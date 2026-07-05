@@ -724,6 +724,56 @@ th {
   grid-column: span 2;
 }
 
+.real-contact-panel {
+  grid-column: span 3;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  border-top: 1px solid #dfe7ea;
+  margin-top: 10px;
+  padding-top: 18px;
+}
+
+.real-contact-panel h3 {
+  grid-column: span 3;
+  margin: 0 0 4px;
+  font-size: 16px;
+  color: #103842;
+}
+
+.real-contact-preview {
+  border: 1px dashed #cfdade;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+  font-size: 13px;
+  font-family: inherit;
+  white-space: pre-wrap;
+  color: #2c3e50;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+
+.real-contact-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.file-note {
+  grid-column: span 3;
+  font-size: 12px;
+  color: #7c5a00;
+  background: #fff9e6;
+  border: 1px solid #ffe89e;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-top: 4px;
+}
+
+
 .form-actions {
   display: flex;
   justify-content: flex-end;

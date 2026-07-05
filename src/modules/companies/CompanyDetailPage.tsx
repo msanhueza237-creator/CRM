@@ -21,6 +21,10 @@ export function CompanyDetailPage() {
   const { createInteraction, getCompany, getCompanyInteractions } = useCompanyStore();
   const [showInteractionForm, setShowInteractionForm] = useState(false);
   const [interactionForm, setInteractionForm] = useState(emptyInteraction);
+  const [selectedChannel, setSelectedChannel] = useState<"Gmail" | "WhatsApp">("WhatsApp");
+  const [selectedCatalog, setSelectedCatalog] = useState<string>("");
+  const [customFileName, setCustomFileName] = useState<string>("");
+
   const company = companyId ? getCompany(companyId) : undefined;
 
   if (!company) return <Navigate to="/empresas" replace />;
@@ -29,6 +33,48 @@ export function CompanyDetailPage() {
 
   function updateInteractionField<K extends keyof typeof interactionForm>(field: K, value: (typeof interactionForm)[K]) {
     setInteractionForm((current) => ({ ...current, [field]: value }));
+  }
+
+  const catalogOptions = [
+    { id: "", name: "Ninguno (Solo mensaje)", url: "", label: "Sin adjunto" },
+    { id: "pdf", name: "Catálogo Clima Activa (PDF)", url: "https://climactiva.cl/catalogos/catalogo_general.pdf", label: "Catálogo PDF" },
+    { id: "xlsx", name: "Lista de Precios 2026 (Excel)", url: "https://climactiva.cl/catalogos/lista_de_precios_2026.xlsx", label: "Lista Excel" },
+    { id: "jpg", name: "Ofertas de Climatización (JPG)", url: "https://climactiva.cl/catalogos/ofertas_julio.jpg", label: "Ofertas JPG" },
+    { id: "local", name: "Subir archivo local...", url: "", label: "Archivo Local" },
+  ];
+
+  const catalogObj = catalogOptions.find((c) => c.id === selectedCatalog);
+  let attachmentText = "";
+  if (catalogObj) {
+    if (catalogObj.id === "local" && customFileName) {
+      attachmentText = `\n\n[Archivo local adjunto: ${customFileName}]`;
+    } else if (catalogObj.url) {
+      attachmentText = `\n\nTe adjunto nuestro documento: ${catalogObj.name}\nDescargar aquí: ${catalogObj.url}`;
+    }
+  }
+  const previewMessage = interactionForm.description + attachmentText;
+
+  function handleSendRealContact() {
+    if (!interactionForm.description.trim()) {
+      alert("Por favor, escribe una descripción o mensaje antes de enviar.");
+      return;
+    }
+
+    if (selectedChannel === "WhatsApp") {
+      const cleanPhone = company!.whatsapp.replace(/\D/g, "");
+      const whatsappUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(previewMessage)}`;
+      window.open(whatsappUrl, "_blank");
+      
+      updateInteractionField("result", `Mensaje enviado por WhatsApp${catalogObj ? ` con ${catalogObj.label}` : ""}`);
+      updateInteractionField("nextAction", "Hacer seguimiento por WhatsApp");
+    } else {
+      const subject = `Contacto Clima Activa - ${company!.name}`;
+      const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${company!.email}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(previewMessage)}`;
+      window.open(gmailUrl, "_blank");
+      
+      updateInteractionField("result", `Correo enviado por Gmail${catalogObj ? ` con ${catalogObj.label}` : ""}`);
+      updateInteractionField("nextAction", "Esperar respuesta de correo");
+    }
   }
 
   function handleInteractionSubmit(event: FormEvent<HTMLFormElement>) {
@@ -121,7 +167,15 @@ export function CompanyDetailPage() {
               Tipo
               <select
                 value={interactionForm.type}
-                onChange={(event) => updateInteractionField("type", event.target.value as Interaction["type"])}
+                onChange={(event) => {
+                  const newType = event.target.value as Interaction["type"];
+                  updateInteractionField("type", newType);
+                  if (newType === "WhatsApp") {
+                    setSelectedChannel("WhatsApp");
+                  } else if (newType === "Correo") {
+                    setSelectedChannel("Gmail");
+                  }
+                }}
               >
                 {interactionTypes.map((type) => <option key={type} value={type}>{type}</option>)}
               </select>
@@ -131,11 +185,12 @@ export function CompanyDetailPage() {
               <input value={interactionForm.owner} onChange={(event) => updateInteractionField("owner", event.target.value)} />
             </label>
             <label className="wide-field">
-              Descripcion
+              Descripcion / Mensaje
               <textarea
                 required
                 value={interactionForm.description}
                 onChange={(event) => updateInteractionField("description", event.target.value)}
+                placeholder="Escribe el mensaje o descripción aquí..."
               />
             </label>
             <label>
@@ -146,7 +201,82 @@ export function CompanyDetailPage() {
               Proxima accion
               <input value={interactionForm.nextAction} onChange={(event) => updateInteractionField("nextAction", event.target.value)} />
             </label>
-            <div className="form-actions wide-field">
+
+            {["WhatsApp", "Correo", "Cotizacion"].includes(interactionForm.type) && (
+              <div className="real-contact-panel">
+                <h3>Generar Contacto Real con Cliente</h3>
+                
+                <label>
+                  Canal de envío
+                  <select 
+                    value={selectedChannel} 
+                    onChange={(e) => setSelectedChannel(e.target.value as "Gmail" | "WhatsApp")}
+                  >
+                    <option value="WhatsApp">WhatsApp</option>
+                    <option value="Gmail">Gmail</option>
+                  </select>
+                </label>
+
+                <label>
+                  Adjuntar Documento
+                  <select 
+                    value={selectedCatalog} 
+                    onChange={(e) => {
+                      setSelectedCatalog(e.target.value);
+                      if (e.target.value !== "local") {
+                        setCustomFileName("");
+                      }
+                    }}
+                  >
+                    {catalogOptions.map((opt) => (
+                      <option key={opt.id} value={opt.id}>{opt.name}</option>
+                    ))}
+                  </select>
+                </label>
+
+                {selectedCatalog === "local" ? (
+                  <label>
+                    Seleccionar archivo local
+                    <input 
+                      type="file" 
+                      onChange={(e) => {
+                        if (e.target.files?.[0]) {
+                          setCustomFileName(e.target.files[0].name);
+                        }
+                      }} 
+                    />
+                  </label>
+                ) : (
+                  <div></div>
+                )}
+
+                {selectedCatalog === "local" && (
+                  <div className="file-note">
+                    ⚠️ <strong>Nota sobre archivos locales:</strong> Por limitaciones del navegador, debes adjuntar el archivo manualmente en la ventana que se abrirá.
+                  </div>
+                )}
+
+                <div className="wide-field" style={{ gridColumn: "span 3" }}>
+                  <label>Vista previa del mensaje a enviar</label>
+                  <div className="real-contact-preview">
+                    {previewMessage || "(Escribe una descripción/mensaje arriba para ver la vista previa)"}
+                  </div>
+                </div>
+
+                <div className="real-contact-actions wide-field" style={{ gridColumn: "span 3" }}>
+                  <button 
+                    type="button" 
+                    className="primary-button" 
+                    onClick={handleSendRealContact}
+                    disabled={!interactionForm.description.trim()}
+                  >
+                    Enviar Mensaje Real ({selectedChannel})
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="form-actions wide-field" style={{ gridColumn: "span 3" }}>
               <button className="ghost-button" type="button" onClick={() => setShowInteractionForm(false)}>Cancelar</button>
               <button className="primary-button" type="submit">Guardar interaccion</button>
             </div>

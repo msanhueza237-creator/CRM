@@ -58,6 +58,18 @@ Deno.serve(async (req) => {
       return json({ valid: true, key_id: validation.key_id, key_name: validation.key_name, scopes: validation.scopes });
     }
 
+    if (route === "whatsapp-webhook" && req.method === "POST") {
+      const validation = await validateWebhookApiKey(req, url, supabase);
+      if (!validation.valid) return unauthorized();
+      return await handleWhatsAppWebhook({ req, url, supabase }, validation);
+    }
+
+    if (route === "gmail-webhook" && req.method === "POST") {
+      const validation = await validateWebhookApiKey(req, url, supabase);
+      if (!validation.valid) return unauthorized();
+      return await handleGmailWebhook({ req, url, supabase }, validation);
+    }
+
     if (readableTables.has(route) && req.method === "GET") {
       const validation = await validateApiKey(req, supabase, "crm:read");
       if (!validation.valid) return unauthorized();
@@ -237,6 +249,219 @@ async function logAgentAction(
       agent_key_name: validation.key_name,
     },
   });
+}
+
+async function validateWebhookApiKey(
+  req: Request,
+  url: URL,
+  supabase: ReturnType<typeof createClient>,
+): Promise<ApiKeyValidation> {
+  let apiKey = req.headers.get("x-climactiva-api-key")?.trim();
+  if (!apiKey) {
+    apiKey = url.searchParams.get("apikey")?.trim();
+  }
+  
+  if (!apiKey) {
+    return { valid: false, key_id: null, key_name: null, scopes: null };
+  }
+
+  const { data, error } = await supabase.rpc("validate_agent_api_key", {
+    p_api_key: apiKey,
+    p_required_scope: "crm:write",
+  });
+
+  if (error || !Array.isArray(data) || data.length === 0) {
+    return { valid: false, key_id: null, key_name: null, scopes: null };
+  }
+
+  return data[0] as ApiKeyValidation;
+}
+
+async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyValidation) {
+  let sender = "";
+  let message = "";
+
+  const contentType = context.req.headers.get("content-type") || "";
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    const formData = await context.req.formData();
+    sender = formData.get("From")?.toString() || "";
+    message = formData.get("Body")?.toString() || "";
+  } else {
+    const payload = await readJsonObject(context.req);
+    sender = String(payload.sender || payload.From || "");
+    message = String(payload.message || payload.Body || "");
+  }
+
+  if (!sender || !message) {
+    return json({ error: "Missing sender or message content" }, 400);
+  }
+
+  const cleanSender = sender.replace(/\D/g, "");
+
+  const { data: companies, error: compError } = await context.supabase
+    .from("companies")
+    .select("id, name, whatsapp, phone");
+
+  if (compError) return json({ error: compError.message }, 500);
+
+  let matchedCompanyId = "";
+
+  for (const c of companies || []) {
+    const cWhatsapp = (c.whatsapp || "").replace(/\D/g, "");
+    const cPhone = (c.phone || "").replace(/\D/g, "");
+    if (
+      (cWhatsapp && cleanSender.endsWith(cWhatsapp)) || 
+      (cPhone && cleanSender.endsWith(cPhone)) || 
+      (cWhatsapp && cWhatsapp.endsWith(cleanSender)) || 
+      (cPhone && cPhone.endsWith(cleanSender))
+    ) {
+      matchedCompanyId = c.id;
+      break;
+    }
+  }
+
+  if (!matchedCompanyId) {
+    const { data: contacts, error: contError } = await context.supabase
+      .from("contacts")
+      .select("id, company_id, phone, whatsapp");
+    
+    if (!contError && contacts) {
+      for (const ct of contacts) {
+        const ctWhatsapp = (ct.whatsapp || "").replace(/\D/g, "");
+        const ctPhone = (ct.phone || "").replace(/\D/g, "");
+        if (
+          (ctWhatsapp && cleanSender.endsWith(ctWhatsapp)) || 
+          (ctPhone && cleanSender.endsWith(ctPhone)) || 
+          (ctWhatsapp && ctWhatsapp.endsWith(cleanSender)) || 
+          (ctPhone && ctPhone.endsWith(cleanSender))
+        ) {
+          matchedCompanyId = ct.company_id;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!matchedCompanyId) {
+    const newCompanyName = `Contacto WhatsApp (${sender})`;
+    const { data: newCompany, error: createError } = await context.supabase
+      .from("companies")
+      .insert({
+        name: newCompanyName,
+        whatsapp: sender,
+        status: "prospecto",
+        description: "Creado automáticamente mediante webhook de WhatsApp al recibir un mensaje."
+      })
+      .select("id")
+      .single();
+
+    if (createError) {
+      return json({ error: `Could not match nor create company: ${createError.message}` }, 500);
+    }
+    matchedCompanyId = newCompany.id;
+  }
+
+  const { data: interaction, error: intError } = await context.supabase
+    .from("interactions")
+    .insert({
+      company_id: matchedCompanyId,
+      type: "whatsapp",
+      description: message,
+      result: "Mensaje entrante del cliente",
+      next_action: "Responder mensaje"
+    })
+    .select("*")
+    .single();
+
+  if (intError) return json({ error: intError.message }, 500);
+
+  await logAgentAction(context.supabase, validation, "interactions", interaction.id, "webhook_received_whatsapp", { sender });
+
+  return json({ success: true, company_id: matchedCompanyId, interaction_id: interaction.id });
+}
+
+async function handleGmailWebhook(context: RouteContext, validation: ApiKeyValidation) {
+  const payload = await readJsonObject(context.req);
+  const sender = String(payload.sender || payload.from || "").trim();
+  const subject = String(payload.subject || "").trim();
+  const message = String(payload.message || payload.body || "").trim();
+
+  if (!sender || !message) {
+    return json({ error: "Missing sender or message content" }, 400);
+  }
+
+  const emailRegex = /<([^>]+)>/;
+  const emailMatch = sender.match(emailRegex);
+  const cleanEmail = (emailMatch ? emailMatch[1] : sender).toLowerCase().trim();
+
+  const { data: companies, error: compError } = await context.supabase
+    .from("companies")
+    .select("id, name, email");
+
+  if (compError) return json({ error: compError.message }, 500);
+
+  let matchedCompanyId = "";
+
+  for (const c of companies || []) {
+    const cEmail = (c.email || "").toLowerCase().trim();
+    if (cEmail && cEmail === cleanEmail) {
+      matchedCompanyId = c.id;
+      break;
+    }
+  }
+
+  if (!matchedCompanyId) {
+    const { data: contacts, error: contError } = await context.supabase
+      .from("contacts")
+      .select("id, company_id, email");
+
+    if (!contError && contacts) {
+      for (const ct of contacts) {
+        const ctEmail = (ct.email || "").toLowerCase().trim();
+        if (ctEmail && ctEmail === cleanEmail) {
+          matchedCompanyId = ct.company_id;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!matchedCompanyId) {
+    const newCompanyName = `Contacto Email (${cleanEmail})`;
+    const { data: newCompany, error: createError } = await context.supabase
+      .from("companies")
+      .insert({
+        name: newCompanyName,
+        email: cleanEmail,
+        status: "prospecto",
+        description: "Creado automáticamente mediante webhook de Gmail al recibir un correo."
+      })
+      .select("id")
+      .single();
+
+    if (createError) {
+      return json({ error: `Could not match nor create company: ${createError.message}` }, 500);
+    }
+    matchedCompanyId = newCompany.id;
+  }
+
+  const { data: interaction, error: intError } = await context.supabase
+    .from("interactions")
+    .insert({
+      company_id: matchedCompanyId,
+      type: "correo",
+      description: `Asunto: ${subject}\n\n${message}`,
+      result: "Correo entrante del cliente",
+      next_action: "Responder correo"
+    })
+    .select("*")
+    .single();
+
+  if (intError) return json({ error: intError.message }, 500);
+
+  await logAgentAction(context.supabase, validation, "interactions", interaction.id, "webhook_received_gmail", { sender });
+
+  return json({ success: true, company_id: matchedCompanyId, interaction_id: interaction.id });
 }
 
 function clampNumber(value: string | null, min: number, max: number, fallback: number) {
