@@ -1,6 +1,8 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Eye, Megaphone, Plus, Send, UserMinus, UserPlus, XCircle } from "lucide-react";
 import { demoCampaigns, demoTemplates } from "../../data/demoData";
+import { isSupabaseConfigured, supabase } from "../../lib/supabase";
+import { useAuth } from "../auth/AuthContext";
 import { useCompanyStore } from "../companies/CompanyStore";
 import { useTemplateStore } from "../templates/TemplateStore";
 import type { Campaign, CampaignStatus, CampaignType, Company, MessageTemplate } from "../../types/crm";
@@ -93,6 +95,7 @@ function renderMessage(template: MessageTemplate, company: Company, campaign: Ca
 }
 
 export function CampaignsPage() {
+  const { user } = useAuth();
   const { companies } = useCompanyStore();
   const { activeTemplates } = useTemplateStore();
   const templates = activeTemplates.length ? activeTemplates : demoTemplates;
@@ -110,6 +113,71 @@ export function CampaignsPage() {
     coupon: "CLIMA10",
     sendAt: new Date().toISOString().slice(0, 10),
   });
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !user) return;
+
+    async function loadSupabaseCampaigns() {
+      const [{ data: campaignsData, error: campaignsError }, { data: recipientsData, error: recipientsError }] =
+        await Promise.all([
+          supabase!.from("campaigns").select("*").order("created_at", { ascending: false }),
+          supabase!.from("campaign_recipients").select("*"),
+        ]);
+
+      if (!campaignsError && campaignsData) {
+        const mappedCampaigns: CampaignDraft[] = campaignsData.map((row) => ({
+          id: String(row.id),
+          name: String(row.name ?? ""),
+          type: mapCampaignTypeFromSupabase(String(row.type)),
+          segment: String(row.segment ?? ""),
+          status: row.status as CampaignStatus,
+          createdAt: String(row.created_at ?? "").slice(0, 10),
+          sendAt: String(row.send_at ?? "").slice(0, 10),
+          recipients: 0,
+          sent: 0,
+          replied: 0,
+          interested: 0,
+          discarded: 0,
+          templateId: templates[0]?.id ?? demoTemplates[0].id,
+          product: String(row.product ?? ""),
+          coupon: String(row.coupon ?? ""),
+          recipientIds: [],
+        }));
+
+        const mappedRecipients: RecipientState[] = !recipientsError && recipientsData
+          ? recipientsData.map((row) => ({
+              campaignId: String(row.campaign_id),
+              companyId: String(row.company_id),
+              sent: Boolean(row.sent_at),
+              replied: Boolean(row.replied_at),
+              interested: Boolean(row.interested),
+              discarded: Boolean(row.discarded),
+            }))
+          : [];
+
+        const campaignsWithRecipients = mappedCampaigns.map((campaign) => {
+          const campaignRows = mappedRecipients.filter((recipient) => recipient.campaignId === campaign.id);
+          return {
+            ...campaign,
+            recipientIds: campaignRows.map((recipient) => recipient.companyId),
+            recipients: campaignRows.length,
+            sent: campaignRows.filter((recipient) => recipient.sent).length,
+            replied: campaignRows.filter((recipient) => recipient.replied).length,
+            interested: campaignRows.filter((recipient) => recipient.interested).length,
+            discarded: campaignRows.filter((recipient) => recipient.discarded).length,
+          };
+        });
+
+        setCampaigns(campaignsWithRecipients);
+        saveCampaigns(campaignsWithRecipients);
+        setRecipients(mappedRecipients);
+        saveRecipients(mappedRecipients);
+        setSelectedCampaignId(campaignsWithRecipients[0]?.id ?? "");
+      }
+    }
+
+    void loadSupabaseCampaigns();
+  }, [templates, user]);
 
   const selectedCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId) ?? campaigns[0];
   const selectedTemplate = templates.find((template) => template.id === selectedCampaign?.templateId) ?? templates[0];
@@ -474,6 +542,12 @@ export function CampaignsPage() {
       ) : null}
     </section>
   );
+}
+
+function mapCampaignTypeFromSupabase(type: string): CampaignType {
+  if (type === "whatsapp") return "WhatsApp";
+  if (type === "email") return "email";
+  return "mixta";
 }
 
 function getCampaignRecipientIds(campaign: CampaignDraft, companies: Company[]) {

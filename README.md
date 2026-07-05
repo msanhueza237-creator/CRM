@@ -26,9 +26,15 @@ Si `.env` no tiene credenciales reales de Supabase, la app abre en modo demo loc
 
 1. Crear un proyecto en Supabase.
 2. Copiar `VITE_SUPABASE_URL` y `VITE_SUPABASE_ANON_KEY` en `.env`.
-3. Ejecutar `supabase/schema.sql` en el SQL editor.
+3. Ejecutar `supabase/setup_climactiva_crm_demo.sql` en el SQL editor para crear tablas y datos de ejemplo.
 4. Crear el primer usuario desde Supabase Auth.
 5. Insertar su registro en `profiles` con rol `administrador`.
+
+### API keys para agentes
+
+Para conectar agentes externos futuros, ejecuta tambien `supabase/agent_api_keys.sql`.
+La guia de uso esta en `docs/api-keys-agentes.md`.
+El endpoint base para agentes esta en `supabase/functions/crm-agent`.
 
 ## Despliegue con Dokploy
 
