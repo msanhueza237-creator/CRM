@@ -3,6 +3,7 @@ import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Save } from "lucide-react";
 import { useCompanyStore } from "./CompanyStore";
 import type { Company, CompanyStatus, CompanyType, Priority } from "../../types/crm";
+import { chileData } from "../../data/chileData";
 
 const companyTypes: CompanyType[] = ["distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia", "otro"];
 const statuses: CompanyStatus[] = ["prospecto", "contactado", "interesado", "cotizado", "cliente", "descartado"];
@@ -45,6 +46,13 @@ export function CompanyFormPage() {
     [existingCompany],
   );
   const [form, setForm] = useState(initialValues);
+
+  const formCities = useMemo(() => {
+    const selectedRegion = form.region;
+    if (!selectedRegion) return [];
+    return chileData.find((r) => r.region === selectedRegion)?.comunas.sort() ?? [];
+  }, [form.region]);
+
 
   if (isEditing && !existingCompany) return <Navigate to="/empresas" replace />;
 
@@ -93,8 +101,22 @@ export function CompanyFormPage() {
         </FormSection>
 
         <FormSection title="Ubicacion y canales">
-          <TextField label="Ciudad" value={form.city} onChange={(value) => updateField("city", value)} />
-          <TextField label="Region" value={form.region} onChange={(value) => updateField("region", value)} />
+          <SelectField 
+            label="Region" 
+            value={form.region} 
+            options={["", ...chileData.map((r) => r.region)]} 
+            onChange={(value) => {
+              updateField("region", value);
+              updateField("city", "");
+            }} 
+          />
+          <SelectField 
+            label="Ciudad" 
+            value={form.city} 
+            options={["", ...formCities]} 
+            onChange={(value) => updateField("city", value)} 
+            disabled={!form.region}
+          />
           <TextField label="Direccion" value={form.address} onChange={(value) => updateField("address", value)} />
           <TextField label="Sitio web" value={form.website} onChange={(value) => updateField("website", value)} />
           <TextField label="Instagram" value={form.instagram} onChange={(value) => updateField("instagram", value)} />
@@ -167,18 +189,22 @@ function SelectField<T extends string>({
   value,
   options,
   onChange,
+  disabled,
 }: {
   label: string;
   value: T;
   options: T[];
   onChange: (value: T) => void;
+  disabled?: boolean;
 }) {
   return (
     <label>
       {label}
-      <select value={value} onChange={(event) => onChange(event.target.value as T)}>
+      <select value={value} onChange={(event) => onChange(event.target.value as T)} disabled={disabled}>
         {options.map((option) => (
-          <option key={option} value={option}>{option}</option>
+          <option key={option} value={option}>
+            {option === "" ? "Seleccionar..." : option}
+          </option>
         ))}
       </select>
     </label>

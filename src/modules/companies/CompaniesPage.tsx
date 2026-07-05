@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { Filter, Plus, Search } from "lucide-react";
 import { useCompanyStore } from "./CompanyStore";
 import type { CompanyStatus, CompanyType, Priority } from "../../types/crm";
+import { chileData, normalizeString } from "../../data/chileData";
 
 const allTypes = ["todos", "distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia", "otro"] as const;
 const allStatuses = ["todos", "prospecto", "contactado", "interesado", "cotizado", "cliente", "descartado"] as const;
@@ -24,24 +25,40 @@ export function CompaniesPage() {
   const [type, setType] = useState<(typeof allTypes)[number]>(initialType);
   const [status, setStatus] = useState<(typeof allStatuses)[number]>(initialStatus);
   const [priority, setPriority] = useState<(typeof allPriorities)[number]>(initialPriority);
+  const [regionFilter, setRegionFilter] = useState<string>(searchParams.get("region") ?? "todos");
+  const [cityFilter, setCityFilter] = useState<string>(searchParams.get("city") ?? "todos");
 
   function updateFilters(nextFilters: {
     query?: string;
     type?: (typeof allTypes)[number];
     status?: (typeof allStatuses)[number];
     priority?: (typeof allPriorities)[number];
+    region?: string;
+    city?: string;
   }) {
     const nextQuery = nextFilters.query ?? query;
     const nextType = nextFilters.type ?? type;
     const nextStatus = nextFilters.status ?? status;
     const nextPriority = nextFilters.priority ?? priority;
+    const nextRegion = nextFilters.region ?? regionFilter;
+    const nextCity = nextFilters.city ?? cityFilter;
+    
     const params = new URLSearchParams();
     if (nextQuery) params.set("q", nextQuery);
     if (nextType !== "todos") params.set("type", nextType);
     if (nextStatus !== "todos") params.set("status", nextStatus);
     if (nextPriority !== "todos") params.set("priority", nextPriority);
+    if (nextRegion !== "todos") params.set("region", nextRegion);
+    if (nextCity !== "todos") params.set("city", nextCity);
     setSearchParams(params, { replace: true });
   }
+
+  const availableCities = useMemo(() => {
+    if (regionFilter === "todos") {
+      return chileData.flatMap((r) => r.comunas).sort();
+    }
+    return chileData.find((r) => r.region === regionFilter)?.comunas.sort() ?? [];
+  }, [regionFilter]);
 
   const companies = useMemo(() => {
     return [...storedCompanies]
@@ -52,8 +69,16 @@ export function CompaniesPage() {
       .filter((company) => type === "todos" || company.type === (type as CompanyType))
       .filter((company) => status === "todos" || company.status === (status as CompanyStatus))
       .filter((company) => priority === "todos" || company.priority === (priority as Priority))
+      .filter((company) => {
+        if (regionFilter === "todos") return true;
+        return normalizeString(company.region) === normalizeString(regionFilter);
+      })
+      .filter((company) => {
+        if (cityFilter === "todos") return true;
+        return normalizeString(company.city) === normalizeString(cityFilter);
+      })
       .sort((a, b) => a.nextFollowUp.localeCompare(b.nextFollowUp));
-  }, [priority, query, status, storedCompanies, type]);
+  }, [priority, query, status, storedCompanies, type, regionFilter, cityFilter]);
 
   return (
     <section className="page-stack">
@@ -83,6 +108,8 @@ export function CompaniesPage() {
         <Select label="Tipo" value={type} onChange={(value) => { setType(value); updateFilters({ type: value }); }} options={allTypes} />
         <Select label="Estado" value={status} onChange={(value) => { setStatus(value); updateFilters({ status: value }); }} options={allStatuses} />
         <Select label="Prioridad" value={priority} onChange={(value) => { setPriority(value); updateFilters({ priority: value }); }} options={allPriorities} />
+        <Select label="Región" value={regionFilter} onChange={(value) => { setRegionFilter(value); setCityFilter("todos"); updateFilters({ region: value, city: "todos" }); }} options={["todos", ...chileData.map((r) => r.region)]} />
+        <Select label="Ciudad" value={cityFilter} onChange={(value) => { setCityFilter(value); updateFilters({ city: value }); }} options={["todos", ...availableCities]} />
       </div>
 
       <div className="panel">

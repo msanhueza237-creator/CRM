@@ -584,7 +584,7 @@ th {
 
 .filters-panel {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) repeat(3, minmax(160px, 220px));
+  grid-template-columns: minmax(240px, 1.5fr) repeat(5, minmax(130px, 1fr));
   gap: 12px;
   align-items: end;
 }
