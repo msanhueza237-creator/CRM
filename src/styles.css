@@ -302,6 +302,12 @@ a {
   font-weight: 700;
 }
 
+.topbar-signout {
+  display: none;
+  width: 40px;
+  padding: 0;
+}
+
 .mode-pill,
 .status-badge,
 .priority,
@@ -501,6 +507,7 @@ td small {
 
 .table-wrap {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 table {
@@ -952,6 +959,10 @@ th {
 }
 
 @media (max-width: 760px) {
+  body {
+    background: #f5f7f8;
+  }
+
   .login-shell,
   .two-column,
   .detail-grid,
@@ -967,8 +978,31 @@ th {
     grid-template-columns: 1fr;
   }
 
+  .app-shell {
+    padding-bottom: calc(78px + env(safe-area-inset-bottom));
+  }
+
   .wide-field {
     grid-column: auto;
+  }
+
+  .login-shell {
+    min-height: 100svh;
+    align-content: end;
+    gap: 22px;
+    padding: 18px;
+  }
+
+  .login-brand h1 {
+    font-size: 44px;
+  }
+
+  .login-brand span {
+    font-size: 16px;
+  }
+
+  .login-card {
+    padding: 20px;
   }
 
   .login-brand {
@@ -977,10 +1011,19 @@ th {
 
   .content-shell,
   .topbar {
-    padding: 18px;
+    padding: 16px;
   }
 
-  .topbar,
+  .content-shell {
+    padding-bottom: 20px;
+  }
+
+  .topbar {
+    min-height: 64px;
+    align-items: center;
+    flex-direction: row;
+  }
+
   .page-heading,
   .company-hero,
   .detail-actions {
@@ -988,7 +1031,212 @@ th {
     flex-direction: column;
   }
 
+  .topbar-title {
+    min-width: 0;
+  }
+
+  .topbar-title > svg {
+    display: none;
+  }
+
+  .topbar-title strong,
+  .topbar-title span,
+  .topbar-user > span:not(.mode-pill) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .topbar-title span {
+    max-width: 48vw;
+  }
+
+  .topbar-user {
+    min-width: 0;
+    margin-left: auto;
+  }
+
+  .topbar-user > span:not(.mode-pill) {
+    max-width: 88px;
+  }
+
+  .topbar-signout {
+    display: inline-flex;
+  }
+
+  .sidebar {
+    position: fixed;
+    left: 10px;
+    right: 10px;
+    bottom: max(10px, env(safe-area-inset-bottom));
+    z-index: 30;
+    height: auto;
+    display: block;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    padding: 8px;
+    box-shadow: 0 18px 42px rgba(12, 33, 41, 0.24);
+  }
+
+  .sidebar-brand,
+  .sidebar-signout {
+    display: none;
+  }
+
   .sidebar nav {
-    grid-template-columns: 1fr 1fr;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 4px;
+  }
+
+  .sidebar a {
+    min-width: 0;
+    min-height: 52px;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    border-radius: 8px;
+    padding: 7px 4px;
+    font-size: 11px;
+    line-height: 1.1;
+    text-align: center;
+  }
+
+  .sidebar a svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .sidebar a span {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .page-heading h1,
+  .company-hero h1 {
+    font-size: 28px;
+  }
+
+  .page-heading .primary-button,
+  .detail-actions .primary-button,
+  .detail-actions .ghost-button,
+  .form-actions .primary-button,
+  .form-actions .ghost-button {
+    width: 100%;
+  }
+
+  .panel,
+  .metric-card,
+  .template-card,
+  .campaign-card {
+    padding: 15px;
+  }
+
+  .metric-card {
+    gap: 5px;
+  }
+
+  .metric-card strong {
+    font-size: 28px;
+  }
+
+  .panel-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .filters-panel {
+    gap: 10px;
+  }
+
+  .company-hero {
+    padding: 18px;
+  }
+
+  .quick-actions {
+    width: 100%;
+  }
+
+  .quick-actions a {
+    flex: 1;
+  }
+
+  .form-actions,
+  .campaign-actions,
+  .recipient-actions,
+  .template-card-actions {
+    flex-direction: column;
+  }
+
+  .campaign-actions .primary-button,
+  .campaign-actions .ghost-button,
+  .recipient-actions .mini-toggle,
+  .template-card-actions .ghost-button {
+    width: 100%;
+  }
+
+  .table-wrap {
+    margin: 0 -15px;
+    padding: 0 15px 4px;
+    scroll-snap-type: x proximity;
+  }
+
+  table {
+    min-width: 680px;
+  }
+
+  th,
+  td {
+    padding: 11px 9px;
+  }
+
+  .message-cell {
+    max-width: 260px;
+  }
+
+  .recipient-editor {
+    align-items: stretch;
+  }
+
+  .recipient-editor .ghost-button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .content-shell,
+  .topbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .page-stack {
+    gap: 16px;
+  }
+
+  .sidebar {
+    left: 6px;
+    right: 6px;
+    padding: 6px;
+  }
+
+  .sidebar a {
+    font-size: 10px;
+  }
+
+  .sidebar a svg {
+    width: 19px;
+    height: 19px;
+  }
+
+  .topbar-title span {
+    display: none;
+  }
+
+  .topbar-user > span:not(.mode-pill) {
+    display: none;
   }
 }

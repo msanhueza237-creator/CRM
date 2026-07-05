@@ -37,7 +37,7 @@ export function AppLayout() {
           {navItems.map((item) => (
             <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? "active" : undefined)}>
               <item.icon size={19} />
-              {item.label}
+              <span>{item.label}</span>
             </NavLink>
           ))}
         </nav>
@@ -60,6 +60,9 @@ export function AppLayout() {
           <div className="topbar-user">
             {isDemoMode ? <span className="mode-pill">Demo</span> : null}
             <span>{user?.name}</span>
+            <button className="ghost-button topbar-signout" type="button" onClick={() => void signOut()} aria-label="Salir">
+              <LogOut size={18} />
+            </button>
           </div>
         </header>
 
