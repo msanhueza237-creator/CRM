@@ -936,6 +936,7 @@ th {
 
   .sidebar {
     position: fixed;
+    top: auto;
     left: 12px;
     right: 12px;
     bottom: max(12px, env(safe-area-inset-bottom));
@@ -1098,6 +1099,7 @@ th {
   }
 
   .sidebar {
+    top: auto;
     left: 10px;
     right: 10px;
     bottom: max(10px, env(safe-area-inset-bottom));
