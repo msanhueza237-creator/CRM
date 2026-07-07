@@ -12,3 +12,9 @@ export const isSupabaseConfigured =
 export const supabase = isSupabaseConfigured
   ? createClient(supabaseUrl!, supabaseAnonKey!)
   : null;
+
+export function getSupabaseFunctionUrl(functionName: string, route = "") {
+  if (!supabaseUrl) return "";
+  const cleanRoute = route.replace(/^\/+/, "");
+  return `${supabaseUrl}/functions/v1/${functionName}${cleanRoute ? `/${cleanRoute}` : ""}`;
+}

@@ -1,6 +1,7 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { ArrowLeft, Edit, Mail, MessageCircle, Phone, Plus } from "lucide-react";
+import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useCompanyStore } from "./CompanyStore";
 import type { Interaction } from "../../types/crm";
 
@@ -16,6 +17,18 @@ const emptyInteraction: Omit<Interaction, "id" | "companyId"> = {
   nextAction: "",
 };
 
+interface EmailMessageRow {
+  id: string;
+  campaign_id: string | null;
+  to_email: string;
+  subject: string;
+  body_preview: string | null;
+  status: string;
+  sent_at: string | null;
+  error_message: string | null;
+  created_at: string;
+}
+
 export function CompanyDetailPage() {
   const { companyId } = useParams();
   const { createInteraction, getCompany, getCompanyInteractions } = useCompanyStore();
@@ -24,8 +37,26 @@ export function CompanyDetailPage() {
   const [selectedChannel, setSelectedChannel] = useState<"Gmail" | "WhatsApp">("WhatsApp");
   const [selectedCatalog, setSelectedCatalog] = useState<string>("");
   const [customFileName, setCustomFileName] = useState<string>("");
+  const [emailMessages, setEmailMessages] = useState<EmailMessageRow[]>([]);
 
   const company = companyId ? getCompany(companyId) : undefined;
+
+  useEffect(() => {
+    if (!companyId || !isSupabaseConfigured || !supabase) return;
+
+    async function loadEmailMessages() {
+      const { data, error } = await supabase!
+        .from("email_messages")
+        .select("id, campaign_id, to_email, subject, body_preview, status, sent_at, error_message, created_at")
+        .eq("company_id", companyId)
+        .order("created_at", { ascending: false })
+        .limit(20);
+
+      if (!error && data) setEmailMessages(data as EmailMessageRow[]);
+    }
+
+    void loadEmailMessages();
+  }, [companyId]);
 
   if (!company) return <Navigate to="/empresas" replace />;
 
@@ -142,6 +173,8 @@ export function CompanyDetailPage() {
             <div><dt>Cargo</dt><dd>{company.contactRole}</dd></div>
             <div><dt>Email</dt><dd>{company.email}</dd></div>
             <div><dt>WhatsApp</dt><dd>{company.whatsapp}</dd></div>
+            <div><dt>Consentimiento WhatsApp</dt><dd>{company.whatsappOptIn ? "Autorizado" : "Sin consentimiento"}</dd></div>
+            <div><dt>Estado WhatsApp</dt><dd>{company.whatsappStatus ?? "sin_consentimiento"}</dd></div>
             <div><dt>Telefono</dt><dd>{company.phone}</dd></div>
             <div><dt>Web</dt><dd>{company.website || "Sin registrar"}</dd></div>
           </dl>
@@ -293,6 +326,44 @@ export function CompanyDetailPage() {
             </article>
           ))}
         </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-heading">
+          <h2>Historial Gmail API</h2>
+          <span>{emailMessages.length ? `${emailMessages.length} registros` : "Sin envios registrados"}</span>
+        </div>
+        {emailMessages.length ? (
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Destinatario</th>
+                  <th>Asunto</th>
+                  <th>Estado</th>
+                  <th>Error</th>
+                </tr>
+              </thead>
+              <tbody>
+                {emailMessages.map((message) => (
+                  <tr key={message.id}>
+                    <td>{(message.sent_at || message.created_at).slice(0, 10)}</td>
+                    <td>{message.to_email}</td>
+                    <td>
+                      <strong>{message.subject}</strong>
+                      <small>{message.campaign_id ? `Campana: ${message.campaign_id.slice(0, 8)}` : "Correo de prueba/manual"}</small>
+                    </td>
+                    <td><span className={`status-badge ${message.status === "sent" ? "enviada" : message.status === "failed" ? "descartado" : "programada"}`}>{message.status}</span></td>
+                    <td>{message.error_message || "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="muted">Cuando se envien correos por Gmail API, apareceran aqui con campana, asunto, destinatario, estado y error si falla.</p>
+        )}
       </div>
 
       <div className="panel">

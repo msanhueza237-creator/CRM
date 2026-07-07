@@ -23,6 +23,10 @@ const emptyCompany: Omit<Company, "id"> = {
   instagram: "",
   facebook: "",
   whatsapp: "",
+  whatsappNumber: "",
+  whatsappOptIn: false,
+  lastWhatsAppMessageAt: "",
+  whatsappStatus: "sin_consentimiento",
   phone: "",
   email: "",
   contactName: "",
@@ -122,6 +126,13 @@ export function CompanyFormPage() {
           <TextField label="Instagram" value={form.instagram} onChange={(value) => updateField("instagram", value)} />
           <TextField label="Facebook" value={form.facebook} onChange={(value) => updateField("facebook", value)} />
           <TextField label="WhatsApp" value={form.whatsapp} onChange={(value) => updateField("whatsapp", value)} />
+          <TextField label="Numero WhatsApp normalizado" value={form.whatsappNumber ?? ""} onChange={(value) => updateField("whatsappNumber", value)} />
+          <SelectField
+            label="Estado WhatsApp"
+            value={form.whatsappStatus ?? "sin_consentimiento"}
+            options={["sin_consentimiento", "opt_in", "bloqueado", "invalido"]}
+            onChange={(value) => updateField("whatsappStatus", value)}
+          />
           <TextField label="Telefono" value={form.phone} onChange={(value) => updateField("phone", value)} />
         </FormSection>
 
@@ -131,6 +142,7 @@ export function CompanyFormPage() {
           <TextField label="Cargo del contacto" value={form.contactRole} onChange={(value) => updateField("contactRole", value)} />
           <TextField label="Fuente del dato" value={form.source} onChange={(value) => updateField("source", value)} />
           <TextField label="Etiquetas separadas por coma" value={form.tags} onChange={(value) => updateField("tags", value)} />
+          <CheckboxField label="Consentimiento WhatsApp comercial" checked={Boolean(form.whatsappOptIn)} onChange={(value) => updateField("whatsappOptIn", value)} />
         </FormSection>
 
         <div className="form-actions">
@@ -142,6 +154,23 @@ export function CompanyFormPage() {
         </div>
       </form>
     </section>
+  );
+}
+
+function CheckboxField({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <label className="checkbox-field">
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      {label}
+    </label>
   );
 }
 

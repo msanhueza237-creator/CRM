@@ -700,6 +700,22 @@ th {
   font-weight: 800;
 }
 
+.checkbox-field {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #40515b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.checkbox-field input {
+  width: 18px;
+  height: 18px;
+  accent-color: #0b7285;
+}
+
 .interaction-form {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -978,6 +994,82 @@ th {
   margin: 14px 0 0;
 }
 
+.admin-integration-form {
+  display: grid;
+  gap: 16px;
+}
+
+.admin-integration-summary {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  border: 1px solid #dfe7ea;
+  border-radius: 8px;
+  padding: 14px;
+  background: #f7fafb;
+}
+
+.admin-integration-summary svg {
+  color: #0b7285;
+}
+
+.admin-integration-summary p {
+  margin: 6px 0 0;
+}
+
+.gmail-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.gmail-status-grid div {
+  border: 1px solid #dfe7ea;
+  border-radius: 8px;
+  padding: 12px;
+  background: #ffffff;
+}
+
+.gmail-status-grid span {
+  display: block;
+  color: #60737c;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.gmail-status-grid strong {
+  display: block;
+  margin-top: 6px;
+  color: #183139;
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.deliverability-panel {
+  border: 1px solid #d9e7c9;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #f6fbef;
+}
+
+.deliverability-panel strong {
+  color: #315a18;
+}
+
+.deliverability-panel p {
+  margin: 6px 0 0;
+  color: #4a5a43;
+  font-size: 14px;
+}
+
+.ghost-button.danger {
+  color: #8c2d22;
+  border-color: #f2b2a7;
+  background: #fff7f5;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -1045,7 +1137,8 @@ th {
   .form-grid,
   .interaction-form,
   .recipient-editor,
-  .filters-panel {
+  .filters-panel,
+  .gmail-status-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -1062,6 +1155,7 @@ th {
   .campaign-grid,
   .template-grid,
   .admin-grid,
+  .gmail-status-grid,
   .filters-panel,
   .form-grid,
   .interaction-form,
@@ -1284,4 +1378,120 @@ th {
   .topbar-user > span:not(.mode-pill) {
     display: none;
   }
+}
+
+/* Meta API Campaign Modal Styles */
+.meta-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(16, 56, 66, 0.6);
+  backdrop-filter: blur(4px);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+  padding: 24px;
+}
+
+.meta-modal-box {
+  background: #ffffff;
+  border-radius: 12px;
+  max-width: 580px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+  padding: 28px;
+  box-shadow: 0 20px 40px rgba(16, 56, 66, 0.15);
+  border: 1px solid #dfe7ea;
+}
+
+.meta-modal-box h2 {
+  margin: 0 0 16px;
+  color: #103842;
+  font-size: 22px;
+}
+
+.meta-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.meta-form-grid label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #40515b;
+}
+
+.meta-form-grid label.wide {
+  grid-column: span 2;
+}
+
+.meta-form-grid input {
+  width: 100%;
+  min-height: 38px;
+  border: 1px solid #cfdade;
+  border-radius: 6px;
+  padding: 0 10px;
+  color: #172026;
+  background: #ffffff;
+}
+
+.meta-variables-list {
+  background: #f7fafb;
+  border: 1px solid #dfe7ea;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 18px;
+}
+
+.meta-variables-list h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  color: #40515b;
+}
+
+.meta-variables-list ul {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #62717a;
+}
+
+.meta-log-panel {
+  background: #172026;
+  color: #a9ffb2;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  max-height: 180px;
+  overflow-y: auto;
+  margin-bottom: 18px;
+  white-space: pre-wrap;
+}
+
+.meta-warning-panel {
+  border: 1px solid #f7b8ad;
+  border-radius: 8px;
+  margin-bottom: 18px;
+  padding: 12px;
+  color: #8c2d22;
+  background: #fff4f1;
+}
+
+.meta-warning-panel p {
+  margin: 6px 0 0;
+  color: #8c2d22;
+}
+
+.meta-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }

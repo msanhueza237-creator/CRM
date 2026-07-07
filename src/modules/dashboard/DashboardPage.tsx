@@ -1,6 +1,8 @@
 import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { ArrowUpRight, Building2, CalendarClock, CheckCircle2, Megaphone } from "lucide-react";
 import { demoActivities, demoCampaigns, demoTasks } from "../../data/demoData";
+import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useCompanyStore } from "../companies/CompanyStore";
 import type { CompanyStatus, CompanyType } from "../../types/crm";
 
@@ -9,10 +11,38 @@ const companyStatuses: CompanyStatus[] = ["prospecto", "contactado", "interesado
 
 export function DashboardPage() {
   const { companies, interactions } = useCompanyStore();
+  const [gmailMetrics, setGmailMetrics] = useState({
+    sentToday: 0,
+    dailyLimit: 0,
+    activeCampaigns: 0,
+    failedEmails: 0,
+    companiesContacted: 0,
+    lastCampaign: "",
+  });
   const conversionBase = companies.filter((company) => company.status !== "descartado").length;
   const clients = companies.filter((company) => company.status === "cliente").length;
   const conversionRate = conversionBase ? Math.round((clients / conversionBase) * 100) : 0;
   const recentInteractions = interactions.slice(0, 6);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase) return;
+
+    async function loadGmailMetrics() {
+      const { data, error } = await supabase!.functions.invoke("gmail-integration/metrics", { method: "GET" });
+      if (!error && data) {
+        setGmailMetrics({
+          sentToday: Number(data.sentToday || 0),
+          dailyLimit: Number(data.dailyLimit || 0),
+          activeCampaigns: Number(data.activeCampaigns || 0),
+          failedEmails: Number(data.failedEmails || 0),
+          companiesContacted: Number(data.companiesContacted || 0),
+          lastCampaign: String(data.lastCampaign || ""),
+        });
+      }
+    }
+
+    void loadGmailMetrics();
+  }, []);
 
   return (
     <section className="page-stack">
@@ -32,6 +62,13 @@ export function DashboardPage() {
         <MetricCard to="/campanas" icon={Megaphone} label="Campanas activas" value={demoCampaigns.length.toString()} detail="Revisar campanas" />
         <MetricCard to="#seguimientos" icon={CalendarClock} label="Proximos seguimientos" value={demoTasks.length.toString()} detail="Ver pendientes" />
         <MetricCard to="/empresas?status=cliente" icon={CheckCircle2} label="Conversion comercial" value={`${conversionRate}%`} detail="Ver clientes" />
+      </div>
+
+      <div className="metric-grid">
+        <MetricCard to="/administracion" icon={Megaphone} label="Emails enviados hoy" value={`${gmailMetrics.sentToday}/${gmailMetrics.dailyLimit || 0}`} detail="Limite diario Gmail" />
+        <MetricCard to="/campanas" icon={Megaphone} label="Campanas email activas" value={gmailMetrics.activeCampaigns.toString()} detail="Ver campanas" />
+        <MetricCard to="/campanas" icon={CheckCircle2} label="Emails fallidos" value={gmailMetrics.failedEmails.toString()} detail="Revisar errores" />
+        <MetricCard to="/empresas" icon={Building2} label="Empresas contactadas" value={gmailMetrics.companiesContacted.toString()} detail={gmailMetrics.lastCampaign || "Sin campana email"} />
       </div>
 
       <div className="two-column">

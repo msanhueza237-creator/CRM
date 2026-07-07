@@ -3,6 +3,7 @@ export type CompanyStatus = "prospecto" | "contactado" | "interesado" | "cotizad
 export type Priority = "alta" | "media" | "baja";
 export type CampaignType = "email" | "WhatsApp" | "mixta";
 export type CampaignStatus = "borrador" | "programada" | "enviada" | "pausada" | "finalizada";
+export type WhatsAppStatus = "sin_consentimiento" | "opt_in" | "bloqueado" | "invalido";
 
 export interface Company {
   id: string;
@@ -19,6 +20,10 @@ export interface Company {
   instagram: string;
   facebook: string;
   whatsapp: string;
+  whatsappNumber?: string;
+  whatsappOptIn?: boolean;
+  lastWhatsAppMessageAt?: string;
+  whatsappStatus?: WhatsAppStatus;
   phone: string;
   email: string;
   contactName: string;

@@ -104,6 +104,13 @@ export function CampaignsPage() {
   const [selectedCampaignId, setSelectedCampaignId] = useState(campaigns[0]?.id ?? "");
   const [companyToAdd, setCompanyToAdd] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [showMetaModal, setShowMetaModal] = useState(false);
+  const [metaApiKey, setMetaApiKey] = useState("");
+  const [metaTemplateName, setMetaTemplateName] = useState("");
+  const [allowWithoutOptIn, setAllowWithoutOptIn] = useState(false);
+  const [adminOverrideReason, setAdminOverrideReason] = useState("");
+  const [sendingCampaign, setSendingCampaign] = useState(false);
+  const [sendingResults, setSendingResults] = useState<{ success: number; failed: number; log: string[] } | null>(null);
   const [form, setForm] = useState({
     name: "",
     type: "mixta" as CampaignType,
@@ -198,6 +205,7 @@ export function CampaignsPage() {
     replied: campaignRecipients.filter((recipient) => recipient.replied).length,
     interested: campaignRecipients.filter((recipient) => recipient.interested).length,
     discarded: campaignRecipients.filter((recipient) => recipient.discarded).length,
+    withoutOptIn: selectedCompanies.filter((company) => !company.whatsappOptIn).length,
   };
 
   function persistCampaigns(nextCampaigns: CampaignDraft[]) {
@@ -303,6 +311,168 @@ export function CampaignsPage() {
   function markCampaignSent() {
     ensureRecipientRows(true);
     updateCampaignStatus("enviada");
+  }
+
+  async function executeMetaCampaign() {
+    if (!selectedCampaign || !isSupabaseConfigured || !supabase) return;
+    setSendingCampaign(true);
+    setSendingResults(null);
+
+    const mappedRecipients = selectedCompanies.map((company) => {
+      const phone = company.whatsapp || company.phone || "";
+      return {
+        phone,
+        companyId: company.id,
+        parameters: [
+          company.name,
+          company.contactName || "cliente",
+          company.city || "su zona",
+          selectedCampaign.product || "",
+          selectedCampaign.coupon || ""
+        ]
+      };
+    }).filter((r) => r.phone);
+
+    if (mappedRecipients.length === 0) {
+      setSendingResults({
+        success: 0,
+        failed: 0,
+        log: ["❌ Error: No hay destinatarios con número de WhatsApp válido."]
+      });
+      setSendingCampaign(false);
+      return;
+    }
+
+    try {
+      const { data, error } = await supabase.functions.invoke("crm-agent/send-campaign", {
+        body: {
+          campaignId: selectedCampaign.id,
+          templateName: metaTemplateName,
+          recipients: mappedRecipients,
+          allowWithoutOptIn,
+          adminOverrideReason
+        },
+        headers: {
+          "x-climactiva-api-key": metaApiKey
+        }
+      });
+
+      if (error || !data || !data.success) {
+        setSendingResults({
+          success: 0,
+          failed: mappedRecipients.length,
+          log: [error?.message || data?.error || "Error al invocar la función de Supabase."]
+        });
+      } else {
+        const results = data.results as Array<{ phone: string; success: boolean; error?: string }>;
+        const successCount = results.filter((r) => r.success).length;
+        const failedCount = results.filter((r) => !r.success).length;
+        const logMsgs = results.map((r) => 
+          r.success 
+            ? `✅ Enviado con éxito a ${r.phone}`
+            : `❌ Falló para ${r.phone}: ${r.error || "error desconocido"}`
+        );
+
+        setSendingResults({
+          success: successCount,
+          failed: failedCount,
+          log: logMsgs
+        });
+
+        if (successCount > 0) {
+          markCampaignSent();
+        }
+      }
+    } catch (err) {
+      setSendingResults({
+        success: 0,
+        failed: mappedRecipients.length,
+        log: [err instanceof Error ? err.message : "Error inesperado al conectar con el servidor."]
+      });
+    } finally {
+      setSendingCampaign(false);
+    }
+  }
+
+  async function executeGmailCampaign() {
+    if (!selectedCampaign || !selectedTemplate || !isSupabaseConfigured || !supabase) return;
+
+    const emailRecipients = selectedCompanies
+      .filter((company) => company.email)
+      .map((company) => ({
+        companyId: company.id,
+        toEmail: company.email,
+        variables: {
+          nombre_empresa: company.name,
+          nombre_contacto: company.contactName || "equipo comercial",
+          ciudad: company.city || "su zona",
+          tipo_empresa: company.type,
+          producto_destacado: selectedCampaign.product || "",
+          cupon: selectedCampaign.coupon || "",
+        },
+      }));
+
+    if (!emailRecipients.length) {
+      setSendingResults({
+        success: 0,
+        failed: 0,
+        log: ["No hay destinatarios con email valido en esta campana."],
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Enviar campana Gmail a ${emailRecipients.length} destinatarios desde msanhueza@latinchile.cl?\n\nRevisa que el segmento sea preciso, que el mensaje este personalizado y que tengas permiso comercial para contactar.`,
+    );
+    if (!confirmed) return;
+
+    setSendingCampaign(true);
+    setSendingResults(null);
+
+    try {
+      const { data, error } = await supabase.functions.invoke("gmail-integration/send-campaign", {
+        body: {
+          name: selectedCampaign.name,
+          subject: selectedCampaign.name,
+          bodyText: selectedTemplate.body,
+          bodyHtml: selectedTemplate.body.replace(/\n/g, "<br />"),
+          segmentFilters: {
+            segment: selectedCampaign.segment,
+            type: selectedCampaign.type,
+            product: selectedCampaign.product,
+            coupon: selectedCampaign.coupon,
+          },
+          recipients: emailRecipients,
+        },
+      });
+
+      if (error || !data) {
+        setSendingResults({
+          success: 0,
+          failed: emailRecipients.length,
+          log: [error?.message || "Error invocando Gmail API."],
+        });
+        return;
+      }
+
+      setSendingResults({
+        success: Number(data.sent || 0),
+        failed: Number(data.failed || 0),
+        log: Array.isArray(data.log) ? data.log : [],
+      });
+
+      if (Number(data.sent || 0) > 0) {
+        markCampaignSent();
+      }
+    } catch (error) {
+      setSendingResults({
+        success: 0,
+        failed: emailRecipients.length,
+        log: [error instanceof Error ? error.message : "Error inesperado al enviar Gmail."],
+      });
+    } finally {
+      setSendingCampaign(false);
+    }
   }
 
   function updateRecipient(companyId: string, field: keyof Omit<RecipientState, "campaignId" | "companyId">) {
@@ -434,6 +604,15 @@ export function CampaignsPage() {
                 <span>Plantilla: {selectedTemplate.name}</span>
                 <p>{selectedCompanies[0] ? renderMessage(selectedTemplate, selectedCompanies[0], selectedCampaign) : "No hay destinatarios para este segmento."}</p>
               </div>
+              {["email", "mixta"].includes(selectedCampaign.type) ? (
+                <div className="deliverability-panel">
+                  <strong>Buenas practicas Gmail</strong>
+                  <p>
+                    Envia segmentos pequenos, usa variables personalizadas, evita asuntos agresivos y agrega datos claros de contacto de Clima Activa / LatinChile.
+                    Para campanas recurrentes queda pendiente agregar baja/desuscripcion.
+                  </p>
+                </div>
+              ) : null}
               <div className="campaign-actions">
                 <button className="ghost-button" type="button" onClick={confirmCampaign}>
                   <CheckCircle2 size={18} />
@@ -443,6 +622,28 @@ export function CampaignsPage() {
                   <Send size={18} />
                   Marcar como enviada
                 </button>
+                {["WhatsApp", "mixta"].includes(selectedCampaign.type) && (
+                  <button 
+                    className="primary-button" 
+                    type="button" 
+                    onClick={() => {
+                      if (!metaTemplateName && selectedTemplate.name) {
+                        setMetaTemplateName(selectedTemplate.name);
+                      }
+                      setShowMetaModal(true);
+                    }}
+                    style={{ background: "#25D366", borderColor: "#25D366", color: "#ffffff" }}
+                  >
+                    <Send size={18} />
+                    Enviar vía Meta API
+                  </button>
+                )}
+                {["email", "mixta"].includes(selectedCampaign.type) && (
+                  <button className="primary-button" type="button" onClick={executeGmailCampaign} disabled={sendingCampaign}>
+                    <Send size={18} />
+                    {sendingCampaign ? "Enviando..." : "Enviar via Gmail API"}
+                  </button>
+                )}
                 <button className="ghost-button" type="button" onClick={() => updateCampaignStatus("pausada")}>
                   <XCircle size={18} />
                   Pausar
@@ -540,6 +741,121 @@ export function CampaignsPage() {
           </div>
         </>
       ) : null}
+      {showMetaModal && (
+        <div className="meta-modal-overlay">
+          <div className="meta-modal-box">
+            <h2>Enviar Campaña vía Meta Cloud API</h2>
+            
+            <div className="meta-form-grid">
+              <label className="wide">
+                Climactiva API Key
+                <input 
+                  type="password" 
+                  placeholder="ca_live_..." 
+                  value={metaApiKey} 
+                  onChange={(e) => setMetaApiKey(e.target.value)} 
+                />
+              </label>
+
+              <label className="wide">
+                Configuracion segura
+                <input
+                  type="text"
+                  value="El token Meta y Phone Number ID se leen solo desde variables de entorno del backend."
+                  readOnly
+                />
+              </label>
+
+              <label>
+                Nombre de Plantilla en Meta
+                <input 
+                  type="text" 
+                  placeholder="Ej: presentacion_comercial" 
+                  value={metaTemplateName} 
+                  onChange={(e) => setMetaTemplateName(e.target.value)} 
+                />
+              </label>
+
+              <label className="checkbox-field wide">
+                <input
+                  type="checkbox"
+                  checked={allowWithoutOptIn}
+                  onChange={(e) => setAllowWithoutOptIn(e.target.checked)}
+                />
+                Permitir envio a destinatarios sin consentimiento registrado
+              </label>
+
+              {allowWithoutOptIn ? (
+                <label className="wide">
+                  Motivo de excepcion administrativa
+                  <input
+                    type="text"
+                    placeholder="Ej: autorizacion manual documentada por el administrador"
+                    value={adminOverrideReason}
+                    onChange={(e) => setAdminOverrideReason(e.target.value)}
+                  />
+                </label>
+              ) : null}
+            </div>
+
+            <div className="meta-variables-list">
+              <h4>Variables enviadas al template de Meta:</h4>
+              <ul>
+                <li><code>{"{{1}}"}</code>: Nombre de la empresa</li>
+                <li><code>{"{{2}}"}</code>: Nombre del contacto (o "cliente")</li>
+                <li><code>{"{{3}}"}</code>: Ciudad de la empresa (o "su zona")</li>
+                <li><code>{"{{4}}"}</code>: Producto destacado (o vacío)</li>
+                <li><code>{"{{5}}"}</code>: Cupón de descuento (o vacío)</li>
+              </ul>
+            </div>
+
+            {analytics.withoutOptIn > 0 ? (
+              <div className="meta-warning-panel">
+                <strong>Advertencia de consentimiento</strong>
+                <p>
+                  Hay {analytics.withoutOptIn} destinatarios sin consentimiento WhatsApp registrado. El backend bloqueara
+                  esos envios salvo que actives la excepcion administrativa y dejes un motivo.
+                </p>
+              </div>
+            ) : null}
+
+            {sendingResults && (
+              <div className="meta-log-panel">
+                <strong>Resultados del envío:</strong><br />
+                Enviados con éxito: {sendingResults.success}<br />
+                Fallidos: {sendingResults.failed}<br />
+                <hr style={{ borderColor: "#333", margin: "6px 0" }} />
+                {sendingResults.log.map((line, i) => (
+                  <div key={i}>{line}</div>
+                ))}
+              </div>
+            )}
+
+            <div className="meta-modal-actions">
+              <button 
+                type="button" 
+                className="ghost-button" 
+                onClick={() => {
+                  setShowMetaModal(false);
+                  setSendingResults(null);
+                }}
+                disabled={sendingCampaign}
+              >
+                Cerrar
+              </button>
+              <button 
+                type="button" 
+                className="primary-button" 
+                onClick={executeMetaCampaign}
+                disabled={sendingCampaign || !metaApiKey || !metaTemplateName || (allowWithoutOptIn && !adminOverrideReason.trim())}
+                style={{ background: "#25D366", borderColor: "#25D366", color: "#ffffff" }}
+              >
+                {sendingCampaign ? "Enviando..." : "Iniciar Envío Masivo"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

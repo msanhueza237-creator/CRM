@@ -2,3 +2,6 @@ project_id = "climactiva-crm"
 
 [functions.crm-agent]
 verify_jwt = false
+
+[functions.gmail-integration]
+verify_jwt = false
