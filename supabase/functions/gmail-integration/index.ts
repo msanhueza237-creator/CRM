@@ -1,6 +1,4 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
-
-type SupabaseClient = ReturnType<typeof createClient>;
+type SupabaseClient = ReturnType<typeof createSupabaseRestClient>;
 
 type AuthenticatedUser = {
   id: string;
@@ -41,6 +39,152 @@ const jsonHeaders = {
 const gmailSendScope = "https://www.googleapis.com/auth/gmail.send";
 const identityScopes = "openid email";
 
+function createSupabaseRestClient(baseUrl: string, serviceRoleKey: string) {
+  return {
+    auth: {
+      async getUser(token: string) {
+        try {
+          const response = await fetch(`${baseUrl}/auth/v1/user`, {
+            headers: {
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${token}`,
+            },
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) return { data: { user: null }, error: { message: data.message || "Invalid session" } };
+          return { data: { user: data }, error: null };
+        } catch (error) {
+          return { data: { user: null }, error };
+        }
+      },
+    },
+    from(table: string) {
+      return new PostgrestQuery(baseUrl, serviceRoleKey, table);
+    },
+  };
+}
+
+class PostgrestQuery {
+  private method = "GET";
+  private params = new URLSearchParams();
+  private payload: unknown;
+  private prefer = "";
+  private head = false;
+  private countMode = "";
+
+  constructor(
+    private baseUrl: string,
+    private key: string,
+    private table: string,
+  ) {}
+
+  select(columns = "*", options?: { count?: string; head?: boolean }) {
+    this.params.set("select", columns);
+    this.head = Boolean(options?.head);
+    this.countMode = options?.count || "";
+    return this;
+  }
+
+  insert(payload: unknown) {
+    this.method = "POST";
+    this.payload = payload;
+    this.prefer = "return=representation";
+    return this;
+  }
+
+  update(payload: unknown) {
+    this.method = "PATCH";
+    this.payload = payload;
+    this.prefer = "return=representation";
+    return this;
+  }
+
+  eq(column: string, value: unknown) {
+    this.params.set(column, `eq.${value}`);
+    return this;
+  }
+
+  is(column: string, value: unknown) {
+    this.params.set(column, `is.${value}`);
+    return this;
+  }
+
+  in(column: string, values: unknown[]) {
+    this.params.set(column, `in.(${values.join(",")})`);
+    return this;
+  }
+
+  not(column: string, operator: string, value: unknown) {
+    this.params.set(column, `not.${operator}.${value}`);
+    return this;
+  }
+
+  gte(column: string, value: unknown) {
+    this.params.set(column, `gte.${value}`);
+    return this;
+  }
+
+  order(column: string, options?: { ascending?: boolean }) {
+    this.params.set("order", `${column}.${options?.ascending === false ? "desc" : "asc"}`);
+    return this;
+  }
+
+  limit(value: number) {
+    this.params.set("limit", String(value));
+    return this;
+  }
+
+  async single() {
+    const result = await this.execute();
+    if (result.error) return result;
+    const rows = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
+    return { ...result, data: rows[0] ?? null, error: rows[0] ? null : { message: "No rows returned" } };
+  }
+
+  async maybeSingle() {
+    const result = await this.execute();
+    if (result.error) return result;
+    const rows = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
+    return { ...result, data: rows[0] ?? null, error: null };
+  }
+
+  then<TResult1 = unknown, TResult2 = never>(
+    onfulfilled?: ((value: { data: unknown; error: unknown; count: number | null }) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ) {
+    return this.execute().then(onfulfilled, onrejected);
+  }
+
+  private async execute() {
+    const url = `${this.baseUrl}/rest/v1/${this.table}?${this.params.toString()}`;
+    const headers: Record<string, string> = {
+      apikey: this.key,
+      Authorization: `Bearer ${this.key}`,
+      "Content-Type": "application/json",
+    };
+
+    if (this.prefer || this.countMode) {
+      headers.Prefer = [this.prefer, this.countMode ? `count=${this.countMode}` : ""].filter(Boolean).join(",");
+    }
+
+    const response = await fetch(url, {
+      method: this.head ? "HEAD" : this.method,
+      headers,
+      body: this.payload === undefined || this.head || this.method === "GET" ? undefined : JSON.stringify(this.payload),
+    });
+
+    const countHeader = response.headers.get("content-range");
+    const count = countHeader?.includes("/") ? Number(countHeader.split("/").pop()) : null;
+    const data = this.head ? null : await response.json().catch(() => null);
+
+    if (!response.ok) {
+      return { data: null, error: { message: data?.message || data?.error || response.statusText }, count };
+    }
+
+    return { data, error: null, count };
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -51,9 +195,7 @@ Deno.serve(async (req) => {
       return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500);
     }
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
+    const supabase = createSupabaseRestClient(supabaseUrl, serviceRoleKey);
 
     const url = new URL(req.url);
     const route = getRoute(url);
