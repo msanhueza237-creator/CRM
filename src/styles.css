@@ -1064,6 +1064,30 @@ th {
   font-size: 14px;
 }
 
+.gmail-notice {
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 700;
+}
+
+.gmail-notice.info {
+  color: #24515d;
+  background: #edf7fa;
+  border: 1px solid #cce9f0;
+}
+
+.gmail-notice.success {
+  color: #24623b;
+  background: #edf9f1;
+  border: 1px solid #ccebd6;
+}
+
+.gmail-notice.error {
+  color: #8c2d22;
+  background: #fff1ee;
+  border: 1px solid #f2b2a7;
+}
+
 .ghost-button.danger {
   color: #8c2d22;
   border-color: #f2b2a7;

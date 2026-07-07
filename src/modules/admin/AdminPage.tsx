@@ -55,6 +55,7 @@ export function AdminPage() {
   const [whatsappNotice, setWhatsappNotice] = useState("");
   const [gmailStatus, setGmailStatus] = useState<GmailStatus>(emptyGmailStatus);
   const [gmailNotice, setGmailNotice] = useState("");
+  const [gmailNoticeType, setGmailNoticeType] = useState<"info" | "success" | "error">("info");
   const [gmailTestEmail, setGmailTestEmail] = useState("");
   const [gmailBusy, setGmailBusy] = useState(false);
   const [gmailDailyLimit, setGmailDailyLimit] = useState(50);
@@ -96,8 +97,14 @@ export function AdminPage() {
   useEffect(() => {
     if (!user) return;
     const params = new URLSearchParams(window.location.search);
-    if (params.get("gmail") === "connected") setGmailNotice("Gmail conectado correctamente.");
-    if (params.get("gmail") === "error") setGmailNotice(`Error Gmail: ${params.get("message") || "revisa la configuracion"}.`);
+    if (params.get("gmail") === "connected") {
+      setGmailNoticeType("success");
+      setGmailNotice("Gmail conectado correctamente.");
+    }
+    if (params.get("gmail") === "error") {
+      setGmailNoticeType("error");
+      setGmailNotice(`Error Gmail: ${params.get("message") || "revisa la configuracion"}.`);
+    }
     void loadGmailStatus();
   }, [user]);
 
@@ -136,6 +143,7 @@ export function AdminPage() {
 
   async function loadGmailStatus() {
     if (!isSupabaseConfigured || !supabase || !user) {
+      setGmailNoticeType("info");
       setGmailNotice("Modo demo: conecta Supabase para activar Gmail API.");
       return;
     }
@@ -145,18 +153,21 @@ export function AdminPage() {
       setGmailStatus(data as GmailStatus);
       setGmailDailyLimit(Number(data.dailyLimit ?? 50));
     } catch (error) {
+      setGmailNoticeType("error");
       setGmailNotice(error instanceof Error ? error.message : "No se pudo cargar Gmail.");
     }
   }
 
   async function connectGmail() {
     setGmailBusy(true);
+    setGmailNoticeType("info");
     setGmailNotice("");
     try {
       const returnTo = `${window.location.origin}/administracion`;
       const data = await callGmailFunction(`auth?return_to=${encodeURIComponent(returnTo)}`);
       window.location.href = String(data.authUrl);
     } catch (error) {
+      setGmailNoticeType("error");
       setGmailNotice(error instanceof Error ? error.message : "No se pudo iniciar OAuth Gmail.");
       setGmailBusy(false);
     }
@@ -164,12 +175,15 @@ export function AdminPage() {
 
   async function disconnectGmail() {
     setGmailBusy(true);
+    setGmailNoticeType("info");
     setGmailNotice("");
     try {
       await callGmailFunction("disconnect", { method: "POST", body: "{}" });
+      setGmailNoticeType("success");
       setGmailNotice("Gmail desconectado.");
       await loadGmailStatus();
     } catch (error) {
+      setGmailNoticeType("error");
       setGmailNotice(error instanceof Error ? error.message : "No se pudo desconectar Gmail.");
     } finally {
       setGmailBusy(false);
@@ -178,15 +192,18 @@ export function AdminPage() {
 
   async function saveGmailSettings() {
     setGmailBusy(true);
+    setGmailNoticeType("info");
     setGmailNotice("");
     try {
       await callGmailFunction("settings", {
         method: "POST",
         body: JSON.stringify({ dailyLimit: gmailDailyLimit }),
       });
+      setGmailNoticeType("success");
       setGmailNotice("Configuracion Gmail guardada.");
       await loadGmailStatus();
     } catch (error) {
+      setGmailNoticeType("error");
       setGmailNotice(error instanceof Error ? error.message : "No se pudo guardar Gmail.");
     } finally {
       setGmailBusy(false);
@@ -194,16 +211,29 @@ export function AdminPage() {
   }
 
   async function sendGmailTest() {
+    if (!gmailTestEmail.trim()) {
+      setGmailNoticeType("error");
+      setGmailNotice("Ingresa un correo de prueba antes de enviar.");
+      return;
+    }
+
     setGmailBusy(true);
-    setGmailNotice("");
+    setGmailNoticeType("info");
+    setGmailNotice("Enviando correo de prueba...");
+    console.info("[gmail-admin] Enviando correo de prueba", { toEmail: gmailTestEmail });
     try {
-      await callGmailFunction("send-test", {
+      const data = await callGmailFunction("test-send", {
         method: "POST",
         body: JSON.stringify({ toEmail: gmailTestEmail }),
       });
-      setGmailNotice("Correo de prueba enviado.");
+      setGmailNoticeType("success");
+      setGmailNotice(data.message || "Correo de prueba enviado.");
+      console.info("[gmail-admin] Correo de prueba enviado", data);
       await loadGmailStatus();
     } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo enviar la prueba.";
+      setGmailNoticeType("error");
+      console.error("[gmail-admin] Error enviando correo de prueba", { error: message });
       setGmailNotice(error instanceof Error ? error.message : "No se pudo enviar la prueba.");
     } finally {
       setGmailBusy(false);
@@ -358,7 +388,7 @@ export function AdminPage() {
         </div>
 
         {gmailStatus.lastError ? <p className="form-error">{gmailStatus.lastError}</p> : null}
-        {gmailNotice ? <p className="muted">{gmailNotice}</p> : null}
+        {gmailNotice ? <p className={`gmail-notice ${gmailNoticeType}`}>{gmailNotice}</p> : null}
 
         <div className="form-actions">
           <button className="ghost-button" type="button" onClick={loadGmailStatus} disabled={gmailBusy}>
@@ -367,9 +397,9 @@ export function AdminPage() {
           <button className="ghost-button" type="button" onClick={saveGmailSettings} disabled={gmailBusy}>
             Guardar limite
           </button>
-          <button className="ghost-button" type="button" onClick={sendGmailTest} disabled={gmailBusy || !gmailStatus.connected}>
+          <button className="ghost-button" type="button" onClick={sendGmailTest} disabled={gmailBusy}>
             <Send size={18} />
-            Enviar prueba
+            {gmailBusy ? "Enviando..." : "Enviar prueba"}
           </button>
           {gmailStatus.connected ? (
             <button className="ghost-button danger" type="button" onClick={disconnectGmail} disabled={gmailBusy}>

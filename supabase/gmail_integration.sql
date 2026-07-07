@@ -81,6 +81,19 @@ create table if not exists public.email_messages (
   constraint email_messages_to_email_not_empty check (length(trim(to_email)) > 0)
 );
 
+create table if not exists public.gmail_test_logs (
+  id uuid primary key default gen_random_uuid(),
+  attempted_at timestamptz not null default now(),
+  user_id uuid references public.profiles(id) on delete set null,
+  to_email text not null,
+  result text not null,
+  gmail_message_id text,
+  error_message text,
+  created_at timestamptz not null default now(),
+  constraint gmail_test_logs_result_check check (result in ('success', 'failed')),
+  constraint gmail_test_logs_to_email_not_empty check (length(trim(to_email)) > 0)
+);
+
 create index if not exists gmail_integrations_status_idx on public.gmail_integrations(status);
 create index if not exists gmail_oauth_states_expires_at_idx on public.gmail_oauth_states(expires_at);
 create index if not exists email_campaigns_status_idx on public.email_campaigns(status);
@@ -89,6 +102,8 @@ create index if not exists email_campaign_recipients_company_id_idx on public.em
 create index if not exists email_messages_company_id_idx on public.email_messages(company_id);
 create index if not exists email_messages_campaign_id_idx on public.email_messages(campaign_id);
 create index if not exists email_messages_created_at_idx on public.email_messages(created_at desc);
+create index if not exists gmail_test_logs_attempted_at_idx on public.gmail_test_logs(attempted_at desc);
+create index if not exists gmail_test_logs_user_id_idx on public.gmail_test_logs(user_id);
 
 drop trigger if exists set_gmail_integrations_updated_at on public.gmail_integrations;
 create trigger set_gmail_integrations_updated_at
@@ -110,6 +125,7 @@ alter table public.gmail_oauth_states enable row level security;
 alter table public.email_campaigns enable row level security;
 alter table public.email_campaign_recipients enable row level security;
 alter table public.email_messages enable row level security;
+alter table public.gmail_test_logs enable row level security;
 
 drop policy if exists "admins can read gmail integrations" on public.gmail_integrations;
 create policy "admins can read gmail integrations"
@@ -158,5 +174,16 @@ using (true);
 drop policy if exists "admins can manage email messages" on public.email_messages;
 create policy "admins can manage email messages"
 on public.email_messages for all to authenticated
+using (public.current_role() = 'administrador')
+with check (public.current_role() = 'administrador');
+
+drop policy if exists "admins can read gmail test logs" on public.gmail_test_logs;
+create policy "admins can read gmail test logs"
+on public.gmail_test_logs for select to authenticated
+using (public.current_role() = 'administrador');
+
+drop policy if exists "admins can manage gmail test logs" on public.gmail_test_logs;
+create policy "admins can manage gmail test logs"
+on public.gmail_test_logs for all to authenticated
 using (public.current_role() = 'administrador')
 with check (public.current_role() = 'administrador');

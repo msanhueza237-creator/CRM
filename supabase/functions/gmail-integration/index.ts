@@ -68,7 +68,7 @@ Deno.serve(async (req) => {
     if (route === "metrics" && req.method === "GET") return handleMetrics(supabase);
     if (route === "settings" && req.method === "POST") return handleSettings(req, supabase, user);
     if (route === "disconnect" && req.method === "POST") return handleDisconnect(supabase, user);
-    if (route === "send-test" && req.method === "POST") return handleSendTest(req, supabase, user);
+    if ((route === "send-test" || route === "test-send") && req.method === "POST") return handleSendTest(req, supabase, user);
     if (route === "send-campaign" && req.method === "POST") return handleSendCampaign(req, supabase, user);
 
     return json({ error: "Route not found" }, 404);
@@ -255,27 +255,43 @@ async function handleSettings(req: Request, supabase: SupabaseClient, user: Auth
 async function handleSendTest(req: Request, supabase: SupabaseClient, user: AuthenticatedUser) {
   const payload = await req.json().catch(() => ({}));
   const toEmail = String(payload.toEmail || "").trim().toLowerCase();
-  if (!isEmail(toEmail)) throw new HttpError("Ingresa un correo de prueba valido.", 400);
+  console.info("[gmail-integration] test-send requested", { userId: user.id, toEmail });
 
-  const subject = "Prueba Gmail API CRM LatinChile";
-  const bodyText = [
-    "Hola,",
-    "",
-    "Este es un correo de prueba enviado desde el CRM LatinChile usando Gmail API.",
-    "",
-    "Si recibiste este mensaje, la integracion esta funcionando.",
-  ].join("\n");
+  if (!isEmail(toEmail)) {
+    const message = "Ingresa un correo de prueba valido.";
+    await logGmailTestAttempt(supabase, { user, toEmail: toEmail || "sin-destinatario", result: "failed", errorMessage: message });
+    console.error("[gmail-integration] test-send failed", { userId: user.id, toEmail, error: message });
+    throw new HttpError(message, 400);
+  }
 
-  const result = await sendTrackedEmail(supabase, {
-    user,
-    toEmail,
-    subject,
-    bodyText,
-    bodyHtml: `<p>Hola,</p><p>Este es un correo de prueba enviado desde el CRM LatinChile usando Gmail API.</p><p>Si recibiste este mensaje, la integracion esta funcionando.</p>`,
-    bodyPreview: bodyText.slice(0, 180),
-  });
+  const subject = "Prueba CRM LatinChile";
+  const bodyText = "Correo de prueba enviado desde CRM LatinChile";
 
-  return json({ success: true, gmailMessageId: result.gmailMessageId });
+  try {
+    const result = await sendTrackedEmail(supabase, {
+      user,
+      toEmail,
+      subject,
+      bodyText,
+      bodyHtml: `<p>Correo de prueba enviado desde CRM LatinChile</p>`,
+      bodyPreview: bodyText.slice(0, 180),
+    });
+
+    await logGmailTestAttempt(supabase, {
+      user,
+      toEmail,
+      result: "success",
+      gmailMessageId: result.gmailMessageId,
+    });
+    console.info("[gmail-integration] test-send success", { userId: user.id, toEmail, gmailMessageId: result.gmailMessageId });
+
+    return json({ success: true, message: "Correo de prueba enviado.", gmailMessageId: result.gmailMessageId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error enviando correo de prueba.";
+    await logGmailTestAttempt(supabase, { user, toEmail, result: "failed", errorMessage: message });
+    console.error("[gmail-integration] test-send failed", { userId: user.id, toEmail, error: message });
+    throw error;
+  }
 }
 
 async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: AuthenticatedUser) {
@@ -445,7 +461,7 @@ async function sendTrackedEmail(
 
 async function prepareIntegrationForSend(supabase: SupabaseClient) {
   const integration = await getIntegration(supabase, true);
-  if (!integration.refresh_token_encrypted) throw new HttpError("Gmail no esta conectado.", 400);
+  if (!integration.refresh_token_encrypted) throw new HttpError("Gmail no está conectado. Conecta la cuenta antes de enviar prueba.", 400);
 
   if (integration.sent_today_date !== new Date().toISOString().slice(0, 10)) {
     await supabase
@@ -664,6 +680,34 @@ async function updateRecipientFailure(supabase: SupabaseClient, recipientId: str
     .from("email_campaign_recipients")
     .update({ status: "failed", error_message: errorMessage })
     .eq("id", recipientId);
+}
+
+async function logGmailTestAttempt(
+  supabase: SupabaseClient,
+  input: {
+    user: AuthenticatedUser;
+    toEmail: string;
+    result: "success" | "failed";
+    gmailMessageId?: string;
+    errorMessage?: string;
+  },
+) {
+  const { error } = await supabase.from("gmail_test_logs").insert({
+    user_id: input.user.id,
+    to_email: input.toEmail,
+    result: input.result,
+    gmail_message_id: input.gmailMessageId || null,
+    error_message: input.errorMessage || null,
+  });
+
+  if (error) {
+    console.error("[gmail-integration] could not write gmail_test_logs", {
+      userId: input.user.id,
+      toEmail: input.toEmail,
+      result: input.result,
+      error: error.message,
+    });
+  }
 }
 
 function renderVariables(template: string, variables: Record<string, string>) {
