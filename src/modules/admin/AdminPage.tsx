@@ -1,7 +1,16 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Database, Mail, MessageCircle, Send, ShieldCheck, Unplug, Users } from "lucide-react";
-import { getSupabaseFunctionUrl, isSupabaseConfigured, supabase } from "../../lib/supabase";
+import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
+import {
+  type GmailStatus,
+  emptyGmailStatus,
+  getGmailStatus,
+  getGmailAuthUrl,
+  disconnectGmail as apiDisconnectGmail,
+  saveGmailSettings as apiSaveGmailSettings,
+  sendGmailTest as apiSendGmailTest,
+} from "../../lib/gmailApi";
 
 interface WhatsAppSettingsForm {
   id?: string;
@@ -24,28 +33,6 @@ const emptyWhatsAppSettings: WhatsAppSettingsForm = {
   lastConnectionStatus: "sin_configurar",
   lastConnectionCheckedAt: "",
   lastError: "",
-};
-
-interface GmailStatus {
-  connected: boolean;
-  connectedEmail: string | null;
-  status: string;
-  dailyLimit: number;
-  sentToday: number;
-  lastConnectedAt: string | null;
-  lastHealthCheckAt: string | null;
-  lastError: string | null;
-}
-
-const emptyGmailStatus: GmailStatus = {
-  connected: false,
-  connectedEmail: null,
-  status: "disconnected",
-  dailyLimit: 50,
-  sentToday: 0,
-  lastConnectedAt: null,
-  lastHealthCheckAt: null,
-  lastError: null,
 };
 
 export function AdminPage() {
@@ -105,43 +92,10 @@ export function AdminPage() {
       setGmailNoticeType("error");
       setGmailNotice(`Error Gmail: ${params.get("message") || "revisa la configuracion"}.`);
     }
-    void loadGmailStatus();
+    void loadGmailStatusData();
   }, [user]);
 
-  async function getAuthHeaders() {
-    if (!isSupabaseConfigured || !supabase) throw new Error("Conecta Supabase para usar Gmail API.");
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-    if (!token) throw new Error("Sesion requerida.");
-    return {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    };
-  }
-
-  async function callGmailFunction(route: string, options: RequestInit = {}) {
-    const headers = await getAuthHeaders();
-    const functionUrl = getSupabaseFunctionUrl("gmail-integration", route);
-    let response: Response;
-    try {
-      response = await fetch(functionUrl, {
-        ...options,
-        headers: {
-          ...headers,
-          ...(options.headers || {}),
-        },
-      });
-    } catch {
-      throw new Error("No se pudo contactar la Edge Function gmail-integration. Esta creada localmente, pero falta servirla localmente o desplegarla en tu Supabase.");
-    }
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      throw new Error(data.error || `No se pudo contactar la Edge Function gmail-integration (${response.status}). Revisa que este servida o desplegada en Supabase.`);
-    }
-    return data;
-  }
-
-  async function loadGmailStatus() {
+  async function loadGmailStatusData() {
     if (!isSupabaseConfigured || !supabase || !user) {
       setGmailNoticeType("info");
       setGmailNotice("Modo demo: conecta Supabase para activar Gmail API.");
@@ -149,8 +103,8 @@ export function AdminPage() {
     }
 
     try {
-      const data = await callGmailFunction("status");
-      setGmailStatus(data as GmailStatus);
+      const data = await getGmailStatus();
+      setGmailStatus(data);
       setGmailDailyLimit(Number(data.dailyLimit ?? 50));
     } catch (error) {
       setGmailNoticeType("error");
@@ -164,8 +118,8 @@ export function AdminPage() {
     setGmailNotice("");
     try {
       const returnTo = `${window.location.origin}/administracion`;
-      const data = await callGmailFunction(`auth?return_to=${encodeURIComponent(returnTo)}`);
-      window.location.href = String(data.authUrl);
+      const authUrl = await getGmailAuthUrl(returnTo);
+      window.location.href = authUrl;
     } catch (error) {
       setGmailNoticeType("error");
       setGmailNotice(error instanceof Error ? error.message : "No se pudo iniciar OAuth Gmail.");
@@ -178,10 +132,10 @@ export function AdminPage() {
     setGmailNoticeType("info");
     setGmailNotice("");
     try {
-      await callGmailFunction("disconnect", { method: "POST", body: "{}" });
+      await apiDisconnectGmail();
       setGmailNoticeType("success");
       setGmailNotice("Gmail desconectado.");
-      await loadGmailStatus();
+      await loadGmailStatusData();
     } catch (error) {
       setGmailNoticeType("error");
       setGmailNotice(error instanceof Error ? error.message : "No se pudo desconectar Gmail.");
@@ -195,13 +149,10 @@ export function AdminPage() {
     setGmailNoticeType("info");
     setGmailNotice("");
     try {
-      await callGmailFunction("settings", {
-        method: "POST",
-        body: JSON.stringify({ dailyLimit: gmailDailyLimit }),
-      });
+      await apiSaveGmailSettings(gmailDailyLimit);
       setGmailNoticeType("success");
       setGmailNotice("Configuracion Gmail guardada.");
-      await loadGmailStatus();
+      await loadGmailStatusData();
     } catch (error) {
       setGmailNoticeType("error");
       setGmailNotice(error instanceof Error ? error.message : "No se pudo guardar Gmail.");
@@ -222,14 +173,11 @@ export function AdminPage() {
     setGmailNotice("Enviando correo de prueba...");
     console.info("[gmail-admin] Enviando correo de prueba", { toEmail: gmailTestEmail });
     try {
-      const data = await callGmailFunction("test-send", {
-        method: "POST",
-        body: JSON.stringify({ toEmail: gmailTestEmail }),
-      });
+      const data = await apiSendGmailTest(gmailTestEmail);
       setGmailNoticeType("success");
       setGmailNotice(data.message || "Correo de prueba enviado.");
       console.info("[gmail-admin] Correo de prueba enviado", data);
-      await loadGmailStatus();
+      await loadGmailStatusData();
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo enviar la prueba.";
       setGmailNoticeType("error");
@@ -391,7 +339,7 @@ export function AdminPage() {
         {gmailNotice ? <p className={`gmail-notice ${gmailNoticeType}`}>{gmailNotice}</p> : null}
 
         <div className="form-actions">
-          <button className="ghost-button" type="button" onClick={loadGmailStatus} disabled={gmailBusy}>
+          <button className="ghost-button" type="button" onClick={loadGmailStatusData} disabled={gmailBusy}>
             Revisar estado
           </button>
           <button className="ghost-button" type="button" onClick={saveGmailSettings} disabled={gmailBusy}>

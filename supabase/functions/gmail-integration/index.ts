@@ -25,16 +25,32 @@ type CampaignRecipient = {
   variables?: Record<string, string>;
 };
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-};
+function getAllowedOrigin(): string {
+  const appUrl = Deno.env.get("CRM_APP_URL") || "http://localhost:5173";
+  try {
+    return new URL(appUrl).origin;
+  } catch {
+    return appUrl.replace(/\/+$/, "");
+  }
+}
 
-const jsonHeaders = {
-  ...corsHeaders,
-  "Content-Type": "application/json; charset=utf-8",
-};
+function corsHeaders(req?: Request): Record<string, string> {
+  const allowed = getAllowedOrigin();
+  const origin = req?.headers.get("origin") || "";
+  const effectiveOrigin = origin === allowed ? allowed : allowed;
+  return {
+    "Access-Control-Allow-Origin": effectiveOrigin,
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  };
+}
+
+function jsonHeaders(req?: Request): Record<string, string> {
+  return {
+    ...corsHeaders(req),
+    "Content-Type": "application/json; charset=utf-8",
+  };
+}
 
 const gmailSendScope = "https://www.googleapis.com/auth/gmail.send";
 const identityScopes = "openid email";
@@ -186,13 +202,13 @@ class PostgrestQuery {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
 
   try {
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
     const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
     if (!supabaseUrl || !serviceRoleKey) {
-      return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500);
+      return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500, req);
     }
 
     const supabase = createSupabaseRestClient(supabaseUrl, serviceRoleKey);
@@ -200,28 +216,28 @@ Deno.serve(async (req) => {
     const url = new URL(req.url);
     const route = getRoute(url);
 
-    if (route === "health") return json({ ok: true, service: "gmail-integration" });
+    if (route === "health") return json({ ok: true, service: "gmail-integration" }, 200, req);
     if (route === "callback" && req.method === "GET") return handleCallback(url, supabase);
 
     const user = await requireAdmin(req, supabase);
 
-    if (route === "auth" && req.method === "GET") return handleAuth(url, supabase, user);
-    if (route === "status" && req.method === "GET") return handleStatus(supabase);
-    if (route === "metrics" && req.method === "GET") return handleMetrics(supabase);
+    if (route === "auth" && req.method === "GET") return handleAuth(url, supabase, user, req);
+    if (route === "status" && req.method === "GET") return handleStatus(supabase, req);
+    if (route === "metrics" && req.method === "GET") return handleMetrics(supabase, req);
     if (route === "settings" && req.method === "POST") return handleSettings(req, supabase, user);
-    if (route === "disconnect" && req.method === "POST") return handleDisconnect(supabase, user);
+    if (route === "disconnect" && req.method === "POST") return handleDisconnect(supabase, user, req);
     if ((route === "send-test" || route === "test-send") && req.method === "POST") return handleSendTest(req, supabase, user);
     if (route === "send-campaign" && req.method === "POST") return handleSendCampaign(req, supabase, user);
 
-    return json({ error: "Route not found" }, 404);
+    return json({ error: "Route not found" }, 404, req);
   } catch (error) {
     const status = error instanceof HttpError ? error.status : 500;
     const message = error instanceof Error ? error.message : "Unexpected error";
-    return json({ error: message }, status);
+    return json({ error: message }, status, req);
   }
 });
 
-async function handleAuth(url: URL, supabase: SupabaseClient, user: AuthenticatedUser) {
+async function handleAuth(url: URL, supabase: SupabaseClient, user: AuthenticatedUser, req: Request) {
   const clientId = requiredEnv("GOOGLE_CLIENT_ID");
   const redirectUri = requiredEnv("GOOGLE_REDIRECT_URI");
   const sender = requiredEnv("GOOGLE_GMAIL_SENDER").toLowerCase();
@@ -248,7 +264,7 @@ async function handleAuth(url: URL, supabase: SupabaseClient, user: Authenticate
     login_hint: sender,
   });
 
-  return json({ authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` });
+  return json({ authUrl: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` }, 200, req);
 }
 
 async function handleCallback(url: URL, supabase: SupabaseClient) {
@@ -309,7 +325,7 @@ async function handleCallback(url: URL, supabase: SupabaseClient) {
   return redirectToAdmin(redirectAfter.includes("gmail=") ? redirectAfter : `${redirectAfter}?gmail=connected`);
 }
 
-async function handleStatus(supabase: SupabaseClient) {
+async function handleStatus(supabase: SupabaseClient, req: Request) {
   const integration = await getIntegration(supabase, false);
   return json({
     connected: integration?.status === "connected",
@@ -320,10 +336,10 @@ async function handleStatus(supabase: SupabaseClient) {
     lastConnectedAt: integration?.last_connected_at ?? null,
     lastHealthCheckAt: integration?.last_health_check_at ?? null,
     lastError: integration?.last_error ?? null,
-  });
+  }, 200, req);
 }
 
-async function handleMetrics(supabase: SupabaseClient) {
+async function handleMetrics(supabase: SupabaseClient, req: Request) {
   const today = new Date().toISOString().slice(0, 10);
   const integration = await getIntegration(supabase, false);
 
@@ -347,12 +363,12 @@ async function handleMetrics(supabase: SupabaseClient) {
     failedEmails: failed ?? 0,
     companiesContacted: new Set((contactedRows || []).map((row) => row.company_id)).size,
     lastCampaign: lastCampaign?.name ?? null,
-  });
+  }, 200, req);
 }
 
-async function handleDisconnect(supabase: SupabaseClient, user: AuthenticatedUser) {
+async function handleDisconnect(supabase: SupabaseClient, user: AuthenticatedUser, req: Request) {
   const integration = await getIntegration(supabase, false);
-  if (!integration) return json({ disconnected: true });
+  if (!integration) return json({ disconnected: true }, 200, req);
 
   const { error } = await supabase
     .from("gmail_integrations")
@@ -365,7 +381,7 @@ async function handleDisconnect(supabase: SupabaseClient, user: AuthenticatedUse
     .eq("id", integration.id);
   if (error) throw new HttpError(error.message, 400);
 
-  return json({ disconnected: true });
+  return json({ disconnected: true }, 200, req);
 }
 
 async function handleSettings(req: Request, supabase: SupabaseClient, user: AuthenticatedUser) {
@@ -391,7 +407,7 @@ async function handleSettings(req: Request, supabase: SupabaseClient, user: Auth
   const { error } = await request;
   if (error) throw new HttpError(error.message, 400);
 
-  return json({ success: true, dailyLimit });
+  return json({ success: true, dailyLimit }, 200, req);
 }
 
 async function handleSendTest(req: Request, supabase: SupabaseClient, user: AuthenticatedUser) {
@@ -417,6 +433,7 @@ async function handleSendTest(req: Request, supabase: SupabaseClient, user: Auth
       bodyText,
       bodyHtml: `<p>Correo de prueba enviado desde CRM LatinChile</p>`,
       bodyPreview: bodyText.slice(0, 180),
+      isCampaign: false,
     });
 
     await logGmailTestAttempt(supabase, {
@@ -427,7 +444,7 @@ async function handleSendTest(req: Request, supabase: SupabaseClient, user: Auth
     });
     console.info("[gmail-integration] test-send success", { userId: user.id, toEmail, gmailMessageId: result.gmailMessageId });
 
-    return json({ success: true, message: "Correo de prueba enviado.", gmailMessageId: result.gmailMessageId });
+    return json({ success: true, message: "Correo de prueba enviado.", gmailMessageId: result.gmailMessageId }, 200, req);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Error enviando correo de prueba.";
     await logGmailTestAttempt(supabase, { user, toEmail, result: "failed", errorMessage: message });
@@ -502,6 +519,7 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
         bodyPreview: renderedText.slice(0, 180),
         companyId: recipient.companyId,
         campaignId: campaign.id,
+        isCampaign: true,
       });
 
       sent += 1;
@@ -527,7 +545,7 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
     .update({ status: failed && !sent ? "failed" : "sent" })
     .eq("id", campaign.id);
 
-  return json({ success: failed === 0, campaignId: campaign.id, sent, failed, log });
+  return json({ success: failed === 0, campaignId: campaign.id, sent, failed, log }, 200, req);
 }
 
 async function sendTrackedEmail(
@@ -541,6 +559,7 @@ async function sendTrackedEmail(
     bodyPreview: string;
     companyId?: string;
     campaignId?: string;
+    isCampaign?: boolean;
   },
 ) {
   const integration = await prepareIntegrationForSend(supabase);
@@ -570,6 +589,7 @@ async function sendTrackedEmail(
       subject: input.subject,
       bodyText: input.bodyText,
       bodyHtml: input.bodyHtml,
+      isCampaign: input.isCampaign,
     });
 
     await supabase
@@ -647,7 +667,7 @@ async function refreshAccessToken(refreshToken: string) {
     grant_type: "refresh_token",
   });
 
-  const res = await fetch("https://oauth2.googleapis.com/token", {
+  const res = await fetchWithRetry("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
@@ -664,9 +684,10 @@ async function sendGmailMessage(input: {
   subject: string;
   bodyText: string;
   bodyHtml?: string;
+  isCampaign?: boolean;
 }) {
   const raw = buildMimeMessage(input);
-  const res = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+  const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${input.accessToken}`,
@@ -679,7 +700,7 @@ async function sendGmailMessage(input: {
   return String(data.id || "");
 }
 
-function buildMimeMessage(input: { fromEmail: string; toEmail: string; subject: string; bodyText: string; bodyHtml?: string }) {
+function buildMimeMessage(input: { fromEmail: string; toEmail: string; subject: string; bodyText: string; bodyHtml?: string; isCampaign?: boolean }) {
   const boundary = `crm_latinchile_${crypto.randomUUID()}`;
   const headers = [
     `From: LatinChile CRM <${input.fromEmail}>`,
@@ -687,6 +708,11 @@ function buildMimeMessage(input: { fromEmail: string; toEmail: string; subject: 
     `Subject: ${encodeMimeHeader(input.subject)}`,
     "MIME-Version: 1.0",
   ];
+
+  if (input.isCampaign) {
+    headers.push(`List-Unsubscribe: <mailto:${input.fromEmail}?subject=Desuscribir>`);
+    headers.push("List-Unsubscribe-Post: List-Unsubscribe=One-Click");
+  }
 
   const body = input.bodyHtml
     ? [
@@ -876,8 +902,34 @@ function requiredEnv(name: string) {
   return value;
 }
 
-function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: jsonHeaders });
+function json(body: unknown, status = 200, req?: Request) {
+  return new Response(JSON.stringify(body), { status, headers: jsonHeaders(req) });
+}
+
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  maxRetries = 2,
+): Promise<Response> {
+  const retryableStatuses = new Set([429, 500, 502, 503]);
+  let lastResponse: Response | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      lastResponse = await fetch(url, init);
+      if (!retryableStatuses.has(lastResponse.status) || attempt === maxRetries) {
+        return lastResponse;
+      }
+    } catch (error) {
+      if (attempt === maxRetries) throw error;
+    }
+
+    const delay = 500 * Math.pow(2, attempt);
+    console.warn(`[gmail-integration] Retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+
+  return lastResponse!;
 }
 
 function isEmail(value: string) {

@@ -2,8 +2,9 @@ import { Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { ArrowUpRight, Building2, CalendarClock, CheckCircle2, Megaphone } from "lucide-react";
 import { demoActivities, demoCampaigns, demoTasks } from "../../data/demoData";
-import { isSupabaseConfigured, supabase } from "../../lib/supabase";
+import { isSupabaseConfigured } from "../../lib/supabase";
 import { useCompanyStore } from "../companies/CompanyStore";
+import { type GmailMetrics, emptyGmailMetrics, getGmailMetrics } from "../../lib/gmailApi";
 import type { CompanyStatus, CompanyType } from "../../types/crm";
 
 const companyTypes: CompanyType[] = ["distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia", "otro"];
@@ -11,38 +12,27 @@ const companyStatuses: CompanyStatus[] = ["prospecto", "contactado", "interesado
 
 export function DashboardPage() {
   const { companies, interactions } = useCompanyStore();
-  const [gmailMetrics, setGmailMetrics] = useState({
-    sentToday: 0,
-    dailyLimit: 0,
-    activeCampaigns: 0,
-    failedEmails: 0,
-    companiesContacted: 0,
-    lastCampaign: "",
-  });
+  const [gmailMetrics, setGmailMetrics] = useState<GmailMetrics>(emptyGmailMetrics);
   const conversionBase = companies.filter((company) => company.status !== "descartado").length;
   const clients = companies.filter((company) => company.status === "cliente").length;
   const conversionRate = conversionBase ? Math.round((clients / conversionBase) * 100) : 0;
   const recentInteractions = interactions.slice(0, 6);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isSupabaseConfigured) return;
 
-    async function loadGmailMetrics() {
-      const { data, error } = await supabase!.functions.invoke("gmail-integration/metrics", { method: "GET" });
-      if (!error && data) {
-        setGmailMetrics({
-          sentToday: Number(data.sentToday || 0),
-          dailyLimit: Number(data.dailyLimit || 0),
-          activeCampaigns: Number(data.activeCampaigns || 0),
-          failedEmails: Number(data.failedEmails || 0),
-          companiesContacted: Number(data.companiesContacted || 0),
-          lastCampaign: String(data.lastCampaign || ""),
-        });
+    async function loadGmailMetricsData() {
+      try {
+        const data = await getGmailMetrics();
+        setGmailMetrics(data);
+      } catch {
+        // Gmail metrics are non-critical — fail silently on dashboard
       }
     }
 
-    void loadGmailMetrics();
+    void loadGmailMetricsData();
   }, []);
+
 
   return (
     <section className="page-stack">

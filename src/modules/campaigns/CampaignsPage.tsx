@@ -5,6 +5,7 @@ import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
 import { useCompanyStore } from "../companies/CompanyStore";
 import { useTemplateStore } from "../templates/TemplateStore";
+import { getGmailStatus, sendGmailCampaign } from "../../lib/gmailApi";
 import type { Campaign, CampaignStatus, CampaignType, Company, MessageTemplate } from "../../types/crm";
 
 type CampaignSegment = "todas" | "prioridad alta" | "distribuidores y tiendas" | "instaladores" | "interesados";
@@ -111,6 +112,7 @@ export function CampaignsPage() {
   const [adminOverrideReason, setAdminOverrideReason] = useState("");
   const [sendingCampaign, setSendingCampaign] = useState(false);
   const [sendingResults, setSendingResults] = useState<{ success: number; failed: number; log: string[] } | null>(null);
+  const [gmailConnected, setGmailConnected] = useState(false);
   const [form, setForm] = useState({
     name: "",
     type: "mixta" as CampaignType,
@@ -185,6 +187,13 @@ export function CampaignsPage() {
 
     void loadSupabaseCampaigns();
   }, [templates, user]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    getGmailStatus()
+      .then((status) => setGmailConnected(status.connected))
+      .catch(() => setGmailConnected(false));
+  }, []);
 
   const selectedCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId) ?? campaigns[0];
   const selectedTemplate = templates.find((template) => template.id === selectedCampaign?.templateId) ?? templates[0];
@@ -430,30 +439,19 @@ export function CampaignsPage() {
     setSendingResults(null);
 
     try {
-      const { data, error } = await supabase.functions.invoke("gmail-integration/send-campaign", {
-        body: {
-          name: selectedCampaign.name,
-          subject: selectedCampaign.name,
-          bodyText: selectedTemplate.body,
-          bodyHtml: selectedTemplate.body.replace(/\n/g, "<br />"),
-          segmentFilters: {
-            segment: selectedCampaign.segment,
-            type: selectedCampaign.type,
-            product: selectedCampaign.product,
-            coupon: selectedCampaign.coupon,
-          },
-          recipients: emailRecipients,
+      const data = await sendGmailCampaign({
+        name: selectedCampaign.name,
+        subject: selectedCampaign.name,
+        bodyText: selectedTemplate.body,
+        bodyHtml: selectedTemplate.body.replace(/\n/g, "<br />"),
+        segmentFilters: {
+          segment: selectedCampaign.segment,
+          type: selectedCampaign.type,
+          product: selectedCampaign.product,
+          coupon: selectedCampaign.coupon,
         },
+        recipients: emailRecipients,
       });
-
-      if (error || !data) {
-        setSendingResults({
-          success: 0,
-          failed: emailRecipients.length,
-          log: [error?.message || "Error invocando Gmail API."],
-        });
-        return;
-      }
 
       setSendingResults({
         success: Number(data.sent || 0),
@@ -639,9 +637,15 @@ export function CampaignsPage() {
                   </button>
                 )}
                 {["email", "mixta"].includes(selectedCampaign.type) && (
-                  <button className="primary-button" type="button" onClick={executeGmailCampaign} disabled={sendingCampaign}>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={executeGmailCampaign}
+                    disabled={sendingCampaign || !gmailConnected}
+                    title={gmailConnected ? undefined : "Gmail no esta conectado. Ve a Administracion para conectar."}
+                  >
                     <Send size={18} />
-                    {sendingCampaign ? "Enviando..." : "Enviar via Gmail API"}
+                    {sendingCampaign ? "Enviando..." : gmailConnected ? "Enviar via Gmail API" : "Gmail desconectado"}
                   </button>
                 )}
                 <button className="ghost-button" type="button" onClick={() => updateCampaignStatus("pausada")}>
