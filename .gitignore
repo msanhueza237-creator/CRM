@@ -2,5 +2,6 @@ node_modules
 dist
 .env
 .env.local
+scripts/backup-database.env
 .DS_Store
 *.log
