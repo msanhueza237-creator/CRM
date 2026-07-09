@@ -111,6 +111,17 @@ a {
   color: #62717a;
 }
 
+.link-button {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #0b7285;
+  font-weight: 800;
+  font-size: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
 .login-card label,
 .select-field {
   display: grid;

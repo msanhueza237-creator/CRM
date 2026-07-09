@@ -27,6 +27,7 @@ export function CompaniesPage() {
   const [priority, setPriority] = useState<(typeof allPriorities)[number]>(initialPriority);
   const [regionFilter, setRegionFilter] = useState<string>(searchParams.get("region") ?? "todos");
   const [cityFilter, setCityFilter] = useState<string>(searchParams.get("city") ?? "todos");
+  const [sourceFilter, setSourceFilter] = useState<string>(searchParams.get("source") ?? "");
 
   function updateFilters(nextFilters: {
     query?: string;
@@ -35,6 +36,7 @@ export function CompaniesPage() {
     priority?: (typeof allPriorities)[number];
     region?: string;
     city?: string;
+    source?: string;
   }) {
     const nextQuery = nextFilters.query ?? query;
     const nextType = nextFilters.type ?? type;
@@ -42,7 +44,8 @@ export function CompaniesPage() {
     const nextPriority = nextFilters.priority ?? priority;
     const nextRegion = nextFilters.region ?? regionFilter;
     const nextCity = nextFilters.city ?? cityFilter;
-    
+    const nextSource = nextFilters.source ?? sourceFilter;
+
     const params = new URLSearchParams();
     if (nextQuery) params.set("q", nextQuery);
     if (nextType !== "todos") params.set("type", nextType);
@@ -50,6 +53,7 @@ export function CompaniesPage() {
     if (nextPriority !== "todos") params.set("priority", nextPriority);
     if (nextRegion !== "todos") params.set("region", nextRegion);
     if (nextCity !== "todos") params.set("city", nextCity);
+    if (nextSource) params.set("source", nextSource);
     setSearchParams(params, { replace: true });
   }
 
@@ -77,8 +81,13 @@ export function CompaniesPage() {
         if (cityFilter === "todos") return true;
         return normalizeString(company.city) === normalizeString(cityFilter);
       })
+      .filter((company) => {
+        if (!sourceFilter) return true;
+        if (sourceFilter === "Sin fuente") return !company.source?.trim();
+        return normalizeString(company.source ?? "") === normalizeString(sourceFilter);
+      })
       .sort((a, b) => a.nextFollowUp.localeCompare(b.nextFollowUp));
-  }, [priority, query, status, storedCompanies, type, regionFilter, cityFilter]);
+  }, [priority, query, status, storedCompanies, type, regionFilter, cityFilter, sourceFilter]);
 
   return (
     <section className="page-stack">
@@ -111,6 +120,19 @@ export function CompaniesPage() {
         <Select label="Región" value={regionFilter} onChange={(value) => { setRegionFilter(value); setCityFilter("todos"); updateFilters({ region: value, city: "todos" }); }} options={["todos", ...chileData.map((r) => r.region)]} />
         <Select label="Ciudad" value={cityFilter} onChange={(value) => { setCityFilter(value); updateFilters({ city: value }); }} options={["todos", ...availableCities]} />
       </div>
+
+      {sourceFilter && (
+        <p className="muted">
+          Filtrando por fuente: <strong>{sourceFilter}</strong>{" "}
+          <button
+            type="button"
+            className="link-button"
+            onClick={() => { setSourceFilter(""); updateFilters({ source: "" }); }}
+          >
+            Quitar filtro
+          </button>
+        </p>
+      )}
 
       <div className="panel">
         <div className="panel-heading">

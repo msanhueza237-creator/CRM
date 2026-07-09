@@ -1,14 +1,67 @@
 import { Link } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowUpRight, Building2, CalendarClock, CheckCircle2, Megaphone } from "lucide-react";
 import { demoActivities, demoCampaigns, demoTasks } from "../../data/demoData";
 import { isSupabaseConfigured } from "../../lib/supabase";
 import { useCompanyStore } from "../companies/CompanyStore";
 import { type GmailMetrics, emptyGmailMetrics, getGmailMetrics } from "../../lib/gmailApi";
-import type { CompanyStatus, CompanyType } from "../../types/crm";
+import type { Company, CompanyStatus, CompanyType } from "../../types/crm";
 
 const companyTypes: CompanyType[] = ["distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia", "otro"];
-const companyStatuses: CompanyStatus[] = ["prospecto", "contactado", "interesado", "cotizado", "cliente", "descartado"];
+
+const funnelStages: CompanyStatus[] = ["prospecto", "contactado", "interesado", "cotizado", "cliente"];
+
+const OTHER_SOURCES_LABEL = "Otras fuentes";
+const MAX_SOURCE_ROWS = 6;
+
+function buildFunnel(companies: Company[]) {
+  const pipeline = companies.filter((company) => company.status !== "descartado");
+  const counts = funnelStages.map(
+    (_, index) => pipeline.filter((company) => funnelStages.indexOf(company.status) >= index).length,
+  );
+
+  return funnelStages.map((stage, index) => ({
+    stage,
+    count: counts[index],
+    conversionFromPrevious: index === 0 || counts[index - 1] === 0 ? null : Math.round((counts[index] / counts[index - 1]) * 100),
+  }));
+}
+
+function buildSourceBreakdown(companies: Company[]) {
+  const bySource = new Map<string, { total: number; clients: number }>();
+  for (const company of companies) {
+    const key = company.source?.trim() || "Sin fuente";
+    const entry = bySource.get(key) ?? { total: 0, clients: 0 };
+    entry.total += 1;
+    if (company.status === "cliente") entry.clients += 1;
+    bySource.set(key, entry);
+  }
+
+  const rows = Array.from(bySource.entries())
+    .map(([source, { total, clients }]) => ({
+      source,
+      total,
+      clients,
+      conversionRate: total ? Math.round((clients / total) * 100) : 0,
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  if (rows.length <= MAX_SOURCE_ROWS) return rows;
+
+  const visible = rows.slice(0, MAX_SOURCE_ROWS);
+  const rest = rows.slice(MAX_SOURCE_ROWS);
+  const merged = rest.reduce(
+    (acc, row) => ({ total: acc.total + row.total, clients: acc.clients + row.clients }),
+    { total: 0, clients: 0 },
+  );
+  visible.push({
+    source: OTHER_SOURCES_LABEL,
+    total: merged.total,
+    clients: merged.clients,
+    conversionRate: merged.total ? Math.round((merged.clients / merged.total) * 100) : 0,
+  });
+  return visible;
+}
 
 export function DashboardPage() {
   const { companies, interactions } = useCompanyStore();
@@ -17,6 +70,9 @@ export function DashboardPage() {
   const clients = companies.filter((company) => company.status === "cliente").length;
   const conversionRate = conversionBase ? Math.round((clients / conversionBase) * 100) : 0;
   const recentInteractions = interactions.slice(0, 6);
+  const discardedCount = companies.filter((company) => company.status === "descartado").length;
+  const funnel = useMemo(() => buildFunnel(companies), [companies]);
+  const sourceBreakdown = useMemo(() => buildSourceBreakdown(companies), [companies]);
 
   useEffect(() => {
     if (!isSupabaseConfigured) return;
@@ -81,19 +137,56 @@ export function DashboardPage() {
 
         <div className="panel">
           <div className="panel-heading">
-            <h2>Estado comercial</h2>
+            <h2>Funnel de conversion</h2>
+            <span>{discardedCount} descartadas</span>
           </div>
           <div className="bar-list">
-            {companyStatuses.map((status) => (
+            {funnel.map(({ stage, count, conversionFromPrevious }) => (
               <BarRow
-                key={status}
-                to={`/empresas?status=${encodeURIComponent(status)}`}
-                label={status}
-                value={companies.filter((company) => company.status === status).length}
-                max={companies.length}
+                key={stage}
+                to={`/empresas?status=${encodeURIComponent(stage)}`}
+                label={conversionFromPrevious === null ? stage : `${stage} (${conversionFromPrevious}% del anterior)`}
+                value={count}
+                max={funnel[0]?.count ?? 0}
               />
             ))}
           </div>
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="panel-heading">
+          <h2>Conversion por fuente</h2>
+        </div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Fuente</th>
+                <th>Empresas</th>
+                <th>Clientes</th>
+                <th>Tasa de conversion</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sourceBreakdown.map((row) => (
+                <tr key={row.source}>
+                  <td>
+                    {row.source === OTHER_SOURCES_LABEL ? (
+                      row.source
+                    ) : (
+                      <Link className="table-link" to={`/empresas?source=${encodeURIComponent(row.source)}`}>
+                        {row.source}
+                      </Link>
+                    )}
+                  </td>
+                  <td>{row.total}</td>
+                  <td>{row.clients}</td>
+                  <td>{row.conversionRate}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 
