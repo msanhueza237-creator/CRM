@@ -15,6 +15,7 @@ interface CampaignDraft extends Campaign {
   product: string;
   coupon: string;
   recipientIds: string[];
+  attachments?: { name: string; url: string }[];
 }
 
 interface RecipientState {
@@ -138,6 +139,170 @@ export function CampaignsPage() {
   const [proposalSuccessMessage, setProposalSuccessMessage] = useState<string | null>(null);
   const [savingProposal, setSavingProposal] = useState(false);
 
+  // Attachment state variables
+  const [formAttachments, setFormAttachments] = useState<{ name: string; url: string }[]>([]);
+  const [proposalAttachments, setProposalAttachments] = useState<{ name: string; url: string }[]>([]);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [manualAttachmentName, setManualAttachmentName] = useState("");
+  const [manualAttachmentUrl, setManualAttachmentUrl] = useState("");
+
+  async function handleFileUpload(file: File, isProposal: boolean) {
+    if (!isSupabaseConfigured || !supabase) {
+      alert("Para subir archivos directamente debes tener configurado y conectado Supabase.");
+      return;
+    }
+
+    setUploadingFile(true);
+    setUploadError(null);
+
+    const fileExt = file.name.split(".").pop();
+    const fileName = `${crypto.randomUUID()}.${fileExt}`;
+    const filePath = `campaigns/${fileName}`;
+
+    try {
+      const { error: uploadErr } = await supabase.storage
+        .from("campaign-attachments")
+        .upload(filePath, file, {
+          cacheControl: "3600",
+          upsert: false,
+        });
+
+      if (uploadErr) {
+        if (uploadErr.message.includes("Bucket not found") || uploadErr.message.includes("does not exist")) {
+          const { error: createErr } = await supabase.storage.createBucket("campaign-attachments", {
+            public: true,
+          });
+          if (!createErr) {
+            const { error: retryErr } = await supabase.storage
+              .from("campaign-attachments")
+              .upload(filePath, file);
+            if (retryErr) throw retryErr;
+          } else {
+            throw uploadErr;
+          }
+        } else {
+          throw uploadErr;
+        }
+      }
+
+      const { data } = supabase.storage.from("campaign-attachments").getPublicUrl(filePath);
+      const publicUrl = data.publicUrl;
+
+      const newAttachment = { name: file.name, url: publicUrl };
+      if (isProposal) {
+        setProposalAttachments((prev) => [...prev, newAttachment]);
+      } else {
+        setFormAttachments((prev) => [...prev, newAttachment]);
+      }
+    } catch (err) {
+      console.error(err);
+      setUploadError("Error al subir el archivo. Intenta usar un enlace web directo abajo.");
+    } finally {
+      setUploadingFile(false);
+    }
+  }
+
+  function addManualAttachment(isProposal: boolean) {
+    if (!manualAttachmentName || !manualAttachmentUrl) return;
+    const newAttachment = { name: manualAttachmentName.trim(), url: manualAttachmentUrl.trim() };
+    if (isProposal) {
+      setProposalAttachments((prev) => [...prev, newAttachment]);
+    } else {
+      setFormAttachments((prev) => [...prev, newAttachment]);
+    }
+    setManualAttachmentName("");
+    setManualAttachmentUrl("");
+  }
+
+  function renderAttachmentsEditor(isProposal: boolean) {
+    const list = isProposal ? proposalAttachments : formAttachments;
+    const setList = isProposal ? setProposalAttachments : setFormAttachments;
+
+    return (
+      <div className="attachments-editor" style={{ marginTop: "16px", padding: "16px", background: "#f8f9fa", borderRadius: "8px", border: "1px solid #dfe7ea" }}>
+        <strong style={{ fontSize: "13px", color: "#40515b", display: "block", marginBottom: "8px" }}>
+          📎 Documentos Adjuntos ({list.length})
+        </strong>
+
+        {list.length > 0 ? (
+          <ul style={{ paddingLeft: "20px", margin: "0 0 16px 0", fontSize: "13px" }}>
+            {list.map((item, index) => (
+              <li key={index} style={{ marginBottom: "6px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <a href={item.url} target="_blank" rel="noopener noreferrer" style={{ color: "#0b7285", textDecoration: "underline", fontWeight: "600" }}>
+                  {item.name}
+                </a>
+                <button 
+                  type="button" 
+                  onClick={() => setList(list.filter((_, i) => i !== index))}
+                  style={{ background: "#fdf2f2", color: "#e03131", border: "1px solid #fbd5d5", borderRadius: "4px", padding: "2px 6px", fontSize: "11px", cursor: "pointer" }}
+                >
+                  Eliminar
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted" style={{ fontSize: "12px", margin: "0 0 16px 0" }}>No hay documentos adjuntos aún.</p>
+        )}
+
+        <div style={{ display: "grid", gap: "12px", borderTop: "1px solid #e9ecef", paddingTop: "14px" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <span style={{ fontSize: "12px", fontWeight: "bold", color: "#40515b" }}>Subir archivo a Supabase:</span>
+            <input 
+              type="file" 
+              disabled={uploadingFile}
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  void handleFileUpload(file, isProposal);
+                }
+              }}
+              style={{ padding: "6px", fontSize: "12px" }}
+            />
+            {uploadingFile && <span style={{ fontSize: "12px", color: "#0b7285" }}>Subiendo archivo...</span>}
+            {uploadError && <span style={{ fontSize: "12px", color: "#e03131" }}>{uploadError}</span>}
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+            <span style={{ fontSize: "12px", fontWeight: "bold", color: "#40515b" }}>O agregar enlace externo (URL):</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr auto", gap: "8px", alignItems: "end" }}>
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", fontWeight: "normal" }}>
+                Nombre del documento
+                <input 
+                  type="text" 
+                  placeholder="Ej: Catálogo 2026.pdf" 
+                  value={manualAttachmentName}
+                  onChange={(e) => setManualAttachmentName(e.target.value)}
+                  style={{ minHeight: "34px", padding: "0 8px", fontSize: "12px", border: "1px solid #cfdade", borderRadius: "6px" }}
+                />
+              </label>
+              <label style={{ display: "flex", flexDirection: "column", gap: "4px", fontSize: "11px", fontWeight: "normal" }}>
+                Dirección URL
+                <input 
+                  type="url" 
+                  placeholder="Ej: https://site.com/doc.pdf" 
+                  value={manualAttachmentUrl}
+                  onChange={(e) => setManualAttachmentUrl(e.target.value)}
+                  style={{ minHeight: "34px", padding: "0 8px", fontSize: "12px", border: "1px solid #cfdade", borderRadius: "6px" }}
+                />
+              </label>
+              <button 
+                type="button" 
+                onClick={() => addManualAttachment(isProposal)}
+                disabled={!manualAttachmentName.trim() || !manualAttachmentUrl.trim()}
+                className="ghost-button"
+                style={{ minHeight: "34px", padding: "0 10px", fontSize: "12px", whiteSpace: "nowrap" }}
+              >
+                + Agregar
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // Memoized smart proposals based on real company database contents
   const proposals = useMemo(() => {
     const vipCompanies = companies.filter(
@@ -202,6 +367,7 @@ export function CampaignsPage() {
       });
       setExcludedCompanyIds([]);
       setProposalSuccessMessage(null);
+      setProposalAttachments([]);
     }
   }, [selectedProposalIndex, proposals]);
 
@@ -249,6 +415,7 @@ export function CampaignsPage() {
       product: proposalForm.product,
       coupon: proposalForm.coupon,
       recipientIds: targetCompanies.map((c) => c.id),
+      attachments: proposalAttachments,
     };
 
     persistCampaigns([newCampaign, ...campaigns]);
@@ -461,10 +628,12 @@ export function CampaignsPage() {
       product: form.product,
       coupon: form.coupon,
       recipientIds: targetCompanies.map((company) => company.id),
+      attachments: formAttachments,
     };
     persistCampaigns([created, ...campaigns]);
     setSelectedCampaignId(created.id);
     setShowForm(false);
+    setFormAttachments([]);
     setForm((current) => ({ ...current, name: "" }));
   }
 
@@ -665,6 +834,7 @@ export function CampaignsPage() {
           coupon: selectedCampaign.coupon,
         },
         recipients: emailRecipients,
+        attachments: selectedCampaign.attachments || [],
       });
 
       setSendingResults({
@@ -805,6 +975,7 @@ export function CampaignsPage() {
                     <input value={form.coupon} onChange={(event) => setForm({ ...form, coupon: event.target.value })} />
                   </label>
                 </div>
+                {renderAttachmentsEditor(false)}
               </div>
               <div className="form-actions">
                 <button className="ghost-button" type="button" onClick={() => setShowForm(false)}>Cancelar</button>
@@ -861,6 +1032,22 @@ export function CampaignsPage() {
                     <span>Plantilla: {selectedTemplate.name}</span>
                     <p>{selectedCompanies[0] ? renderMessage(selectedTemplate, selectedCompanies[0], selectedCampaign) : "No hay destinatarios para este segmento."}</p>
                   </div>
+                  {selectedCampaign.attachments && selectedCampaign.attachments.length > 0 && (
+                    <div style={{ padding: "14px", marginTop: "14px", background: "#f1f3f5", borderRadius: "8px", border: "1px solid #dee2e6" }}>
+                      <strong style={{ fontSize: "13px", color: "#495057", display: "block", marginBottom: "8px" }}>
+                        📎 Documentos Adjuntos en esta Campaña ({selectedCampaign.attachments.length}):
+                      </strong>
+                      <ul style={{ margin: 0, paddingLeft: "20px", fontSize: "13px" }}>
+                        {selectedCampaign.attachments.map((att: { name: string; url: string }, i: number) => (
+                          <li key={i} style={{ marginBottom: "4px" }}>
+                            <a href={att.url} target="_blank" rel="noopener noreferrer" style={{ color: "#0b7285", fontWeight: "bold", textDecoration: "underline" }}>
+                              {att.name}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   {["email", "mixta"].includes(selectedCampaign.type) ? (
                     <div className="deliverability-panel">
                       <strong>Buenas practicas Gmail</strong>
@@ -1127,6 +1314,7 @@ export function CampaignsPage() {
                         style={{ minHeight: "140px", fontFamily: "monospace", fontSize: "13px", padding: "12px", borderRadius: "8px", border: "1px solid #cfdade", resize: "vertical" }}
                       />
                     </label>
+                    {renderAttachmentsEditor(true)}
                   </div>
 
                   {/* Vista Previa en Vivo */}

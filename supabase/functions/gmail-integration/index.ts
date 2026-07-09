@@ -453,6 +453,27 @@ async function handleSendTest(req: Request, supabase: SupabaseClient, user: Auth
   }
 }
 
+async function fetchAttachment(url: string): Promise<{ contentBase64: string; contentType: string } | null> {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const arrayBuffer = await res.arrayBuffer();
+    const bytes = new Uint8Array(arrayBuffer);
+
+    let binary = "";
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    const contentBase64 = btoa(binary);
+    const contentType = res.headers.get("content-type") || "application/octet-stream";
+    return { contentBase64, contentType };
+  } catch (error) {
+    console.error("[gmail-integration] fetchAttachment failed for URL:", url, error);
+    return null;
+  }
+}
+
 async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: AuthenticatedUser) {
   const payload = await req.json().catch(() => ({}));
   const name = String(payload.name || "").trim();
@@ -461,10 +482,26 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
   const bodyHtml = String(payload.bodyHtml || "").trim();
   const segmentFilters = payload.segmentFilters && typeof payload.segmentFilters === "object" ? payload.segmentFilters : {};
   const recipients = Array.isArray(payload.recipients) ? payload.recipients as CampaignRecipient[] : [];
+  const payloadAttachments = Array.isArray(payload.attachments) ? payload.attachments : [];
 
   if (!name || !subject || !bodyText) throw new HttpError("Faltan nombre, asunto o cuerpo de la campana.", 400);
   if (!recipients.length) throw new HttpError("Selecciona al menos un destinatario.", 400);
   if (recipients.length > 200) throw new HttpError("Por seguridad, el lote maximo local es 200 destinatarios.", 400);
+
+  // Fetch campaign attachments once at the beginning
+  const fetchedAttachments: { name: string; contentBase64: string; contentType: string }[] = [];
+  for (const att of payloadAttachments) {
+    if (att.url && att.name) {
+      const fetched = await fetchAttachment(att.url);
+      if (fetched) {
+        fetchedAttachments.push({
+          name: att.name,
+          contentBase64: fetched.contentBase64,
+          contentType: fetched.contentType,
+        });
+      }
+    }
+  }
 
   const { data: campaign, error: campaignError } = await supabase
     .from("email_campaigns")
@@ -520,6 +557,7 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
         companyId: recipient.companyId,
         campaignId: campaign.id,
         isCampaign: true,
+        attachments: fetchedAttachments,
       });
 
       sent += 1;
@@ -560,6 +598,7 @@ async function sendTrackedEmail(
     companyId?: string;
     campaignId?: string;
     isCampaign?: boolean;
+    attachments?: { name: string; contentBase64: string; contentType: string }[];
   },
 ) {
   const integration = await prepareIntegrationForSend(supabase);
@@ -590,6 +629,7 @@ async function sendTrackedEmail(
       bodyText: input.bodyText,
       bodyHtml: input.bodyHtml,
       isCampaign: input.isCampaign,
+      attachments: input.attachments,
     });
 
     await supabase
@@ -685,6 +725,7 @@ async function sendGmailMessage(input: {
   bodyText: string;
   bodyHtml?: string;
   isCampaign?: boolean;
+  attachments?: { name: string; contentBase64: string; contentType: string }[];
 }) {
   const raw = buildMimeMessage(input);
   const res = await fetchWithRetry("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
@@ -700,8 +741,18 @@ async function sendGmailMessage(input: {
   return String(data.id || "");
 }
 
-function buildMimeMessage(input: { fromEmail: string; toEmail: string; subject: string; bodyText: string; bodyHtml?: string; isCampaign?: boolean }) {
-  const boundary = `crm_latinchile_${crypto.randomUUID()}`;
+function buildMimeMessage(input: {
+  fromEmail: string;
+  toEmail: string;
+  subject: string;
+  bodyText: string;
+  bodyHtml?: string;
+  isCampaign?: boolean;
+  attachments?: { name: string; contentBase64: string; contentType: string }[];
+}) {
+  const mixedBoundary = `mixed_${crypto.randomUUID()}`;
+  const altBoundary = `alt_${crypto.randomUUID()}`;
+
   const headers = [
     `From: LatinChile CRM <${input.fromEmail}>`,
     `To: ${input.toEmail}`,
@@ -714,30 +765,66 @@ function buildMimeMessage(input: { fromEmail: string; toEmail: string; subject: 
     headers.push("List-Unsubscribe-Post: List-Unsubscribe=One-Click");
   }
 
-  const body = input.bodyHtml
-    ? [
-        `Content-Type: multipart/alternative; boundary="${boundary}"`,
-        "",
-        `--${boundary}`,
-        "Content-Type: text/plain; charset=UTF-8",
-        "Content-Transfer-Encoding: 8bit",
-        "",
-        input.bodyText,
-        `--${boundary}`,
-        "Content-Type: text/html; charset=UTF-8",
-        "Content-Transfer-Encoding: 8bit",
-        "",
-        input.bodyHtml,
-        `--${boundary}--`,
-      ]
-    : [
-        "Content-Type: text/plain; charset=UTF-8",
-        "Content-Transfer-Encoding: 8bit",
-        "",
-        input.bodyText,
-      ];
+  const lines: string[] = [];
 
-  return base64UrlEncode(`${headers.join("\r\n")}\r\n${body.join("\r\n")}`);
+  if (input.attachments && input.attachments.length > 0) {
+    headers.push(`Content-Type: multipart/mixed; boundary="${mixedBoundary}"`);
+    lines.push(...headers);
+    lines.push("");
+
+    lines.push(`--${mixedBoundary}`);
+    lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
+    lines.push("");
+
+    lines.push(`--${altBoundary}`);
+    lines.push("Content-Type: text/plain; charset=UTF-8");
+    lines.push("Content-Transfer-Encoding: 8bit");
+    lines.push("");
+    lines.push(input.bodyText);
+
+    if (input.bodyHtml) {
+      lines.push(`--${altBoundary}`);
+      lines.push("Content-Type: text/html; charset=UTF-8");
+      lines.push("Content-Transfer-Encoding: 8bit");
+      lines.push("");
+      lines.push(input.bodyHtml);
+    }
+    lines.push(`--${altBoundary}--`);
+
+    for (const att of input.attachments) {
+      lines.push(`--${mixedBoundary}`);
+      lines.push(`Content-Type: ${att.contentType || "application/octet-stream"}; name="${att.name}"`);
+      lines.push("Content-Transfer-Encoding: base64");
+      lines.push(`Content-Disposition: attachment; filename="${att.name}"`);
+      lines.push("");
+      lines.push(att.contentBase64);
+    }
+    lines.push(`--${mixedBoundary}--`);
+  } else {
+    lines.push(...headers);
+    if (input.bodyHtml) {
+      lines.push(`Content-Type: multipart/alternative; boundary="${altBoundary}"`);
+      lines.push("");
+      lines.push(`--${altBoundary}`);
+      lines.push("Content-Type: text/plain; charset=UTF-8");
+      lines.push("Content-Transfer-Encoding: 8bit");
+      lines.push("");
+      lines.push(input.bodyText);
+      lines.push(`--${altBoundary}`);
+      lines.push("Content-Type: text/html; charset=UTF-8");
+      lines.push("Content-Transfer-Encoding: 8bit");
+      lines.push("");
+      lines.push(input.bodyHtml);
+      lines.push(`--${altBoundary}--`);
+    } else {
+      lines.push("Content-Type: text/plain; charset=UTF-8");
+      lines.push("Content-Transfer-Encoding: 8bit");
+      lines.push("");
+      lines.push(input.bodyText);
+    }
+  }
+
+  return base64UrlEncode(lines.join("\r\n"));
 }
 
 async function getIntegration(supabase: SupabaseClient, requireConnected: boolean): Promise<GmailIntegration> {

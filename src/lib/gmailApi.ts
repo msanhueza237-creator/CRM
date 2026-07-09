@@ -33,6 +33,10 @@ export interface GmailCampaignPayload {
     toEmail: string;
     variables?: Record<string, string>;
   }[];
+  attachments?: {
+    name: string;
+    url: string;
+  }[];
 }
 
 export interface GmailCampaignResult {
