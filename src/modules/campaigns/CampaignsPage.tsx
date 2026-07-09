@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Eye, Megaphone, Plus, Send, UserMinus, UserPlus, XCircle } from "lucide-react";
 import { demoCampaigns, demoTemplates } from "../../data/demoData";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
@@ -29,6 +29,18 @@ interface RecipientState {
 
 const CAMPAIGNS_STORAGE_KEY = "climactiva_campaigns";
 const RECIPIENTS_STORAGE_KEY = "climactiva_campaign_recipients";
+const PROPOSAL_OVERRIDES_STORAGE_KEY = "climactiva_proposal_overrides";
+const DISMISSED_PROPOSALS_STORAGE_KEY = "climactiva_dismissed_proposals";
+
+interface ProposalOverride {
+  name?: string;
+  description?: string;
+  type?: CampaignType;
+  product?: string;
+  coupon?: string;
+  subject?: string;
+  message?: string;
+}
 const segments: CampaignSegment[] = ["todas", "prioridad alta", "distribuidores y tiendas", "instaladores", "interesados"];
 const campaignTypes: CampaignType[] = ["email", "WhatsApp", "mixta"];
 
@@ -70,6 +82,36 @@ function saveCampaigns(campaigns: CampaignDraft[]) {
 
 function saveRecipients(recipients: RecipientState[]) {
   localStorage.setItem(RECIPIENTS_STORAGE_KEY, JSON.stringify(recipients));
+}
+
+function loadProposalOverrides(): Record<string, ProposalOverride> {
+  const stored = localStorage.getItem(PROPOSAL_OVERRIDES_STORAGE_KEY);
+  if (!stored) return {};
+
+  try {
+    return JSON.parse(stored) as Record<string, ProposalOverride>;
+  } catch {
+    return {};
+  }
+}
+
+function saveProposalOverrides(overrides: Record<string, ProposalOverride>) {
+  localStorage.setItem(PROPOSAL_OVERRIDES_STORAGE_KEY, JSON.stringify(overrides));
+}
+
+function loadDismissedProposals(): string[] {
+  const stored = localStorage.getItem(DISMISSED_PROPOSALS_STORAGE_KEY);
+  if (!stored) return [];
+
+  try {
+    return JSON.parse(stored) as string[];
+  } catch {
+    return [];
+  }
+}
+
+function saveDismissedProposals(ids: string[]) {
+  localStorage.setItem(DISMISSED_PROPOSALS_STORAGE_KEY, JSON.stringify(ids));
 }
 
 function getSegmentCompanies(companies: Company[], segment: CampaignSegment) {
@@ -129,6 +171,7 @@ export function CampaignsPage() {
   const [selectedProposalIndex, setSelectedProposalIndex] = useState(0);
   const [proposalForm, setProposalForm] = useState({
     name: "",
+    description: "",
     type: "mixta" as CampaignType,
     product: "bombas de condensado y herramientas Super Stars",
     coupon: "CLIMA10",
@@ -138,6 +181,9 @@ export function CampaignsPage() {
   const [excludedCompanyIds, setExcludedCompanyIds] = useState<string[]>([]);
   const [proposalSuccessMessage, setProposalSuccessMessage] = useState<string | null>(null);
   const [savingProposal, setSavingProposal] = useState(false);
+  const [proposalOverrides, setProposalOverrides] = useState<Record<string, ProposalOverride>>(loadProposalOverrides);
+  const [dismissedProposalIds, setDismissedProposalIds] = useState<string[]>(loadDismissedProposals);
+  const [proposalEditSavedMessage, setProposalEditSavedMessage] = useState<string | null>(null);
 
   // Attachment state variables
   const [formAttachments, setFormAttachments] = useState<{ name: string; url: string }[]>([]);
@@ -313,7 +359,7 @@ export function CampaignsPage() {
       (c) => c.status === "prospecto" || c.status === "contactado" || c.status === "cotizado"
     );
 
-    return [
+    const baseProposals = [
       {
         id: "prop-vip",
         defaultName: "Fidelización VIP - Distribuidores Principales",
@@ -351,14 +397,38 @@ export function CampaignsPage() {
         defaultMessage: `Hola {{nombre_contacto}},\n\nTe escribimos de Clima Activa. Hace un tiempo estuvimos conversando sobre soluciones de climatización para {{nombre_empresa}}.\n\nQueremos reactivar el contacto contigo en {{ciudad}} y comentarte que tenemos disponibilidad inmediata de {{producto_destacado}}.\n\nAdemás, habilitamos el beneficio especial {{cupon}} para que puedas concretar tu proyecto con un descuento extra.\n\n¿Te gustaría que agendemos una breve llamada de 5 minutos?\n\nSaludos cordiales,\nClima Activa`,
       },
     ];
-  }, [companies]);
 
-  // Synchronize forms when changing target proposal template
+    return baseProposals
+      .filter((prop) => !dismissedProposalIds.includes(prop.id))
+      .map((prop) => {
+        const override = proposalOverrides[prop.id];
+        if (!override) return prop;
+        return {
+          ...prop,
+          defaultName: override.name ?? prop.defaultName,
+          description: override.description ?? prop.description,
+          type: override.type ?? prop.type,
+          product: override.product ?? prop.product,
+          coupon: override.coupon ?? prop.coupon,
+          subject: override.subject ?? prop.subject,
+          defaultMessage: override.message ?? prop.defaultMessage,
+        };
+      });
+  }, [companies, proposalOverrides, dismissedProposalIds]);
+
+  // Synchronize forms only when the user switches to a different proposal card.
+  // Deliberately excludes `proposals` from the deps: saving an override edit
+  // recomputes that memo, and resyncing on every content change would wipe out
+  // the just-saved confirmation message and reset excluded/attachments state.
+  const proposalsRef = useRef(proposals);
+  proposalsRef.current = proposals;
+
   useEffect(() => {
-    const prop = proposals[selectedProposalIndex];
+    const prop = proposalsRef.current[selectedProposalIndex];
     if (prop) {
       setProposalForm({
         name: prop.defaultName,
+        description: prop.description,
         type: prop.type,
         product: prop.product,
         coupon: prop.coupon,
@@ -367,9 +437,46 @@ export function CampaignsPage() {
       });
       setExcludedCompanyIds([]);
       setProposalSuccessMessage(null);
+      setProposalEditSavedMessage(null);
       setProposalAttachments([]);
     }
-  }, [selectedProposalIndex, proposals]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProposalIndex]);
+
+  function saveProposalEdits() {
+    const prop = proposals[selectedProposalIndex];
+    if (!prop) return;
+
+    const nextOverrides: Record<string, ProposalOverride> = {
+      ...proposalOverrides,
+      [prop.id]: {
+        name: proposalForm.name,
+        description: proposalForm.description,
+        type: proposalForm.type,
+        product: proposalForm.product,
+        coupon: proposalForm.coupon,
+        subject: proposalForm.subject,
+        message: proposalForm.message,
+      },
+    };
+    setProposalOverrides(nextOverrides);
+    saveProposalOverrides(nextOverrides);
+    setProposalEditSavedMessage("Cambios guardados en la propuesta.");
+  }
+
+  function dismissProposal(proposalId: string) {
+    if (!confirm("¿Eliminar esta propuesta de la lista de sugerencias?")) return;
+
+    const nextDismissed = [...dismissedProposalIds, proposalId];
+    setDismissedProposalIds(nextDismissed);
+    saveDismissedProposals(nextDismissed);
+    setSelectedProposalIndex(0);
+  }
+
+  function restoreDismissedProposals() {
+    setDismissedProposalIds([]);
+    saveDismissedProposals([]);
+  }
 
   function renderProposalPreview(templateText: string, company: Company) {
     if (!company) return "No hay empresas seleccionadas.";
@@ -1196,16 +1303,23 @@ export function CampaignsPage() {
         /* UI de Propuestas Inteligentes */
         <div className="suggestions-planner page-stack" style={{ gap: "20px" }}>
           <div className="panel" style={{ padding: "24px" }}>
-            <div style={{ marginBottom: "20px" }}>
-              <h2 style={{ color: "#103842", margin: 0 }}>💡 Propuestas de Campañas Sugeridas</h2>
-              <p className="muted" style={{ fontSize: "14px", marginTop: "6px" }}>
-                El CRM ha analizado tu base de datos de empresas y propone las siguientes campañas segmentadas. Revisa, edita los mensajes y desmarca a los clientes que prefieras excluir.
-              </p>
+            <div style={{ marginBottom: "20px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <h2 style={{ color: "#103842", margin: 0 }}>💡 Propuestas de Campañas Sugeridas</h2>
+                <p className="muted" style={{ fontSize: "14px", marginTop: "6px" }}>
+                  El CRM ha analizado tu base de datos de empresas y propone las siguientes campañas segmentadas. Revisa, edita los mensajes y desmarca a los clientes que prefieras excluir.
+                </p>
+              </div>
+              {dismissedProposalIds.length > 0 && (
+                <button type="button" className="link-button" onClick={restoreDismissedProposals}>
+                  Restaurar {dismissedProposalIds.length} propuesta{dismissedProposalIds.length > 1 ? "s" : ""} eliminada{dismissedProposalIds.length > 1 ? "s" : ""}
+                </button>
+              )}
             </div>
 
             <div className="two-column" style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: "24px" }}>
               {/* Columna Izquierda: Listado de propuestas */}
-              <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div className="proposal-list" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
                 {proposals.map((prop, index) => {
                   const isSelected = selectedProposalIndex === index;
                   return (
@@ -1226,9 +1340,23 @@ export function CampaignsPage() {
                         <span className={`status-badge ${prop.type === "WhatsApp" ? "programada" : prop.type === "email" ? "pausada" : "enviada"}`} style={{ fontSize: "11px", textTransform: "uppercase" }}>
                           {prop.type}
                         </span>
-                        <span style={{ fontSize: "12px", fontWeight: "bold", color: "#62717a" }}>
-                          👥 {prop.potentialCompanies.length} potenciales
-                        </span>
+                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                          <span style={{ fontSize: "12px", fontWeight: "bold", color: "#62717a" }}>
+                            👥 {prop.potentialCompanies.length} potenciales
+                          </span>
+                          <button
+                            type="button"
+                            title="Eliminar propuesta"
+                            aria-label="Eliminar propuesta"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              dismissProposal(prop.id);
+                            }}
+                            style={{ border: "none", background: "none", cursor: "pointer", color: "#c92a2a", fontSize: "16px", lineHeight: 1, padding: "2px 4px" }}
+                          >
+                            ✕
+                          </button>
+                        </div>
                       </div>
                       <h4 style={{ margin: "0 0 6px 0", color: "#103842", fontSize: "15px", fontWeight: "bold" }}>{prop.defaultName}</h4>
                       <p className="muted" style={{ fontSize: "13px", margin: 0 }}>{prop.description}</p>
@@ -1245,17 +1373,32 @@ export function CampaignsPage() {
                       {proposalSuccessMessage}
                     </div>
                   )}
-                  
+                  {proposalEditSavedMessage && (
+                    <div style={{ background: "#e7f5ff", border: "1px solid #a5d8ff", color: "#1864ab", padding: "14px", borderRadius: "8px", marginBottom: "20px", fontSize: "14px", fontWeight: 500 }}>
+                      {proposalEditSavedMessage}
+                    </div>
+                  )}
+
                   <h3 style={{ marginTop: 0, marginBottom: "20px", color: "#103842" }}>Configuración del Borrador</h3>
-                  
+
                   <div className="campaign-form" style={{ display: "grid", gap: "16px", background: "none", border: "none", boxShadow: "none", padding: 0 }}>
                     <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontWeight: "bold", fontSize: "14px", color: "#40515b" }}>
                       Nombre de la Campaña
-                      <input 
-                        type="text" 
-                        value={proposalForm.name} 
-                        onChange={(e) => setProposalForm({ ...proposalForm, name: e.target.value })} 
+                      <input
+                        type="text"
+                        value={proposalForm.name}
+                        onChange={(e) => setProposalForm({ ...proposalForm, name: e.target.value })}
                         style={{ minHeight: "40px", border: "1px solid #cfdade", borderRadius: "8px", padding: "0 12px" }}
+                      />
+                    </label>
+
+                    <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontWeight: "bold", fontSize: "14px", color: "#40515b" }}>
+                      Descripción de la propuesta
+                      <textarea
+                        value={proposalForm.description}
+                        onChange={(e) => setProposalForm({ ...proposalForm, description: e.target.value })}
+                        rows={2}
+                        style={{ border: "1px solid #cfdade", borderRadius: "8px", padding: "10px 12px", fontFamily: "inherit", fontWeight: "normal" }}
                       />
                     </label>
 
@@ -1386,7 +1529,15 @@ export function CampaignsPage() {
                   </div>
 
                   <div style={{ marginTop: "24px", display: "flex", gap: "12px", justifyContent: "flex-end" }}>
-                    <button 
+                    <button
+                      className="ghost-button"
+                      type="button"
+                      onClick={saveProposalEdits}
+                      title="Guarda estos cambios en la propuesta para que se mantengan la próxima vez que la abras"
+                    >
+                      Guardar cambios en la propuesta
+                    </button>
+                    <button
                       className="primary-button"
                       type="button"
                       onClick={saveProposedCampaign}
@@ -1397,8 +1548,17 @@ export function CampaignsPage() {
                   </div>
                 </div>
               ) : (
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "200px" }}>
-                  <p className="muted">Selecciona una propuesta sugerida para ver su edición.</p>
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "200px", gap: "10px" }}>
+                  <p className="muted">
+                    {dismissedProposalIds.length > 0
+                      ? "Eliminaste todas las propuestas sugeridas."
+                      : "Selecciona una propuesta sugerida para ver su edición."}
+                  </p>
+                  {dismissedProposalIds.length > 0 && (
+                    <button type="button" className="link-button" onClick={restoreDismissedProposals}>
+                      Restaurar propuestas eliminadas
+                    </button>
+                  )}
                 </div>
               )}
             </div>
