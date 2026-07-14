@@ -10,7 +10,7 @@ const INTERACTIONS_STORAGE_KEY = "climactiva_interactions";
 interface CompanyStoreValue {
   companies: Company[];
   interactions: Interaction[];
-  createCompany: (company: Omit<Company, "id">) => Company;
+  createCompany: (company: Omit<Company, "id">, options?: { localOnly?: boolean }) => Company;
   createInteraction: (interaction: Omit<Interaction, "id">) => Interaction;
   updateCompany: (id: string, company: Omit<Company, "id">) => Company;
   getCompany: (id: string) => Company | undefined;
@@ -90,12 +90,12 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
     () => ({
       companies,
       interactions,
-      createCompany: (company) => {
+      createCompany: (company, options) => {
         const created = { ...company, id: crypto.randomUUID() };
         const nextCompanies = [created, ...companies];
         setCompanies(nextCompanies);
         saveCompanies(nextCompanies);
-        if (isSupabaseConfigured && supabase && user) {
+        if (!options?.localOnly && isSupabaseConfigured && supabase && user) {
           void supabase.from("companies").insert(mapCompanyToSupabase(created));
         }
         return created;

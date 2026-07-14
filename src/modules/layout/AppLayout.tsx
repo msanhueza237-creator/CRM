@@ -6,6 +6,7 @@ import {
   LogOut,
   Megaphone,
   Menu,
+  Radar,
   Settings,
   Snowflake,
 } from "lucide-react";
@@ -14,6 +15,7 @@ import { useAuth } from "../auth/AuthContext";
 const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/empresas", label: "Empresas", icon: Building2 },
+  { to: "/prospeccion", label: "Prospeccion", icon: Radar },
   { to: "/campanas", label: "Campanas", icon: Megaphone },
   { to: "/plantillas", label: "Plantillas", icon: FileText },
   { to: "/administracion", label: "Administracion", icon: Settings },

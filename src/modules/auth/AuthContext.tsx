@@ -37,6 +37,27 @@ function mapSession(session: Session | null): AppUser | null {
   };
 }
 
+async function mapSessionWithProfile(session: Session | null): Promise<AppUser | null> {
+  const fallback = mapSession(session);
+  if (!fallback || !supabase) return fallback;
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("full_name, role")
+    .eq("id", fallback.id)
+    .maybeSingle();
+  if (error || !data) return fallback;
+
+  const role = ["administrador", "vendedor", "visualizador"].includes(String(data.role))
+    ? (String(data.role) as AppUser["role"])
+    : fallback.role;
+  return {
+    ...fallback,
+    name: String(data.full_name ?? fallback.name),
+    role,
+  };
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(() => {
     if (isSupabaseConfigured) return null;
@@ -47,14 +68,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase) return;
 
-    supabase.auth.getSession().then(({ data }) => {
-      setUser(mapSession(data.session));
+    supabase.auth.getSession().then(async ({ data }) => {
+      setUser(await mapSessionWithProfile(data.session));
       setLoading(false);
     });
 
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(mapSession(session));
-      setLoading(false);
+      void mapSessionWithProfile(session).then((mappedUser) => {
+        setUser(mappedUser);
+        setLoading(false);
+      });
     });
 
     return () => data.subscription.unsubscribe();
