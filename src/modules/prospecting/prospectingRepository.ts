@@ -797,6 +797,7 @@ function mapCandidate(
         ? snapshot.description ?? snapshot.business_line ?? snapshot.category ?? ""
         : safeEntity.business_line ?? safeEntity.description ?? "",
     ),
+    companySummary: String(isSnapshotBacked ? snapshot.company_summary ?? "" : safeEntity.company_summary ?? ""),
     companyType: asCompanyType(isSnapshotBacked ? snapshot.category ?? snapshot.company_type : safeEntity.company_type),
     website: String(isSnapshotBacked ? snapshot.website ?? "" : safeEntity.website ?? ""),
     phone: String(isSnapshotBacked ? snapshot.phone ?? "" : safeEntity.phone ?? ""),

@@ -239,7 +239,7 @@ export function ProspectingPage() {
       .filter((candidate) => {
         if (!query) return true;
         return normalizeString(
-          [candidate.name, candidate.legalName, candidate.rut, candidate.phone, candidate.email, candidate.businessLine]
+          [candidate.name, candidate.legalName, candidate.rut, candidate.phone, candidate.email, candidate.businessLine, candidate.companySummary]
             .concat(candidate.locations.map((location) => `${location.comunaName} ${location.address}`))
             .join(" "),
         ).includes(query);
@@ -1556,6 +1556,13 @@ function CandidateDetail({
         </div>
       ) : null}
       {linked ? <div className="linked-alert"><Link2 size={18} /><span>Vinculado a <strong>{linked.name}</strong>. No se creó un duplicado.</span></div> : null}
+
+      {candidate.companySummary ? (
+        <div className="candidate-import-readiness ready" role="status">
+          <Building2 size={19} />
+          <div><strong>Descripción investigada</strong><p>{candidate.companySummary}</p></div>
+        </div>
+      ) : null}
 
       <div
         id={readinessId}

@@ -331,6 +331,7 @@ async function handleProspectingEnrichmentRoute(
         optionalString(candidate.phone, "candidate.phone", 50);
         optionalString(candidate.email, "candidate.email", 320);
         optionalString(candidate.website, "candidate.website", 2048);
+        optionalString(candidate.company_summary, "candidate.company_summary", 1200);
         if (candidate.evidence !== undefined && !Array.isArray(candidate.evidence)) {
           throw new RequestValidationError("candidate.evidence must be an array");
         }

@@ -19,6 +19,7 @@ alter table public.prospect_entities add column if not exists social_media jsonb
 alter table public.prospect_entities add column if not exists specialties text[] not null default '{}'::text[];
 alter table public.prospect_entities add column if not exists brands text[] not null default '{}'::text[];
 alter table public.prospect_entities add column if not exists enriched_at timestamptz;
+alter table public.prospect_entities add column if not exists company_summary text;
 
 create table if not exists public.prospect_enrichment_jobs (
   id uuid primary key default gen_random_uuid(),
@@ -122,7 +123,8 @@ begin
     'candidate',case when v_relation.candidate_snapshot<>'{}'::jsonb then v_relation.candidate_snapshot else
       jsonb_build_object('candidate_id',v_relation.external_candidate_id,'name',v_entity.name,'trade_name',v_entity.legal_name,
         'rut',v_entity.rut,'phone',v_entity.phone,'email',v_entity.email,'website',v_entity.website,
-        'description',v_entity.description,'location',jsonb_build_object('country_code','CL')) end);
+        'description',v_entity.description,'company_summary',v_entity.company_summary,
+        'location',jsonb_build_object('country_code','CL')) end);
 end $$;
 
 create or replace function public.refresh_prospect_enrichment_progress(p_run_id uuid)
@@ -151,6 +153,7 @@ begin
   update public.prospect_entities set name=coalesce(nullif(trim(p_candidate->>'name'),''),name),legal_name=coalesce(nullif(trim(p_candidate->>'trade_name'),''),legal_name),
     website=coalesce(nullif(trim(p_candidate->>'website'),''),website),phone=coalesce(nullif(trim(p_candidate->>'phone'),''),phone),
     email=coalesce(nullif(lower(trim(p_candidate->>'email')),''),email),description=coalesce(nullif(trim(p_candidate->>'description'),''),description),
+    company_summary=coalesce(nullif(trim(p_candidate->>'company_summary'),''),company_summary),
     social_media=coalesce(p_candidate->'social_media','{}'::jsonb),specialties=array(select jsonb_array_elements_text(coalesce(p_candidate->'specialties','[]'::jsonb))),
     brands=array(select jsonb_array_elements_text(coalesce(p_candidate->'brands','[]'::jsonb))),enriched_at=now(),updated_at=now() where id=v_job.entity_id;
   for v_item in select value from jsonb_array_elements(coalesce(p_candidate->'evidence','[]'::jsonb)) loop
@@ -213,3 +216,44 @@ grant execute on function public.claim_prospect_enrichment(uuid,text,integer),pu
   public.fail_prospect_enrichment(uuid,uuid,text,uuid,text),public.refresh_prospect_enrichment_progress(uuid) to service_role;
 
 comment on table public.prospect_enrichment_jobs is 'Cola durable para investigar candidatos existentes sin repetir Google Places.';
+
+create or replace function public.build_prospect_company_summary(p_candidate jsonb)
+returns text language plpgsql immutable set search_path=public,pg_temp as $$
+declare
+  v_comuna text := coalesce(nullif(p_candidate#>>'{location,comuna_name}',''),nullif(p_candidate#>>'{location,region_name}',''),'Chile');
+  v_specialties text;
+  v_brands text;
+  v_category text := nullif(trim(coalesce(p_candidate->>'category','')),'');
+  v_result text;
+begin
+  select string_agg(value, ', ' order by ordinality) into v_specialties
+  from jsonb_array_elements_text(coalesce(p_candidate->'specialties','[]'::jsonb)) with ordinality
+  where ordinality<=5;
+  select string_agg(value, ', ' order by ordinality) into v_brands
+  from jsonb_array_elements_text(coalesce(p_candidate->'brands','[]'::jsonb)) with ordinality
+  where ordinality<=5;
+  if v_specialties is not null then
+    v_result := format('Empresa del sector climatización y HVAC con actividad en %s. En sus fuentes públicas se identifican servicios de %s.',v_comuna,v_specialties);
+  elsif v_category is not null and lower(v_category)<>'otro' then
+    v_result := format('Candidato comercial del sector climatización y HVAC con actividad en %s, clasificado como %s. La actividad específica requiere confirmación cuando no está detallada en su sitio público.',v_comuna,lower(v_category));
+  else
+    v_result := format('Empresa encontrada durante una búsqueda de climatización y HVAC en %s. No fue posible confirmar públicamente su actividad específica.',v_comuna);
+  end if;
+  if v_brands is not null then v_result := v_result||format(' En su información pública se mencionan marcas como %s.',v_brands); end if;
+  if nullif(p_candidate->>'website','') is not null then v_result := v_result||' Cuenta con un sitio web público.'; end if;
+  return left(v_result,1200);
+end $$;
+
+update public.prospecting_campaign_candidates
+set candidate_snapshot=jsonb_set(candidate_snapshot,'{company_summary}',to_jsonb(public.build_prospect_company_summary(candidate_snapshot)),true)
+where enrichment_status='completed' and coalesce(candidate_snapshot->>'company_summary','')='';
+
+update public.prospect_entities entity
+set company_summary=relation.candidate_snapshot->>'company_summary',updated_at=now()
+from public.prospecting_campaign_candidates relation
+where relation.entity_id=entity.id and relation.enrichment_status='completed'
+  and coalesce(relation.candidate_snapshot->>'company_summary','')<>''
+  and coalesce(entity.company_summary,'')='';
+
+revoke all on function public.build_prospect_company_summary(jsonb) from public;
+grant execute on function public.build_prospect_company_summary(jsonb) to authenticated,service_role;

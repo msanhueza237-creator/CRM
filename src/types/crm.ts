@@ -213,6 +213,7 @@ export interface ProspectCandidate {
   legalName: string;
   rut: string;
   businessLine: string;
+  companySummary: string;
   companyType: CompanyType;
   website: string;
   phone: string;
