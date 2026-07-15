@@ -149,7 +149,12 @@ begin
   if v_job.status<>'running' or v_job.claimed_by_api_key is distinct from p_api_key_id or v_job.claimed_by_worker is distinct from trim(p_worker_id)
     or v_job.lease_token is distinct from p_lease_token or v_job.lease_expires_at<=now() then raise exception using errcode='42501',message='Invalid enrichment lease'; end if;
   update public.prospecting_campaign_candidates set candidate_snapshot=p_candidate,enrichment_status='completed',
-    enrichment_summary=coalesce(p_summary,'{}'::jsonb),enrichment_error=null,enriched_at=now(),last_seen_at=now() where id=v_job.candidate_relation_id;
+    enrichment_summary=coalesce(p_summary,'{}'::jsonb),enrichment_error=null,enriched_at=now(),last_seen_at=now(),
+    review_status=case when coalesce((p_summary->>'hvac_relevant')::boolean,true)=false and review_status in ('pending','possible_duplicate') then 'rejected' else review_status end,
+    review_notes=case when coalesce((p_summary->>'hvac_relevant')::boolean,true)=false and review_status in ('pending','possible_duplicate')
+      then concat_ws(E'\n',nullif(review_notes,''),'Descartado automáticamente: la investigación no confirmó actividad de climatización, refrigeración o HVAC.') else review_notes end,
+    reviewed_at=case when coalesce((p_summary->>'hvac_relevant')::boolean,true)=false and review_status in ('pending','possible_duplicate') then now() else reviewed_at end
+    where id=v_job.candidate_relation_id;
   update public.prospect_entities set name=coalesce(nullif(trim(p_candidate->>'name'),''),name),legal_name=coalesce(nullif(trim(p_candidate->>'trade_name'),''),legal_name),
     website=coalesce(nullif(trim(p_candidate->>'website'),''),website),phone=coalesce(nullif(trim(p_candidate->>'phone'),''),phone),
     email=coalesce(nullif(lower(trim(p_candidate->>'email')),''),email),description=coalesce(nullif(trim(p_candidate->>'description'),''),description),
@@ -254,6 +259,19 @@ from public.prospecting_campaign_candidates relation
 where relation.entity_id=entity.id and relation.enrichment_status='completed'
   and coalesce(relation.candidate_snapshot->>'company_summary','')<>''
   and coalesce(entity.company_summary,'')='';
+
+-- Limpia falsos positivos históricos que Google devolvió sólo por coincidir
+-- con la consulta, sin una señal HVAC corroborada. Se conserva el registro
+-- rechazado para auditoría y nunca se alteran candidatos aprobados o vinculados.
+update public.prospecting_campaign_candidates
+set review_status='rejected',
+    review_notes=concat_ws(E'\n',nullif(review_notes,''),'Descartado automáticamente: la investigación no confirmó actividad de climatización, refrigeración o HVAC.'),
+    reviewed_at=coalesce(reviewed_at,now())
+where enrichment_status='completed'
+  and review_status in ('pending','possible_duplicate')
+  and coalesce(candidate_snapshot->'review_flags','[]'::jsonb) ? 'hvac_relevance_needs_review'
+  and lower(concat_ws(' ',candidate_snapshot->>'name',candidate_snapshot->>'trade_name',candidate_snapshot->>'description',candidate_snapshot->>'category',candidate_snapshot->>'specialties'))
+      !~ '(climatiz|refriger|aire[ _-]+acondicionado|calefacci|ventilaci|hvac|fr[ií]o[ _-]+industrial|bomba[ _-]+de[ _-]+calor|chiller|air[ _-]+conditioning|heating[ _-]+contractor)';
 
 revoke all on function public.build_prospect_company_summary(jsonb) from public;
 grant execute on function public.build_prospect_company_summary(jsonb) to authenticated,service_role;
