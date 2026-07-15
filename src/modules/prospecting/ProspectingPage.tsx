@@ -56,6 +56,7 @@ import { HistoricalBaseView } from "./HistoricalBaseView";
 
 type ViewTab = "campaigns" | "operation" | "candidates" | "historical";
 type Notice = { type: "info" | "success" | "error"; text: string } | null;
+type CandidateStatusFilter = ProspectReviewStatus | "all" | "active";
 
 const runLabels: Record<ProspectingRun["status"], string> = {
   pending: "Pendiente",
@@ -119,7 +120,7 @@ export function ProspectingPage() {
   const [selectedRunId, setSelectedRunId] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [candidateQuery, setCandidateQuery] = useState("");
-  const [candidateStatus, setCandidateStatus] = useState<ProspectReviewStatus | "all">("all");
+  const [candidateStatus, setCandidateStatus] = useState<CandidateStatusFilter>("active");
   const [candidateSource, setCandidateSource] = useState<ProspectingSource | "all">("all");
   const [candidateComuna, setCandidateComuna] = useState("all");
   const [companyToLink, setCompanyToLink] = useState("");
@@ -227,7 +228,11 @@ export function ProspectingPage() {
   const filteredCandidates = useMemo(() => {
     const query = normalizeString(candidateQuery);
     return campaignCandidates
-      .filter((candidate) => candidateStatus === "all" || candidate.reviewStatus === candidateStatus)
+      .filter((candidate) =>
+        candidateStatus === "all"
+        || (candidateStatus === "active" && ["pending", "possible_duplicate"].includes(candidate.reviewStatus))
+        || candidate.reviewStatus === candidateStatus,
+      )
       .filter(
         (candidate) =>
           candidateSource === "all" || candidate.evidence.some((evidence) => evidence.source === candidateSource),
@@ -247,7 +252,7 @@ export function ProspectingPage() {
       .sort((a, b) => b.score - a.score);
   }, [campaignCandidates, candidateComuna, candidateQuery, candidateSource, candidateStatus]);
   const selectedCandidate =
-    campaignCandidates.find((candidate) => candidate.id === selectedCandidateId) ?? filteredCandidates[0];
+    filteredCandidates.find((candidate) => candidate.id === selectedCandidateId) ?? filteredCandidates[0];
 
   useEffect(() => {
     if (!workspace?.campaigns.length) {
@@ -1406,14 +1411,14 @@ function CandidatesView({
   canReview: boolean;
   busyAction: string;
   query: string;
-  status: ProspectReviewStatus | "all";
+  status: CandidateStatusFilter;
   source: ProspectingSource | "all";
   comuna: string;
   comunas: string[];
   companyToLink: string;
   onSelectRun: (id: string) => void;
   onQuery: (value: string) => void;
-  onStatus: (value: ProspectReviewStatus | "all") => void;
+  onStatus: (value: CandidateStatusFilter) => void;
   onSource: (value: ProspectingSource | "all") => void;
   onComuna: (value: string) => void;
   onSelect: (id: string) => void;
@@ -1430,7 +1435,7 @@ function CandidatesView({
       <div className="panel candidate-filters">
         <label className="search-field"><Search size={18} /><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Empresa, RUT, contacto o actividad" /></label>
         <label className="select-field">Ejecución<select value={selectedRun.id} onChange={(event) => onSelectRun(event.target.value)}>{runs.map((run, index) => <option key={run.id} value={run.id}>Run #{runs.length - index} · {runLabels[run.status]}</option>)}</select></label>
-        <label className="select-field">Estado<select value={status} onChange={(event) => onStatus(event.target.value as ProspectReviewStatus | "all")}><option value="all">Todos</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="select-field">Estado<select value={status} onChange={(event) => onStatus(event.target.value as CandidateStatusFilter)}><option value="active">Por revisar</option><option value="all">Todos (incluye descartados)</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="select-field">Fuente<select value={source} onChange={(event) => onSource(event.target.value as ProspectingSource | "all")}><option value="all">Todas</option>{SOURCE_DEFINITIONS.filter((item) => !item.disabled).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="select-field">Comuna<select value={comuna} onChange={(event) => onComuna(event.target.value)}><option value="all">Todas</option>{comunas.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <span className="filter-result"><Filter size={16} /> {candidates.length} de {totalCandidates}</span>
