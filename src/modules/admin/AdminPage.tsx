@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Database, Mail, MessageCircle, Send, ShieldCheck, Unplug, Users } from "lucide-react";
+import { Database, Mail, MapPinned, MessageCircle, RefreshCw, Send, ShieldCheck, Unplug, Users } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
 import {
@@ -35,6 +35,17 @@ const emptyWhatsAppSettings: WhatsAppSettingsForm = {
   lastError: "",
 };
 
+interface ProspectingIntegrationStatus {
+  provider: "google_places" | "brave_search";
+  configured: boolean;
+  status: "not_configured" | "pending" | "checking" | "connected" | "quota_exhausted" | "error";
+  message: string;
+  error_code: string | null;
+  last_checked_at: string | null;
+  last_success_at: string | null;
+  metadata: Record<string, unknown>;
+}
+
 export function AdminPage() {
   const { user } = useAuth();
   const [whatsappSettings, setWhatsappSettings] = useState<WhatsAppSettingsForm>(emptyWhatsAppSettings);
@@ -46,6 +57,9 @@ export function AdminPage() {
   const [gmailTestEmail, setGmailTestEmail] = useState("");
   const [gmailBusy, setGmailBusy] = useState(false);
   const [gmailDailyLimit, setGmailDailyLimit] = useState(50);
+  const [prospectingIntegrations, setProspectingIntegrations] = useState<ProspectingIntegrationStatus[]>([]);
+  const [placesBusy, setPlacesBusy] = useState(false);
+  const [placesNotice, setPlacesNotice] = useState("");
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !user) return;
@@ -80,6 +94,55 @@ export function AdminPage() {
 
     void loadWhatsAppSettings();
   }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    void loadProspectingIntegrations();
+  }, [user]);
+
+  async function loadProspectingIntegrations() {
+    if (!isSupabaseConfigured || !supabase || !user) return;
+    const { data, error } = await supabase
+      .from("prospecting_integration_status")
+      .select("provider,configured,status,message,error_code,last_checked_at,last_success_at,metadata")
+      .order("provider");
+    if (error) {
+      setPlacesNotice("Falta instalar la actualizacion de integraciones de prospeccion en Supabase.");
+      return;
+    }
+    setProspectingIntegrations((data ?? []) as ProspectingIntegrationStatus[]);
+  }
+
+  async function testGooglePlaces() {
+    if (!supabase) return;
+    setPlacesBusy(true);
+    setPlacesNotice("Solicitando una prueba segura al agente...");
+    const { error } = await supabase.rpc("request_prospecting_integration_check", {
+      p_provider: "google_places",
+    });
+    if (error) {
+      setPlacesBusy(false);
+      setPlacesNotice(error.message);
+      return;
+    }
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 2500));
+      await loadProspectingIntegrations();
+      const { data } = await supabase
+        .from("prospecting_integration_status")
+        .select("status,message")
+        .eq("provider", "google_places")
+        .maybeSingle();
+      if (data && !["pending", "checking"].includes(String(data.status))) {
+        setPlacesNotice(String(data.message ?? "Prueba finalizada."));
+        setPlacesBusy(false);
+        return;
+      }
+    }
+    setPlacesNotice("La prueba sigue pendiente. Pulsa Revisar estado en unos segundos.");
+    setPlacesBusy(false);
+  }
 
   useEffect(() => {
     if (!user) return;
@@ -261,6 +324,64 @@ export function AdminPage() {
           <h2>Supabase</h2>
           <p>{isSupabaseConfigured ? "Variables de Supabase configuradas." : "Modo demo: agrega VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY."}</p>
         </article>
+      </div>
+
+      <div className="panel admin-integration-form">
+        <div className="panel-heading">
+          <div>
+            <h2>Fuentes del agente buscador</h2>
+            <span>Conexiones del worker de prospeccion; las claves permanecen fuera del CRM.</span>
+          </div>
+        </div>
+
+        {(() => {
+          const places = prospectingIntegrations.find((item) => item.provider === "google_places");
+          const connected = places?.status === "connected";
+          const pending = places?.status === "pending" || places?.status === "checking";
+          return (
+            <>
+              <div className="admin-integration-summary">
+                <MapPinned size={24} />
+                <div>
+                  <strong>Google Places API</strong>
+                  <p className="muted">
+                    {places?.message ?? "Sin informacion del agente."} La clave nunca se muestra ni se guarda en el navegador.
+                  </p>
+                </div>
+                <span className={`status-badge ${connected ? "cliente" : places?.status === "error" ? "descartado" : "pausada"}`}>
+                  {connected ? "conectado" : pending ? "probando" : places?.configured ? "revisar" : "sin verificar"}
+                </span>
+              </div>
+
+              <div className="gmail-status-grid">
+                <div>
+                  <span>Configuracion</span>
+                  <strong>{places?.configured ? "Clave detectada" : "No confirmada"}</strong>
+                </div>
+                <div>
+                  <span>Ultima prueba</span>
+                  <strong>{places?.last_checked_at ? new Date(places.last_checked_at).toLocaleString() : "Sin prueba"}</strong>
+                </div>
+                <div>
+                  <span>Ultimo exito</span>
+                  <strong>{places?.last_success_at ? new Date(places.last_success_at).toLocaleString() : "Pendiente"}</strong>
+                </div>
+              </div>
+
+              {placesNotice ? <p className="muted">{placesNotice}</p> : null}
+              <div className="form-actions">
+                <button className="ghost-button" type="button" onClick={loadProspectingIntegrations} disabled={placesBusy}>
+                  <RefreshCw size={18} />
+                  Revisar estado
+                </button>
+                <button className="primary-button" type="button" onClick={testGooglePlaces} disabled={placesBusy}>
+                  <MapPinned size={18} />
+                  {placesBusy ? "Probando..." : "Probar Google Places"}
+                </button>
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       <div className="panel">

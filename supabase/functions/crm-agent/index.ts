@@ -91,6 +91,18 @@ Deno.serve(async (req) => {
       return await handleProspectingRoute({ req, url, supabase }, validation, prospectingPath);
     }
 
+    const integrationRouteIndex = pathParts.lastIndexOf("prospecting-integrations");
+    if (integrationRouteIndex >= 0) {
+      const validation = await validateApiKey(req, supabase, "prospecting:execute");
+      if (!validation.valid) return unauthorized("API key missing prospecting:execute scope");
+      const integrationPath = pathParts.slice(integrationRouteIndex + 1);
+      return await handleProspectingIntegrationRoute(
+        { req, url, supabase },
+        validation,
+        integrationPath,
+      );
+    }
+
     if (readableTables.has(route) && req.method === "GET") {
       const validation = await validateApiKey(req, supabase, "crm:read");
       if (!validation.valid) return unauthorized();
@@ -201,6 +213,64 @@ type ProspectingActionResult = {
   body: Record<string, unknown>;
   status?: number;
 };
+
+async function handleProspectingIntegrationRoute(
+  context: RouteContext,
+  validation: ApiKeyValidation,
+  routeParts: string[],
+) {
+  if (context.req.method !== "POST" || !validation.key_id) {
+    return json({ error: "Prospecting integration route not found" }, 404);
+  }
+  const payload = await readJsonObject(context.req);
+
+  if (routeParts.join("/") === "checks/claim") {
+    return withProspectingIdempotency(context, validation, "integrations/checks/claim", payload, async () => {
+      const workerId = requiredString(payload.worker_id, "worker_id", 120);
+      const { data, error } = await context.supabase.rpc("claim_prospecting_integration_check", {
+        p_api_key_id: validation.key_id,
+        p_worker_id: workerId,
+      });
+      if (error) return rpcErrorResult(error);
+      return { body: asObject(data) };
+    });
+  }
+
+  if (routeParts.join("/") === "status") {
+    return withProspectingIdempotency(context, validation, "integrations/status", payload, async () => {
+      const workerId = requiredString(payload.worker_id, "worker_id", 120);
+      const checkId = requiredString(payload.check_id, "check_id", 36);
+      const provider = requiredString(payload.provider, "provider", 40);
+      const status = requiredString(payload.status, "status", 40);
+      const message = requiredString(payload.message, "message", 500);
+      if (!isUuid(checkId)) throw new RequestValidationError("check_id must be a UUID");
+      if (!["google_places", "brave_search"].includes(provider)) {
+        throw new RequestValidationError("Unsupported integration provider");
+      }
+      if (!["not_configured", "pending", "connected", "quota_exhausted", "error"].includes(status)) {
+        throw new RequestValidationError("Unsupported integration status");
+      }
+      const metadata = payload.metadata && typeof payload.metadata === "object" && !Array.isArray(payload.metadata)
+        ? payload.metadata as Record<string, unknown>
+        : {};
+      const { data, error } = await context.supabase.rpc("report_prospecting_integration_status", {
+        p_api_key_id: validation.key_id,
+        p_worker_id: workerId,
+        p_check_id: checkId,
+        p_provider: provider,
+        p_configured: Boolean(payload.configured),
+        p_status: status,
+        p_message: message,
+        p_error_code: typeof payload.error_code === "string" ? payload.error_code.slice(0, 80) : null,
+        p_metadata: metadata,
+      });
+      if (error) return rpcErrorResult(error);
+      return { body: asObject(data) };
+    });
+  }
+
+  return json({ error: "Prospecting integration route not found" }, 404);
+}
 
 async function handleProspectingRoute(
   context: RouteContext,
