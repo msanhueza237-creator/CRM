@@ -82,11 +82,17 @@ begin
   if not exists(select 1 from public.prospecting_runs where id=p_run_id) then raise exception using errcode='P0002',message='Prospecting run not found'; end if;
   select count(*) into v_active from public.prospect_enrichment_jobs where run_id=p_run_id and status in ('pending','running');
   if v_active=0 then
+    delete from public.prospect_enrichment_jobs job
+    using public.prospecting_campaign_candidates relation
+    where job.run_id=p_run_id and relation.id=job.candidate_relation_id
+      and relation.review_status not in ('pending','possible_duplicate');
     insert into public.prospect_enrichment_jobs(run_id,candidate_relation_id,entity_id)
-      select run_id,id,entity_id from public.prospecting_campaign_candidates where run_id=p_run_id
+      select run_id,id,entity_id from public.prospecting_campaign_candidates
+      where run_id=p_run_id and review_status in ('pending','possible_duplicate')
     on conflict(run_id,candidate_relation_id) do update set status='pending',attempts=0,lease_token=null,
       lease_expires_at=null,claimed_by_api_key=null,claimed_by_worker=null,last_error=null,started_at=null,completed_at=null,updated_at=now();
-    update public.prospecting_campaign_candidates set enrichment_status='pending',enrichment_error=null where run_id=p_run_id;
+    update public.prospecting_campaign_candidates set enrichment_status='pending',enrichment_error=null
+      where run_id=p_run_id and review_status in ('pending','possible_duplicate');
   end if;
   select count(*) into v_total from public.prospect_enrichment_jobs where run_id=p_run_id;
   update public.prospecting_runs set enrichment_status=case when v_total>0 then 'pending' else 'completed' end,
