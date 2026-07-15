@@ -269,7 +269,6 @@ set review_status='rejected',
     reviewed_at=coalesce(reviewed_at,now())
 where enrichment_status='completed'
   and review_status in ('pending','possible_duplicate')
-  and coalesce(candidate_snapshot->'review_flags','[]'::jsonb) ? 'hvac_relevance_needs_review'
   and lower(concat_ws(' ',candidate_snapshot->>'name',candidate_snapshot->>'trade_name',candidate_snapshot->>'description',candidate_snapshot->>'category',candidate_snapshot->>'specialties'))
       !~ '(climatiz|refriger|aire[ _-]+acondicionado|calefacci|ventilaci|hvac|fr[ií]o[ _-]+industrial|bomba[ _-]+de[ _-]+calor|chiller|air[ _-]+conditioning|heating[ _-]+contractor)';
 
