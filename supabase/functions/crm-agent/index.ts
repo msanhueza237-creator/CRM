@@ -323,7 +323,17 @@ async function handleProspectingEnrichmentRoute(
         if (!candidate.name || !candidate.location) {
           throw new RequestValidationError("candidate must include name and location");
         }
-        validateCandidateBatch([candidate]);
+        // El snapshot historico no repite la evidencia de Google: esta vive en
+        // prospect_source_records. La investigacion solo adjunta evidencia
+        // incremental del sitio oficial/Brave, que puede ser vacia cuando el
+        // agente no encuentra una fuente autorizada.
+        optionalString(candidate.name, "candidate.name", 300);
+        optionalString(candidate.phone, "candidate.phone", 50);
+        optionalString(candidate.email, "candidate.email", 320);
+        optionalString(candidate.website, "candidate.website", 2048);
+        if (candidate.evidence !== undefined && !Array.isArray(candidate.evidence)) {
+          throw new RequestValidationError("candidate.evidence must be an array");
+        }
         const summary = payload.summary && typeof payload.summary === "object" && !Array.isArray(payload.summary)
           ? payload.summary as Record<string, unknown>
           : {};
