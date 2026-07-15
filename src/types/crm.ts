@@ -89,6 +89,7 @@ export type ProspectingCampaignStatus = "draft" | "active" | "archived";
 export type ProspectingRunStatus =
   | "pending"
   | "running"
+  | "paused"
   | "partial"
   | "completed"
   | "failed"
@@ -173,6 +174,10 @@ export interface ProspectingRun {
   startedAt: string;
   completedAt: string;
   lastError: string;
+  enrichmentStatus: "not_requested" | "pending" | "running" | "paused" | "completed" | "partial";
+  enrichmentTotal: number;
+  enrichmentCompleted: number;
+  enrichmentFailed: number;
 }
 
 export interface ProspectLocation {
@@ -212,6 +217,13 @@ export interface ProspectCandidate {
   website: string;
   phone: string;
   email: string;
+  socialMedia: Record<string, string>;
+  specialties: string[];
+  brands: string[];
+  enrichmentStatus: "not_requested" | "pending" | "running" | "paused" | "completed" | "failed";
+  enrichmentSummary: Record<string, number | string | boolean>;
+  enrichmentError: string;
+  enrichedAt: string;
   score: number;
   reviewStatus: ProspectReviewStatus;
   locations: ProspectLocation[];

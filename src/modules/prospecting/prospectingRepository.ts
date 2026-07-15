@@ -38,7 +38,7 @@ export interface RunMutationResult {
 type Row = Record<string, unknown>;
 
 const campaignStatuses: ProspectingCampaignStatus[] = ["draft", "active", "archived"];
-const runStatuses: ProspectingRunStatus[] = ["pending", "running", "partial", "completed", "failed", "cancel_requested", "cancelled"];
+const runStatuses: ProspectingRunStatus[] = ["pending", "running", "paused", "partial", "completed", "failed", "cancel_requested", "cancelled"];
 const reviewStatuses: ProspectReviewStatus[] = ["pending", "possible_duplicate", "approved", "rejected", "linked"];
 const sourceIds = SOURCE_DEFINITIONS.map((source) => source.id);
 export const PROSPECTING_CAMPAIGN_NAME_MAX_LENGTH = 200;
@@ -417,6 +417,10 @@ export class ProspectingRepository {
       startedAt: "",
       completedAt: "",
       lastError: "",
+      enrichmentStatus: "not_requested",
+      enrichmentTotal: 0,
+      enrichmentCompleted: 0,
+      enrichmentFailed: 0,
     };
 
     if (this.mode === "supabase" && supabase) {
@@ -482,6 +486,69 @@ export class ProspectingRepository {
     this.workspace.events = [event, ...this.workspace.events];
     this.persistIfLocal();
     return { run, event };
+  }
+
+  async pauseRun(runId: string, userId: string): Promise<RunMutationResult> {
+    return this.controlRun(runId, userId, "pause");
+  }
+
+  async resumeRun(runId: string, userId: string): Promise<RunMutationResult> {
+    return this.controlRun(runId, userId, "resume");
+  }
+
+  private async controlRun(runId: string, userId: string, action: "pause" | "resume"): Promise<RunMutationResult> {
+    const current = this.workspace.runs.find((run) => run.id === runId);
+    if (!current) throw new Error("No se encontro la ejecucion seleccionada.");
+    const now = new Date().toISOString();
+    const fallbackStatus: ProspectingRunStatus = action === "pause" ? "paused" : "pending";
+    let run: ProspectingRun = { ...current, status: fallbackStatus };
+    if (this.mode === "supabase" && supabase) {
+      const functionName = action === "pause" ? "pause_prospecting_run" : "resume_prospecting_run";
+      const { data, error } = await supabase.rpc(functionName, { p_run_id: runId });
+      if (error) throw error;
+      const response = asRecord(data);
+      const status = String(response.status ?? fallbackStatus) as ProspectingRunStatus;
+      run = { ...run, status: runStatuses.includes(status) ? status : fallbackStatus };
+    }
+    const event: RunEvent = {
+      id: crypto.randomUUID(), runId, taskId: "", createdAt: now, level: action === "pause" ? "warning" : "info",
+      stage: action === "pause" ? "paused" : "resumed",
+      message: action === "pause" ? "Ejecucion pausada desde el CRM." : "Ejecucion reanudada desde el CRM.",
+      metrics: { requestedBy: userId },
+    };
+    this.workspace.runs = this.workspace.runs.map((item) => item.id === runId ? run : item);
+    this.workspace.events = [event, ...this.workspace.events];
+    this.persistIfLocal();
+    return { run, event };
+  }
+
+  async enqueueEnrichment(runId: string): Promise<ProspectingRun> {
+    const current = this.workspace.runs.find((run) => run.id === runId);
+    if (!current) throw new Error("No se encontro la ejecucion seleccionada.");
+    let run: ProspectingRun = { ...current, enrichmentStatus: "pending", enrichmentTotal: current.progress.candidatesFound, enrichmentCompleted: 0, enrichmentFailed: 0 };
+    if (this.mode === "supabase" && supabase) {
+      const { data, error } = await supabase.rpc("enqueue_prospect_enrichment", { p_run_id: runId });
+      if (error) throw error;
+      const response = asRecord(data);
+      run = { ...run, enrichmentStatus: String(response.status ?? "pending") as ProspectingRun["enrichmentStatus"], enrichmentTotal: asNumber(response.total, run.enrichmentTotal) };
+    }
+    this.workspace.runs = this.workspace.runs.map((item) => item.id === runId ? run : item);
+    this.persistIfLocal();
+    return run;
+  }
+
+  async controlEnrichment(runId: string, action: "pause" | "resume"): Promise<ProspectingRun> {
+    const current = this.workspace.runs.find((run) => run.id === runId);
+    if (!current) throw new Error("No se encontro la ejecucion seleccionada.");
+    const enrichmentStatus = action === "pause" ? "paused" : "pending";
+    let run: ProspectingRun = { ...current, enrichmentStatus };
+    if (this.mode === "supabase" && supabase) {
+      const { error } = await supabase.rpc(action === "pause" ? "pause_prospect_enrichment" : "resume_prospect_enrichment", { p_run_id: runId });
+      if (error) throw error;
+    }
+    this.workspace.runs = this.workspace.runs.map((item) => item.id === runId ? run : item);
+    this.persistIfLocal();
+    return run;
   }
 
   async reviewCandidate(
@@ -614,6 +681,10 @@ function mapRun(row: Row, campaign?: ProspectingCampaign): ProspectingRun {
     startedAt: String(row.started_at ?? ""),
     completedAt: String(row.completed_at ?? ""),
     lastError: String(row.last_error ?? ""),
+    enrichmentStatus: String(row.enrichment_status ?? "not_requested") as ProspectingRun["enrichmentStatus"],
+    enrichmentTotal: asNumber(row.enrichment_total),
+    enrichmentCompleted: asNumber(row.enrichment_completed),
+    enrichmentFailed: asNumber(row.enrichment_failed),
   };
 }
 
@@ -730,6 +801,13 @@ function mapCandidate(
     website: String(isSnapshotBacked ? snapshot.website ?? "" : safeEntity.website ?? ""),
     phone: String(isSnapshotBacked ? snapshot.phone ?? "" : safeEntity.phone ?? ""),
     email: String(isSnapshotBacked ? snapshot.email ?? "" : safeEntity.email ?? ""),
+    socialMedia: asRecord(isSnapshotBacked ? snapshot.social_media : safeEntity.social_media) as Record<string, string>,
+    specialties: arrayOfStrings(isSnapshotBacked ? snapshot.specialties : safeEntity.specialties),
+    brands: arrayOfStrings(isSnapshotBacked ? snapshot.brands : safeEntity.brands),
+    enrichmentStatus: String(association.enrichment_status ?? "not_requested") as ProspectCandidate["enrichmentStatus"],
+    enrichmentSummary: asRecord(association.enrichment_summary) as Record<string, number | string | boolean>,
+    enrichmentError: String(association.enrichment_error ?? ""),
+    enrichedAt: String(association.enriched_at ?? safeEntity.enriched_at ?? ""),
     score: isSnapshotBacked
       ? asNumber(snapshot.score, asNumber(association.score))
       : asNumber(association.score ?? safeEntity.relevance_score),

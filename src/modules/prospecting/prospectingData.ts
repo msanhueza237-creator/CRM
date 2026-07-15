@@ -131,6 +131,10 @@ export function createDemoProspectingWorkspace(): ProspectingWorkspace {
         startedAt: "2026-07-13T12:05:08-04:00",
         completedAt: "",
         lastError: "Brave Search alcanzo temporalmente el limite de consultas para Providencia.",
+        enrichmentStatus: "not_requested",
+        enrichmentTotal: 0,
+        enrichmentCompleted: 0,
+        enrichmentFailed: 0,
       },
     ],
     candidates: [
@@ -228,6 +232,8 @@ export function createDemoProspectingWorkspace(): ProspectingWorkspace {
         reviewNotes: "",
         firstSeenAt: "2026-07-13T12:09:00-04:00",
         lastSeenAt: "2026-07-13T12:10:00-04:00",
+        socialMedia: {}, specialties: [], brands: [], enrichmentStatus: "not_requested",
+        enrichmentSummary: {}, enrichmentError: "", enrichedAt: "",
       },
       {
         id: "pros-candidate-demo-002",
@@ -323,6 +329,8 @@ export function createDemoProspectingWorkspace(): ProspectingWorkspace {
         reviewNotes: "Coincidencia exacta de dominio con una empresa existente.",
         firstSeenAt: "2026-07-13T12:12:00-04:00",
         lastSeenAt: "2026-07-13T12:13:00-04:00",
+        socialMedia: {}, specialties: [], brands: [], enrichmentStatus: "not_requested",
+        enrichmentSummary: {}, enrichmentError: "", enrichedAt: "",
       },
       {
         id: "pros-candidate-demo-003",
@@ -428,6 +436,8 @@ export function createDemoProspectingWorkspace(): ProspectingWorkspace {
         reviewNotes: "El agente detectó una similitud difusa con otro candidato; requiere revisión humana.",
         firstSeenAt: "2026-07-13T12:15:00-04:00",
         lastSeenAt: "2026-07-13T12:15:00-04:00",
+        socialMedia: {}, specialties: [], brands: [], enrichmentStatus: "not_requested",
+        enrichmentSummary: {}, enrichmentError: "", enrichedAt: "",
       },
     ],
     events: [

@@ -60,6 +60,7 @@ type Notice = { type: "info" | "success" | "error"; text: string } | null;
 const runLabels: Record<ProspectingRun["status"], string> = {
   pending: "Pendiente",
   running: "En proceso",
+  paused: "Pausada",
   partial: "Parcial",
   completed: "Completada",
   failed: "Fallida",
@@ -184,7 +185,7 @@ export function ProspectingPage() {
   }, [repository]);
 
   const hasLiveRuns = Boolean(
-    workspace?.runs.some((run) => ["pending", "running", "cancel_requested"].includes(run.status)),
+    workspace?.runs.some((run) => ["pending", "running", "cancel_requested"].includes(run.status) || ["pending", "running"].includes(run.enrichmentStatus)),
   );
 
   useEffect(() => {
@@ -382,6 +383,40 @@ export function ProspectingPage() {
     } finally {
       setBusyAction("");
     }
+  }
+
+  async function controlRun(run: ProspectingRun, action: "pause" | "resume") {
+    if (!user || !canExecute) return;
+    setBusyAction(`${action}:${run.id}`);
+    setNotice(null);
+    try {
+      const result = action === "pause" ? await repository.pauseRun(run.id, user.id) : await repository.resumeRun(run.id, user.id);
+      setWorkspace((current) => current ? { ...current, runs: current.runs.map((item) => item.id === run.id ? result.run : item), events: [result.event, ...current.events] } : current);
+      setNotice({ type: "success", text: action === "pause" ? "EjecuciÃ³n pausada. Los resultados obtenidos se conservan." : "EjecuciÃ³n reanudada y disponible para el agente." });
+    } catch (error) { setNotice({ type: "error", text: errorMessage(error) }); }
+    finally { setBusyAction(""); }
+  }
+
+  async function startEnrichment(run: ProspectingRun) {
+    if (!canExecute) return;
+    setBusyAction(`enrich:${run.id}`); setNotice(null);
+    try {
+      const updated = await repository.enqueueEnrichment(run.id);
+      setWorkspace((current) => current ? { ...current, runs: current.runs.map((item) => item.id === run.id ? updated : item) } : current);
+      setNotice({ type: "success", text: `${updated.enrichmentTotal} candidatos quedaron en cola para investigaciÃ³n web.` });
+    } catch (error) { setNotice({ type: "error", text: errorMessage(error) }); }
+    finally { setBusyAction(""); }
+  }
+
+  async function controlEnrichment(run: ProspectingRun, action: "pause" | "resume") {
+    if (!canExecute) return;
+    setBusyAction(`enrichment-${action}:${run.id}`); setNotice(null);
+    try {
+      const updated = await repository.controlEnrichment(run.id, action);
+      setWorkspace((current) => current ? { ...current, runs: current.runs.map((item) => item.id === run.id ? updated : item) } : current);
+      setNotice({ type: "success", text: action === "pause" ? "InvestigaciÃ³n pausada." : "InvestigaciÃ³n reanudada." });
+    } catch (error) { setNotice({ type: "error", text: errorMessage(error) }); }
+    finally { setBusyAction(""); }
   }
 
   function updateCandidate(candidate: ProspectCandidate) {
@@ -620,6 +655,9 @@ export function ProspectingPage() {
           onSelectRun={setSelectedRunId}
           onStart={() => selectedCampaign && void startRun(selectedCampaign)}
           onCancel={(run) => void cancelRun(run)}
+          onControlRun={(run, action) => void controlRun(run, action)}
+          onStartEnrichment={(run) => void startEnrichment(run)}
+          onControlEnrichment={(run, action) => void controlEnrichment(run, action)}
         />
       ) : null}
 
@@ -1186,6 +1224,9 @@ function OperationView({
   onSelectRun,
   onStart,
   onCancel,
+  onControlRun,
+  onStartEnrichment,
+  onControlEnrichment,
 }: {
   campaign?: ProspectingCampaign;
   runs: ProspectingRun[];
@@ -1196,6 +1237,9 @@ function OperationView({
   onSelectRun: (id: string) => void;
   onStart: () => void;
   onCancel: (run: ProspectingRun) => void;
+  onControlRun: (run: ProspectingRun, action: "pause" | "resume") => void;
+  onStartEnrichment: (run: ProspectingRun) => void;
+  onControlEnrichment: (run: ProspectingRun, action: "pause" | "resume") => void;
 }) {
   if (!campaign) return <EmptyState icon={<Globe2 size={28} />} title="Selecciona una campaña" text="Elige una campaña para consultar su operación." />;
   const campaignNeedsOfficialWebsite = requiresOfficialWebsite(campaign.sources);
@@ -1217,6 +1261,10 @@ function OperationView({
     ? Math.min(100, Math.round((selectedRun.progress.completedTasks / selectedRun.progress.totalTasks) * 100))
     : 0;
   const canCancel = ["pending", "running"].includes(selectedRun.status);
+  const enrichmentActive = ["pending", "running"].includes(selectedRun.enrichmentStatus);
+  const enrichmentPercent = selectedRun.enrichmentTotal
+    ? Math.round(((selectedRun.enrichmentCompleted + selectedRun.enrichmentFailed) / selectedRun.enrichmentTotal) * 100)
+    : 0;
 
   return (
     <>
@@ -1230,7 +1278,9 @@ function OperationView({
           <div className="operation-controls">
             <label>Run<select value={selectedRun.id} onChange={(event) => onSelectRun(event.target.value)}>{runs.map((run, index) => <option key={run.id} value={run.id}>#{runs.length - index} · {runLabels[run.status]}</option>)}</select></label>
             {canExecute ? <button className="ghost-button" type="button" disabled={campaignNeedsOfficialWebsite} title={campaignNeedsOfficialWebsite ? "Agrega el sitio oficial antes de repetir" : undefined} onClick={onStart}><RefreshCw size={16} /> Repetir</button> : null}
-            {canExecute && canCancel ? <button className="ghost-button danger" disabled={busyAction === `cancel:${selectedRun.id}`} type="button" onClick={() => onCancel(selectedRun)}><PauseCircle size={16} /> Solicitar cancelación</button> : null}
+            {canExecute && canCancel ? <button className="ghost-button" disabled={busyAction === `pause:${selectedRun.id}`} type="button" onClick={() => onControlRun(selectedRun, "pause")}><PauseCircle size={16} /> Pausar</button> : null}
+            {canExecute && selectedRun.status === "paused" ? <button className="ghost-button" disabled={busyAction === `resume:${selectedRun.id}`} type="button" onClick={() => onControlRun(selectedRun, "resume")}><Play size={16} /> Reanudar</button> : null}
+            {canExecute && canCancel ? <button className="ghost-button danger" disabled={busyAction === `cancel:${selectedRun.id}`} type="button" onClick={() => onCancel(selectedRun)}><Ban size={16} /> Cancelar</button> : null}
           </div>
         </div>
         {campaignNeedsOfficialWebsite ? (
@@ -1245,6 +1295,23 @@ function OperationView({
           <span>{selectedRun.progress.completedTasks} de {selectedRun.progress.totalTasks} tareas</span>
         </div>
         {selectedRun.lastError ? <div className="run-error"><AlertTriangle size={17} /><span><strong>Última incidencia</strong>{selectedRun.lastError}</span></div> : null}
+      </div>
+
+      <div className="panel operation-header">
+        <div className="operation-title-row">
+          <div><p>Investigación posterior</p><h2>Sitios oficiales y Brave Search</h2><span>Complementa los candidatos sin repetir Google Places.</span></div>
+          <div className="operation-controls">
+            {canExecute && selectedRun.enrichmentStatus === "not_requested" ? <button className="primary-button" type="button" disabled={busyAction === `enrich:${selectedRun.id}` || selectedRun.progress.candidatesFound === 0} onClick={() => onStartEnrichment(selectedRun)}><Sparkles size={16} /> Investigar {selectedRun.progress.candidatesFound} empresas</button> : null}
+            {canExecute && enrichmentActive ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-pause:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "pause")}><PauseCircle size={16} /> Pausar investigación</button> : null}
+            {canExecute && selectedRun.enrichmentStatus === "paused" ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-resume:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "resume")}><Play size={16} /> Reanudar investigación</button> : null}
+            {canExecute && ["completed", "partial"].includes(selectedRun.enrichmentStatus) ? <button className="ghost-button" type="button" disabled={busyAction === `enrich:${selectedRun.id}`} onClick={() => onStartEnrichment(selectedRun)}><RefreshCw size={16} /> Investigar nuevamente</button> : null}
+          </div>
+        </div>
+        <div className="operation-progress-row">
+          <span className={`status-badge prospecting-status ${selectedRun.enrichmentStatus}`}>{selectedRun.enrichmentStatus === "not_requested" ? "Sin iniciar" : selectedRun.enrichmentStatus === "pending" ? "Pendiente" : selectedRun.enrichmentStatus === "running" ? "Investigando" : selectedRun.enrichmentStatus === "paused" ? "Pausada" : selectedRun.enrichmentStatus === "partial" ? "Parcial" : "Completada"}</span>
+          <div className="run-progress"><div><span style={{ width: `${enrichmentPercent}%` }} /></div><strong>{enrichmentPercent}%</strong></div>
+          <span>{selectedRun.enrichmentCompleted} completadas · {selectedRun.enrichmentFailed} con error · {selectedRun.enrichmentTotal} total</span>
+        </div>
       </div>
 
       <div className="prospecting-overview-grid">
@@ -1517,6 +1584,19 @@ function CandidateDetail({
         <div><dt>Email</dt><dd>{candidate.email || "No encontrado"}</dd></div>
         <div><dt>Sitio web</dt><dd>{website ? <a href={website} target="_blank" rel="noreferrer">Abrir sitio <ExternalLink size={12} /></a> : "No encontrado"}</dd></div>
       </dl>
+
+      {candidate.enrichmentStatus !== "not_requested" ? (
+        <div className="candidate-import-readiness ready" role="status">
+          <Sparkles size={19} />
+          <div>
+            <strong>{candidate.enrichmentStatus === "completed" ? "Investigación web completada" : candidate.enrichmentStatus === "failed" ? "Investigación con error" : candidate.enrichmentStatus === "paused" ? "Investigación pausada" : "Investigación web en curso"}</strong>
+            <p>{candidate.enrichedAt ? `Verificada ${formatDateTime(candidate.enrichedAt)}.` : candidate.enrichmentError || "El agente está revisando fuentes públicas autorizadas."}</p>
+            {candidate.specialties.length ? <p><strong>Especialidades:</strong> {candidate.specialties.join(", ")}</p> : null}
+            {candidate.brands.length ? <p><strong>Marcas detectadas:</strong> {candidate.brands.join(", ")}</p> : null}
+            {Object.keys(candidate.socialMedia).length ? <p><strong>Redes:</strong> {Object.entries(candidate.socialMedia).map(([name, url]) => <a key={name} href={safeExternalUrl(url) || undefined} target="_blank" rel="noreferrer"> {name}</a>)}</p> : null}
+          </div>
+        </div>
+      ) : null}
 
       <div className="candidate-evidence-section">
         <div className="prospecting-section-heading"><div><strong>Evidencia por campo</strong><span>Fuente y fecha de verificación</span></div><span>{candidate.evidence.length} registros</span></div>

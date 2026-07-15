@@ -39,6 +39,7 @@ $paths = @(
   "src/types/crm.ts",
   "supabase/functions/crm-agent/index.ts",
   "supabase/prospecting.sql",
+  "supabase/prospecting_enrichment.sql",
   "supabase/prospecting_preflight.sql",
   "supabase/prospecting_verify.sql",
   "docs/prospecting-api.md",

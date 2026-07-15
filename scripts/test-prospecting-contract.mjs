@@ -13,11 +13,12 @@ function withoutPgCrypto(sql) {
 }
 
 async function loadSql() {
-  const [schema, agentApiKeys, preflight, prospecting, verify] = await Promise.all([
+  const [schema, agentApiKeys, preflight, prospecting, enrichment, verify] = await Promise.all([
     fs.readFile(new URL("../supabase/schema.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/agent_api_keys.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/prospecting_preflight.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/prospecting.sql", import.meta.url), "utf8"),
+    fs.readFile(new URL("../supabase/prospecting_enrichment.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/prospecting_verify.sql", import.meta.url), "utf8"),
   ]);
   return {
@@ -25,6 +26,7 @@ async function loadSql() {
     agentApiKeys: withoutPgCrypto(agentApiKeys),
     preflight,
     prospecting: withoutPgCrypto(prospecting),
+    enrichment: withoutPgCrypto(enrichment),
     verify,
   };
 }
@@ -163,6 +165,8 @@ async function testMigrationAndNormalization(sql) {
     await db.exec(sql.agentApiKeys);
     await db.exec(sql.prospecting);
     await db.exec(sql.prospecting);
+    await db.exec(sql.enrichment);
+    await db.exec(sql.enrichment);
     await db.exec(sql.verify);
     const catalog = (await db.query(`
       select count(*)::integer regions,

@@ -91,6 +91,17 @@ Deno.serve(async (req) => {
       return await handleProspectingRoute({ req, url, supabase }, validation, prospectingPath);
     }
 
+    const enrichmentRouteIndex = pathParts.lastIndexOf("prospecting-enrichment");
+    if (enrichmentRouteIndex >= 0) {
+      const validation = await validateApiKey(req, supabase, "prospecting:execute");
+      if (!validation.valid) return unauthorized("API key missing prospecting:execute scope");
+      return await handleProspectingEnrichmentRoute(
+        { req, url, supabase },
+        validation,
+        pathParts.slice(enrichmentRouteIndex + 1),
+      );
+    }
+
     const integrationRouteIndex = pathParts.lastIndexOf("prospecting-integrations");
     if (integrationRouteIndex >= 0) {
       const validation = await validateApiKey(req, supabase, "prospecting:execute");
@@ -270,6 +281,75 @@ async function handleProspectingIntegrationRoute(
   }
 
   return json({ error: "Prospecting integration route not found" }, 404);
+}
+
+async function handleProspectingEnrichmentRoute(
+  context: RouteContext,
+  validation: ApiKeyValidation,
+  routeParts: string[],
+) {
+  const { req } = context;
+  const jobId = routeParts[0] ?? "";
+  const action = routeParts[1] ?? "";
+
+  if (req.method === "POST" && jobId === "claim" && routeParts.length === 1) {
+    const payload = await readJsonObject(req);
+    return withProspectingIdempotency(context, validation, "enrichment/claim", payload, async () => {
+      const workerId = requiredString(payload.worker_id, "worker_id", 120);
+      const leaseSeconds = boundedInteger(payload.lease_seconds, 60, 600, 300);
+      const { data, error } = await context.supabase.rpc("claim_prospect_enrichment", {
+        p_api_key_id: validation.key_id,
+        p_worker_id: workerId,
+        p_lease_seconds: leaseSeconds,
+      });
+      if (error) return rpcErrorResult(error);
+      return { body: asObject(data) };
+    });
+  }
+
+  if (!isUuid(jobId) || req.method !== "POST" || !["complete", "fail"].includes(action)) {
+    return json({ error: "Prospecting enrichment route not found" }, 404);
+  }
+  const payload = await readJsonObject(req);
+  return withProspectingIdempotency(
+    context,
+    validation,
+    `enrichment/${jobId}/${action}`,
+    payload,
+    async () => {
+      const lease = readLeasePayload(payload);
+      if (action === "complete") {
+        const candidate = asObject(payload.candidate);
+        if (!candidate.name || !candidate.location) {
+          throw new RequestValidationError("candidate must include name and location");
+        }
+        validateCandidateBatch([candidate]);
+        const summary = payload.summary && typeof payload.summary === "object" && !Array.isArray(payload.summary)
+          ? payload.summary as Record<string, unknown>
+          : {};
+        const { data, error } = await context.supabase.rpc("complete_prospect_enrichment", {
+          p_job_id: jobId,
+          p_api_key_id: validation.key_id,
+          p_worker_id: lease.workerId,
+          p_lease_token: lease.leaseToken,
+          p_candidate: candidate,
+          p_summary: summary,
+        });
+        if (error) return rpcErrorResult(error);
+        return { body: asObject(data) };
+      }
+      const errorMessage = requiredString(payload.error, "error", 4000);
+      const { data, error } = await context.supabase.rpc("fail_prospect_enrichment", {
+        p_job_id: jobId,
+        p_api_key_id: validation.key_id,
+        p_worker_id: lease.workerId,
+        p_lease_token: lease.leaseToken,
+        p_error: errorMessage,
+      });
+      if (error) return rpcErrorResult(error);
+      return { body: asObject(data) };
+    },
+  );
 }
 
 async function handleProspectingRoute(
