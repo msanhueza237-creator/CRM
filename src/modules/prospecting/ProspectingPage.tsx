@@ -1343,7 +1343,7 @@ function OperationView({
 
       <div className="panel operation-header">
         <div className="operation-title-row">
-          <div><p>Investigación posterior</p><h2>Sitios oficiales y Brave Search</h2><span>Complementa los candidatos sin repetir Google Places.</span></div>
+          <div><p>Investigación posterior</p><h2>Investigación del sitio oficial</h2><span>Profundiza cada candidato sin nuevas búsquedas Brave. Valida contacto, actividad y ubicación publicada.</span></div>
           <div className="operation-controls">
             {canExecute && selectedRun.enrichmentStatus === "not_requested" ? <button className="primary-button" type="button" disabled={busyAction === `enrich:${selectedRun.id}` || selectedRun.progress.candidatesFound === 0} onClick={() => onStartEnrichment(selectedRun)}><Sparkles size={16} /> Investigar {selectedRun.progress.candidatesFound} empresas</button> : null}
             {canExecute && enrichmentActive ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-pause:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "pause")}><PauseCircle size={16} /> Pausar investigación</button> : null}
@@ -1775,6 +1775,12 @@ function humanize(value: string) {
 }
 
 function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
+  if (flag === "official_location_conflict") {
+    return "La ubicacion publicada en el sitio oficial no coincide con la comuna seleccionada. Revisa antes de aprobar.";
+  }
+  if (flag === "official_site_missing") {
+    return "No se encontro un sitio oficial util para profundizar. No se consumieron consultas Brave adicionales.";
+  }
   if (flag === "insufficient_permanent_evidence") {
     return "Falta respaldo permanente para el nombre, el contacto comercial o al menos una ubicación.";
   }
