@@ -12,7 +12,8 @@ interface CompanyStoreValue {
   interactions: Interaction[];
   createCompany: (company: Omit<Company, "id">, options?: { localOnly?: boolean }) => Company;
   createInteraction: (interaction: Omit<Interaction, "id">) => Interaction;
-  updateCompany: (id: string, company: Omit<Company, "id">) => Company;
+  updateCompany: (id: string, company: Omit<Company, "id">) => Promise<Company>;
+  deleteCompany: (id: string) => Promise<void>;
   getCompany: (id: string) => Company | undefined;
   getCompanyInteractions: (companyId: string) => Interaction[];
 }
@@ -58,7 +59,12 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
     if (!isSupabaseConfigured || !supabase || !user) return;
 
     async function loadSupabaseData() {
-      const [{ data: companiesData, error: companiesError }, { data: interactionsData, error: interactionsError }] =
+      const [
+        { data: companiesData, error: companiesError },
+        { data: interactionsData, error: interactionsError },
+        { data: tagsData },
+        { data: companyTagsData },
+      ] =
         await Promise.all([
           supabase!
             .from("companies")
@@ -68,10 +74,22 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
             .from("interactions")
             .select("*")
             .order("occurred_at", { ascending: false }),
+          supabase!.from("tags").select("id,name"),
+          supabase!.from("company_tags").select("company_id,tag_id"),
         ]);
 
       if (!companiesError && companiesData) {
-        const mappedCompanies = companiesData.map(mapCompanyFromSupabase);
+        const tagNames = new Map((tagsData ?? []).map((tag) => [String(tag.id), String(tag.name)]));
+        const tagsByCompany = new Map<string, string[]>();
+        for (const relation of companyTagsData ?? []) {
+          const companyId = String(relation.company_id);
+          const tagName = tagNames.get(String(relation.tag_id));
+          if (tagName) tagsByCompany.set(companyId, [...(tagsByCompany.get(companyId) ?? []), tagName]);
+        }
+        const mappedCompanies = companiesData.map((row) => ({
+          ...mapCompanyFromSupabase(row),
+          tags: tagsByCompany.get(String(row.id)) ?? [],
+        }));
         setCompanies(mappedCompanies);
         saveCompanies(mappedCompanies);
       }
@@ -110,15 +128,39 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
         }
         return created;
       },
-      updateCompany: (id, company) => {
+      updateCompany: async (id, company) => {
         const updated = { ...company, id };
-        const nextCompanies = companies.map((item) => (item.id === id ? updated : item));
+        let saved = updated;
+        if (isSupabaseConfigured && supabase && user) {
+          const { id: _id, ...databasePayload } = mapCompanyToSupabase(updated);
+          void _id;
+          const { data, error } = await supabase
+            .from("companies")
+            .update(databasePayload)
+            .eq("id", id)
+            .select("*")
+            .single();
+          if (error) throw new Error(`No se pudo guardar la empresa: ${error.message}`);
+          saved = mapCompanyFromSupabase(data as Record<string, unknown>);
+          saved.tags = updated.tags;
+          await saveCompanyTags(id, updated.tags);
+        }
+        const nextCompanies = companies.map((item) => (item.id === id ? saved : item));
         setCompanies(nextCompanies);
         saveCompanies(nextCompanies);
+        return saved;
+      },
+      deleteCompany: async (id) => {
         if (isSupabaseConfigured && supabase && user) {
-          void supabase.from("companies").update(mapCompanyToSupabase(updated)).eq("id", id);
+          const { error } = await supabase.from("companies").delete().eq("id", id);
+          if (error) throw new Error(`No se pudo borrar la empresa: ${error.message}`);
         }
-        return updated;
+        const nextCompanies = companies.filter((item) => item.id !== id);
+        const nextInteractions = interactions.filter((item) => item.companyId !== id);
+        setCompanies(nextCompanies);
+        setInteractions(nextInteractions);
+        saveCompanies(nextCompanies);
+        saveInteractions(nextInteractions);
       },
       getCompany: (id) => companies.find((company) => company.id === id),
       getCompanyInteractions: (companyId) =>
@@ -126,7 +168,7 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
           .filter((interaction) => interaction.companyId === companyId)
           .sort((a, b) => b.date.localeCompare(a.date)),
     }),
-    [companies, interactions],
+    [companies, interactions, user],
   );
 
   return <CompanyStoreContext.Provider value={value}>{children}</CompanyStoreContext.Provider>;
@@ -244,4 +286,21 @@ export function useCompanyStore() {
   const context = useContext(CompanyStoreContext);
   if (!context) throw new Error("useCompanyStore debe usarse dentro de CompanyStoreProvider.");
   return context;
+}
+
+async function saveCompanyTags(companyId: string, names: string[]) {
+  if (!supabase) return;
+  const normalized = Array.from(new Set(names.map((name) => name.trim()).filter(Boolean)));
+  const { error: deleteError } = await supabase.from("company_tags").delete().eq("company_id", companyId);
+  if (deleteError) throw new Error(`La empresa se guardó, pero no sus etiquetas: ${deleteError.message}`);
+  if (!normalized.length) return;
+  const { data: tags, error: tagError } = await supabase
+    .from("tags")
+    .upsert(normalized.map((name) => ({ name })), { onConflict: "name" })
+    .select("id,name");
+  if (tagError) throw new Error(`La empresa se guardó, pero no sus etiquetas: ${tagError.message}`);
+  const { error: relationError } = await supabase.from("company_tags").insert(
+    (tags ?? []).map((tag) => ({ company_id: companyId, tag_id: tag.id })),
+  );
+  if (relationError) throw new Error(`La empresa se guardó, pero no sus etiquetas: ${relationError.message}`);
 }

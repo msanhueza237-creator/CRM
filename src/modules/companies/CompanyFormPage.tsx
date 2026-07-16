@@ -50,6 +50,8 @@ export function CompanyFormPage() {
     [existingCompany],
   );
   const [form, setForm] = useState(initialValues);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const formCities = useMemo(() => {
     const selectedRegion = form.region;
@@ -64,14 +66,22 @@ export function CompanyFormPage() {
     setForm((current) => ({ ...current, [field]: value }));
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setSaving(true);
+    setSaveError("");
     const payload: Omit<Company, "id"> = {
       ...form,
       tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
     };
-    const savedCompany = companyId ? updateCompany(companyId, payload) : createCompany(payload);
-    navigate(`/empresas/${savedCompany.id}`);
+    try {
+      const savedCompany = companyId ? await updateCompany(companyId, payload) : createCompany(payload);
+      navigate(`/empresas/${savedCompany.id}`);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "No se pudo guardar la empresa.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -146,10 +156,11 @@ export function CompanyFormPage() {
         </FormSection>
 
         <div className="form-actions">
+          {saveError ? <p className="gmail-notice error">{saveError}</p> : null}
           <Link to="/empresas" className="ghost-button">Cancelar</Link>
-          <button className="primary-button" type="submit">
+          <button className="primary-button" type="submit" disabled={saving}>
             <Save size={18} />
-            Guardar empresa
+            {saving ? "Guardando..." : "Guardar empresa"}
           </button>
         </div>
       </form>

@@ -1,9 +1,10 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Link, Navigate, useParams } from "react-router-dom";
-import { ArrowLeft, Edit, Mail, MessageCircle, Phone, Plus } from "lucide-react";
+import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, Edit, Mail, MessageCircle, Phone, Plus, Trash2 } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useCompanyStore } from "./CompanyStore";
 import type { Interaction } from "../../types/crm";
+import { useAuth } from "../auth/AuthContext";
 
 const interactionTypes: Interaction["type"][] = ["Llamada", "Correo", "WhatsApp", "Reunion", "Cotizacion", "Nota"];
 const today = new Date().toISOString().slice(0, 10);
@@ -31,13 +32,17 @@ interface EmailMessageRow {
 
 export function CompanyDetailPage() {
   const { companyId } = useParams();
-  const { createInteraction, getCompany, getCompanyInteractions } = useCompanyStore();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const { createInteraction, deleteCompany, getCompany, getCompanyInteractions } = useCompanyStore();
   const [showInteractionForm, setShowInteractionForm] = useState(false);
   const [interactionForm, setInteractionForm] = useState(emptyInteraction);
   const [selectedChannel, setSelectedChannel] = useState<"Gmail" | "WhatsApp">("WhatsApp");
   const [selectedCatalog, setSelectedCatalog] = useState<string>("");
   const [customFileName, setCustomFileName] = useState<string>("");
   const [emailMessages, setEmailMessages] = useState<EmailMessageRow[]>([]);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   const company = companyId ? getCompany(companyId) : undefined;
 
@@ -118,12 +123,27 @@ export function CompanyDetailPage() {
     setShowInteractionForm(false);
   }
 
+  async function handleDeleteCompany() {
+    if (!company || !window.confirm(`¿Borrar definitivamente “${company.name}”? También se eliminarán sus interacciones asociadas.`)) return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      await deleteCompany(company.id);
+      navigate("/empresas", { replace: true });
+    } catch (error) {
+      setDeleteError(error instanceof Error ? error.message : "No se pudo borrar la empresa.");
+      setDeleting(false);
+    }
+  }
+
   return (
     <section className="page-stack">
       <div className="detail-actions">
         <Link to="/empresas" className="ghost-button"><ArrowLeft size={18} /> Volver</Link>
+        {user?.role === "administrador" ? <button className="ghost-button danger" type="button" disabled={deleting} onClick={() => void handleDeleteCompany()}><Trash2 size={18} /> {deleting ? "Borrando..." : "Borrar empresa"}</button> : null}
         <Link to={`/empresas/${company.id}/editar`} className="primary-button"><Edit size={18} /> Editar ficha</Link>
       </div>
+      {deleteError ? <p className="gmail-notice error">{deleteError}</p> : null}
 
       <div className="company-hero">
         <div>
