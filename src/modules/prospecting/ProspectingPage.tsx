@@ -249,7 +249,7 @@ export function ProspectingPage() {
             .join(" "),
         ).includes(query);
       })
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => (b.marketScore || b.score) - (a.marketScore || a.score));
   }, [campaignCandidates, candidateComuna, candidateQuery, candidateSource, candidateStatus]);
   const selectedCandidate =
     filteredCandidates.find((candidate) => candidate.id === selectedCandidateId) ?? filteredCandidates[0];
@@ -755,6 +755,10 @@ function CampaignForm({
   const [targetTypes, setTargetTypes] = useState<CompanyType[]>(
     initialCampaign?.targetTypes ?? ["tecnico", "instalador grande"],
   );
+  const initialRadar = Boolean(initialCampaign)
+    && initialCampaign!.targetTypes.some((type) => ["distribuidor", "tienda comercial", "competencia"].includes(type))
+    && !initialCampaign!.targetTypes.some((type) => ["tecnico", "instalador grande"].includes(type));
+  const [searchMode, setSearchMode] = useState<"territorial" | "market_radar">(initialRadar ? "market_radar" : "territorial");
   const [activeRegionCode, setActiveRegionCode] = useState(initialCampaign?.territories[0]?.regionCode ?? defaultRegion);
   const [selection, setSelection] = useState<Record<string, string[]>>(() =>
     Object.fromEntries((initialCampaign?.territories ?? []).map((territory) => [territory.regionCode, territory.comunaCodes])),
@@ -915,6 +919,25 @@ function CampaignForm({
           Descripción operativa
           <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Objetivo y perfil que debe encontrar el agente" />
         </label>
+      </div>
+
+      <div className="prospecting-form-section">
+        <div className="prospecting-section-heading"><div><strong>Modalidad de búsqueda</strong><span>El Radar prioriza cobertura e importancia comercial; la búsqueda territorial prioriza empresas por comuna.</span></div></div>
+        <div className="target-type-grid">
+          <label className="checkbox-card">
+            <input type="radio" name="search-mode" checked={searchMode === "territorial"} onChange={() => setSearchMode("territorial")} />
+            Búsqueda territorial
+          </label>
+          <label className="checkbox-card">
+            <input type="radio" name="search-mode" checked={searchMode === "market_radar"} onChange={() => {
+              setSearchMode("market_radar");
+              setTargetTypes(["distribuidor", "tienda comercial", "competencia"]);
+              setSources(["google_places", "brave_search", "official_website"]);
+            }} />
+            Radar de mercado
+          </label>
+        </div>
+        {searchMode === "market_radar" ? <div className="source-contract-message info" role="status"><Sparkles size={17} /><span><strong>Descubrimiento amplio activado</strong>Brave buscará distribuidores, mayoristas, importadores, tiendas, catálogos y marcas a nivel regional y nacional. Google Places validará ubicación y el sitio oficial completará la investigación.</span></div> : null}
       </div>
 
       <div className="prospecting-form-section">
@@ -1467,7 +1490,7 @@ function CandidatesView({
               const primary = candidate.locations.find((location) => location.isPrimary) ?? candidate.locations[0];
               return (
                 <button key={candidate.id} type="button" className={`candidate-row ${candidate.id === selectedCandidate?.id ? "selected" : ""}`} onClick={() => onSelect(candidate.id)}>
-                  <span className="candidate-score">{Math.round(candidate.score)}<small>score</small></span>
+                  <span className="candidate-score">{Math.round(candidate.marketScore || candidate.score)}<small>{candidate.marketScore ? "mercado" : "score"}</small></span>
                   <span className="candidate-row-main"><strong>{candidate.name}</strong><small><MapPin size={12} /> {primary?.comunaName || "Sin comuna"} · {candidate.companyType}</small><em>{candidate.phone || candidate.email || candidate.website}</em></span>
                   <span className={`status-badge prospecting-status ${candidate.reviewStatus}`}>{reviewLabels[candidate.reviewStatus]}</span>
                   <ChevronRight size={17} />
@@ -1564,7 +1587,7 @@ function CandidateDetail({
     <>
       <div className="candidate-detail-heading">
         <div><span className={`status-badge prospecting-status ${candidate.reviewStatus}`}>{reviewLabels[candidate.reviewStatus]}</span><h2>{candidate.name}</h2><p>{candidate.legalName || candidate.businessLine}</p></div>
-        <div className="score-ring"><strong>{Math.round(candidate.score)}</strong><span>de 100</span></div>
+        <div className="score-ring"><strong>{Math.round(candidate.marketScore || candidate.score)}</strong><span>{candidate.marketScore ? "mercado" : "de 100"}</span></div>
       </div>
       {candidate.reviewStatus === "possible_duplicate" ? (
         <div className="duplicate-alert">
@@ -1587,6 +1610,13 @@ function CandidateDetail({
         <div className="candidate-import-readiness ready" role="status">
           <Building2 size={19} />
           <div><strong>Descripción investigada</strong><p>{candidate.companySummary}</p></div>
+        </div>
+      ) : null}
+
+      {candidate.marketScore ? (
+        <div className="candidate-import-readiness ready" role="status">
+          <Sparkles size={19} />
+          <div><strong>Importancia de mercado: {Math.round(candidate.marketScore)}/100</strong><p>Apareció en {Number(candidate.marketSignals?.query_hits || 0)} búsquedas; mejor posición {Number(candidate.marketSignals?.best_rank || 0) || "sin dato"}. El ranking también considera perfil comercial, marcas, sucursales y evidencia oficial.</p></div>
         </div>
       ) : null}
 

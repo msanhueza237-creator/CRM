@@ -226,6 +226,8 @@ export interface ProspectCandidate {
   enrichmentError: string;
   enrichedAt: string;
   score: number;
+  marketScore?: number;
+  marketSignals?: Record<string, number | string | boolean>;
   reviewStatus: ProspectReviewStatus;
   locations: ProspectLocation[];
   evidence: SourceEvidence[];

@@ -850,6 +850,8 @@ function mapCandidate(
     score: isSnapshotBacked
       ? asNumber(snapshot.score, asNumber(association.score))
       : asNumber(association.score ?? safeEntity.relevance_score),
+    marketScore: isSnapshotBacked ? asNumber(snapshot.market_score) : 0,
+    marketSignals: asRecord(isSnapshotBacked ? snapshot.market_signals : {}) as Record<string, number | string | boolean>,
     reviewStatus: reviewStatuses.includes(statusValue) ? statusValue : "pending",
     locations: candidateLocations,
     evidence: evidenceRows.map(mapEvidence),
