@@ -432,6 +432,21 @@ export function ProspectingPage() {
     );
   }
 
+  async function confirmCandidateEvidence(candidate: ProspectCandidate) {
+    if (!user || !canReview) return;
+    setBusyAction(`verify:${candidate.id}`);
+    setNotice(null);
+    try {
+      const verified = await repository.confirmCandidateEvidence(candidate.id);
+      updateCandidate(verified);
+      setNotice({ type: "success", text: "Verificacion registrada. Ya puedes aprobar o vincular este prospecto." });
+    } catch (error) {
+      setNotice({ type: "error", text: errorMessage(error) });
+    } finally {
+      setBusyAction("");
+    }
+  }
+
   async function approveCandidate(candidate: ProspectCandidate) {
     if (!user || !canReview) return;
     if (hasIdentityConflict(candidate)) {
@@ -692,6 +707,7 @@ export function ProspectingPage() {
           onSelect={setSelectedCandidateId}
           onCompanyToLink={setCompanyToLink}
           onApprove={(candidate) => void approveCandidate(candidate)}
+          onConfirmEvidence={(candidate) => void confirmCandidateEvidence(candidate)}
           onReject={(candidate) => void rejectCandidate(candidate)}
           onLink={(candidate) => void linkCandidate(candidate)}
         />
@@ -1397,6 +1413,7 @@ function CandidatesView({
   onSelect,
   onCompanyToLink,
   onApprove,
+  onConfirmEvidence,
   onReject,
   onLink,
 }: {
@@ -1424,6 +1441,7 @@ function CandidatesView({
   onSelect: (id: string) => void;
   onCompanyToLink: (id: string) => void;
   onApprove: (candidate: ProspectCandidate) => void;
+  onConfirmEvidence: (candidate: ProspectCandidate) => void;
   onReject: (candidate: ProspectCandidate) => void;
   onLink: (candidate: ProspectCandidate) => void;
 }) {
@@ -1471,10 +1489,11 @@ function CandidatesView({
               )}
               companies={companies}
               canReview={canReview}
-              busy={busyAction === `review:${selectedCandidate.id}`}
+              busy={busyAction === `review:${selectedCandidate.id}` || busyAction === `verify:${selectedCandidate.id}`}
               companyToLink={companyToLink}
               onCompanyToLink={onCompanyToLink}
               onApprove={() => onApprove(selectedCandidate)}
+              onConfirmEvidence={() => onConfirmEvidence(selectedCandidate)}
               onReject={() => onReject(selectedCandidate)}
               onLink={() => onLink(selectedCandidate)}
             />
@@ -1494,6 +1513,7 @@ function CandidateDetail({
   companyToLink,
   onCompanyToLink,
   onApprove,
+  onConfirmEvidence,
   onReject,
   onLink,
 }: {
@@ -1505,6 +1525,7 @@ function CandidateDetail({
   companyToLink: string;
   onCompanyToLink: (id: string) => void;
   onApprove: () => void;
+  onConfirmEvidence: () => void;
   onReject: () => void;
   onLink: () => void;
 }) {
@@ -1629,6 +1650,18 @@ function CandidateDetail({
 
       {canReview && reviewable ? (
         <div className="candidate-review-box">
+          {!candidate.importEligible && website && primary ? (
+            <div className="candidate-import-readiness partial" role="group" aria-label="Verificacion humana">
+              <ShieldCheck size={19} />
+              <div>
+                <strong>¿Revisaste el sitio oficial?</strong>
+                <p>Confirma solamente si el nombre, el contacto y la comuna mostrados corresponden a esta empresa. La comprobacion quedara registrada con tu usuario.</p>
+                <button className="ghost-button" type="button" disabled={busy} onClick={onConfirmEvidence}>
+                  <CheckCircle2 size={17} /> Confirmé los datos en el sitio oficial
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div className="candidate-primary-actions">
             <button
               className="primary-button"

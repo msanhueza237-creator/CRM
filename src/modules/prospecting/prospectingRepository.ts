@@ -599,6 +599,44 @@ export class ProspectingRepository {
     return candidate;
   }
 
+  async confirmCandidateEvidence(candidateId: string): Promise<ProspectCandidate> {
+    const current = this.workspace.candidates.find((candidate) => candidate.id === candidateId);
+    if (!current) throw new Error("No se encontro el candidato seleccionado.");
+    if (!current.website) throw new Error("El candidato no tiene un sitio oficial que puedas verificar.");
+    if (!current.locations.length) throw new Error("El candidato no tiene una ubicacion canonica para confirmar.");
+
+    let importableLocationIndexes = [
+      Math.max(0, current.locations.findIndex((location) => location.isPrimary)),
+    ];
+    if (this.mode === "supabase" && supabase) {
+      const { data, error } = await supabase.rpc("confirm_prospect_candidate_evidence", {
+        p_candidate_id: candidateId,
+      });
+      if (error) throw error;
+      const response = asRecord(data);
+      const reportedIndexes = Array.isArray(response.importable_location_indexes)
+        ? response.importable_location_indexes.map((value) => Number(value)).filter(Number.isInteger)
+        : [];
+      if (reportedIndexes.length) importableLocationIndexes = reportedIndexes;
+    }
+
+    const candidate: ProspectCandidate = {
+      ...current,
+      importEligible: true,
+      importableLocationIndexes,
+      reviewFlags: current.reviewFlags.filter((flag) => ![
+        "insufficient_permanent_evidence",
+        "location_0_temporary_evidence",
+        "eligibility_not_reported",
+        "eligibility_without_importable_locations",
+      ].includes(flag)),
+      lastSeenAt: new Date().toISOString(),
+    };
+    this.workspace.candidates = this.workspace.candidates.map((item) => item.id === candidateId ? candidate : item);
+    this.persistIfLocal();
+    return candidate;
+  }
+
   private persistIfLocal() {
     if (this.mode === "demo") localStorage.setItem(STORAGE_KEY, JSON.stringify(this.workspace));
   }
