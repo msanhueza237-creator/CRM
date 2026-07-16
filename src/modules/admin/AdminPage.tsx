@@ -58,8 +58,8 @@ export function AdminPage() {
   const [gmailBusy, setGmailBusy] = useState(false);
   const [gmailDailyLimit, setGmailDailyLimit] = useState(50);
   const [prospectingIntegrations, setProspectingIntegrations] = useState<ProspectingIntegrationStatus[]>([]);
-  const [placesBusy, setPlacesBusy] = useState(false);
-  const [placesNotice, setPlacesNotice] = useState("");
+  const [integrationBusy, setIntegrationBusy] = useState<ProspectingIntegrationStatus["provider"] | null>(null);
+  const [integrationNotice, setIntegrationNotice] = useState("");
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !user) return;
@@ -107,22 +107,22 @@ export function AdminPage() {
       .select("provider,configured,status,message,error_code,last_checked_at,last_success_at,metadata")
       .order("provider");
     if (error) {
-      setPlacesNotice("Falta instalar la actualizacion de integraciones de prospeccion en Supabase.");
+      setIntegrationNotice("Falta instalar la actualizacion de integraciones de prospeccion en Supabase.");
       return;
     }
     setProspectingIntegrations((data ?? []) as ProspectingIntegrationStatus[]);
   }
 
-  async function testGooglePlaces() {
+  async function testProspectingIntegration(provider: ProspectingIntegrationStatus["provider"]) {
     if (!supabase) return;
-    setPlacesBusy(true);
-    setPlacesNotice("Solicitando una prueba segura al agente...");
+    setIntegrationBusy(provider);
+    setIntegrationNotice("Solicitando una prueba segura al agente...");
     const { error } = await supabase.rpc("request_prospecting_integration_check", {
-      p_provider: "google_places",
+      p_provider: provider,
     });
     if (error) {
-      setPlacesBusy(false);
-      setPlacesNotice(error.message);
+      setIntegrationBusy(null);
+      setIntegrationNotice(error.message);
       return;
     }
 
@@ -132,16 +132,16 @@ export function AdminPage() {
       const { data } = await supabase
         .from("prospecting_integration_status")
         .select("status,message")
-        .eq("provider", "google_places")
+        .eq("provider", provider)
         .maybeSingle();
       if (data && !["pending", "checking"].includes(String(data.status))) {
-        setPlacesNotice(String(data.message ?? "Prueba finalizada."));
-        setPlacesBusy(false);
+        setIntegrationNotice(String(data.message ?? "Prueba finalizada."));
+        setIntegrationBusy(null);
         return;
       }
     }
-    setPlacesNotice("La prueba sigue pendiente. Pulsa Revisar estado en unos segundos.");
-    setPlacesBusy(false);
+    setIntegrationNotice("La prueba sigue pendiente. Pulsa Revisar estado en unos segundos.");
+    setIntegrationBusy(null);
   }
 
   useEffect(() => {
@@ -335,50 +335,43 @@ export function AdminPage() {
         </div>
 
         {(() => {
-          const places = prospectingIntegrations.find((item) => item.provider === "google_places");
-          const connected = places?.status === "connected";
-          const pending = places?.status === "pending" || places?.status === "checking";
           return (
             <>
-              <div className="admin-integration-summary">
-                <MapPinned size={24} />
-                <div>
-                  <strong>Google Places API</strong>
-                  <p className="muted">
-                    {places?.message ?? "Sin informacion del agente."} La clave nunca se muestra ni se guarda en el navegador.
-                  </p>
-                </div>
-                <span className={`status-badge ${connected ? "cliente" : places?.status === "error" ? "descartado" : "pausada"}`}>
-                  {connected ? "conectado" : pending ? "probando" : places?.configured ? "revisar" : "sin verificar"}
-                </span>
-              </div>
-
-              <div className="gmail-status-grid">
-                <div>
-                  <span>Configuracion</span>
-                  <strong>{places?.configured ? "Clave detectada" : "No confirmada"}</strong>
-                </div>
-                <div>
-                  <span>Ultima prueba</span>
-                  <strong>{places?.last_checked_at ? new Date(places.last_checked_at).toLocaleString() : "Sin prueba"}</strong>
-                </div>
-                <div>
-                  <span>Ultimo exito</span>
-                  <strong>{places?.last_success_at ? new Date(places.last_success_at).toLocaleString() : "Pendiente"}</strong>
-                </div>
-              </div>
-
-              {placesNotice ? <p className="muted">{placesNotice}</p> : null}
-              <div className="form-actions">
-                <button className="ghost-button" type="button" onClick={loadProspectingIntegrations} disabled={placesBusy}>
-                  <RefreshCw size={18} />
-                  Revisar estado
-                </button>
-                <button className="primary-button" type="button" onClick={testGooglePlaces} disabled={placesBusy}>
-                  <MapPinned size={18} />
-                  {placesBusy ? "Probando..." : "Probar Google Places"}
-                </button>
-              </div>
+              {([
+                ["google_places", "Google Places API", "Probar Google Places"],
+                ["brave_search", "Brave Search API", "Probar Brave Search"],
+              ] as const).map(([provider, title, action]) => {
+                const integration = prospectingIntegrations.find((item) => item.provider === provider);
+                const connected = integration?.status === "connected";
+                const pending = integration?.status === "pending" || integration?.status === "checking";
+                const busy = integrationBusy === provider;
+                return (
+                  <div key={provider} className="admin-integration-source">
+                    <div className="admin-integration-summary">
+                      <MapPinned size={24} />
+                      <div>
+                        <strong>{title}</strong>
+                        <p className="muted">
+                          {integration?.message ?? "Sin informacion del agente."} La clave nunca se muestra ni se guarda en el navegador.
+                        </p>
+                      </div>
+                      <span className={`status-badge ${connected ? "cliente" : integration?.status === "error" ? "descartado" : "pausada"}`}>
+                        {connected ? "conectado" : pending ? "probando" : integration?.configured ? "revisar" : "sin verificar"}
+                      </span>
+                    </div>
+                    <div className="gmail-status-grid">
+                      <div><span>Configuracion</span><strong>{integration?.configured ? "Clave detectada" : "No confirmada"}</strong></div>
+                      <div><span>Ultima prueba</span><strong>{integration?.last_checked_at ? new Date(integration.last_checked_at).toLocaleString() : "Sin prueba"}</strong></div>
+                      <div><span>Ultimo exito</span><strong>{integration?.last_success_at ? new Date(integration.last_success_at).toLocaleString() : "Pendiente"}</strong></div>
+                    </div>
+                    <div className="form-actions">
+                      <button className="ghost-button" type="button" onClick={loadProspectingIntegrations} disabled={Boolean(integrationBusy)}><RefreshCw size={18} />Revisar estado</button>
+                      <button className="primary-button" type="button" onClick={() => testProspectingIntegration(provider)} disabled={Boolean(integrationBusy)}><MapPinned size={18} />{busy ? "Probando..." : action}</button>
+                    </div>
+                  </div>
+                );
+              })}
+              {integrationNotice ? <p className="muted">{integrationNotice}</p> : null}
             </>
           );
         })()}
