@@ -1301,7 +1301,11 @@ function OperationView({
       </div>
     );
   }
+  const processedTasks = selectedRun.progress.completedTasks + selectedRun.progress.failedTasks;
   const progressPercent = selectedRun.progress.totalTasks
+    ? Math.min(100, Math.round((processedTasks / selectedRun.progress.totalTasks) * 100))
+    : 0;
+  const successPercent = selectedRun.progress.totalTasks
     ? Math.min(100, Math.round((selectedRun.progress.completedTasks / selectedRun.progress.totalTasks) * 100))
     : 0;
   const canCancel = ["pending", "running"].includes(selectedRun.status);
@@ -1336,7 +1340,7 @@ function OperationView({
         <div className="operation-progress-row">
           <span className={`status-badge prospecting-status ${selectedRun.status}`}>{runLabels[selectedRun.status]}</span>
           <div className="run-progress"><div><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div>
-          <span>{selectedRun.progress.completedTasks} de {selectedRun.progress.totalTasks} tareas</span>
+          <span>{selectedRun.progress.completedTasks} exitosas · {selectedRun.progress.failedTasks} con error · {processedTasks} de {selectedRun.progress.totalTasks} procesadas</span>
         </div>
         {selectedRun.lastError ? <div className="run-error"><AlertTriangle size={17} /><span><strong>Última incidencia</strong>{selectedRun.lastError}</span></div> : null}
       </div>
@@ -1360,7 +1364,7 @@ function OperationView({
 
       <div className="prospecting-overview-grid">
         <MetricCard icon={<ListChecks size={20} />} label="Tareas totales" value={selectedRun.progress.totalTasks} detail="Fuente × keyword × comuna" />
-        <MetricCard icon={<CheckCircle2 size={20} />} label="Completadas" value={selectedRun.progress.completedTasks} detail={`${progressPercent}% del plan`} />
+        <MetricCard icon={<CheckCircle2 size={20} />} label="Completadas" value={selectedRun.progress.completedTasks} detail={`${successPercent}% exitosas`} />
         <MetricCard icon={<AlertTriangle size={20} />} label="Con error" value={selectedRun.progress.failedTasks} detail="Con reintento o incidencia" />
         <MetricCard icon={<Building2 size={20} />} label="Candidatos" value={selectedRun.progress.candidatesFound} detail="Antes de revisión humana" />
       </div>
