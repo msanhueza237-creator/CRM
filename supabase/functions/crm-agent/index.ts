@@ -388,6 +388,17 @@ async function handleProspectingRoute(
 
       const run = asObject(result.run);
       const snapshot = asObject(run.snapshot);
+      const { data: braveSettings } = await context.supabase
+        .from("prospecting_provider_settings")
+        .select("monthly_limit_usd,free_credit_usd,social_search_enabled,max_social_queries_per_campaign")
+        .eq("provider", "brave_search")
+        .maybeSingle();
+      snapshot.brave_policy = {
+        monthly_limit_usd: Number(braveSettings?.monthly_limit_usd ?? 5),
+        free_credit_usd: Number(braveSettings?.free_credit_usd ?? 5),
+        social_search_enabled: Boolean(braveSettings?.social_search_enabled ?? false),
+        max_social_queries_per_campaign: Number(braveSettings?.max_social_queries_per_campaign ?? 6),
+      };
       const campaign = asObject(snapshot.campaign);
       const maxResults = boundedInteger(campaign.max_results_per_task, 1, 20, 20);
       const territories = Array.isArray(campaign.territories) ? campaign.territories.map(asObject) : [];
