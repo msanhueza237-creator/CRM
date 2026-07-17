@@ -225,7 +225,6 @@ function mapCompanyToSupabase(company: Company) {
     whatsapp: company.whatsapp || null,
     whatsapp_number: company.whatsappNumber || company.whatsapp || null,
     whatsapp_opt_in: Boolean(company.whatsappOptIn),
-    last_whatsapp_message_at: company.lastWhatsAppMessageAt || null,
     whatsapp_status: company.whatsappStatus || (company.whatsappOptIn ? "opt_in" : "sin_consentimiento"),
     phone: company.phone || null,
     email: company.email || null,
