@@ -402,14 +402,20 @@ export function AdminPage() {
                 const brave = prospectingIntegrations.find((item) => item.provider === "brave_search");
                 const used = Number(brave?.metadata?.monthly_queries ?? 0);
                 const spent = Number(brave?.metadata?.monthly_spend_usd ?? 0);
+                const providerUsed = Number(brave?.metadata?.provider_queries ?? 0);
+                const providerSpent = Number(brave?.metadata?.provider_spend_usd ?? 0);
+                const providerSyncedAt = String(brave?.metadata?.provider_synced_at ?? "");
+                const reconciled = Boolean(providerSyncedAt);
                 const remaining = Math.max(0, bravePolicy.monthlyLimitUsd - spent);
                 const estimatedNext = Number(brave?.metadata?.cost_per_query_usd ?? 0.005) * 8;
                 return <div className="admin-integration-source">
                   <div className="panel-heading"><div><h2>Control mensual de Brave</h2><span>El agente detiene nuevas consultas automáticamente al alcanzar este límite.</span></div></div>
                   <div className="gmail-status-grid">
-                    <div><span>Consultas este mes</span><strong>{used}</strong></div>
-                    <div><span>Consumo estimado</span><strong>US${spent.toFixed(3)}</strong></div>
-                    <div><span>Crédito disponible</span><strong>US${remaining.toFixed(2)}</strong></div>
+                      <div><span>Consumo oficial Brave</span><strong>{reconciled ? `US$${providerSpent.toFixed(2)}` : "Pendiente"}</strong></div>
+                      <div><span>Consultas oficiales</span><strong>{reconciled ? providerUsed : "—"}</strong></div>
+                      <div><span>Consumo reconciliado</span><strong>US${spent.toFixed(3)}</strong></div>
+                      <div><span>Consultas controladas</span><strong>{used}</strong></div>
+                      <div><span>Crédito disponible</span><strong>US${remaining.toFixed(2)}</strong></div>
                     <div><span>Próxima ejecución base</span><strong>≈ US${estimatedNext.toFixed(3)}</strong></div>
                   </div>
                   <div className="form-grid">
@@ -417,7 +423,7 @@ export function AdminPage() {
                     <label><span>Máximo de consultas sociales por campaña</span><input type="number" min={0} max={100} value={bravePolicy.maxSocialQueries} onChange={(event) => setBravePolicy((current) => ({ ...current, maxSocialQueries: Number(event.target.value) }))} /></label>
                     <label className="checkbox-row"><input type="checkbox" checked={bravePolicy.socialSearchEnabled} onChange={(event) => setBravePolicy((current) => ({ ...current, socialSearchEnabled: event.target.checked }))} /><span>Buscar también en Instagram y Facebook</span></label>
                   </div>
-                  <p className="muted">La investigación posterior de sitios oficiales consume 0 consultas Brave. La búsqueda social sólo se habilita con este interruptor.</p>
+                    <p className="muted">{reconciled ? `Última sincronización oficial: ${new Date(providerSyncedAt).toLocaleString("es-CL")}. ` : "Pulsa Probar Brave Search para sincronizar el consumo oficial. "}La investigación posterior de sitios oficiales consume 0 consultas Brave. La búsqueda social sólo se habilita con este interruptor.</p>
                   <div className="form-actions"><button className="primary-button" type="button" onClick={saveBravePolicy} disabled={savingBravePolicy}><Save size={18} />{savingBravePolicy ? "Guardando..." : "Guardar control de gasto"}</button></div>
                 </div>;
               })()}
