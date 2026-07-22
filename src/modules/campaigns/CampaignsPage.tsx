@@ -6,9 +6,11 @@ import { useAuth } from "../auth/AuthContext";
 import { useCompanyStore } from "../companies/CompanyStore";
 import { useTemplateStore } from "../templates/TemplateStore";
 import { getGmailStatus, sendGmailCampaign } from "../../lib/gmailApi";
-import type { Campaign, CampaignStatus, CampaignType, Company, MessageTemplate } from "../../types/crm";
+import { chileData, normalizeString } from "../../data/chileData";
+import type { Campaign, CampaignStatus, CampaignType, Company, CompanyType, MessageTemplate } from "../../types/crm";
 
 type CampaignSegment = "todas" | "prioridad alta" | "distribuidores y tiendas" | "instaladores" | "interesados";
+type CampaignCompanyTypeFilter = "todas" | CompanyType;
 
 interface CampaignDraft extends Campaign {
   templateId: string;
@@ -55,6 +57,15 @@ interface ProposalOverride {
 }
 const segments: CampaignSegment[] = ["todas", "prioridad alta", "distribuidores y tiendas", "instaladores", "interesados"];
 const campaignTypes: CampaignType[] = ["email", "WhatsApp", "mixta"];
+const companyTypeFilters: CampaignCompanyTypeFilter[] = [
+  "todas",
+  "distribuidor",
+  "tienda comercial",
+  "tecnico",
+  "instalador grande",
+  "competencia",
+  "otro",
+];
 
 function defaultCampaigns(): CampaignDraft[] {
   return demoCampaigns.map((campaign, index) => ({
@@ -164,6 +175,26 @@ function getSegmentCompanies(companies: Company[], segment: CampaignSegment) {
   return companies;
 }
 
+function getFilteredCampaignCompanies(
+  companies: Company[],
+  filters: { companyType: CampaignCompanyTypeFilter; region: string; city: string },
+) {
+  return companies.filter((company) => {
+    const typeMatches = filters.companyType === "todas" || company.type === filters.companyType;
+    const regionMatches = !filters.region || normalizeString(company.region) === normalizeString(filters.region);
+    const cityMatches = !filters.city || normalizeString(company.city) === normalizeString(filters.city);
+    return typeMatches && regionMatches && cityMatches;
+  });
+}
+
+function describeCampaignSegment(filters: { companyType: CampaignCompanyTypeFilter; region: string; city: string }) {
+  const parts = [
+    filters.companyType === "todas" ? "todas las clasificaciones" : filters.companyType,
+    filters.city || filters.region || "todo Chile",
+  ];
+  return parts.filter(Boolean).join(" · ");
+}
+
 function renderMessage(template: MessageTemplate, company: Company, campaign: CampaignDraft) {
   return template.body
     .replace(/\{\{nombre_empresa\}\}/g, company.name)
@@ -196,6 +227,9 @@ export function CampaignsPage() {
     name: "",
     type: "mixta" as CampaignType,
     segment: "distribuidores y tiendas" as CampaignSegment,
+    companyType: "distribuidor" as CampaignCompanyTypeFilter,
+    region: "",
+    city: "",
     templateId: templates[0].id,
     product: "bombas de condensado y herramientas Super Stars",
     coupon: "CLIMA10",
@@ -756,6 +790,21 @@ export function CampaignsPage() {
     discarded: campaignRecipients.filter((recipient) => recipient.discarded).length,
     withoutOptIn: selectedCompanies.filter((company) => !company.whatsappOptIn).length,
   };
+  const formCities = useMemo(() => {
+    if (!form.region) return [];
+    return chileData.find((region) => normalizeString(region.region) === normalizeString(form.region))?.comunas.sort() ?? [];
+  }, [form.region]);
+  const previewTargetCompanies = useMemo(
+    () =>
+      getFilteredCampaignCompanies(companies, {
+        companyType: form.companyType,
+        region: form.region,
+        city: form.city,
+      }),
+    [companies, form.city, form.companyType, form.region],
+  );
+  const previewWithEmail = previewTargetCompanies.filter((company) => company.email).length;
+  const previewWithWhatsApp = previewTargetCompanies.filter((company) => company.whatsapp || company.phone).length;
 
   function persistCampaigns(nextCampaigns: CampaignDraft[]) {
     setCampaigns(nextCampaigns);
@@ -769,12 +818,21 @@ export function CampaignsPage() {
 
   async function createCampaign(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const targetCompanies = getSegmentCompanies(companies, form.segment);
+    const targetCompanies = previewTargetCompanies;
+    if (!targetCompanies.length) {
+      alert("No hay empresas que coincidan con la clasificacion, region y ciudad seleccionadas.");
+      return;
+    }
+    const segmentDescription = describeCampaignSegment({
+      companyType: form.companyType,
+      region: form.region,
+      city: form.city,
+    });
     const created: CampaignDraft = {
       id: `cam-${crypto.randomUUID()}`,
       name: form.name,
       type: form.type,
-      segment: form.segment,
+      segment: segmentDescription,
       status: "borrador",
       createdAt: new Date().toISOString().slice(0, 10),
       sendAt: form.sendAt,
@@ -1169,9 +1227,9 @@ export function CampaignsPage() {
                     </select>
                   </label>
                   <label>
-                    Segmento
-                    <select value={form.segment} onChange={(event) => setForm({ ...form, segment: event.target.value as CampaignSegment })}>
-                      {segments.map((segment) => <option key={segment} value={segment}>{segment}</option>)}
+                    Clasificacion / tipo
+                    <select value={form.companyType} onChange={(event) => setForm({ ...form, companyType: event.target.value as CampaignCompanyTypeFilter })}>
+                      {companyTypeFilters.map((type) => <option key={type} value={type}>{type}</option>)}
                     </select>
                   </label>
                   <label>
@@ -1192,12 +1250,41 @@ export function CampaignsPage() {
                     Cupon
                     <input value={form.coupon} onChange={(event) => setForm({ ...form, coupon: event.target.value })} />
                   </label>
+                  <label>
+                    Region
+                    <select
+                      value={form.region}
+                      onChange={(event) => setForm({ ...form, region: event.target.value, city: "" })}
+                    >
+                      <option value="">Todas las regiones</option>
+                      {chileData.map((region) => <option key={region.region} value={region.region}>{region.region}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    Ciudad / comuna
+                    <select
+                      value={form.city}
+                      onChange={(event) => setForm({ ...form, city: event.target.value })}
+                      disabled={!form.region}
+                    >
+                      <option value="">Todas las comunas</option>
+                      {formCities.map((city) => <option key={city} value={city}>{city}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="deliverability-panel" style={{ marginTop: "16px" }}>
+                  <strong>Segmento automatico: {describeCampaignSegment({ companyType: form.companyType, region: form.region, city: form.city })}</strong>
+                  <p>
+                    Se agregaran automaticamente {previewTargetCompanies.length} empresa{previewTargetCompanies.length === 1 ? "" : "s"}.
+                    {["email", "mixta"].includes(form.type) ? ` Con email: ${previewWithEmail}.` : ""}
+                    {["WhatsApp", "mixta"].includes(form.type) ? ` Con WhatsApp/telefono: ${previewWithWhatsApp}.` : ""}
+                  </p>
                 </div>
                 {renderAttachmentsEditor(false)}
               </div>
               <div className="form-actions">
                 <button className="ghost-button" type="button" onClick={() => setShowForm(false)}>Cancelar</button>
-                <button className="primary-button" type="submit">Crear y revisar</button>
+                <button className="primary-button" type="submit" disabled={!previewTargetCompanies.length}>Crear y revisar</button>
               </div>
             </form>
           ) : null}
