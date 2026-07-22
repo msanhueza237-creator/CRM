@@ -69,6 +69,20 @@ const companyTypeFilters: CampaignCompanyTypeFilter[] = [
 const INSTALLER_REGISTER_URL = "https://www.climactiva.cl/account/register/wholesale/7d860bbb-d587-465e-a4f9-251620a5b478";
 const DEFAULT_INSTALLER_BENEFIT = `Inscribete aqui: ${INSTALLER_REGISTER_URL} y accede a un 7% de descuento especial por ser instalador.`;
 
+function isInstallerCampaignType(companyType: CampaignCompanyTypeFilter) {
+  return companyType === "tecnico" || companyType === "instalador grande";
+}
+
+function isInstallerCampaignSegment(segment: CampaignSegment | string) {
+  return segment === "instaladores" || segment.includes("tecnico") || segment.includes("instalador grande");
+}
+
+function isInstallerAccountTemplate(template?: MessageTemplate) {
+  if (!template) return false;
+  const text = `${template.id} ${template.name} ${template.body}`.toLowerCase();
+  return text.includes("cuenta instalador") || text.includes("cuenta de instalador") || text.includes(INSTALLER_REGISTER_URL);
+}
+
 function defaultCampaigns(): CampaignDraft[] {
   return demoCampaigns.map((campaign, index) => ({
     ...campaign,
@@ -198,7 +212,7 @@ function describeCampaignSegment(filters: { companyType: CampaignCompanyTypeFilt
 }
 
 function renderMessage(template: MessageTemplate, company: Company, campaign: CampaignDraft) {
-  const benefit = campaign.coupon || DEFAULT_INSTALLER_BENEFIT;
+  const benefit = campaign.coupon || "";
   return template.body
     .replace(/\{\{nombre_empresa\}\}/g, company.name)
     .replace(/\{\{nombre_contacto\}\}/g, company.contactName || "equipo comercial")
@@ -214,6 +228,7 @@ export function CampaignsPage() {
   const { companies } = useCompanyStore();
   const { activeTemplates } = useTemplateStore();
   const templates = activeTemplates.length ? activeTemplates : demoTemplates;
+  const firstNonInstallerTemplateId = templates.find((template) => !isInstallerAccountTemplate(template))?.id ?? templates[0].id;
   const [campaigns, setCampaigns] = useState<CampaignDraft[]>(loadCampaigns);
   const [recipients, setRecipients] = useState<RecipientState[]>(loadRecipients);
   const [selectedCampaignId, setSelectedCampaignId] = useState(campaigns[0]?.id ?? "");
@@ -235,9 +250,9 @@ export function CampaignsPage() {
     companyType: "distribuidor" as CampaignCompanyTypeFilter,
     region: "",
     city: "",
-    templateId: templates[0].id,
+    templateId: firstNonInstallerTemplateId,
     product: "bombas de condensado y herramientas Super Stars",
-    coupon: DEFAULT_INSTALLER_BENEFIT,
+    coupon: "",
     sendAt: new Date().toISOString().slice(0, 10),
   });
 
@@ -609,7 +624,7 @@ export function CampaignsPage() {
       discarded: 0,
       templateId: templates[0]?.id || demoTemplates[0].id,
       product: proposalForm.product,
-      coupon: proposalForm.coupon,
+      coupon: isInstallerCampaignSegment(prop.segment) ? proposalForm.coupon : "",
       recipientIds: targetCompanies.map((c) => c.id),
       attachments: proposalAttachments,
     };
@@ -801,6 +816,11 @@ export function CampaignsPage() {
     if (!form.region) return [];
     return chileData.find((region) => normalizeString(region.region) === normalizeString(form.region))?.comunas.sort() ?? [];
   }, [form.region]);
+  const formUsesInstallerBenefit = isInstallerCampaignType(form.companyType);
+  const formTemplates = useMemo(
+    () => (formUsesInstallerBenefit ? templates : templates.filter((template) => !isInstallerAccountTemplate(template))),
+    [formUsesInstallerBenefit, templates],
+  );
   const previewTargetCompanies = useMemo(
     () =>
       getFilteredCampaignCompanies(companies, {
@@ -813,6 +833,27 @@ export function CampaignsPage() {
   const previewWithEmail = previewTargetCompanies.filter((company) => company.email).length;
   const previewWithWhatsApp = previewTargetCompanies.filter((company) => company.whatsapp || company.phone).length;
   const previewVisibleCompanies = previewTargetCompanies.slice(0, 50);
+
+  useEffect(() => {
+    setForm((current) => {
+      const selectedFormTemplate = templates.find((template) => template.id === current.templateId);
+      const fallbackTemplateId = templates.find((template) => !isInstallerAccountTemplate(template))?.id ?? templates[0]?.id ?? "";
+
+      if (isInstallerCampaignType(current.companyType)) {
+        return current.coupon ? current : { ...current, coupon: DEFAULT_INSTALLER_BENEFIT };
+      }
+
+      if (!current.coupon && !isInstallerAccountTemplate(selectedFormTemplate)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        coupon: "",
+        templateId: isInstallerAccountTemplate(selectedFormTemplate) ? fallbackTemplateId : current.templateId,
+      };
+    });
+  }, [form.companyType, templates]);
 
   function persistCampaigns(nextCampaigns: CampaignDraft[]) {
     setCampaigns(nextCampaigns);
@@ -841,6 +882,8 @@ export function CampaignsPage() {
       region: form.region,
       city: form.city,
     });
+    const formTemplate = templates.find((template) => template.id === form.templateId) ?? templates[0];
+    const campaignBenefit = isInstallerCampaignType(form.companyType) ? form.coupon : "";
     const created: CampaignDraft = {
       id: `cam-${crypto.randomUUID()}`,
       name: form.name.trim(),
@@ -856,7 +899,7 @@ export function CampaignsPage() {
       discarded: 0,
       templateId: form.templateId,
       product: form.product,
-      coupon: form.coupon,
+      coupon: campaignBenefit,
       recipientIds: targetCompanies.map((company) => company.id),
       attachments: formAttachments,
     };
@@ -878,7 +921,7 @@ export function CampaignsPage() {
                 ? "email"
                 : "mixta",
             segment: created.segment,
-            message: selectedTemplate?.body ?? "",
+            message: formTemplate?.body ?? "",
             status: "borrador",
             product: created.product,
             coupon: created.coupon,
@@ -895,7 +938,7 @@ export function CampaignsPage() {
           const recipientsToInsert = targetCompanies.map((company) => ({
             campaign_id: dbCampaignId,
             company_id: company.id,
-            rendered_message: renderMessage(selectedTemplate, company, created),
+            rendered_message: renderMessage(formTemplate, company, created),
           }));
 
           if (recipientsToInsert.length) {
@@ -1259,17 +1302,19 @@ export function CampaignsPage() {
                   <label>
                     Plantilla
                     <select value={form.templateId} onChange={(event) => setForm({ ...form, templateId: event.target.value })}>
-                      {templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
+                      {formTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
                     </select>
                   </label>
                   <label>
                     Producto destacado
                     <input value={form.product} onChange={(event) => setForm({ ...form, product: event.target.value })} />
                   </label>
-                  <label>
-                    Llamado / beneficio
-                    <input value={form.coupon} onChange={(event) => setForm({ ...form, coupon: event.target.value })} />
-                  </label>
+                  {formUsesInstallerBenefit ? (
+                    <label>
+                      Llamado / beneficio
+                      <input value={form.coupon} onChange={(event) => setForm({ ...form, coupon: event.target.value })} />
+                    </label>
+                  ) : null}
                   <label>
                     Region
                     <select
@@ -1682,15 +1727,17 @@ export function CampaignsPage() {
                         </select>
                       </label>
 
-                      <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontWeight: "bold", fontSize: "14px", color: "#40515b" }}>
-                        Llamado / beneficio
-                        <input 
-                          type="text" 
-                          value={proposalForm.coupon} 
-                          onChange={(e) => setProposalForm({ ...proposalForm, coupon: e.target.value })} 
-                          style={{ minHeight: "40px", border: "1px solid #cfdade", borderRadius: "8px", padding: "0 12px" }}
-                        />
-                      </label>
+                      {isInstallerCampaignSegment(proposals[selectedProposalIndex].segment) ? (
+                        <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontWeight: "bold", fontSize: "14px", color: "#40515b" }}>
+                          Llamado / beneficio
+                          <input 
+                            type="text" 
+                            value={proposalForm.coupon} 
+                            onChange={(e) => setProposalForm({ ...proposalForm, coupon: e.target.value })} 
+                            style={{ minHeight: "40px", border: "1px solid #cfdade", borderRadius: "8px", padding: "0 12px" }}
+                          />
+                        </label>
+                      ) : null}
                     </div>
 
                     <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontWeight: "bold", fontSize: "14px", color: "#40515b" }}>
