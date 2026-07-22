@@ -101,6 +101,7 @@ create table public.campaigns (
   status public.campaign_status not null default 'borrador',
   product text,
   coupon text,
+  attachments jsonb not null default '[]'::jsonb check (jsonb_typeof(attachments) = 'array'),
   created_by uuid references public.profiles(id) on delete set null,
   send_at timestamptz,
   confirmed_at timestamptz,

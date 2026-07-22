@@ -31,6 +31,18 @@ const CAMPAIGNS_STORAGE_KEY = "climactiva_campaigns";
 const RECIPIENTS_STORAGE_KEY = "climactiva_campaign_recipients";
 const PROPOSAL_OVERRIDES_STORAGE_KEY = "climactiva_proposal_overrides";
 const DISMISSED_PROPOSALS_STORAGE_KEY = "climactiva_dismissed_proposals";
+const CAMPAIGN_ATTACHMENTS_BUCKET = "campaign-attachments";
+const MAX_ATTACHMENT_SIZE_MB = 20;
+const ALLOWED_ATTACHMENT_TYPES = new Set([
+  "application/pdf",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
 
 interface ProposalOverride {
   name?: string;
@@ -114,6 +126,30 @@ function saveDismissedProposals(ids: string[]) {
   localStorage.setItem(DISMISSED_PROPOSALS_STORAGE_KEY, JSON.stringify(ids));
 }
 
+function normalizeAttachmentRows(value: unknown): { name: string; url: string }[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const record = item as Record<string, unknown>;
+      const name = String(record.name ?? "").trim();
+      const url = String(record.url ?? "").trim();
+      return name && url ? { name, url } : null;
+    })
+    .filter((item): item is { name: string; url: string } => Boolean(item));
+}
+
+function sanitizeStorageFileName(fileName: string) {
+  const fallback = "catalogo";
+  const clean = fileName
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
+  return clean || fallback;
+}
+
 function getSegmentCompanies(companies: Company[], segment: CampaignSegment) {
   if (segment === "prioridad alta") return companies.filter((company) => company.priority === "alta");
   if (segment === "distribuidores y tiendas") {
@@ -195,44 +231,40 @@ export function CampaignsPage() {
 
   async function handleFileUpload(file: File, isProposal: boolean) {
     if (!isSupabaseConfigured || !supabase) {
-      alert("Para subir archivos directamente debes tener configurado y conectado Supabase.");
+      setUploadError("Para subir archivos debes tener conectado Supabase.");
+      return;
+    }
+
+    if (file.size > MAX_ATTACHMENT_SIZE_MB * 1024 * 1024) {
+      setUploadError(`El archivo supera ${MAX_ATTACHMENT_SIZE_MB} MB. Usa un PDF mas liviano o un enlace web.`);
+      return;
+    }
+
+    if (file.type && !ALLOWED_ATTACHMENT_TYPES.has(file.type)) {
+      setUploadError("Formato no permitido. Usa PDF, Excel, Word, JPG, PNG o WebP.");
       return;
     }
 
     setUploadingFile(true);
     setUploadError(null);
 
-    const fileExt = file.name.split(".").pop();
-    const fileName = `${crypto.randomUUID()}.${fileExt}`;
-    const filePath = `campaigns/${fileName}`;
+    const fileName = `${crypto.randomUUID()}-${sanitizeStorageFileName(file.name)}`;
+    const filePath = `campaigns/${new Date().toISOString().slice(0, 7)}/${fileName}`;
 
     try {
       const { error: uploadErr } = await supabase.storage
-        .from("campaign-attachments")
+        .from(CAMPAIGN_ATTACHMENTS_BUCKET)
         .upload(filePath, file, {
           cacheControl: "3600",
+          contentType: file.type || "application/octet-stream",
           upsert: false,
         });
 
       if (uploadErr) {
-        if (uploadErr.message.includes("Bucket not found") || uploadErr.message.includes("does not exist")) {
-          const { error: createErr } = await supabase.storage.createBucket("campaign-attachments", {
-            public: true,
-          });
-          if (!createErr) {
-            const { error: retryErr } = await supabase.storage
-              .from("campaign-attachments")
-              .upload(filePath, file);
-            if (retryErr) throw retryErr;
-          } else {
-            throw uploadErr;
-          }
-        } else {
-          throw uploadErr;
-        }
+        throw uploadErr;
       }
 
-      const { data } = supabase.storage.from("campaign-attachments").getPublicUrl(filePath);
+      const { data } = supabase.storage.from(CAMPAIGN_ATTACHMENTS_BUCKET).getPublicUrl(filePath);
       const publicUrl = data.publicUrl;
 
       const newAttachment = { name: file.name, url: publicUrl };
@@ -243,7 +275,14 @@ export function CampaignsPage() {
       }
     } catch (err) {
       console.error(err);
-      setUploadError("Error al subir el archivo. Intenta usar un enlace web directo abajo.");
+      const message = err instanceof Error ? err.message : "";
+      if (message.includes("Bucket not found") || message.includes("does not exist")) {
+        setUploadError("Falta crear el bucket de adjuntos en Supabase. Ejecuta supabase/campaign_attachments.sql.");
+      } else if (message.toLowerCase().includes("row-level security") || message.toLowerCase().includes("policy")) {
+        setUploadError("Supabase bloqueo la subida por politicas de Storage. Ejecuta supabase/campaign_attachments.sql.");
+      } else {
+        setUploadError("No se pudo subir el archivo. Revisa Storage en Supabase o usa un enlace web directo.");
+      }
     } finally {
       setUploadingFile(false);
     }
@@ -251,6 +290,14 @@ export function CampaignsPage() {
 
   function addManualAttachment(isProposal: boolean) {
     if (!manualAttachmentName || !manualAttachmentUrl) return;
+    try {
+      const parsedUrl = new URL(manualAttachmentUrl.trim());
+      if (!["http:", "https:"].includes(parsedUrl.protocol)) throw new Error("invalid");
+    } catch {
+      setUploadError("El enlace debe empezar con http:// o https://.");
+      return;
+    }
+
     const newAttachment = { name: manualAttachmentName.trim(), url: manualAttachmentUrl.trim() };
     if (isProposal) {
       setProposalAttachments((prev) => [...prev, newAttachment]);
@@ -297,6 +344,7 @@ export function CampaignsPage() {
             <span style={{ fontSize: "12px", fontWeight: "bold", color: "#40515b" }}>Subir archivo a Supabase:</span>
             <input 
               type="file" 
+              accept=".pdf,.xls,.xlsx,.doc,.docx,.jpg,.jpeg,.png,.webp"
               disabled={uploadingFile}
               onChange={(e) => {
                 const file = e.target.files?.[0];
@@ -552,6 +600,9 @@ export function CampaignsPage() {
             segment: newCampaign.segment,
             message: proposalForm.message,
             status: "borrador",
+            product: newCampaign.product,
+            coupon: newCampaign.coupon,
+            attachments: newCampaign.attachments ?? [],
             send_at: new Date().toISOString(),
           })
           .select()
@@ -638,6 +689,7 @@ export function CampaignsPage() {
           templateId: templates[0]?.id ?? demoTemplates[0].id,
           product: String(row.product ?? ""),
           coupon: String(row.coupon ?? ""),
+          attachments: normalizeAttachmentRows(row.attachments),
           recipientIds: [],
         }));
 
@@ -715,7 +767,7 @@ export function CampaignsPage() {
     saveRecipients(nextRecipients);
   }
 
-  function createCampaign(event: FormEvent<HTMLFormElement>) {
+  async function createCampaign(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const targetCompanies = getSegmentCompanies(companies, form.segment);
     const created: CampaignDraft = {
@@ -740,8 +792,67 @@ export function CampaignsPage() {
     persistCampaigns([created, ...campaigns]);
     setSelectedCampaignId(created.id);
     setShowForm(false);
-    setFormAttachments([]);
     setForm((current) => ({ ...current, name: "" }));
+
+    if (isSupabaseConfigured && supabase && user) {
+      try {
+        const { data: dbCampaign, error: campaignError } = await supabase
+          .from("campaigns")
+          .insert({
+            name: created.name,
+            type:
+              created.type.toLowerCase() === "whatsapp"
+                ? "whatsapp"
+                : created.type.toLowerCase() === "email"
+                ? "email"
+                : "mixta",
+            segment: created.segment,
+            message: selectedTemplate?.body ?? "",
+            status: "borrador",
+            product: created.product,
+            coupon: created.coupon,
+            attachments: created.attachments ?? [],
+            send_at: created.sendAt ? new Date(`${created.sendAt}T12:00:00`).toISOString() : null,
+          })
+          .select()
+          .single();
+
+        if (campaignError) throw campaignError;
+
+        if (dbCampaign) {
+          const dbCampaignId = String(dbCampaign.id);
+          const recipientsToInsert = targetCompanies.map((company) => ({
+            campaign_id: dbCampaignId,
+            company_id: company.id,
+            rendered_message: renderMessage(selectedTemplate, company, created),
+          }));
+
+          if (recipientsToInsert.length) {
+            const { error: recipientsError } = await supabase.from("campaign_recipients").insert(recipientsToInsert);
+            if (recipientsError) throw recipientsError;
+          }
+
+          const savedCampaign = { ...created, id: dbCampaignId };
+          const savedRecipients = targetCompanies.map((company) => ({
+            campaignId: dbCampaignId,
+            companyId: company.id,
+            sent: false,
+            replied: false,
+            interested: false,
+            discarded: false,
+          }));
+
+          persistCampaigns([savedCampaign, ...campaigns]);
+          persistRecipients([...savedRecipients, ...recipients]);
+          setSelectedCampaignId(dbCampaignId);
+        }
+      } catch (err) {
+        console.error("Error al guardar campana en Supabase:", err);
+        alert("La campana quedo como borrador local, pero no se pudo guardar en Supabase. Revisa la actualizacion de adjuntos en SQL.");
+      }
+    }
+
+    setFormAttachments([]);
   }
 
   function updateCampaignStatus(status: CampaignStatus) {
