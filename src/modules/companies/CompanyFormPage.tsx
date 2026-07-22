@@ -1,9 +1,9 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, Save } from "lucide-react";
 import { useCompanyStore } from "./CompanyStore";
 import type { Company, CompanyStatus, CompanyType, Priority } from "../../types/crm";
-import { chileData } from "../../data/chileData";
+import { chileData, normalizeString } from "../../data/chileData";
 
 const companyTypes: CompanyType[] = ["distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia", "otro"];
 const statuses: CompanyStatus[] = ["prospecto", "contactado", "interesado", "cotizado", "cliente", "descartado"];
@@ -59,6 +59,17 @@ export function CompanyFormPage() {
     return chileData.find((r) => r.region === selectedRegion)?.comunas.sort() ?? [];
   }, [form.region]);
 
+  useEffect(() => {
+    if (!form.address || (form.region && form.city)) return;
+    const inferred = inferLocationFromText(`${form.address} ${form.city} ${form.region}`);
+    if (!inferred) return;
+    setForm((current) => {
+      const nextRegion = current.region || inferred.region;
+      const nextCity = current.city || inferred.city;
+      if (current.region === nextRegion && current.city === nextCity) return current;
+      return { ...current, region: nextRegion, city: nextCity };
+    });
+  }, [form.address, form.city, form.region]);
 
   if (isEditing && !existingCompany) return <Navigate to="/empresas" replace />;
 
@@ -70,8 +81,11 @@ export function CompanyFormPage() {
     event.preventDefault();
     setSaving(true);
     setSaveError("");
+    const inferred = inferLocationFromText(`${form.address} ${form.city} ${form.region}`);
     const payload: Omit<Company, "id"> = {
       ...form,
+      region: form.region || inferred?.region || "",
+      city: form.city || inferred?.city || "",
       tags: form.tags.split(",").map((tag) => tag.trim()).filter(Boolean),
     };
     try {
@@ -166,6 +180,39 @@ export function CompanyFormPage() {
       </form>
     </section>
   );
+}
+
+function inferLocationFromText(text: string) {
+  const normalizedText = normalizeString(text);
+  if (!normalizedText) return null;
+
+  let inferredRegion = "";
+  let inferredCity = "";
+  let bestCityScore = 0;
+
+  for (const region of chileData) {
+    const normalizedRegion = normalizeString(region.region);
+    if (normalizedRegion && normalizedText.includes(normalizedRegion)) {
+      inferredRegion = region.region;
+    }
+
+    for (const comuna of region.comunas) {
+      const normalizedComuna = normalizeString(comuna);
+      if (!normalizedComuna || !normalizedText.includes(normalizedComuna)) continue;
+      if (normalizedComuna.length > bestCityScore) {
+        bestCityScore = normalizedComuna.length;
+        inferredRegion = region.region;
+        inferredCity = comuna;
+      }
+    }
+  }
+
+  if (!inferredRegion && /\bregionmetropolitana\b|\bmetropolitanadesantiago\b|\bsantiago\b/.test(normalizedText)) {
+    inferredRegion = "Región Metropolitana de Santiago";
+    inferredCity = inferredCity || "Santiago";
+  }
+
+  return inferredRegion || inferredCity ? { region: inferredRegion, city: inferredCity } : null;
 }
 
 function CheckboxField({

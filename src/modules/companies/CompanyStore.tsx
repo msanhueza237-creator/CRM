@@ -134,13 +134,7 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
         if (isSupabaseConfigured && supabase && user) {
           const { id: _id, ...databasePayload } = mapCompanyToSupabase(updated);
           void _id;
-          const { data, error } = await supabase
-            .from("companies")
-            .update(databasePayload)
-            .eq("id", id)
-            .select("*")
-            .single();
-          if (error) throw new Error(`No se pudo guardar la empresa: ${error.message}`);
+          const data = await updateCompanyRow(id, databasePayload);
           saved = mapCompanyFromSupabase(data as Record<string, unknown>);
           saved.tags = updated.tags;
           await saveCompanyTags(id, updated.tags);
@@ -236,6 +230,44 @@ function mapCompanyToSupabase(company: Company) {
     status: company.status,
     next_follow_up: company.nextFollowUp || null,
   };
+}
+
+async function updateCompanyRow(id: string, payload: Record<string, unknown>) {
+  if (!supabase) throw new Error("Supabase no esta configurado.");
+  const currentPayload = { ...payload };
+  const skippedColumns: string[] = [];
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const { data, error } = await supabase
+      .from("companies")
+      .update(currentPayload)
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (!error) {
+      if (skippedColumns.length) {
+        console.warn("Company update skipped unavailable columns:", skippedColumns);
+      }
+      return data;
+    }
+
+    const missingColumn = getMissingSchemaColumn(error.message);
+    if (missingColumn && Object.prototype.hasOwnProperty.call(currentPayload, missingColumn)) {
+      delete currentPayload[missingColumn];
+      skippedColumns.push(missingColumn);
+      continue;
+    }
+
+    throw new Error(`No se pudo guardar la empresa: ${error.message}`);
+  }
+
+  throw new Error("No se pudo guardar la empresa: Supabase rechazo demasiadas columnas no instaladas.");
+}
+
+function getMissingSchemaColumn(message: string) {
+  const match = message.match(/'([^']+)'\s+column of 'companies'/i);
+  return match?.[1] ?? "";
 }
 
 function mapInteractionFromSupabase(row: Record<string, unknown>): Interaction {
