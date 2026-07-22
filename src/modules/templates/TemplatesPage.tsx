@@ -3,7 +3,7 @@ import { Copy, Edit, FileText, Plus, Power, Save, X } from "lucide-react";
 import { useTemplateStore } from "./TemplateStore";
 import type { MessageTemplate } from "../../types/crm";
 
-const variables = ["{{nombre_empresa}}", "{{nombre_contacto}}", "{{ciudad}}", "{{tipo_empresa}}", "{{cupon}}", "{{producto_destacado}}"];
+const variables = ["{{nombre_empresa}}", "{{nombre_contacto}}", "{{ciudad}}", "{{tipo_empresa}}", "{{beneficio}}", "{{cupon}}", "{{producto_destacado}}"];
 
 const emptyTemplate: Omit<MessageTemplate, "id"> = {
   name: "",
@@ -185,6 +185,7 @@ function renderPreview(body: string) {
     .replace(/\{\{nombre_contacto\}\}/g, "Paula Morales")
     .replace(/\{\{ciudad\}\}/g, "Valparaiso")
     .replace(/\{\{tipo_empresa\}\}/g, "tienda comercial")
-    .replace(/\{\{cupon\}\}/g, "CLIMA10")
+    .replace(/\{\{beneficio\}\}/g, "Inscribete en climactiva.cl y accede a un 7% de descuento especial por ser instalador.")
+    .replace(/\{\{cupon\}\}/g, "Inscribete en climactiva.cl y accede a un 7% de descuento especial por ser instalador.")
     .replace(/\{\{producto_destacado\}\}/g, "bombas de condensado");
 }

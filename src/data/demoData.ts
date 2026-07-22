@@ -180,6 +180,13 @@ export const demoTemplates: MessageTemplate[] = [
     body:
       "Hola {{nombre_contacto}}, te escribo para dar seguimiento a la informacion enviada a {{nombre_empresa}}. Quedo atento para coordinar la siguiente accion.",
   },
+  {
+    id: "tpl-004",
+    name: "Invitacion cuenta instalador Clima Activa",
+    category: "Instaladores",
+    body:
+      "Hola {{nombre_contacto}}, desde Clima Activa queremos invitar a {{nombre_empresa}} a crear una cuenta en climactiva.cl. {{beneficio}} Tambien contamos con stock de {{producto_destacado}} para tus trabajos en {{ciudad}}. Si quieres, te ayudamos a activar la cuenta.",
+  },
 ];
 
 export const demoActivities: Activity[] = [

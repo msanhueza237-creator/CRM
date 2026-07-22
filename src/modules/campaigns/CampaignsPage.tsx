@@ -66,13 +66,14 @@ const companyTypeFilters: CampaignCompanyTypeFilter[] = [
   "competencia",
   "otro",
 ];
+const DEFAULT_INSTALLER_BENEFIT = "Inscribete en climactiva.cl y accede a un 7% de descuento especial por ser instalador.";
 
 function defaultCampaigns(): CampaignDraft[] {
   return demoCampaigns.map((campaign, index) => ({
     ...campaign,
     templateId: demoTemplates[index === 0 ? 1 : 2]?.id ?? demoTemplates[0].id,
     product: "bombas de condensado y herramientas Super Stars",
-    coupon: "CLIMA10",
+    coupon: DEFAULT_INSTALLER_BENEFIT,
     recipientIds: [],
   }));
 }
@@ -196,12 +197,14 @@ function describeCampaignSegment(filters: { companyType: CampaignCompanyTypeFilt
 }
 
 function renderMessage(template: MessageTemplate, company: Company, campaign: CampaignDraft) {
+  const benefit = campaign.coupon || DEFAULT_INSTALLER_BENEFIT;
   return template.body
     .replace(/\{\{nombre_empresa\}\}/g, company.name)
     .replace(/\{\{nombre_contacto\}\}/g, company.contactName || "equipo comercial")
     .replace(/\{\{ciudad\}\}/g, company.city || "su zona")
     .replace(/\{\{tipo_empresa\}\}/g, company.type)
-    .replace(/\{\{cupon\}\}/g, campaign.coupon)
+    .replace(/\{\{cupon\}\}/g, benefit)
+    .replace(/\{\{beneficio\}\}/g, benefit)
     .replace(/\{\{producto_destacado\}\}/g, campaign.product);
 }
 
@@ -233,7 +236,7 @@ export function CampaignsPage() {
     city: "",
     templateId: templates[0].id,
     product: "bombas de condensado y herramientas Super Stars",
-    coupon: "CLIMA10",
+    coupon: DEFAULT_INSTALLER_BENEFIT,
     sendAt: new Date().toISOString().slice(0, 10),
   });
 
@@ -245,7 +248,7 @@ export function CampaignsPage() {
     description: "",
     type: "mixta" as CampaignType,
     product: "bombas de condensado y herramientas Super Stars",
-    coupon: "CLIMA10",
+    coupon: DEFAULT_INSTALLER_BENEFIT,
     subject: "",
     message: "",
   });
@@ -563,12 +566,14 @@ export function CampaignsPage() {
 
   function renderProposalPreview(templateText: string, company: Company) {
     if (!company) return "No hay empresas seleccionadas.";
+    const benefit = proposalForm.coupon || DEFAULT_INSTALLER_BENEFIT;
     return templateText
       .replace(/\{\{nombre_empresa\}\}/g, company.name)
       .replace(/\{\{nombre_contacto\}\}/g, company.contactName || "equipo comercial")
       .replace(/\{\{ciudad\}\}/g, company.city || "su zona")
       .replace(/\{\{tipo_empresa\}\}/g, company.type)
-      .replace(/\{\{cupon\}\}/g, proposalForm.coupon)
+      .replace(/\{\{cupon\}\}/g, benefit)
+      .replace(/\{\{beneficio\}\}/g, benefit)
       .replace(/\{\{producto_destacado\}\}/g, proposalForm.product);
   }
 
@@ -1261,7 +1266,7 @@ export function CampaignsPage() {
                     <input value={form.product} onChange={(event) => setForm({ ...form, product: event.target.value })} />
                   </label>
                   <label>
-                    Cupon
+                    Llamado / beneficio
                     <input value={form.coupon} onChange={(event) => setForm({ ...form, coupon: event.target.value })} />
                   </label>
                   <label>
@@ -1677,7 +1682,7 @@ export function CampaignsPage() {
                       </label>
 
                       <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontWeight: "bold", fontSize: "14px", color: "#40515b" }}>
-                        Cupón Promocional
+                        Llamado / beneficio
                         <input 
                           type="text" 
                           value={proposalForm.coupon} 
@@ -1890,7 +1895,7 @@ export function CampaignsPage() {
                 <li><code>{"{{2}}"}</code>: Nombre del contacto (o "cliente")</li>
                 <li><code>{"{{3}}"}</code>: Ciudad de la empresa (o "su zona")</li>
                 <li><code>{"{{4}}"}</code>: Producto destacado (o vacío)</li>
-                <li><code>{"{{5}}"}</code>: Cupón de descuento (o vacío)</li>
+                <li><code>{"{{5}}"}</code>: Llamado/beneficio, por ejemplo cuenta instalador con 7% de descuento</li>
               </ul>
             </div>
 
