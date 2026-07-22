@@ -223,6 +223,7 @@ export function CampaignsPage() {
   const [sendingCampaign, setSendingCampaign] = useState(false);
   const [sendingResults, setSendingResults] = useState<{ success: number; failed: number; log: string[] } | null>(null);
   const [gmailConnected, setGmailConnected] = useState(false);
+  const [campaignFormError, setCampaignFormError] = useState("");
   const [form, setForm] = useState({
     name: "",
     type: "mixta" as CampaignType,
@@ -819,9 +820,14 @@ export function CampaignsPage() {
 
   async function createCampaign(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    setCampaignFormError("");
     const targetCompanies = previewTargetCompanies;
+    if (!form.name.trim()) {
+      setCampaignFormError("Falta el nombre de la campana. Escribe un nombre para identificarla antes de crearla.");
+      return;
+    }
     if (!targetCompanies.length) {
-      alert("No hay empresas que coincidan con la clasificacion, region y ciudad seleccionadas.");
+      setCampaignFormError("No hay empresas que coincidan con la clasificacion, region y ciudad seleccionadas.");
       return;
     }
     const segmentDescription = describeCampaignSegment({
@@ -831,7 +837,7 @@ export function CampaignsPage() {
     });
     const created: CampaignDraft = {
       id: `cam-${crypto.randomUUID()}`,
-      name: form.name,
+      name: form.name.trim(),
       type: form.type,
       segment: segmentDescription,
       status: "borrador",
@@ -1219,7 +1225,14 @@ export function CampaignsPage() {
                 <div className="form-grid">
                   <label>
                     Nombre
-                    <input required value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+                    <input
+                      value={form.name}
+                      placeholder="Ej: Tecnicos RM julio 2026"
+                      onChange={(event) => {
+                        setCampaignFormError("");
+                        setForm({ ...form, name: event.target.value });
+                      }}
+                    />
                   </label>
                   <label>
                     Tipo
@@ -1331,6 +1344,7 @@ export function CampaignsPage() {
                 {renderAttachmentsEditor(false)}
               </div>
               <div className="form-actions">
+                {campaignFormError ? <p className="gmail-notice error">{campaignFormError}</p> : null}
                 <button className="ghost-button" type="button" onClick={() => setShowForm(false)}>Cancelar</button>
                 <button className="primary-button" type="submit" disabled={!previewTargetCompanies.length}>Crear y revisar</button>
               </div>
