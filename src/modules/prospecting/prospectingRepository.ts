@@ -103,6 +103,16 @@ function normalizeCandidateImportability(
   };
 }
 
+function contactImportableLocationIndexes(candidateLocations: ProspectLocation[], phone: string, email: string): number[] {
+  if (!phone.trim() && !email.trim()) return [];
+  const indexes = candidateLocations
+    .map((location, index) => (location.regionCode && location.comunaCode ? index : -1))
+    .filter((index) => index >= 0);
+  if (!indexes.length) return [];
+  const primaryIndex = candidateLocations.findIndex((location) => location.isPrimary && location.regionCode && location.comunaCode);
+  return [primaryIndex >= 0 ? primaryIndex : indexes[0]];
+}
+
 function filterCompanyTypes(value: unknown): CompanyType[] {
   return Array.from(
     new Set(
@@ -575,7 +585,11 @@ export class ProspectingRepository {
     if (this.mode === "supabase" && supabase) {
       const action = status === "linked" ? "link" : status === "rejected" ? "reject" : status === "approved" ? "approve" : "";
       if (!action) throw new Error("La accion de revision no es valida.");
-      const { data, error } = await supabase.rpc("review_prospect_candidate", {
+      const rpcName =
+        action !== "reject" && current.reviewFlags.includes("contact_only_import")
+          ? "review_contact_prospect_candidate"
+          : "review_prospect_candidate";
+      const { data, error } = await supabase.rpc(rpcName, {
         p_candidate_id: candidateId,
         p_action: action,
         p_company_id: companyId || null,
@@ -815,12 +829,24 @@ function mapCandidate(
   const statusValue = String(association.review_status ?? "pending") as ProspectReviewStatus;
   const snapshotLocations = isSnapshotBacked ? mapCandidateSnapshotLocations(snapshot, association, regions, comunas) : [];
   const candidateLocations = isSnapshotBacked ? snapshotLocations : locationRows.map((row) => mapLocation(row, regions, comunas));
-  const importability = normalizeCandidateImportability(
+  let importability = normalizeCandidateImportability(
     isSnapshotBacked ? snapshot.import_eligible : undefined,
     isSnapshotBacked ? snapshot.importable_location_indexes : undefined,
     isSnapshotBacked ? snapshot.review_flags : undefined,
     candidateLocations.length,
   );
+  const candidatePhone = String(isSnapshotBacked ? snapshot.phone ?? "" : safeEntity.phone ?? "");
+  const candidateEmail = String(isSnapshotBacked ? snapshot.email ?? "" : safeEntity.email ?? "");
+  const contactOnlyIndexes = contactImportableLocationIndexes(candidateLocations, candidatePhone, candidateEmail);
+  if (!importability.importEligible && contactOnlyIndexes.length) {
+    importability = {
+      importEligible: true,
+      importableLocationIndexes: contactOnlyIndexes,
+      reviewFlags: importability.reviewFlags
+        .filter((flag) => !flag.startsWith("location_") && flag !== "insufficient_permanent_evidence")
+        .concat(importability.reviewFlags.includes("contact_only_import") ? [] : ["contact_only_import"]),
+    };
+  }
   return {
     id: String(association.id),
     entityId: String(association.entity_id ?? safeEntity.id ?? ""),
@@ -838,8 +864,8 @@ function mapCandidate(
     companySummary: String(isSnapshotBacked ? snapshot.company_summary ?? "" : safeEntity.company_summary ?? ""),
     companyType: asCompanyType(isSnapshotBacked ? snapshot.category ?? snapshot.company_type : safeEntity.company_type),
     website: String(isSnapshotBacked ? snapshot.website ?? "" : safeEntity.website ?? ""),
-    phone: String(isSnapshotBacked ? snapshot.phone ?? "" : safeEntity.phone ?? ""),
-    email: String(isSnapshotBacked ? snapshot.email ?? "" : safeEntity.email ?? ""),
+    phone: candidatePhone,
+    email: candidateEmail,
     socialMedia: asRecord(isSnapshotBacked ? snapshot.social_media : safeEntity.social_media) as Record<string, string>,
     specialties: arrayOfStrings(isSnapshotBacked ? snapshot.specialties : safeEntity.specialties),
     brands: arrayOfStrings(isSnapshotBacked ? snapshot.brands : safeEntity.brands),

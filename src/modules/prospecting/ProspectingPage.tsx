@@ -1785,6 +1785,9 @@ function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
   if (flag === "official_site_missing") {
     return "No se encontro un sitio oficial util para profundizar. No se consumieron consultas Brave adicionales.";
   }
+  if (flag === "contact_only_import") {
+    return "Sin sitio web, pero habilitado para importar porque tiene contacto comercial y comuna validada.";
+  }
   if (flag === "insufficient_permanent_evidence") {
     return "Falta respaldo permanente para el nombre, el contacto comercial o al menos una ubicación.";
   }
@@ -1840,7 +1843,7 @@ function candidateToCompany(candidate: ProspectCandidate, region: string, city: 
     instagram: "",
     facebook: "",
     whatsapp: "",
-    whatsappNumber: "",
+    whatsappNumber: candidate.phone,
     whatsappOptIn: false,
     lastWhatsAppMessageAt: "",
     whatsappStatus: "sin_consentimiento",
