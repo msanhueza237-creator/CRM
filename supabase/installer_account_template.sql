@@ -12,7 +12,7 @@ values (
   '00000000-0000-4000-9000-000000000004',
   'Invitacion cuenta instalador Clima Activa',
   'Instaladores',
-  'Hola {{nombre_contacto}}, desde Clima Activa queremos invitar a {{nombre_empresa}} a crear una cuenta en climactiva.cl. {{beneficio}} Tambien contamos con stock de {{producto_destacado}} para tus trabajos en {{ciudad}}. Si quieres, te ayudamos a activar la cuenta.',
+  'Hola {{nombre_contacto}}, desde Clima Activa queremos invitar a {{nombre_empresa}} a crear una cuenta de instalador. {{beneficio}} Tambien contamos con stock de {{producto_destacado}} para tus trabajos en {{ciudad}}. Si quieres, te ayudamos a activar la cuenta.',
   true
 )
 on conflict (id) do update

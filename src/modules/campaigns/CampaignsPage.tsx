@@ -66,7 +66,8 @@ const companyTypeFilters: CampaignCompanyTypeFilter[] = [
   "competencia",
   "otro",
 ];
-const DEFAULT_INSTALLER_BENEFIT = "Inscribete en climactiva.cl y accede a un 7% de descuento especial por ser instalador.";
+const INSTALLER_REGISTER_URL = "https://www.climactiva.cl/account/register/wholesale/7d860bbb-d587-465e-a4f9-251620a5b478";
+const DEFAULT_INSTALLER_BENEFIT = `Inscribete aqui: ${INSTALLER_REGISTER_URL} y accede a un 7% de descuento especial por ser instalador.`;
 
 function defaultCampaigns(): CampaignDraft[] {
   return demoCampaigns.map((campaign, index) => ({

@@ -4,6 +4,8 @@ import { useTemplateStore } from "./TemplateStore";
 import type { MessageTemplate } from "../../types/crm";
 
 const variables = ["{{nombre_empresa}}", "{{nombre_contacto}}", "{{ciudad}}", "{{tipo_empresa}}", "{{beneficio}}", "{{cupon}}", "{{producto_destacado}}"];
+const installerBenefitPreview =
+  "Inscribete aqui: https://www.climactiva.cl/account/register/wholesale/7d860bbb-d587-465e-a4f9-251620a5b478 y accede a un 7% de descuento especial por ser instalador.";
 
 const emptyTemplate: Omit<MessageTemplate, "id"> = {
   name: "",
@@ -185,7 +187,7 @@ function renderPreview(body: string) {
     .replace(/\{\{nombre_contacto\}\}/g, "Paula Morales")
     .replace(/\{\{ciudad\}\}/g, "Valparaiso")
     .replace(/\{\{tipo_empresa\}\}/g, "tienda comercial")
-    .replace(/\{\{beneficio\}\}/g, "Inscribete en climactiva.cl y accede a un 7% de descuento especial por ser instalador.")
-    .replace(/\{\{cupon\}\}/g, "Inscribete en climactiva.cl y accede a un 7% de descuento especial por ser instalador.")
+    .replace(/\{\{beneficio\}\}/g, installerBenefitPreview)
+    .replace(/\{\{cupon\}\}/g, installerBenefitPreview)
     .replace(/\{\{producto_destacado\}\}/g, "bombas de condensado");
 }
