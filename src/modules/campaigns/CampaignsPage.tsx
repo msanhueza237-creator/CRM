@@ -5,7 +5,7 @@ import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
 import { useCompanyStore } from "../companies/CompanyStore";
 import { useTemplateStore } from "../templates/TemplateStore";
-import { getGmailStatus, sendGmailCampaign } from "../../lib/gmailApi";
+import { getGmailStatus, sendGmailCampaign, syncGmailReplies } from "../../lib/gmailApi";
 import { chileData, normalizeString } from "../../data/chileData";
 import type { Campaign, CampaignStatus, CampaignType, Company, CompanyType, MessageTemplate } from "../../types/crm";
 
@@ -248,6 +248,7 @@ export function CampaignsPage() {
   const [sendingCampaign, setSendingCampaign] = useState(false);
   const [sendingResults, setSendingResults] = useState<{ success: number; failed: number; log: string[] } | null>(null);
   const [gmailConnected, setGmailConnected] = useState(false);
+  const [syncingReplies, setSyncingReplies] = useState(false);
   const [campaignFormError, setCampaignFormError] = useState("");
   const [form, setForm] = useState({
     name: "",
@@ -738,7 +739,7 @@ export function CampaignsPage() {
           supabase!.from("campaigns").select("*").order("created_at", { ascending: false }),
           supabase!.from("campaign_recipients").select("*"),
           supabase!.from("email_campaigns").select("id,name,segment_filters,status,created_at"),
-          supabase!.from("email_campaign_recipients").select("campaign_id,company_id,status,sent_at,error_message"),
+          supabase!.from("email_campaign_recipients").select("campaign_id,company_id,status,sent_at,replied_at,error_message"),
         ]);
 
       if (!campaignsError && campaignsData) {
@@ -796,28 +797,33 @@ export function CampaignsPage() {
         });
 
         const sentEmailCompanyIdsByCampaignId = new Map<string, Set<string>>();
+        const repliedEmailCompanyIdsByCampaignId = new Map<string, Set<string>>();
         mappedCampaigns.forEach((campaign) => {
           const emailCampaignIds = emailCampaignIdsByCrmCampaignId.get(campaign.id) ?? emailCampaignIdsByName.get(normalizeString(campaign.name)) ?? new Set<string>();
           if (!emailCampaignIds.size) return;
           const sent = new Set<string>();
+          const replied = new Set<string>();
           emailRecipientRows.forEach((row) => {
             if (!emailCampaignIds.has(String(row.campaign_id ?? ""))) return;
             const companyId = String(row.company_id ?? "");
             if (!companyId) return;
             if (String(row.status ?? "") === "sent" || row.sent_at) sent.add(companyId);
+            if (row.replied_at) replied.add(companyId);
           });
           sentEmailCompanyIdsByCampaignId.set(campaign.id, sent);
+          repliedEmailCompanyIdsByCampaignId.set(campaign.id, replied);
         });
 
         const campaignsWithRecipients = mappedCampaigns.map((campaign) => {
           const campaignRows = mappedRecipients.filter((recipient) => recipient.campaignId === campaign.id);
           const sentByGmail = sentEmailCompanyIdsByCampaignId.get(campaign.id) ?? new Set<string>();
+          const repliedByGmail = repliedEmailCompanyIdsByCampaignId.get(campaign.id) ?? new Set<string>();
           return {
             ...campaign,
             recipientIds: campaignRows.map((recipient) => recipient.companyId),
             recipients: campaignRows.length,
             sent: campaignRows.filter((recipient) => recipient.sent || sentByGmail.has(recipient.companyId)).length,
-            replied: campaignRows.filter((recipient) => recipient.replied).length,
+            replied: campaignRows.filter((recipient) => recipient.replied || repliedByGmail.has(recipient.companyId)).length,
             interested: campaignRows.filter((recipient) => recipient.interested).length,
             discarded: campaignRows.filter((recipient) => recipient.discarded).length,
           };
@@ -826,6 +832,7 @@ export function CampaignsPage() {
         const mergedRecipients = mappedRecipients.map((recipient) => ({
           ...recipient,
           sent: recipient.sent || Boolean(sentEmailCompanyIdsByCampaignId.get(recipient.campaignId)?.has(recipient.companyId)),
+          replied: recipient.replied || Boolean(repliedEmailCompanyIdsByCampaignId.get(recipient.campaignId)?.has(recipient.companyId)),
         }));
 
         setCampaigns(campaignsWithRecipients);
@@ -1282,6 +1289,46 @@ export function CampaignsPage() {
     }
   }
 
+  async function syncRepliesFromGmail() {
+    if (!selectedCampaign || !gmailConnected) return;
+    setSyncingReplies(true);
+    setSendingResults(null);
+
+    try {
+      const data = await syncGmailReplies();
+      const selectedName = normalizeString(selectedCampaign.name);
+      const repliesForSelected = data.replies.filter(
+        (reply) => reply.campaignId === selectedCampaign.id || normalizeString(reply.campaignName) === selectedName,
+      );
+      const repliedCompanyIds = new Set(repliesForSelected.map((reply) => reply.companyId).filter(Boolean));
+
+      if (repliedCompanyIds.size) {
+        const nextRecipients = recipients.map((recipient) =>
+          recipient.campaignId === selectedCampaign.id && repliedCompanyIds.has(recipient.companyId)
+            ? { ...recipient, replied: true }
+            : recipient,
+        );
+        persistRecipients(nextRecipients);
+      }
+
+      setSendingResults({
+        success: repliesForSelected.length,
+        failed: 0,
+        log: repliesForSelected.length
+          ? repliesForSelected.map((reply) => `${reply.fromEmail}: respondió "${reply.subject || selectedCampaign.name}"`)
+          : [`Se revisaron ${data.checked} correos enviados. No hay respuestas nuevas para esta campaña.`],
+      });
+    } catch (error) {
+      setSendingResults({
+        success: 0,
+        failed: 1,
+        log: [error instanceof Error ? error.message : "No se pudieron sincronizar respuestas Gmail."],
+      });
+    } finally {
+      setSyncingReplies(false);
+    }
+  }
+
   function updateRecipient(companyId: string, field: keyof Omit<RecipientState, "campaignId" | "companyId">) {
     if (!selectedCampaign) return;
     const existing = recipients.find((recipient) => recipient.campaignId === selectedCampaign.id && recipient.companyId === companyId);
@@ -1594,16 +1641,28 @@ export function CampaignsPage() {
                       </button>
                     )}
                     {["email", "mixta"].includes(selectedCampaign.type) && (
-                      <button
-                        className="primary-button"
-                        type="button"
-                        onClick={executeGmailCampaign}
-                        disabled={sendingCampaign || !gmailConnected}
-                        title={gmailConnected ? undefined : "Gmail no esta conectado. Ve a Administracion para conectar."}
-                      >
-                        <Send size={18} />
-                        {sendingCampaign ? "Enviando..." : gmailConnected ? "Enviar via Gmail API" : "Gmail desconectado"}
-                      </button>
+                      <>
+                        <button
+                          className="primary-button"
+                          type="button"
+                          onClick={executeGmailCampaign}
+                          disabled={sendingCampaign || !gmailConnected}
+                          title={gmailConnected ? undefined : "Gmail no esta conectado. Ve a Administracion para conectar."}
+                        >
+                          <Send size={18} />
+                          {sendingCampaign ? "Enviando..." : gmailConnected ? "Enviar via Gmail API" : "Gmail desconectado"}
+                        </button>
+                        <button
+                          className="ghost-button"
+                          type="button"
+                          onClick={syncRepliesFromGmail}
+                          disabled={syncingReplies || !gmailConnected}
+                          title={gmailConnected ? "Busca respuestas de clientes en Gmail y actualiza esta campana." : "Gmail no esta conectado. Ve a Administracion para conectar."}
+                        >
+                          <CheckCircle2 size={18} />
+                          {syncingReplies ? "Sincronizando..." : "Sincronizar respuestas Gmail"}
+                        </button>
+                      </>
                     )}
                     <button className="ghost-button" type="button" onClick={() => updateCampaignStatus("pausada")}>
                       <XCircle size={18} />

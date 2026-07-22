@@ -53,6 +53,7 @@ function jsonHeaders(req?: Request): Record<string, string> {
 }
 
 const gmailSendScope = "https://www.googleapis.com/auth/gmail.send";
+const gmailReadScope = "https://www.googleapis.com/auth/gmail.readonly";
 const identityScopes = "openid email";
 
 function createSupabaseRestClient(baseUrl: string, serviceRoleKey: string) {
@@ -228,6 +229,7 @@ Deno.serve(async (req) => {
     if (route === "disconnect" && req.method === "POST") return handleDisconnect(supabase, user, req);
     if ((route === "send-test" || route === "test-send") && req.method === "POST") return handleSendTest(req, supabase, user);
     if (route === "send-campaign" && req.method === "POST") return handleSendCampaign(req, supabase, user);
+    if (route === "sync-replies" && req.method === "POST") return handleSyncReplies(supabase, user, req);
 
     return json({ error: "Route not found" }, 404, req);
   } catch (error) {
@@ -259,7 +261,7 @@ async function handleAuth(url: URL, supabase: SupabaseClient, user: Authenticate
     access_type: "offline",
     prompt: "consent",
     include_granted_scopes: "false",
-    scope: `${gmailSendScope} ${identityScopes}`,
+    scope: `${gmailSendScope} ${gmailReadScope} ${identityScopes}`,
     state,
     login_hint: sender,
   });
@@ -584,6 +586,108 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
     .eq("id", campaign.id);
 
   return json({ success: failed === 0, campaignId: campaign.id, sent, failed, log }, 200, req);
+}
+
+async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedUser, req: Request) {
+  const integration = await getIntegration(supabase, true);
+  if (!integration.refresh_token_encrypted) throw new HttpError("Gmail no esta conectado.", 400);
+
+  const refreshToken = await decryptSecret(integration.refresh_token_encrypted);
+  const accessToken = await refreshAccessToken(refreshToken);
+  const connectedEmail = String(integration.connected_email || "").toLowerCase();
+
+  const { data: recipientRows, error: recipientError } = await supabase
+    .from("email_campaign_recipients")
+    .select("id,campaign_id,company_id,contact_email,status,sent_at,replied_at,gmail_message_id")
+    .eq("status", "sent")
+    .is("replied_at", null)
+    .not("gmail_message_id", "is", "null")
+    .order("sent_at", { ascending: false })
+    .limit(100);
+
+  if (recipientError) throw new HttpError(recipientError.message, 400);
+
+  const recipients = Array.isArray(recipientRows) ? recipientRows as Array<Record<string, unknown>> : [];
+  const campaignIds = Array.from(new Set(recipients.map((row) => String(row.campaign_id || "")).filter(Boolean)));
+  const { data: campaignRows } = campaignIds.length
+    ? await supabase.from("email_campaigns").select("id,name,subject,segment_filters").in("id", campaignIds)
+    : { data: [] };
+  const campaignsById = new Map((Array.isArray(campaignRows) ? campaignRows : []).map((row: Record<string, unknown>) => [String(row.id), row]));
+
+  const replies: Array<{
+    campaignId: string;
+    campaignName: string;
+    companyId: string;
+    fromEmail: string;
+    subject: string;
+    receivedAt: string;
+  }> = [];
+  const log: string[] = [];
+
+  for (const recipient of recipients) {
+    const sentMessageId = String(recipient.gmail_message_id || "");
+    const companyId = String(recipient.company_id || "");
+    const emailCampaignId = String(recipient.campaign_id || "");
+    const emailCampaign = campaignsById.get(emailCampaignId) || {};
+    const segmentFilters = asObject(emailCampaign.segment_filters);
+    const crmCampaignId = String(segmentFilters.crm_campaign_id || "");
+    const campaignName = String(emailCampaign.name || "");
+
+    if (!sentMessageId || !companyId) continue;
+
+    try {
+      const sentMessage = await getGmailMessageMetadata(accessToken, sentMessageId);
+      const threadId = String(sentMessage.threadId || "");
+      if (!threadId) continue;
+
+      const reply = await findCustomerReplyInThread(accessToken, {
+        threadId,
+        sentMessageId,
+        sentInternalDate: Number(sentMessage.internalDate || 0),
+        connectedEmail,
+      });
+
+      if (!reply) continue;
+
+      const repliedAt = new Date(reply.internalDate || Date.now()).toISOString();
+      await supabase
+        .from("email_campaign_recipients")
+        .update({ replied_at: repliedAt })
+        .eq("id", recipient.id);
+
+      if (crmCampaignId) {
+        await supabase
+          .from("campaign_recipients")
+          .update({ replied_at: repliedAt })
+          .eq("campaign_id", crmCampaignId)
+          .eq("company_id", companyId);
+      }
+
+      await supabase.from("interactions").insert({
+        company_id: companyId,
+        type: "correo",
+        description: `Respuesta recibida por Gmail desde ${reply.fromEmail || recipient.contact_email || "cliente"}.\n\nAsunto: ${reply.subject || campaignName}\n\n${reply.snippet || "Respuesta detectada en el hilo de la campaña."}`,
+        result: "respondio",
+        next_action: "Revisar respuesta y definir seguimiento comercial.",
+        related_url: `https://mail.google.com/mail/u/0/#inbox/${reply.messageId}`,
+        occurred_at: repliedAt,
+      });
+
+      replies.push({
+        campaignId: crmCampaignId,
+        campaignName,
+        companyId,
+        fromEmail: reply.fromEmail,
+        subject: reply.subject,
+        receivedAt: repliedAt,
+      });
+      log.push(`${recipient.contact_email || reply.fromEmail}: respondio`);
+    } catch (error) {
+      log.push(`${recipient.contact_email || sentMessageId}: ${error instanceof Error ? error.message : "no se pudo revisar"}`);
+    }
+  }
+
+  return json({ checked: recipients.length, replies, log }, 200, req);
 }
 
 async function sendTrackedEmail(
@@ -937,6 +1041,71 @@ async function updateRecipientFailure(supabase: SupabaseClient, recipientId: str
     .eq("id", recipientId);
 }
 
+async function getGmailMessageMetadata(accessToken: string, messageId: string) {
+  const params = new URLSearchParams({ format: "metadata" });
+  ["From", "To", "Subject", "Date", "Message-ID", "In-Reply-To", "References"].forEach((header) => {
+    params.append("metadataHeaders", header);
+  });
+  const res = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?${params.toString()}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new HttpError(data.error?.message || "No se pudo leer el mensaje enviado en Gmail.", 400);
+  return data as Record<string, unknown>;
+}
+
+async function findCustomerReplyInThread(
+  accessToken: string,
+  input: { threadId: string; sentMessageId: string; sentInternalDate: number; connectedEmail: string },
+) {
+  const params = new URLSearchParams({ format: "metadata" });
+  ["From", "Subject", "Date"].forEach((header) => params.append("metadataHeaders", header));
+  const res = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(input.threadId)}?${params.toString()}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new HttpError(data.error?.message || "No se pudo leer el hilo Gmail.", 400);
+
+  const messages = Array.isArray(data.messages) ? data.messages as Array<Record<string, unknown>> : [];
+  const candidates = messages
+    .filter((message) => String(message.id || "") !== input.sentMessageId)
+    .map((message) => {
+      const internalDate = Number(message.internalDate || 0);
+      const fromHeader = getGmailHeader(message, "From");
+      const fromEmail = extractEmailAddress(fromHeader).toLowerCase();
+      return {
+        messageId: String(message.id || ""),
+        internalDate,
+        fromEmail,
+        subject: getGmailHeader(message, "Subject"),
+        snippet: String(message.snippet || ""),
+      };
+    })
+    .filter((message) =>
+      message.messageId &&
+      message.internalDate > input.sentInternalDate &&
+      message.fromEmail &&
+      message.fromEmail !== input.connectedEmail,
+    )
+    .sort((left, right) => left.internalDate - right.internalDate);
+
+  return candidates[0] || null;
+}
+
+function getGmailHeader(message: Record<string, unknown>, name: string) {
+  const payload = asObject(message.payload);
+  const headers = Array.isArray(payload.headers) ? payload.headers as Array<Record<string, unknown>> : [];
+  const header = headers.find((item) => String(item.name || "").toLowerCase() === name.toLowerCase());
+  return String(header?.value || "");
+}
+
+function extractEmailAddress(value: string) {
+  const match = value.match(/<([^>]+)>/);
+  return (match?.[1] || value).trim().replace(/^mailto:/i, "");
+}
+
 async function logGmailTestAttempt(
   supabase: SupabaseClient,
   input: {
@@ -970,6 +1139,10 @@ function renderVariables(template: string, variables: Record<string, string>) {
     const value = variables[key.trim()];
     return value === undefined ? "" : value;
   });
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function getRoute(url: URL) {

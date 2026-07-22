@@ -47,6 +47,19 @@ export interface GmailCampaignResult {
   log: string[];
 }
 
+export interface GmailReplySyncResult {
+  checked: number;
+  replies: {
+    campaignId: string;
+    campaignName: string;
+    companyId: string;
+    fromEmail: string;
+    subject: string;
+    receivedAt: string;
+  }[];
+  log: string[];
+}
+
 export interface GmailTestResult {
   success: boolean;
   message: string;
@@ -150,4 +163,8 @@ export async function sendGmailTest(toEmail: string): Promise<GmailTestResult> {
 
 export async function sendGmailCampaign(payload: GmailCampaignPayload): Promise<GmailCampaignResult> {
   return callGmail<GmailCampaignResult>("send-campaign", { method: "POST", body: payload });
+}
+
+export async function syncGmailReplies(): Promise<GmailReplySyncResult> {
+  return callGmail<GmailReplySyncResult>("sync-replies", { method: "POST", body: {} });
 }
