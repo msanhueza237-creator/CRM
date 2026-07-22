@@ -805,6 +805,7 @@ export function CampaignsPage() {
   );
   const previewWithEmail = previewTargetCompanies.filter((company) => company.email).length;
   const previewWithWhatsApp = previewTargetCompanies.filter((company) => company.whatsapp || company.phone).length;
+  const previewVisibleCompanies = previewTargetCompanies.slice(0, 50);
 
   function persistCampaigns(nextCampaigns: CampaignDraft[]) {
     setCampaigns(nextCampaigns);
@@ -1279,6 +1280,53 @@ export function CampaignsPage() {
                     {["email", "mixta"].includes(form.type) ? ` Con email: ${previewWithEmail}.` : ""}
                     {["WhatsApp", "mixta"].includes(form.type) ? ` Con WhatsApp/telefono: ${previewWithWhatsApp}.` : ""}
                   </p>
+                </div>
+                <div className="panel" style={{ marginTop: "16px", padding: "14px", background: "#ffffff" }}>
+                  <div className="panel-heading" style={{ marginBottom: "10px" }}>
+                    <h2 style={{ fontSize: "16px" }}>Empresas seleccionadas automaticamente</h2>
+                    <span>{previewTargetCompanies.length} empresa{previewTargetCompanies.length === 1 ? "" : "s"}</span>
+                  </div>
+                  {previewTargetCompanies.length ? (
+                    <>
+                      <div className="table-wrap" style={{ maxHeight: "320px", overflow: "auto" }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Empresa</th>
+                              <th>Tipo</th>
+                              <th>Ubicacion</th>
+                              <th>Email</th>
+                              <th>WhatsApp/telefono</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {previewVisibleCompanies.map((company) => (
+                              <tr key={company.id}>
+                                <td>
+                                  <strong>{company.name}</strong>
+                                  {company.legalName ? <small>{company.legalName}</small> : null}
+                                </td>
+                                <td>{company.type}</td>
+                                <td>
+                                  {company.city || "Sin comuna"}
+                                  <small>{company.region || "Sin region"}</small>
+                                </td>
+                                <td>{company.email || <span className="muted">Sin email</span>}</td>
+                                <td>{company.whatsapp || company.phone || <span className="muted">Sin telefono</span>}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {previewTargetCompanies.length > previewVisibleCompanies.length ? (
+                        <p className="muted" style={{ marginTop: "10px" }}>
+                          Mostrando las primeras {previewVisibleCompanies.length}. Al crear la campana se agregaran las {previewTargetCompanies.length} empresas del filtro.
+                        </p>
+                      ) : null}
+                    </>
+                  ) : (
+                    <p className="muted">No hay empresas que coincidan con estos filtros.</p>
+                  )}
                 </div>
                 {renderAttachmentsEditor(false)}
               </div>
