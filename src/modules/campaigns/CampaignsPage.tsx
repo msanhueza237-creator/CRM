@@ -33,6 +33,7 @@ interface RecipientState {
   replyBody?: string;
   replyReceivedAt?: string;
   replyGmailMessageId?: string;
+  replyGmailUrl?: string;
 }
 
 type Row = Record<string, unknown>;
@@ -93,6 +94,24 @@ function isInstallerAccountTemplate(template?: MessageTemplate) {
   if (!template) return false;
   const text = `${template.id} ${template.name} ${template.body}`.toLowerCase();
   return text.includes("cuenta instalador") || text.includes("cuenta de instalador") || text.includes(INSTALLER_REGISTER_URL);
+}
+
+function canReceiveInstallerBenefit(company: Company) {
+  return company.type === "tecnico" || company.type === "instalador grande";
+}
+
+function getCampaignBenefitForCompany(campaign: CampaignDraft, company: Company) {
+  return canReceiveInstallerBenefit(company) ? campaign.coupon || "" : "";
+}
+
+function cleanEmptyBenefitText(message: string) {
+  return message
+    .replace(/^\s*(Cup[oó]n de referencia|Beneficio|Llamado \/ beneficio):\s*$/gim, "")
+    .replace(/^\s*Recuerda que tienes habilitado tu c[oó]digo de descuento\s+para tu pr[oó]xima facturaci[oó]n\.\s*$/gim, "")
+    .replace(/^\s*Adem[aá]s, habilitamos el beneficio especial\s+para que puedas concretar tu proyecto con un descuento extra\.\s*$/gim, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function defaultCampaigns(): CampaignDraft[] {
@@ -224,15 +243,15 @@ function describeCampaignSegment(filters: { companyType: CampaignCompanyTypeFilt
 }
 
 function renderMessage(template: MessageTemplate, company: Company, campaign: CampaignDraft) {
-  const benefit = campaign.coupon || "";
-  return template.body
+  const benefit = getCampaignBenefitForCompany(campaign, company);
+  return cleanEmptyBenefitText(template.body
     .replace(/\{\{nombre_empresa\}\}/g, company.name)
     .replace(/\{\{nombre_contacto\}\}/g, company.contactName || "equipo comercial")
     .replace(/\{\{ciudad\}\}/g, company.city || "su zona")
     .replace(/\{\{tipo_empresa\}\}/g, company.type)
     .replace(/\{\{cupon\}\}/g, benefit)
     .replace(/\{\{beneficio\}\}/g, benefit)
-    .replace(/\{\{producto_destacado\}\}/g, campaign.product);
+    .replace(/\{\{producto_destacado\}\}/g, campaign.product));
 }
 
 export function CampaignsPage() {
@@ -595,15 +614,15 @@ export function CampaignsPage() {
 
   function renderProposalPreview(templateText: string, company: Company) {
     if (!company) return "No hay empresas seleccionadas.";
-    const benefit = proposalForm.coupon || DEFAULT_INSTALLER_BENEFIT;
-    return templateText
+    const benefit = canReceiveInstallerBenefit(company) ? proposalForm.coupon || DEFAULT_INSTALLER_BENEFIT : "";
+    return cleanEmptyBenefitText(templateText
       .replace(/\{\{nombre_empresa\}\}/g, company.name)
       .replace(/\{\{nombre_contacto\}\}/g, company.contactName || "equipo comercial")
       .replace(/\{\{ciudad\}\}/g, company.city || "su zona")
       .replace(/\{\{tipo_empresa\}\}/g, company.type)
       .replace(/\{\{cupon\}\}/g, benefit)
       .replace(/\{\{beneficio\}\}/g, benefit)
-      .replace(/\{\{producto_destacado\}\}/g, proposalForm.product);
+      .replace(/\{\{producto_destacado\}\}/g, proposalForm.product));
   }
 
   async function saveProposedCampaign() {
@@ -685,13 +704,17 @@ export function CampaignsPage() {
           const recipientsToInsert = targetCompanies.map((c) => ({
             campaign_id: dbCampaign.id,
             company_id: c.id,
-            rendered_message: proposalForm.message
-              .replace(/\{\{nombre_empresa\}\}/g, c.name)
-              .replace(/\{\{nombre_contacto\}\}/g, c.contactName || "equipo comercial")
-              .replace(/\{\{ciudad\}\}/g, c.city || "su zona")
-              .replace(/\{\{tipo_empresa\}\}/g, c.type)
-              .replace(/\{\{cupon\}\}/g, newCampaign.coupon)
-              .replace(/\{\{producto_destacado\}\}/g, newCampaign.product),
+            rendered_message: renderMessage(
+              {
+                id: "proposal-preview",
+                name: newCampaign.name,
+                category: newCampaign.type,
+                body: proposalForm.message,
+                active: true,
+              },
+              c,
+              newCampaign,
+            ),
           }));
 
           const { error: recipientsError } = await supabase.from("campaign_recipients").insert(recipientsToInsert);
@@ -745,7 +768,7 @@ export function CampaignsPage() {
           supabase!.from("campaigns").select("*").order("created_at", { ascending: false }),
           supabase!.from("campaign_recipients").select("*"),
           supabase!.from("email_campaigns").select("id,name,segment_filters,status,created_at"),
-          supabase!.from("email_campaign_recipients").select("campaign_id,company_id,status,sent_at,replied_at,reply_from_email,reply_subject,reply_snippet,reply_body,reply_gmail_message_id,error_message"),
+          supabase!.from("email_campaign_recipients").select("campaign_id,company_id,status,sent_at,replied_at,reply_from_email,reply_subject,reply_snippet,reply_body,reply_gmail_message_id,reply_gmail_url,error_message"),
         ]);
 
       if (!campaignsError && campaignsData) {
@@ -822,6 +845,7 @@ export function CampaignsPage() {
                 replyBody: String(row.reply_body ?? ""),
                 replyReceivedAt: String(row.replied_at ?? ""),
                 replyGmailMessageId: String(row.reply_gmail_message_id ?? ""),
+                replyGmailUrl: String(row.reply_gmail_url ?? ""),
               });
             }
           });
@@ -1165,6 +1189,16 @@ export function CampaignsPage() {
     setSendingCampaign(true);
     setSendingResults(null);
 
+    if (selectedTemplate && isInstallerAccountTemplate(selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
+      setSendingResults({
+        success: 0,
+        failed: selectedCompanies.length,
+        log: ["Campana bloqueada: la plantilla de cuenta instalador solo se puede usar con empresas tipo tecnico o instalador grande."],
+      });
+      setSendingCampaign(false);
+      return;
+    }
+
     const mappedRecipients = selectedCompanies.map((company) => {
       const phone = company.whatsapp || company.phone || "";
       return {
@@ -1175,7 +1209,7 @@ export function CampaignsPage() {
           company.contactName || "cliente",
           company.city || "su zona",
           selectedCampaign.product || "",
-          selectedCampaign.coupon || ""
+          getCampaignBenefitForCompany(selectedCampaign, company)
         ]
       };
     }).filter((r) => r.phone);
@@ -1244,20 +1278,33 @@ export function CampaignsPage() {
   async function executeGmailCampaign() {
     if (!selectedCampaign || !selectedTemplate || !isSupabaseConfigured || !supabase) return;
 
+    if (isInstallerAccountTemplate(selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
+      setSendingResults({
+        success: 0,
+        failed: selectedCompanies.length,
+        log: ["Campana bloqueada: la plantilla de cuenta instalador solo se puede usar con empresas tipo tecnico o instalador grande."],
+      });
+      return;
+    }
+
     const emailRecipients = selectedCompanies
       .filter((company) => company.email)
-      .map((company) => ({
-        companyId: company.id,
-        toEmail: company.email,
-        variables: {
-          nombre_empresa: company.name,
-          nombre_contacto: company.contactName || "equipo comercial",
-          ciudad: company.city || "su zona",
-          tipo_empresa: company.type,
-          producto_destacado: selectedCampaign.product || "",
-          cupon: selectedCampaign.coupon || "",
-        },
-      }));
+      .map((company) => {
+        const benefit = getCampaignBenefitForCompany(selectedCampaign, company);
+        return {
+          companyId: company.id,
+          toEmail: company.email,
+          variables: {
+            nombre_empresa: company.name,
+            nombre_contacto: company.contactName || "equipo comercial",
+            ciudad: company.city || "su zona",
+            tipo_empresa: company.type,
+            producto_destacado: selectedCampaign.product || "",
+            cupon: benefit,
+            beneficio: benefit,
+          },
+        };
+      });
 
     if (!emailRecipients.length) {
       setSendingResults({
@@ -1287,7 +1334,7 @@ export function CampaignsPage() {
           segment: selectedCampaign.segment,
           type: selectedCampaign.type,
           product: selectedCampaign.product,
-          coupon: selectedCampaign.coupon,
+          coupon: selectedCompanies.every(canReceiveInstallerBenefit) ? selectedCampaign.coupon : "",
         },
         recipients: emailRecipients,
         attachments: selectedCampaign.attachments || [],
@@ -1342,6 +1389,7 @@ export function CampaignsPage() {
                         replyBody: reply.body,
                         replyReceivedAt: reply.receivedAt,
                         replyGmailMessageId: reply.gmailMessageId,
+                        replyGmailUrl: reply.gmailUrl,
                       }
                     : {};
                 })(),
@@ -1744,7 +1792,7 @@ export function CampaignsPage() {
                           {recipient.replyGmailMessageId ? (
                             <a
                               className="ghost-button"
-                              href={`https://mail.google.com/mail/u/0/#inbox/${recipient.replyGmailMessageId}`}
+                              href={recipient.replyGmailUrl || `https://mail.google.com/mail/u/msanhueza%40latinchile.cl/#inbox/${recipient.replyGmailMessageId}`}
                               target="_blank"
                               rel="noreferrer"
                               style={{ textDecoration: "none" }}

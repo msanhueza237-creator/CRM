@@ -58,6 +58,7 @@ export interface GmailReplySyncResult {
     snippet: string;
     body: string;
     gmailMessageId: string;
+    gmailUrl: string;
     receivedAt: string;
   }[];
   log: string[];

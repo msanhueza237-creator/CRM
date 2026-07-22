@@ -620,6 +620,10 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
     companyId: string;
     fromEmail: string;
     subject: string;
+    snippet: string;
+    body: string;
+    gmailMessageId: string;
+    gmailUrl: string;
     receivedAt: string;
   }> = [];
   const log: string[] = [];
@@ -650,6 +654,7 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
       if (!reply) continue;
 
       const repliedAt = new Date(reply.internalDate || Date.now()).toISOString();
+      const gmailUrl = buildGmailMessageUrl(reply.messageId, connectedEmail);
       await supabase
         .from("email_campaign_recipients")
         .update({
@@ -659,6 +664,7 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
           reply_snippet: reply.snippet || null,
           reply_body: reply.body || null,
           reply_gmail_message_id: reply.messageId || null,
+          reply_gmail_url: gmailUrl,
         })
         .eq("id", recipient.id);
 
@@ -676,7 +682,7 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
         description: `Respuesta recibida por Gmail desde ${reply.fromEmail || recipient.contact_email || "cliente"}.\n\nAsunto: ${reply.subject || campaignName}\n\n${reply.body || reply.snippet || "Respuesta detectada en el hilo de la campaña."}`,
         result: "respondio",
         next_action: "Revisar respuesta y definir seguimiento comercial.",
-        related_url: `https://mail.google.com/mail/u/0/#inbox/${reply.messageId}`,
+        related_url: gmailUrl,
         occurred_at: repliedAt,
       });
 
@@ -689,6 +695,7 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
         snippet: reply.snippet,
         body: reply.body,
         gmailMessageId: reply.messageId,
+        gmailUrl,
         receivedAt: repliedAt,
       });
       log.push(`${recipient.contact_email || reply.fromEmail}: respondio`);
@@ -1049,6 +1056,11 @@ async function updateRecipientFailure(supabase: SupabaseClient, recipientId: str
     .from("email_campaign_recipients")
     .update({ status: "failed", error_message: errorMessage })
     .eq("id", recipientId);
+}
+
+function buildGmailMessageUrl(messageId: string, connectedEmail: string) {
+  const account = encodeURIComponent(connectedEmail || "msanhueza@latinchile.cl");
+  return `https://mail.google.com/mail/u/${account}/#inbox/${encodeURIComponent(messageId)}`;
 }
 
 async function getGmailMessageMetadata(accessToken: string, messageId: string) {

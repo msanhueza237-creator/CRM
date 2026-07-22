@@ -7,7 +7,8 @@ alter table public.email_campaign_recipients
   add column if not exists reply_subject text,
   add column if not exists reply_snippet text,
   add column if not exists reply_body text,
-  add column if not exists reply_gmail_message_id text;
+  add column if not exists reply_gmail_message_id text,
+  add column if not exists reply_gmail_url text;
 
 create index if not exists email_campaign_recipients_replied_at_idx
   on public.email_campaign_recipients(replied_at desc)
@@ -22,3 +23,6 @@ comment on column public.email_campaign_recipients.replied_at is
 
 comment on column public.email_campaign_recipients.reply_body is
   'Texto limpio y acotado de la respuesta detectada por Gmail; el hilo completo queda en Gmail.';
+
+comment on column public.email_campaign_recipients.reply_gmail_url is
+  'URL directa al mensaje en Gmail usando la cuenta conectada msanhueza@latinchile.cl.';
