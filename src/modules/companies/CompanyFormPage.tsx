@@ -61,7 +61,7 @@ export function CompanyFormPage() {
 
   useEffect(() => {
     if (!form.address || (form.region && form.city)) return;
-    const inferred = inferLocationFromText(`${form.address} ${form.city} ${form.region}`);
+    const inferred = inferLocationFromText(form.address);
     if (!inferred) return;
     setForm((current) => {
       const nextRegion = current.region || inferred.region;
@@ -81,7 +81,7 @@ export function CompanyFormPage() {
     event.preventDefault();
     setSaving(true);
     setSaveError("");
-    const inferred = inferLocationFromText(`${form.address} ${form.city} ${form.region}`);
+    const inferred = inferLocationFromText(form.address);
     const payload: Omit<Company, "id"> = {
       ...form,
       region: form.region || inferred?.region || "",

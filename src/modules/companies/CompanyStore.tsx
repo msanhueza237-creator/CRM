@@ -219,26 +219,38 @@ function canonicalCompanyLocation({
 }) {
   const normalizedRegion = normalizeString(region);
   const normalizedCity = normalizeString(city);
-  const normalizedText = normalizeString([address, city, region].filter(Boolean).join(" "));
-  let canonicalRegion = "";
+  const normalizedAddress = normalizeString(address);
+  const regionMatch = chileData.find((item) => {
+    const itemRegion = normalizeString(item.region);
+    return (
+      normalizedRegion &&
+      (itemRegion === normalizedRegion ||
+        itemRegion.includes(normalizedRegion) ||
+        normalizedRegion.includes(itemRegion))
+    );
+  });
+
+  if (normalizedCity) {
+    for (const item of chileData) {
+      const comuna = item.comunas.find((name) => normalizeString(name) === normalizedCity);
+      if (comuna) {
+        return {
+          region: item.region,
+          city: comuna,
+        };
+      }
+    }
+  }
+
+  let canonicalRegion = regionMatch?.region ?? "";
   let canonicalCity = "";
   let bestCityScore = 0;
 
   for (const item of chileData) {
-    const itemRegion = normalizeString(item.region);
-    const regionMatches =
-      normalizedRegion &&
-      (itemRegion === normalizedRegion ||
-        itemRegion.includes(normalizedRegion) ||
-        normalizedRegion.includes(itemRegion));
-
-    if (regionMatches) canonicalRegion = item.region;
-
     for (const comuna of item.comunas) {
       const itemCity = normalizeString(comuna);
-      const cityMatches = normalizedCity && itemCity === normalizedCity;
-      const addressMatches = normalizedText && normalizedText.includes(itemCity);
-      if ((cityMatches || addressMatches) && itemCity.length > bestCityScore) {
+      const addressMatches = normalizedAddress && normalizedAddress.includes(itemCity);
+      if (addressMatches && itemCity.length > bestCityScore) {
         bestCityScore = itemCity.length;
         canonicalRegion = item.region;
         canonicalCity = comuna;
@@ -246,9 +258,9 @@ function canonicalCompanyLocation({
     }
   }
 
-  if (!canonicalRegion && /metropolitanadesantiago|regionmetropolitana|santiago/.test(normalizedText)) {
+  if (!canonicalRegion && /metropolitanadesantiago|regionmetropolitana|santiago/.test(normalizedAddress || normalizedRegion)) {
     canonicalRegion = chileData.find((item) => normalizeString(item.region).includes("metropolitana"))?.region ?? region;
-    canonicalCity = canonicalCity || "Santiago";
+    canonicalCity = canonicalCity || (normalizedAddress.includes("santiago") ? "Santiago" : "");
   }
 
   return {

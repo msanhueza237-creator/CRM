@@ -91,7 +91,7 @@ begin
         end as region_name
       from public.companies company
       join public.geo_comunas comuna
-        on public.normalize_prospect_text(concat_ws(' ', company.address, company.city, company.region, company.notes))
+        on public.normalize_prospect_text(company.address)
            like '%' || public.normalize_prospect_text(comuna.name) || '%'
       join public.geo_regions region
         on region.code = comuna.region_code
@@ -105,6 +105,38 @@ begin
       region = coalesce(nullif(trim(company.region), ''), matches.region_name)
     from matches
     where company.id = matches.id;
+
+    with address_matches as (
+      select
+        company.id,
+        comuna.name as comuna_name,
+        case
+          when public.normalize_prospect_text(region.name) in ('metropolitanadesantiago','regionmetropolitanadesantiago')
+            then 'RegiÃ³n Metropolitana de Santiago'
+          when lower(region.name) like 'regiÃ³n%' or lower(region.name) like 'region%' then region.name
+          else 'RegiÃ³n ' || region.name
+        end as region_name,
+        count(*) over (partition by company.id) as match_count
+      from public.companies company
+      join public.geo_comunas comuna
+        on public.normalize_prospect_text(company.address)
+           like '%' || public.normalize_prospect_text(comuna.name) || '%'
+      join public.geo_regions region
+        on region.code = comuna.region_code
+      where nullif(trim(company.address), '') is not null
+    )
+    update public.companies company
+    set
+      city = address_matches.comuna_name,
+      region = address_matches.region_name
+    from address_matches
+    where company.id = address_matches.id
+      and address_matches.match_count = 1
+      and (
+        nullif(trim(company.city), '') is null
+        or public.normalize_prospect_text(company.city) <> public.normalize_prospect_text(address_matches.comuna_name)
+        or nullif(trim(company.region), '') is null
+      );
   end if;
 end $$;
 
