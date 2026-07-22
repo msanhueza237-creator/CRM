@@ -3518,14 +3518,14 @@ begin
     v_created_company := true;
   else
     update public.companies
-    set region_code = coalesce(region_code, v_location.region_code),
-        comuna_code = coalesce(comuna_code, v_location.comuna_code),
-        region = coalesce(region, v_region_name),
-        city = coalesce(city, v_comuna_name),
-        address = coalesce(address, v_import_address),
-        website = coalesce(website, v_import_website),
-        phone = coalesce(phone, v_import_phone),
-        email = coalesce(email, v_import_email)
+    set region_code = coalesce(nullif(trim(region_code), ''), v_location.region_code),
+        comuna_code = coalesce(nullif(trim(comuna_code), ''), v_location.comuna_code),
+        region = coalesce(nullif(trim(region), ''), v_region_name),
+        city = coalesce(nullif(trim(city), ''), v_comuna_name),
+        address = coalesce(nullif(trim(address), ''), v_import_address),
+        website = coalesce(nullif(trim(website), ''), v_import_website),
+        phone = coalesce(nullif(trim(phone), ''), v_import_phone),
+        email = coalesce(nullif(trim(email), ''), v_import_email)
     where id = v_company_id;
   end if;
 

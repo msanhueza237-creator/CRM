@@ -24,6 +24,51 @@ begin
   if to_regclass('public.geo_comunas') is not null
      and to_regclass('public.geo_regions') is not null
      and to_regprocedure('public.normalize_prospect_text(text)') is not null then
+    if to_regclass('public.company_locations') is not null then
+      with primary_locations as (
+        select distinct on (location.company_id)
+          location.company_id,
+          comuna.name as comuna_name,
+          region.name as region_name
+        from public.company_locations location
+        join public.geo_comunas comuna on comuna.code = location.comuna_code
+        join public.geo_regions region on region.code = comuna.region_code
+        where nullif(trim(location.comuna_code), '') is not null
+        order by location.company_id, location.is_primary desc, location.updated_at desc nulls last, location.created_at desc
+      )
+      update public.companies company
+      set
+        city = coalesce(nullif(trim(company.city), ''), primary_locations.comuna_name),
+        region = coalesce(nullif(trim(company.region), ''), primary_locations.region_name)
+      from primary_locations
+      where company.id = primary_locations.company_id
+        and (nullif(trim(company.city), '') is null or nullif(trim(company.region), '') is null);
+    end if;
+
+    if to_regclass('public.prospecting_campaign_candidates') is not null
+       and to_regclass('public.prospect_locations') is not null then
+      with approved_locations as (
+        select distinct on (candidate.company_id)
+          candidate.company_id,
+          comuna.name as comuna_name,
+          region.name as region_name
+        from public.prospecting_campaign_candidates candidate
+        join public.prospect_locations location on location.entity_id = candidate.entity_id
+        join public.geo_comunas comuna on comuna.code = location.comuna_code
+        join public.geo_regions region on region.code = comuna.region_code
+        where candidate.company_id is not null
+          and candidate.review_status in ('approved', 'linked')
+        order by candidate.company_id, location.is_primary desc, candidate.reviewed_at desc nulls last, location.created_at desc
+      )
+      update public.companies company
+      set
+        city = coalesce(nullif(trim(company.city), ''), approved_locations.comuna_name),
+        region = coalesce(nullif(trim(company.region), ''), approved_locations.region_name)
+      from approved_locations
+      where company.id = approved_locations.company_id
+        and (nullif(trim(company.city), '') is null or nullif(trim(company.region), '') is null);
+    end if;
+
     with matches as (
       select distinct on (company.id)
         company.id,
