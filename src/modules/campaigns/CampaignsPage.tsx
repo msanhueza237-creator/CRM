@@ -29,6 +29,12 @@ interface RecipientState {
   discarded: boolean;
 }
 
+type Row = Record<string, unknown>;
+
+function asRecord(value: unknown): Row {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Row) : {};
+}
+
 const CAMPAIGNS_STORAGE_KEY = "climactiva_campaigns";
 const RECIPIENTS_STORAGE_KEY = "climactiva_campaign_recipients";
 const PROPOSAL_OVERRIDES_STORAGE_KEY = "climactiva_proposal_overrides";
@@ -722,10 +728,17 @@ export function CampaignsPage() {
     if (!isSupabaseConfigured || !supabase || !user) return;
 
     async function loadSupabaseCampaigns() {
-      const [{ data: campaignsData, error: campaignsError }, { data: recipientsData, error: recipientsError }] =
+      const [
+        { data: campaignsData, error: campaignsError },
+        { data: recipientsData, error: recipientsError },
+        { data: emailCampaignsData },
+        { data: emailRecipientsData },
+      ] =
         await Promise.all([
           supabase!.from("campaigns").select("*").order("created_at", { ascending: false }),
           supabase!.from("campaign_recipients").select("*"),
+          supabase!.from("email_campaigns").select("id,name,segment_filters,status,created_at"),
+          supabase!.from("email_campaign_recipients").select("campaign_id,company_id,status,sent_at,error_message"),
         ]);
 
       if (!campaignsError && campaignsData) {
@@ -760,23 +773,65 @@ export function CampaignsPage() {
             }))
           : [];
 
+        const emailCampaignRows = (emailCampaignsData ?? []) as Row[];
+        const emailRecipientRows = (emailRecipientsData ?? []) as Row[];
+        const emailCampaignIdsByCrmCampaignId = new Map<string, Set<string>>();
+        const emailCampaignIdsByName = new Map<string, Set<string>>();
+
+        emailCampaignRows.forEach((row) => {
+          const emailCampaignId = String(row.id ?? "");
+          const filters = asRecord(row.segment_filters);
+          const crmCampaignId = String(filters.crm_campaign_id ?? "");
+          const name = normalizeString(String(row.name ?? ""));
+          if (crmCampaignId) {
+            const ids = emailCampaignIdsByCrmCampaignId.get(crmCampaignId) ?? new Set<string>();
+            ids.add(emailCampaignId);
+            emailCampaignIdsByCrmCampaignId.set(crmCampaignId, ids);
+          }
+          if (name) {
+            const ids = emailCampaignIdsByName.get(name) ?? new Set<string>();
+            ids.add(emailCampaignId);
+            emailCampaignIdsByName.set(name, ids);
+          }
+        });
+
+        const sentEmailCompanyIdsByCampaignId = new Map<string, Set<string>>();
+        mappedCampaigns.forEach((campaign) => {
+          const emailCampaignIds = emailCampaignIdsByCrmCampaignId.get(campaign.id) ?? emailCampaignIdsByName.get(normalizeString(campaign.name)) ?? new Set<string>();
+          if (!emailCampaignIds.size) return;
+          const sent = new Set<string>();
+          emailRecipientRows.forEach((row) => {
+            if (!emailCampaignIds.has(String(row.campaign_id ?? ""))) return;
+            const companyId = String(row.company_id ?? "");
+            if (!companyId) return;
+            if (String(row.status ?? "") === "sent" || row.sent_at) sent.add(companyId);
+          });
+          sentEmailCompanyIdsByCampaignId.set(campaign.id, sent);
+        });
+
         const campaignsWithRecipients = mappedCampaigns.map((campaign) => {
           const campaignRows = mappedRecipients.filter((recipient) => recipient.campaignId === campaign.id);
+          const sentByGmail = sentEmailCompanyIdsByCampaignId.get(campaign.id) ?? new Set<string>();
           return {
             ...campaign,
             recipientIds: campaignRows.map((recipient) => recipient.companyId),
             recipients: campaignRows.length,
-            sent: campaignRows.filter((recipient) => recipient.sent).length,
+            sent: campaignRows.filter((recipient) => recipient.sent || sentByGmail.has(recipient.companyId)).length,
             replied: campaignRows.filter((recipient) => recipient.replied).length,
             interested: campaignRows.filter((recipient) => recipient.interested).length,
             discarded: campaignRows.filter((recipient) => recipient.discarded).length,
           };
         });
 
+        const mergedRecipients = mappedRecipients.map((recipient) => ({
+          ...recipient,
+          sent: recipient.sent || Boolean(sentEmailCompanyIdsByCampaignId.get(recipient.campaignId)?.has(recipient.companyId)),
+        }));
+
         setCampaigns(campaignsWithRecipients);
         saveCampaigns(campaignsWithRecipients);
-        setRecipients(mappedRecipients);
-        saveRecipients(mappedRecipients);
+        setRecipients(mergedRecipients);
+        saveRecipients(mergedRecipients);
         setSelectedCampaignId(campaignsWithRecipients[0]?.id ?? "");
       }
     }
@@ -1037,6 +1092,43 @@ export function CampaignsPage() {
     updateCampaignStatus("enviada");
   }
 
+  async function markCampaignEmailRecipientsSent(companyIds: string[]) {
+    if (!selectedCampaign || !companyIds.length) return;
+
+    const ids = new Set(companyIds);
+    const existingKeys = new Set(recipients.map((recipient) => `${recipient.campaignId}:${recipient.companyId}`));
+    const createdRows = selectedCompanies
+      .filter((company) => ids.has(company.id) && !existingKeys.has(`${selectedCampaign.id}:${company.id}`))
+      .map((company) => ({
+        campaignId: selectedCampaign.id,
+        companyId: company.id,
+        sent: true,
+        replied: false,
+        interested: false,
+        discarded: false,
+      }));
+    const nextRecipients = recipients
+      .map((recipient) =>
+        recipient.campaignId === selectedCampaign.id && ids.has(recipient.companyId)
+          ? { ...recipient, sent: true }
+          : recipient,
+      )
+      .concat(createdRows);
+
+    persistRecipients(nextRecipients);
+    updateCampaignStatus("enviada");
+
+    if (isSupabaseConfigured && supabase) {
+      const sentAt = new Date().toISOString();
+      await supabase
+        .from("campaign_recipients")
+        .update({ sent_at: sentAt })
+        .eq("campaign_id", selectedCampaign.id)
+        .in("company_id", companyIds);
+      await supabase.from("campaigns").update({ status: "enviada" }).eq("id", selectedCampaign.id);
+    }
+  }
+
   async function executeMetaCampaign() {
     if (!selectedCampaign || !isSupabaseConfigured || !supabase) return;
     setSendingCampaign(true);
@@ -1160,6 +1252,7 @@ export function CampaignsPage() {
         bodyText: selectedTemplate.body,
         bodyHtml: selectedTemplate.body.replace(/\n/g, "<br />"),
         segmentFilters: {
+          crm_campaign_id: selectedCampaign.id,
           segment: selectedCampaign.segment,
           type: selectedCampaign.type,
           product: selectedCampaign.product,
@@ -1176,7 +1269,7 @@ export function CampaignsPage() {
       });
 
       if (Number(data.sent || 0) > 0) {
-        markCampaignSent();
+        await markCampaignEmailRecipientsSent(emailRecipients.map((recipient) => recipient.companyId));
       }
     } catch (error) {
       setSendingResults({
