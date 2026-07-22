@@ -27,6 +27,12 @@ interface RecipientState {
   replied: boolean;
   interested: boolean;
   discarded: boolean;
+  replyFromEmail?: string;
+  replySubject?: string;
+  replySnippet?: string;
+  replyBody?: string;
+  replyReceivedAt?: string;
+  replyGmailMessageId?: string;
 }
 
 type Row = Record<string, unknown>;
@@ -739,7 +745,7 @@ export function CampaignsPage() {
           supabase!.from("campaigns").select("*").order("created_at", { ascending: false }),
           supabase!.from("campaign_recipients").select("*"),
           supabase!.from("email_campaigns").select("id,name,segment_filters,status,created_at"),
-          supabase!.from("email_campaign_recipients").select("campaign_id,company_id,status,sent_at,replied_at,error_message"),
+          supabase!.from("email_campaign_recipients").select("campaign_id,company_id,status,sent_at,replied_at,reply_from_email,reply_subject,reply_snippet,reply_body,reply_gmail_message_id,error_message"),
         ]);
 
       if (!campaignsError && campaignsData) {
@@ -797,43 +803,54 @@ export function CampaignsPage() {
         });
 
         const sentEmailCompanyIdsByCampaignId = new Map<string, Set<string>>();
-        const repliedEmailCompanyIdsByCampaignId = new Map<string, Set<string>>();
+        const emailRepliesByCampaignCompany = new Map<string, Partial<RecipientState>>();
         mappedCampaigns.forEach((campaign) => {
           const emailCampaignIds = emailCampaignIdsByCrmCampaignId.get(campaign.id) ?? emailCampaignIdsByName.get(normalizeString(campaign.name)) ?? new Set<string>();
           if (!emailCampaignIds.size) return;
           const sent = new Set<string>();
-          const replied = new Set<string>();
           emailRecipientRows.forEach((row) => {
             if (!emailCampaignIds.has(String(row.campaign_id ?? ""))) return;
             const companyId = String(row.company_id ?? "");
             if (!companyId) return;
             if (String(row.status ?? "") === "sent" || row.sent_at) sent.add(companyId);
-            if (row.replied_at) replied.add(companyId);
+            if (row.replied_at) {
+              emailRepliesByCampaignCompany.set(`${campaign.id}:${companyId}`, {
+                replied: true,
+                replyFromEmail: String(row.reply_from_email ?? ""),
+                replySubject: String(row.reply_subject ?? ""),
+                replySnippet: String(row.reply_snippet ?? ""),
+                replyBody: String(row.reply_body ?? ""),
+                replyReceivedAt: String(row.replied_at ?? ""),
+                replyGmailMessageId: String(row.reply_gmail_message_id ?? ""),
+              });
+            }
           });
           sentEmailCompanyIdsByCampaignId.set(campaign.id, sent);
-          repliedEmailCompanyIdsByCampaignId.set(campaign.id, replied);
         });
 
         const campaignsWithRecipients = mappedCampaigns.map((campaign) => {
           const campaignRows = mappedRecipients.filter((recipient) => recipient.campaignId === campaign.id);
           const sentByGmail = sentEmailCompanyIdsByCampaignId.get(campaign.id) ?? new Set<string>();
-          const repliedByGmail = repliedEmailCompanyIdsByCampaignId.get(campaign.id) ?? new Set<string>();
           return {
             ...campaign,
             recipientIds: campaignRows.map((recipient) => recipient.companyId),
             recipients: campaignRows.length,
             sent: campaignRows.filter((recipient) => recipient.sent || sentByGmail.has(recipient.companyId)).length,
-            replied: campaignRows.filter((recipient) => recipient.replied || repliedByGmail.has(recipient.companyId)).length,
+            replied: campaignRows.filter((recipient) => recipient.replied || emailRepliesByCampaignCompany.has(`${campaign.id}:${recipient.companyId}`)).length,
             interested: campaignRows.filter((recipient) => recipient.interested).length,
             discarded: campaignRows.filter((recipient) => recipient.discarded).length,
           };
         });
 
-        const mergedRecipients = mappedRecipients.map((recipient) => ({
-          ...recipient,
-          sent: recipient.sent || Boolean(sentEmailCompanyIdsByCampaignId.get(recipient.campaignId)?.has(recipient.companyId)),
-          replied: recipient.replied || Boolean(repliedEmailCompanyIdsByCampaignId.get(recipient.campaignId)?.has(recipient.companyId)),
-        }));
+        const mergedRecipients = mappedRecipients.map((recipient) => {
+          const reply = emailRepliesByCampaignCompany.get(`${recipient.campaignId}:${recipient.companyId}`);
+          return {
+            ...recipient,
+            sent: recipient.sent || Boolean(sentEmailCompanyIdsByCampaignId.get(recipient.campaignId)?.has(recipient.companyId)),
+            replied: recipient.replied || Boolean(reply),
+            ...reply,
+          };
+        });
 
         setCampaigns(campaignsWithRecipients);
         saveCampaigns(campaignsWithRecipients);
@@ -874,6 +891,13 @@ export function CampaignsPage() {
     discarded: campaignRecipients.filter((recipient) => recipient.discarded).length,
     withoutOptIn: selectedCompanies.filter((company) => !company.whatsappOptIn).length,
   };
+  const selectedReplies = campaignRecipients
+    .filter((recipient) => recipient.replied && (recipient.replyBody || recipient.replySnippet || recipient.replySubject))
+    .map((recipient) => ({
+      recipient,
+      company: companies.find((company) => company.id === recipient.companyId),
+    }))
+    .filter((item) => item.company);
   const formCities = useMemo(() => {
     if (!form.region) return [];
     return chileData.find((region) => normalizeString(region.region) === normalizeString(form.region))?.comunas.sort() ?? [];
@@ -1305,7 +1329,23 @@ export function CampaignsPage() {
       if (repliedCompanyIds.size) {
         const nextRecipients = recipients.map((recipient) =>
           recipient.campaignId === selectedCampaign.id && repliedCompanyIds.has(recipient.companyId)
-            ? { ...recipient, replied: true }
+            ? {
+                ...recipient,
+                replied: true,
+                ...(() => {
+                  const reply = repliesForSelected.find((item) => item.companyId === recipient.companyId);
+                  return reply
+                    ? {
+                        replyFromEmail: reply.fromEmail,
+                        replySubject: reply.subject,
+                        replySnippet: reply.snippet,
+                        replyBody: reply.body,
+                        replyReceivedAt: reply.receivedAt,
+                        replyGmailMessageId: reply.gmailMessageId,
+                      }
+                    : {};
+                })(),
+              }
             : recipient,
         );
         persistRecipients(nextRecipients);
@@ -1683,6 +1723,45 @@ export function CampaignsPage() {
                   </div>
                 </div>
               </div>
+
+              {selectedReplies.length ? (
+                <div className="panel">
+                  <div className="panel-heading">
+                    <h2>Respuestas recibidas Gmail</h2>
+                    <span>{selectedReplies.length} respuesta{selectedReplies.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div className="response-list" style={{ display: "grid", gap: "12px" }}>
+                    {selectedReplies.map(({ recipient, company }) => (
+                      <article key={`${recipient.campaignId}:${recipient.companyId}`} style={{ border: "1px solid #dfe7ea", borderRadius: "10px", padding: "14px", background: "#f8fbfc" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "flex-start" }}>
+                          <div>
+                            <strong>{company?.name}</strong>
+                            <p className="muted" style={{ margin: "4px 0 0" }}>
+                              {recipient.replyFromEmail || company?.email || "Correo no identificado"}
+                              {recipient.replyReceivedAt ? ` · ${new Date(recipient.replyReceivedAt).toLocaleString("es-CL")}` : ""}
+                            </p>
+                          </div>
+                          {recipient.replyGmailMessageId ? (
+                            <a
+                              className="ghost-button"
+                              href={`https://mail.google.com/mail/u/0/#inbox/${recipient.replyGmailMessageId}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={{ textDecoration: "none" }}
+                            >
+                              Abrir Gmail
+                            </a>
+                          ) : null}
+                        </div>
+                        <h3 style={{ fontSize: "15px", margin: "12px 0 8px" }}>{recipient.replySubject || selectedCampaign.name}</h3>
+                        <p style={{ whiteSpace: "pre-wrap", margin: 0 }}>
+                          {recipient.replyBody || recipient.replySnippet || "Respuesta detectada sin texto disponible."}
+                        </p>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
 
               <div className="panel">
                 <div className="panel-heading">

@@ -357,6 +357,7 @@ function mapInteractionFromSupabase(row: Record<string, unknown>): Interaction {
     description: String(row.description ?? ""),
     result: String(row.result ?? ""),
     nextAction: String(row.next_action ?? ""),
+    relatedUrl: String(row.related_url ?? ""),
   };
 }
 
@@ -377,6 +378,7 @@ function mapInteractionToSupabase(interaction: Interaction) {
     description: interaction.description,
     result: interaction.result,
     next_action: interaction.nextAction,
+    related_url: interaction.relatedUrl || null,
     occurred_at: `${interaction.date}T12:00:00-04:00`,
   };
 }

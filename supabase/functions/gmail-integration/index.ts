@@ -652,7 +652,14 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
       const repliedAt = new Date(reply.internalDate || Date.now()).toISOString();
       await supabase
         .from("email_campaign_recipients")
-        .update({ replied_at: repliedAt })
+        .update({
+          replied_at: repliedAt,
+          reply_from_email: reply.fromEmail || null,
+          reply_subject: reply.subject || null,
+          reply_snippet: reply.snippet || null,
+          reply_body: reply.body || null,
+          reply_gmail_message_id: reply.messageId || null,
+        })
         .eq("id", recipient.id);
 
       if (crmCampaignId) {
@@ -666,7 +673,7 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
       await supabase.from("interactions").insert({
         company_id: companyId,
         type: "correo",
-        description: `Respuesta recibida por Gmail desde ${reply.fromEmail || recipient.contact_email || "cliente"}.\n\nAsunto: ${reply.subject || campaignName}\n\n${reply.snippet || "Respuesta detectada en el hilo de la campaña."}`,
+        description: `Respuesta recibida por Gmail desde ${reply.fromEmail || recipient.contact_email || "cliente"}.\n\nAsunto: ${reply.subject || campaignName}\n\n${reply.body || reply.snippet || "Respuesta detectada en el hilo de la campaña."}`,
         result: "respondio",
         next_action: "Revisar respuesta y definir seguimiento comercial.",
         related_url: `https://mail.google.com/mail/u/0/#inbox/${reply.messageId}`,
@@ -679,6 +686,9 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
         companyId,
         fromEmail: reply.fromEmail,
         subject: reply.subject,
+        snippet: reply.snippet,
+        body: reply.body,
+        gmailMessageId: reply.messageId,
         receivedAt: repliedAt,
       });
       log.push(`${recipient.contact_email || reply.fromEmail}: respondio`);
@@ -1059,7 +1069,7 @@ async function findCustomerReplyInThread(
   accessToken: string,
   input: { threadId: string; sentMessageId: string; sentInternalDate: number; connectedEmail: string },
 ) {
-  const params = new URLSearchParams({ format: "metadata" });
+  const params = new URLSearchParams({ format: "full" });
   ["From", "Subject", "Date"].forEach((header) => params.append("metadataHeaders", header));
   const res = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(input.threadId)}?${params.toString()}`, {
     method: "GET",
@@ -1081,6 +1091,7 @@ async function findCustomerReplyInThread(
         fromEmail,
         subject: getGmailHeader(message, "Subject"),
         snippet: String(message.snippet || ""),
+        body: cleanEmailBody(extractPlainTextFromGmailPayload(asObject(message.payload))).slice(0, 5000),
       };
     })
     .filter((message) =>
@@ -1104,6 +1115,67 @@ function getGmailHeader(message: Record<string, unknown>, name: string) {
 function extractEmailAddress(value: string) {
   const match = value.match(/<([^>]+)>/);
   return (match?.[1] || value).trim().replace(/^mailto:/i, "");
+}
+
+function extractPlainTextFromGmailPayload(payload: Record<string, unknown>): string {
+  const mimeType = String(payload.mimeType || "");
+  const body = asObject(payload.body);
+  const data = String(body.data || "");
+
+  if (data && (mimeType === "text/plain" || !mimeType)) {
+    return decodeGmailBody(data);
+  }
+
+  const parts = Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : [];
+  const plainParts: string[] = [];
+  const htmlParts: string[] = [];
+
+  for (const part of parts) {
+    const partMime = String(part.mimeType || "");
+    const partText = extractPlainTextFromGmailPayload(part);
+    if (!partText) continue;
+    if (partMime === "text/html") htmlParts.push(htmlToText(partText));
+    else plainParts.push(partText);
+  }
+
+  if (plainParts.length) return plainParts.join("\n\n");
+  if (htmlParts.length) return htmlParts.join("\n\n");
+
+  if (data && mimeType === "text/html") return htmlToText(decodeGmailBody(data));
+  return "";
+}
+
+function decodeGmailBody(data: string) {
+  try {
+    return new TextDecoder().decode(base64UrlDecodeBytes(data));
+  } catch {
+    return "";
+  }
+}
+
+function htmlToText(html: string) {
+  return html
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'");
+}
+
+function cleanEmailBody(value: string) {
+  return value
+    .replace(/\r/g, "")
+    .split("\n")
+    .filter((line) => !/^>/.test(line.trim()))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 async function logGmailTestAttempt(

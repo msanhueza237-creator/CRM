@@ -45,6 +45,7 @@ export interface Interaction {
   description: string;
   result: string;
   nextAction: string;
+  relatedUrl?: string;
 }
 
 export interface Campaign {

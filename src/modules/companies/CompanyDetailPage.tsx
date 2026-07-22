@@ -340,9 +340,16 @@ export function CompanyDetailPage() {
           {interactions.map((interaction) => (
             <article key={interaction.id}>
               <span>{interaction.date} - {interaction.type} - {interaction.owner}</span>
-              <h3>{interaction.description}</h3>
+              <h3 style={{ whiteSpace: "pre-wrap" }}>{interaction.description}</h3>
               <p>{interaction.result}</p>
               <strong>{interaction.nextAction}</strong>
+              {interaction.relatedUrl ? (
+                <p>
+                  <a href={interaction.relatedUrl} target="_blank" rel="noreferrer">
+                    Abrir hilo en Gmail
+                  </a>
+                </p>
+              ) : null}
             </article>
           ))}
         </div>
