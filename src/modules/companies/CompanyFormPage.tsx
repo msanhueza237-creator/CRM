@@ -56,7 +56,7 @@ export function CompanyFormPage() {
   const formCities = useMemo(() => {
     const selectedRegion = form.region;
     if (!selectedRegion) return [];
-    return chileData.find((r) => r.region === selectedRegion)?.comunas.sort() ?? [];
+    return chileData.find((r) => normalizeString(r.region) === normalizeString(selectedRegion))?.comunas.sort() ?? [];
   }, [form.region]);
 
   useEffect(() => {

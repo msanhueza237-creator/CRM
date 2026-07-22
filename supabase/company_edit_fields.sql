@@ -29,7 +29,12 @@ begin
         select distinct on (location.company_id)
           location.company_id,
           comuna.name as comuna_name,
-          region.name as region_name
+          case
+            when public.normalize_prospect_text(region.name) in ('metropolitanadesantiago','regionmetropolitanadesantiago')
+              then 'Región Metropolitana de Santiago'
+            when lower(region.name) like 'región%' or lower(region.name) like 'region%' then region.name
+            else 'Región ' || region.name
+          end as region_name
         from public.company_locations location
         join public.geo_comunas comuna on comuna.code = location.comuna_code
         join public.geo_regions region on region.code = comuna.region_code
@@ -51,7 +56,12 @@ begin
         select distinct on (candidate.company_id)
           candidate.company_id,
           comuna.name as comuna_name,
-          region.name as region_name
+          case
+            when public.normalize_prospect_text(region.name) in ('metropolitanadesantiago','regionmetropolitanadesantiago')
+              then 'Región Metropolitana de Santiago'
+            when lower(region.name) like 'región%' or lower(region.name) like 'region%' then region.name
+            else 'Región ' || region.name
+          end as region_name
         from public.prospecting_campaign_candidates candidate
         join public.prospect_locations location on location.entity_id = candidate.entity_id
         join public.geo_comunas comuna on comuna.code = location.comuna_code
@@ -73,7 +83,12 @@ begin
       select distinct on (company.id)
         company.id,
         comuna.name as comuna_name,
-        region.name as region_name
+        case
+          when public.normalize_prospect_text(region.name) in ('metropolitanadesantiago','regionmetropolitanadesantiago')
+            then 'Región Metropolitana de Santiago'
+          when lower(region.name) like 'región%' or lower(region.name) like 'region%' then region.name
+          else 'Región ' || region.name
+        end as region_name
       from public.companies company
       join public.geo_comunas comuna
         on public.normalize_prospect_text(concat_ws(' ', company.address, company.city, company.region, company.notes))
@@ -103,6 +118,13 @@ where (nullif(trim(region), '') is null or nullif(trim(city), '') is null)
     or lower(coalesce(address, '')) like '%región metropolitana%'
     or lower(coalesce(address, '')) like '%region metropolitana%'
   );
+
+update public.companies
+set region = 'Región Metropolitana de Santiago'
+where public.normalize_prospect_text(coalesce(region, '')) in (
+  'metropolitanadesantiago',
+  'regionmetropolitanadesantiago'
+);
 
 create index if not exists companies_whatsapp_number_idx on public.companies(whatsapp_number);
 create index if not exists companies_city_region_idx on public.companies(city, region);

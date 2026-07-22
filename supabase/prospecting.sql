@@ -3301,7 +3301,17 @@ begin
   v_import_description := null;
   v_import_address := null;
 
-  select region.name, comuna.name into v_region_name, v_comuna_name
+  select
+    case
+      when public.normalize_prospect_text(region.name) in (
+        'metropolitanadesantiago',
+        'regionmetropolitanadesantiago'
+      ) then 'Región Metropolitana de Santiago'
+      when lower(region.name) like 'región%' or lower(region.name) like 'region%' then region.name
+      else 'Región ' || region.name
+    end,
+    comuna.name
+  into v_region_name, v_comuna_name
   from public.geo_comunas comuna
   join public.geo_regions region on region.code = comuna.region_code
   where comuna.code = v_location.comuna_code;

@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { demoCompanies, demoInteractions } from "../../data/demoData";
+import { chileData, normalizeString } from "../../data/chileData";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
 import type { Company, Interaction } from "../../types/crm";
@@ -169,6 +170,12 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
 }
 
 function mapCompanyFromSupabase(row: Record<string, unknown>): Company {
+  const canonicalLocation = canonicalCompanyLocation({
+    region: String(row.region ?? ""),
+    city: String(row.city ?? ""),
+    address: String(row.address ?? ""),
+  });
+
   return {
     id: String(row.id),
     name: String(row.name ?? ""),
@@ -177,8 +184,8 @@ function mapCompanyFromSupabase(row: Record<string, unknown>): Company {
     rut: String(row.rut ?? ""),
     businessLine: String(row.business_line ?? ""),
     type: row.type as Company["type"],
-    city: String(row.city ?? ""),
-    region: String(row.region ?? ""),
+    city: canonicalLocation.city,
+    region: canonicalLocation.region,
     address: String(row.address ?? ""),
     website: String(row.website ?? ""),
     instagram: String(row.instagram ?? ""),
@@ -198,6 +205,55 @@ function mapCompanyFromSupabase(row: Record<string, unknown>): Company {
     status: row.status as Company["status"],
     nextFollowUp: String(row.next_follow_up ?? ""),
     tags: [],
+  };
+}
+
+function canonicalCompanyLocation({
+  region,
+  city,
+  address,
+}: {
+  region: string;
+  city: string;
+  address: string;
+}) {
+  const normalizedRegion = normalizeString(region);
+  const normalizedCity = normalizeString(city);
+  const normalizedText = normalizeString([address, city, region].filter(Boolean).join(" "));
+  let canonicalRegion = "";
+  let canonicalCity = "";
+  let bestCityScore = 0;
+
+  for (const item of chileData) {
+    const itemRegion = normalizeString(item.region);
+    const regionMatches =
+      normalizedRegion &&
+      (itemRegion === normalizedRegion ||
+        itemRegion.includes(normalizedRegion) ||
+        normalizedRegion.includes(itemRegion));
+
+    if (regionMatches) canonicalRegion = item.region;
+
+    for (const comuna of item.comunas) {
+      const itemCity = normalizeString(comuna);
+      const cityMatches = normalizedCity && itemCity === normalizedCity;
+      const addressMatches = normalizedText && normalizedText.includes(itemCity);
+      if ((cityMatches || addressMatches) && itemCity.length > bestCityScore) {
+        bestCityScore = itemCity.length;
+        canonicalRegion = item.region;
+        canonicalCity = comuna;
+      }
+    }
+  }
+
+  if (!canonicalRegion && /metropolitanadesantiago|regionmetropolitana|santiago/.test(normalizedText)) {
+    canonicalRegion = chileData.find((item) => normalizeString(item.region).includes("metropolitana"))?.region ?? region;
+    canonicalCity = canonicalCity || "Santiago";
+  }
+
+  return {
+    region: canonicalRegion || region,
+    city: canonicalCity || city,
   };
 }
 
