@@ -1105,6 +1105,37 @@ th {
   background: #fff7f5;
 }
 
+.whatsapp-inbox-preview {
+  align-items: flex-start;
+}
+
+.admin-message-list {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.admin-message-list li {
+  border: 1px solid #d9e5e8;
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.admin-message-list span {
+  color: #708188;
+  display: block;
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+
+.admin-message-list p {
+  margin: 4px 0 0;
+  color: #21353c;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;

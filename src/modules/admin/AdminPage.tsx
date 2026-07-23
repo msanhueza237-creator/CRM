@@ -24,6 +24,16 @@ interface WhatsAppSettingsForm {
   lastError: string;
 }
 
+interface WhatsAppInboundMessage {
+  id: string;
+  company_id: string | null;
+  phone_number: string;
+  body: string;
+  message_type: string;
+  occurred_at: string;
+  companies?: { name?: string | null } | null;
+}
+
 const emptyWhatsAppSettings: WhatsAppSettingsForm = {
   phoneNumberId: "",
   businessAccountId: "",
@@ -34,6 +44,8 @@ const emptyWhatsAppSettings: WhatsAppSettingsForm = {
   lastConnectionCheckedAt: "",
   lastError: "",
 };
+
+const whatsappWebhookUrl = "https://supabase.latinchile.cl/functions/v1/crm-agent/whatsapp-webhook";
 
 interface ProspectingIntegrationStatus {
   provider: "google_places" | "brave_search";
@@ -58,6 +70,7 @@ export function AdminPage() {
   const [whatsappSettings, setWhatsappSettings] = useState<WhatsAppSettingsForm>(emptyWhatsAppSettings);
   const [savingWhatsApp, setSavingWhatsApp] = useState(false);
   const [whatsappNotice, setWhatsappNotice] = useState("");
+  const [whatsappInboundMessages, setWhatsappInboundMessages] = useState<WhatsAppInboundMessage[]>([]);
   const [gmailStatus, setGmailStatus] = useState<GmailStatus>(emptyGmailStatus);
   const [gmailNotice, setGmailNotice] = useState("");
   const [gmailNoticeType, setGmailNoticeType] = useState<"info" | "success" | "error">("info");
@@ -102,7 +115,20 @@ export function AdminPage() {
     }
 
     void loadWhatsAppSettings();
+    void loadWhatsAppInboundMessages();
   }, [user]);
+
+  async function loadWhatsAppInboundMessages() {
+    if (!isSupabaseConfigured || !supabase || !user) return;
+    const { data, error } = await supabase
+      .from("whatsapp_messages")
+      .select("id,company_id,phone_number,body,message_type,occurred_at,companies(name)")
+      .eq("direction", "inbound")
+      .order("occurred_at", { ascending: false })
+      .limit(8);
+
+    if (!error) setWhatsappInboundMessages((data ?? []) as WhatsAppInboundMessage[]);
+  }
 
   useEffect(() => {
     if (!user) return;
@@ -313,6 +339,7 @@ export function AdminPage() {
 
     setWhatsappSettings((current) => ({ ...current, id: String(data.id) }));
     setWhatsappNotice("Configuracion WhatsApp guardada. Los secretos deben configurarse como variables de entorno del backend.");
+    await loadWhatsAppInboundMessages();
   }
 
   function markConnectionCheck() {
@@ -554,6 +581,19 @@ export function AdminPage() {
           </div>
         </div>
 
+        <div className="admin-integration-summary">
+          <ShieldCheck size={24} />
+          <div>
+            <strong>Webhook para pegar en Meta</strong>
+            <p className="muted">
+              URL de devolucion de llamada: <code>{whatsappWebhookUrl}</code>
+            </p>
+            <p className="muted">
+              Token de verificacion: usa el mismo valor privado que configures en Dokploy como <code>META_WHATSAPP_WEBHOOK_VERIFY_TOKEN</code>.
+            </p>
+          </div>
+        </div>
+
         <div className="form-grid">
           <label>
             Phone Number ID
@@ -604,12 +644,36 @@ export function AdminPage() {
           <button className="ghost-button" type="button" onClick={markConnectionCheck}>
             Probar conexion
           </button>
+          <button className="ghost-button" type="button" onClick={loadWhatsAppInboundMessages}>
+            <RefreshCw size={18} />
+            Actualizar respuestas
+          </button>
           <button className="ghost-button" type="button" disabled title="Disponible cuando el backend de prueba quede configurado">
             Enviar mensaje de prueba
           </button>
           <button className="primary-button" type="submit" disabled={savingWhatsApp}>
             {savingWhatsApp ? "Guardando..." : "Guardar configuracion"}
           </button>
+        </div>
+
+        <div className="admin-integration-summary whatsapp-inbox-preview">
+          <MessageCircle size={24} />
+          <div>
+            <strong>Ultimas respuestas WhatsApp recibidas</strong>
+            {whatsappInboundMessages.length === 0 ? (
+              <p className="muted">Aun no hay respuestas entrantes registradas.</p>
+            ) : (
+              <ul className="admin-message-list">
+                {whatsappInboundMessages.map((item) => (
+                  <li key={item.id}>
+                    <span>{new Date(item.occurred_at).toLocaleString()}</span>
+                    <strong>{item.companies?.name || item.phone_number}</strong>
+                    <p>{item.body || `[${item.message_type}]`}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       </form>
     </section>

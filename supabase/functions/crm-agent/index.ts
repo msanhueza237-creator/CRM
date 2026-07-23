@@ -920,6 +920,8 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
   let sender = "";
   let message = "";
   let metaMessageId = "";
+  let contactName = "";
+  let messageType = "text";
   let eventType = "message";
   let rawPayload: Record<string, unknown> = {};
 
@@ -936,6 +938,8 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
     sender = parsed.sender || String(payload.sender || payload.From || "");
     message = parsed.message || String(payload.message || payload.Body || "");
     metaMessageId = parsed.metaMessageId;
+    contactName = parsed.contactName;
+    messageType = parsed.messageType || "text";
     eventType = parsed.eventType;
   }
 
@@ -956,11 +960,12 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
     return json({ error: "Missing sender or message content" }, 400);
   }
 
-  const cleanSender = sender.replace(/\D/g, "");
+  const normalizedSender = normalizeWhatsAppPhone(sender);
+  const cleanSender = normalizedSender.replace(/\D/g, "");
 
   const { data: companies, error: compError } = await context.supabase
     .from("companies")
-    .select("id, name, whatsapp, phone");
+    .select("id, name, whatsapp, whatsapp_number, phone");
 
   if (compError) return json({ error: compError.message }, 500);
 
@@ -968,11 +973,14 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
 
   for (const c of companies || []) {
     const cWhatsapp = (c.whatsapp || "").replace(/\D/g, "");
+    const cWhatsappNumber = (c.whatsapp_number || "").replace(/\D/g, "");
     const cPhone = (c.phone || "").replace(/\D/g, "");
     if (
       (cWhatsapp && cleanSender.endsWith(cWhatsapp)) || 
+      (cWhatsappNumber && cleanSender.endsWith(cWhatsappNumber)) ||
       (cPhone && cleanSender.endsWith(cPhone)) || 
       (cWhatsapp && cWhatsapp.endsWith(cleanSender)) || 
+      (cWhatsappNumber && cWhatsappNumber.endsWith(cleanSender)) ||
       (cPhone && cPhone.endsWith(cleanSender))
     ) {
       matchedCompanyId = c.id;
@@ -1008,8 +1016,11 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
       .from("companies")
       .insert({
         name: newCompanyName,
-        whatsapp: sender,
+        whatsapp: normalizedSender || sender,
+        whatsapp_number: normalizedSender || null,
+        phone: normalizedSender || sender,
         status: "prospecto",
+        source: "whatsapp_webhook",
         description: "Creado automáticamente mediante webhook de WhatsApp al recibir un mensaje."
       })
       .select("id")
@@ -1026,7 +1037,7 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
     .insert({
       company_id: matchedCompanyId,
       type: "whatsapp",
-      description: message,
+      description: contactName ? `${contactName}: ${message}` : message,
       result: "Mensaje entrante del cliente",
       next_action: "Responder mensaje"
     })
@@ -1035,23 +1046,91 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
 
   if (intError) return json({ error: intError.message }, 500);
 
-  await context.supabase.from("whatsapp_messages").insert({
-    company_id: matchedCompanyId,
-    direction: "inbound",
-    phone_number: sender,
-    meta_message_id: metaMessageId || null,
-    message_type: "text",
-    body: message,
-    status: "received",
-    raw_payload: rawPayload,
-  });
+  const { data: lastOutbound } = await context.supabase
+    .from("whatsapp_messages")
+    .select("id, whatsapp_campaign_id, recipient_id")
+    .eq("company_id", matchedCompanyId)
+    .eq("direction", "outbound")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  let alreadyStoredMessage = false;
+  if (metaMessageId) {
+    const { data: existingMessage } = await context.supabase
+      .from("whatsapp_messages")
+      .select("id")
+      .eq("meta_message_id", metaMessageId)
+      .maybeSingle();
+    alreadyStoredMessage = Boolean(existingMessage?.id);
+  }
+
+  if (!alreadyStoredMessage) {
+    await context.supabase.from("whatsapp_messages").insert({
+      company_id: matchedCompanyId,
+      whatsapp_campaign_id: lastOutbound?.whatsapp_campaign_id ?? null,
+      recipient_id: lastOutbound?.recipient_id ?? null,
+      direction: "inbound",
+      phone_number: normalizedSender || sender,
+      meta_message_id: metaMessageId || null,
+      message_type: messageType,
+      body: message,
+      status: "received",
+      raw_payload: rawPayload,
+    });
+  }
+
+  if (lastOutbound?.recipient_id) {
+    await context.supabase
+      .from("whatsapp_campaign_recipients")
+      .update({ replied_at: new Date().toISOString(), status: "replied" })
+      .eq("id", lastOutbound.recipient_id);
+  }
+
+  const contactPhone = normalizedSender || sender;
+  const { data: existingContact } = await context.supabase
+    .from("contacts")
+    .select("id")
+    .eq("company_id", matchedCompanyId)
+    .eq("whatsapp", contactPhone)
+    .maybeSingle();
+
+  if (existingContact?.id) {
+    await context.supabase
+      .from("contacts")
+      .update({ phone: contactPhone, notes: "Detectado por respuesta entrante de WhatsApp Meta." })
+      .eq("id", existingContact.id);
+  } else {
+    await context.supabase.from("contacts").insert({
+      company_id: matchedCompanyId,
+      full_name: contactName || "Contacto WhatsApp",
+      phone: contactPhone,
+      whatsapp: contactPhone,
+      is_primary: false,
+      notes: "Detectado por respuesta entrante de WhatsApp Meta.",
+    });
+  }
+
+  if (metaMessageId) {
+    await context.supabase
+      .from("whatsapp_webhook_events")
+      .update({ processed: true, company_id: matchedCompanyId })
+      .eq("meta_message_id", metaMessageId);
+  }
 
   await context.supabase
     .from("companies")
-    .update({ last_whatsapp_message_at: new Date().toISOString() })
+    .update({
+      last_whatsapp_message_at: new Date().toISOString(),
+      whatsapp: normalizedSender || sender,
+      whatsapp_number: normalizedSender || null,
+    })
     .eq("id", matchedCompanyId);
 
-  await logAgentAction(context.supabase, validation, "interactions", interaction.id, "webhook_received_whatsapp", { sender });
+  await logAgentAction(context.supabase, validation, "interactions", interaction.id, "webhook_received_whatsapp", {
+    sender: normalizedSender || sender,
+    metaMessageId,
+  });
 
   return json({ success: true, company_id: matchedCompanyId, interaction_id: interaction.id });
 }
@@ -1097,16 +1176,37 @@ function parseMetaWhatsAppWebhook(payload: Record<string, unknown>) {
   const value = changes?.value as Record<string, unknown> | undefined;
   const messages = Array.isArray(value?.messages) ? value?.messages : [];
   const statuses = Array.isArray(value?.statuses) ? value?.statuses : [];
+  const contacts = Array.isArray(value?.contacts) ? value?.contacts : [];
   const message = messages[0] as Record<string, unknown> | undefined;
   const status = statuses[0] as Record<string, unknown> | undefined;
   const text = message?.text as Record<string, unknown> | undefined;
+  const image = message?.image as Record<string, unknown> | undefined;
+  const document = message?.document as Record<string, unknown> | undefined;
+  const audio = message?.audio as Record<string, unknown> | undefined;
+  const video = message?.video as Record<string, unknown> | undefined;
+  const button = message?.button as Record<string, unknown> | undefined;
+  const interactive = message?.interactive as Record<string, unknown> | undefined;
+  const firstContact = contacts[0] as Record<string, unknown> | undefined;
+  const profile = firstContact?.profile as Record<string, unknown> | undefined;
+  const type = String(message?.type ?? "text");
+
+  let body = String(text?.body ?? "");
+  if (!body && button) body = String(button.text ?? button.payload ?? "");
+  if (!body && interactive) body = JSON.stringify(interactive);
+  if (!body && image) body = String(image.caption ?? "[imagen recibida]");
+  if (!body && document) body = String(document.filename ?? document.caption ?? "[documento recibido]");
+  if (!body && audio) body = "[audio recibido]";
+  if (!body && video) body = String(video.caption ?? "[video recibido]");
+  if (!body) body = `[mensaje ${type} recibido]`;
 
   if (message) {
     return {
       eventType: "message",
       sender: String(message.from ?? ""),
-      message: String(text?.body ?? ""),
+      message: body,
       metaMessageId: String(message.id ?? ""),
+      contactName: String(profile?.name ?? ""),
+      messageType: type,
     };
   }
 
@@ -1116,10 +1216,21 @@ function parseMetaWhatsAppWebhook(payload: Record<string, unknown>) {
       sender: String(status.recipient_id ?? ""),
       message: String(status.status ?? ""),
       metaMessageId: String(status.id ?? ""),
+      contactName: "",
+      messageType: "status",
     };
   }
 
-  return { eventType: "unknown", sender: "", message: "", metaMessageId: "" };
+  return { eventType: "unknown", sender: "", message: "", metaMessageId: "", contactName: "", messageType: "unknown" };
+}
+
+function normalizeWhatsAppPhone(value: string) {
+  const digits = String(value || "").replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("569") && digits.length === 11) return `+${digits}`;
+  if (digits.startsWith("9") && digits.length === 9) return `+56${digits}`;
+  if (digits.startsWith("56") && digits.length === 11) return `+${digits}`;
+  return `+${digits}`;
 }
 
 async function updateWhatsAppMessageStatus(
