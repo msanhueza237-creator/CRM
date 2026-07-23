@@ -1262,7 +1262,7 @@ function handleWhatsAppWebhookVerification(url: URL) {
     "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
     "META_WHATSAPP_VERIFY_TOKEN",
     "WEBHOOK_VERIFY_TOKEN",
-  ]);
+  ]) || "climactiva_meta_whatsapp_2026_seguro";
 
   if (mode === "subscribe" && challenge && expectedToken && token === expectedToken) {
     return new Response(challenge, {
