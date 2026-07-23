@@ -1257,7 +1257,12 @@ function handleWhatsAppWebhookVerification(url: URL) {
   const mode = url.searchParams.get("hub.mode");
   const token = url.searchParams.get("hub.verify_token");
   const challenge = url.searchParams.get("hub.challenge");
-  const expectedToken = Deno.env.get("META_WHATSAPP_WEBHOOK_VERIFY_TOKEN")?.trim();
+  const expectedToken = firstEnvValue([
+    "META_WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+    "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
+    "META_WHATSAPP_VERIFY_TOKEN",
+    "WEBHOOK_VERIFY_TOKEN",
+  ]);
 
   if (mode === "subscribe" && challenge && expectedToken && token === expectedToken) {
     return new Response(challenge, {
@@ -1270,6 +1275,25 @@ function handleWhatsAppWebhookVerification(url: URL) {
   }
 
   return json({ error: "Webhook verification failed" }, 403);
+}
+
+function firstEnvValue(names: string[]) {
+  for (const name of names) {
+    const value = stripOptionalQuotes(Deno.env.get(name));
+    if (value) return value;
+  }
+  return "";
+}
+
+function stripOptionalQuotes(value: string | undefined) {
+  const trimmed = value?.trim() ?? "";
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
 }
 
 async function handleGmailWebhook(context: RouteContext, validation: ApiKeyValidation) {
