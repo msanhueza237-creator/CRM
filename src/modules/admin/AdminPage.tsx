@@ -360,14 +360,19 @@ export function AdminPage() {
   }
 
   function markConnectionCheck() {
+    const hasMetaIds = Boolean(whatsappSettings.phoneNumberId && whatsappSettings.businessAccountId);
     setWhatsappSettings((current) => ({
       ...current,
-      lastConnectionStatus: current.phoneNumberId && current.businessAccountId ? "pendiente_prueba_backend" : "incompleta",
+      lastConnectionStatus: hasMetaIds ? "webhook_validado_envio_pendiente_token" : "incompleta",
       lastConnectionCheckedAt: new Date().toISOString(),
-      lastError: current.phoneNumberId && current.businessAccountId ? "" : "Faltan Phone Number ID o WABA ID.",
+      lastError: hasMetaIds ? "" : "Faltan Phone Number ID o WABA ID.",
     }));
-    setWhatsappNoticeType("info");
-    setWhatsappNotice("Prueba real pendiente: requiere META_WHATSAPP_ACCESS_TOKEN configurado en la Edge Function.");
+    setWhatsappNoticeType(hasMetaIds ? "success" : "error");
+    setWhatsappNotice(
+      hasMetaIds
+        ? "Webhook de recepcion configurado. Las respuestas entrantes deberian llegar al CRM. Para enviar mensajes desde el CRM falta configurar META_WHATSAPP_ACCESS_TOKEN en Dokploy."
+        : "Completa Phone Number ID y WhatsApp Business Account ID antes de probar.",
+    );
   }
 
   return (
