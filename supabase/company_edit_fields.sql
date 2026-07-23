@@ -14,10 +14,36 @@ alter table public.companies
   add constraint companies_whatsapp_status_check
   check (whatsapp_status in ('sin_consentimiento', 'opt_in', 'bloqueado', 'invalido'));
 
+create or replace function public.normalize_prospect_whatsapp(p_value text)
+returns text
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when public.normalize_prospect_phone(p_value) ~ '^\+569[0-9]{8}$'
+      then public.normalize_prospect_phone(p_value)
+    else null
+  end
+$$;
+
 update public.companies
-set whatsapp_number = coalesce(nullif(whatsapp_number, ''), nullif(whatsapp, ''), nullif(phone, ''))
-where nullif(whatsapp_number, '') is null
-  and (nullif(whatsapp, '') is not null or nullif(phone, '') is not null);
+set whatsapp_number = coalesce(
+      nullif(whatsapp_number, ''),
+      public.normalize_prospect_whatsapp(whatsapp),
+      public.normalize_prospect_whatsapp(phone)
+    ),
+    whatsapp = coalesce(
+      nullif(whatsapp, ''),
+      public.normalize_prospect_whatsapp(whatsapp_number),
+      public.normalize_prospect_whatsapp(phone)
+    )
+where (nullif(whatsapp_number, '') is null or nullif(whatsapp, '') is null)
+  and (
+    public.normalize_prospect_whatsapp(whatsapp) is not null
+    or public.normalize_prospect_whatsapp(whatsapp_number) is not null
+    or public.normalize_prospect_whatsapp(phone) is not null
+  );
 
 do $$
 begin

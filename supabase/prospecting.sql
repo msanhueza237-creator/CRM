@@ -212,6 +212,9 @@ on conflict (code) do update set
 
 alter table public.companies add column if not exists region_code text;
 alter table public.companies add column if not exists comuna_code text;
+alter table public.companies add column if not exists whatsapp_number text;
+alter table public.companies add column if not exists whatsapp_opt_in boolean not null default false;
+alter table public.companies add column if not exists whatsapp_status text not null default 'sin_consentimiento';
 
 -- El contrato compartido con el worker admite como maximo 50 terminos de
 -- hasta 200 caracteres. Se exige que lleguen ya recortados y que no existan
@@ -792,6 +795,19 @@ as $$
   )
   select case when digits ~ '^[2-9][0-9]{8}$' then '+56' || digits else null end
   from national
+$$;
+
+create or replace function public.normalize_prospect_whatsapp(p_value text)
+returns text
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when public.normalize_prospect_phone(p_value) ~ '^\+569[0-9]{8}$'
+      then public.normalize_prospect_phone(p_value)
+    else null
+  end
 $$;
 
 create or replace function public.normalize_prospect_rut(p_value text)
@@ -3131,6 +3147,7 @@ declare
   v_import_business_line text;
   v_import_website text;
   v_import_phone text;
+  v_import_whatsapp text;
   v_import_email text;
   v_import_description text;
   v_import_address text;
@@ -3296,6 +3313,7 @@ begin
   v_import_rut := null;
   v_import_business_line := nullif(trim(v_snapshot->>'category'), '');
   v_import_phone := null;
+  v_import_whatsapp := null;
   v_import_email := null;
   v_import_website := null;
   v_import_description := null;
@@ -3348,6 +3366,20 @@ begin
       and public.normalize_prospect_phone(evidence.field_value) = public.normalize_prospect_phone(v_snapshot->>'phone')
       and (evidence.retention_until is null or evidence.retention_until > now())
   ) then v_import_phone := v_snapshot->>'phone'; end if;
+
+  if nullif(trim(coalesce(v_snapshot->>'whatsapp_number', v_snapshot->>'phone')), '') is not null and (
+    exists (
+      select 1 from public.prospect_source_records evidence
+      where evidence.run_id = v_candidate.run_id and evidence.entity_id = v_entity.id
+        and evidence.provider in ('brave_search','official_website')
+        and evidence.field_name in ('whatsapp_number','phone')
+        and public.normalize_prospect_whatsapp(evidence.field_value)
+            = public.normalize_prospect_whatsapp(coalesce(v_snapshot->>'whatsapp_number', v_snapshot->>'phone'))
+        and (evidence.retention_until is null or evidence.retention_until > now())
+    )
+  ) then
+    v_import_whatsapp := public.normalize_prospect_whatsapp(coalesce(v_snapshot->>'whatsapp_number', v_snapshot->>'phone'));
+  end if;
 
   if nullif(lower(trim(v_snapshot->>'email')), '') is not null and exists (
     select 1 from public.prospect_source_records evidence
@@ -3432,7 +3464,8 @@ begin
     select company.id from public.companies company
     where public.normalize_prospect_phone(v_import_phone) is not null
       and (public.normalize_prospect_phone(company.phone) = public.normalize_prospect_phone(v_import_phone)
-           or public.normalize_prospect_phone(company.whatsapp) = public.normalize_prospect_phone(v_import_phone))
+           or public.normalize_prospect_phone(company.whatsapp) = public.normalize_prospect_phone(v_import_phone)
+           or public.normalize_prospect_phone(company.whatsapp_number) = public.normalize_prospect_phone(v_import_phone))
     union all
     select company.id
     from public.companies company
@@ -3478,6 +3511,7 @@ begin
       -- autoriza copiar hacia ella los identificadores/contactos contradictorios.
       v_import_rut := null;
       v_import_phone := null;
+      v_import_whatsapp := null;
       v_import_email := null;
       v_import_website := null;
     end if;
@@ -3516,12 +3550,14 @@ begin
   if v_company_id is null then
     insert into public.companies (
       name, legal_name, rut, business_line, type, city, region, address,
-      region_code, comuna_code, website, phone, email, source, notes, status
+      region_code, comuna_code, website, phone, whatsapp, whatsapp_number,
+      whatsapp_opt_in, whatsapp_status, email, source, notes, status
     ) values (
       v_import_name, v_import_legal_name, v_import_rut, v_import_business_line,
       v_company_type, v_comuna_name, v_region_name, v_import_address,
       v_location.region_code, v_location.comuna_code, v_import_website,
-      v_import_phone, v_import_email, v_source,
+      v_import_phone, v_import_whatsapp, v_import_whatsapp,
+      false, 'sin_consentimiento', v_import_email, v_source,
       concat_ws(E'\n', 'Importada desde prospeccion CRM.', nullif(trim(p_notes),'')),
       'prospecto'
     ) returning id into v_company_id;
@@ -3535,6 +3571,8 @@ begin
         address = coalesce(nullif(trim(address), ''), v_import_address),
         website = coalesce(nullif(trim(website), ''), v_import_website),
         phone = coalesce(nullif(trim(phone), ''), v_import_phone),
+        whatsapp = coalesce(nullif(trim(whatsapp), ''), v_import_whatsapp),
+        whatsapp_number = coalesce(nullif(trim(whatsapp_number), ''), v_import_whatsapp),
         email = coalesce(nullif(trim(email), ''), v_import_email)
     where id = v_company_id;
   end if;

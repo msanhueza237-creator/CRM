@@ -742,6 +742,7 @@ function validateCandidateBatch(candidates: unknown[]) {
     optionalString(candidate.trade_name, `candidates[${candidateIndex}].trade_name`, 300);
     optionalString(candidate.rut, `candidates[${candidateIndex}].rut`, 32);
     optionalString(candidate.phone, `candidates[${candidateIndex}].phone`, 50);
+    optionalString(candidate.whatsapp_number, `candidates[${candidateIndex}].whatsapp_number`, 50);
     optionalString(candidate.email, `candidates[${candidateIndex}].email`, 320);
     optionalString(candidate.website, `candidates[${candidateIndex}].website`, 2048);
     optionalString(candidate.category, `candidates[${candidateIndex}].category`, 120);

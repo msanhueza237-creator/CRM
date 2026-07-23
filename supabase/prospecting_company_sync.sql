@@ -1,5 +1,18 @@
 begin;
 
+create or replace function public.normalize_prospect_whatsapp(p_value text)
+returns text
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when public.normalize_prospect_phone(p_value) ~ '^\+569[0-9]{8}$'
+      then public.normalize_prospect_phone(p_value)
+    else null
+  end
+$$;
+
 create or replace function public.sync_prospect_candidate_to_company(p_candidate_id uuid)
 returns void
 language plpgsql
@@ -16,6 +29,7 @@ declare
   v_instagram text;
   v_facebook text;
   v_whatsapp_url text;
+  v_whatsapp_number text;
 begin
   select * into v_candidate
   from public.prospecting_campaign_candidates
@@ -48,6 +62,9 @@ begin
   v_instagram := nullif(trim(v_snapshot#>>'{social_media,instagram}'), '');
   v_facebook := nullif(trim(v_snapshot#>>'{social_media,facebook}'), '');
   v_whatsapp_url := nullif(trim(v_snapshot#>>'{social_media,whatsapp}'), '');
+  v_whatsapp_number := public.normalize_prospect_whatsapp(
+    coalesce(nullif(trim(v_snapshot->>'whatsapp_number'), ''), nullif(trim(v_snapshot->>'phone'), ''))
+  );
 
   update public.companies
   set legal_name = coalesce(nullif(trim(legal_name), ''), nullif(trim(v_snapshot->>'trade_name'), '')),
@@ -73,8 +90,10 @@ begin
       facebook = coalesce(nullif(trim(facebook), ''), v_facebook),
       whatsapp = coalesce(
         nullif(trim(whatsapp), ''),
-        case when v_whatsapp_url is not null then nullif(trim(v_snapshot->>'phone'), '') end
+        v_whatsapp_number,
+        case when v_whatsapp_url is not null then public.normalize_prospect_whatsapp(v_snapshot->>'phone') end
       ),
+      whatsapp_number = coalesce(nullif(trim(whatsapp_number), ''), v_whatsapp_number),
       source = coalesce(nullif(trim(source), ''), 'Prospeccion CRM'),
       notes = case
         when position('Información investigada por el agente de prospección.' in coalesce(notes, '')) > 0 then notes

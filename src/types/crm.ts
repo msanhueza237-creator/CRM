@@ -218,6 +218,7 @@ export interface ProspectCandidate {
   companyType: CompanyType;
   website: string;
   phone: string;
+  whatsappNumber?: string;
   email: string;
   socialMedia: Record<string, string>;
   specialties: string[];

@@ -1828,7 +1828,15 @@ function safeExternalUrl(value: string) {
   }
 }
 
+function normalizeChileanMobileWhatsApp(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (digits.startsWith("569") && digits.length === 11) return `+${digits}`;
+  if (digits.startsWith("9") && digits.length === 9) return `+56${digits}`;
+  return "";
+}
+
 function candidateToCompany(candidate: ProspectCandidate, region: string, city: string, address: string): Omit<Company, "id"> {
+  const whatsappNumber = normalizeChileanMobileWhatsApp(candidate.whatsappNumber || candidate.phone);
   return {
     name: candidate.name,
     legalName: candidate.legalName,
@@ -1842,8 +1850,8 @@ function candidateToCompany(candidate: ProspectCandidate, region: string, city: 
     website: candidate.website,
     instagram: "",
     facebook: "",
-    whatsapp: "",
-    whatsappNumber: candidate.phone,
+    whatsapp: whatsappNumber,
+    whatsappNumber,
     whatsappOptIn: false,
     lastWhatsAppMessageAt: "",
     whatsappStatus: "sin_consentimiento",

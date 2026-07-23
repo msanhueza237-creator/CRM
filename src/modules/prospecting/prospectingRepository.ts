@@ -73,6 +73,17 @@ function asBoolean(value: unknown, fallback = false) {
   return fallback;
 }
 
+function normalizeDigits(value: string) {
+  return value.replace(/\D/g, "");
+}
+
+function normalizeChileanMobileWhatsApp(value: string) {
+  const digits = normalizeDigits(value);
+  if (digits.startsWith("569") && digits.length === 11) return `+${digits}`;
+  if (digits.startsWith("9") && digits.length === 9) return `+56${digits}`;
+  return "";
+}
+
 function normalizeCandidateImportability(
   importEligibleValue: unknown,
   indexesValue: unknown,
@@ -836,6 +847,9 @@ function mapCandidate(
     candidateLocations.length,
   );
   const candidatePhone = String(isSnapshotBacked ? snapshot.phone ?? "" : safeEntity.phone ?? "");
+  const candidateWhatsApp = normalizeChileanMobileWhatsApp(
+    String(isSnapshotBacked ? snapshot.whatsapp_number ?? snapshot.whatsappNumber ?? snapshot.phone ?? "" : safeEntity.whatsapp_number ?? safeEntity.whatsapp ?? safeEntity.phone ?? ""),
+  );
   const candidateEmail = String(isSnapshotBacked ? snapshot.email ?? "" : safeEntity.email ?? "");
   const contactOnlyIndexes = contactImportableLocationIndexes(candidateLocations, candidatePhone, candidateEmail);
   if (!importability.importEligible && contactOnlyIndexes.length) {
@@ -865,6 +879,7 @@ function mapCandidate(
     companyType: asCompanyType(isSnapshotBacked ? snapshot.category ?? snapshot.company_type : safeEntity.company_type),
     website: String(isSnapshotBacked ? snapshot.website ?? "" : safeEntity.website ?? ""),
     phone: candidatePhone,
+    whatsappNumber: candidateWhatsApp,
     email: candidateEmail,
     socialMedia: asRecord(isSnapshotBacked ? snapshot.social_media : safeEntity.social_media) as Record<string, string>,
     specialties: arrayOfStrings(isSnapshotBacked ? snapshot.specialties : safeEntity.specialties),

@@ -7,6 +7,19 @@ alter table public.companies
   add column if not exists whatsapp_opt_in boolean not null default false,
   add column if not exists whatsapp_status text not null default 'sin_consentimiento';
 
+create or replace function public.normalize_prospect_whatsapp(p_value text)
+returns text
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when public.normalize_prospect_phone(p_value) ~ '^\+569[0-9]{8}$'
+      then public.normalize_prospect_phone(p_value)
+    else null
+  end
+$$;
+
 create or replace function public.review_contact_prospect_candidate(
   p_candidate_id uuid,
   p_action text,
@@ -31,6 +44,7 @@ declare
   v_snapshot_location jsonb;
   v_import_name text;
   v_import_phone text;
+  v_import_whatsapp text;
   v_import_email text;
   v_import_website text;
   v_import_address text;
@@ -98,6 +112,9 @@ begin
 
   v_import_name := coalesce(nullif(trim(v_snapshot->>'name'), ''), v_entity.name);
   v_import_phone := coalesce(nullif(trim(v_snapshot->>'phone'), ''), nullif(trim(v_entity.phone), ''));
+  v_import_whatsapp := public.normalize_prospect_whatsapp(
+    coalesce(nullif(trim(v_snapshot->>'whatsapp_number'), ''), v_import_phone)
+  );
   v_import_email := lower(coalesce(nullif(trim(v_snapshot->>'email'), ''), nullif(trim(v_entity.email), '')));
   v_import_website := coalesce(nullif(trim(v_snapshot->>'website'), ''), nullif(trim(v_entity.website), ''));
   v_import_description := coalesce(nullif(trim(v_snapshot->>'company_summary'), ''), nullif(trim(v_snapshot->>'description'), ''), v_entity.description);
@@ -252,7 +269,7 @@ begin
     ) values (
       v_import_name, nullif(trim(v_snapshot->>'trade_name'), ''), v_import_business_line, v_company_type,
       v_comuna_name, v_region_name, v_import_address, v_region_code, v_comuna_code,
-      v_import_website, v_import_phone, v_import_phone, v_import_phone, false, 'sin_consentimiento',
+      v_import_website, v_import_phone, v_import_whatsapp, v_import_whatsapp, false, 'sin_consentimiento',
       v_import_email, v_source,
       concat_ws(E'\n',
         'Importada desde prospeccion CRM.',
@@ -271,8 +288,8 @@ begin
         address = coalesce(nullif(trim(address), ''), v_import_address),
         website = coalesce(nullif(trim(website), ''), v_import_website),
         phone = coalesce(nullif(trim(phone), ''), v_import_phone),
-        whatsapp = coalesce(nullif(trim(whatsapp), ''), v_import_phone),
-        whatsapp_number = coalesce(nullif(trim(whatsapp_number), ''), v_import_phone),
+        whatsapp = coalesce(nullif(trim(whatsapp), ''), v_import_whatsapp),
+        whatsapp_number = coalesce(nullif(trim(whatsapp_number), ''), v_import_whatsapp),
         email = coalesce(nullif(trim(email), ''), v_import_email),
         notes = concat_ws(E'\n', nullif(trim(notes), ''), nullif(trim(p_notes), ''))
     where id = v_company_id;
