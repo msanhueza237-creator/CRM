@@ -5,6 +5,7 @@ type ApiKeyValidation = {
   key_id: string | null;
   key_name: string | null;
   scopes: string[] | null;
+  error?: string | null;
 };
 
 type RouteContext = {
@@ -67,7 +68,7 @@ Deno.serve(async (req) => {
 
     if (route === "whatsapp-webhook" && req.method === "POST") {
       const validation = await validateMetaWebhookRequest(req.clone(), url, supabase);
-      if (!validation.valid) return unauthorized("Invalid WhatsApp webhook request");
+      if (!validation.valid) return unauthorized(validation.error || "Invalid WhatsApp webhook request");
       return await handleWhatsAppWebhook({ req, url, supabase }, validation);
     }
 
@@ -1140,18 +1141,81 @@ async function validateMetaWebhookRequest(
   url: URL,
   supabase: ReturnType<typeof createClient>,
 ): Promise<ApiKeyValidation> {
-  const appSecret = Deno.env.get("META_WHATSAPP_APP_SECRET")?.trim();
+  const appSecret = stripOptionalQuotes(Deno.env.get("META_WHATSAPP_APP_SECRET"));
+  const signature = req.headers.get("x-hub-signature-256") ?? "";
+  const rawBody = await req.text();
 
   if (appSecret) {
-    const signature = req.headers.get("x-hub-signature-256") ?? "";
-    const rawBody = await req.text();
     const expected = await createMetaSignature(rawBody, appSecret);
     if (signature === expected) {
       return { valid: true, key_id: null, key_name: "meta-webhook", scopes: ["crm:write"] };
     }
+
+    if (signature) {
+      return { valid: false, key_id: null, key_name: null, scopes: null, error: "Invalid WhatsApp webhook signature" };
+    }
   }
 
-  return validateWebhookApiKey(req, url, supabase);
+  const fallbackValidation = await validateMetaWebhookPayloadFallback(rawBody, supabase);
+  if (fallbackValidation.valid) return fallbackValidation;
+
+  if (!appSecret) {
+    return { valid: false, key_id: null, key_name: null, scopes: null, error: "Missing META_WHATSAPP_APP_SECRET in Edge Function" };
+  }
+
+  return {
+    valid: false,
+    key_id: null,
+    key_name: null,
+    scopes: null,
+    error: "Missing WhatsApp webhook signature",
+  };
+}
+
+async function validateMetaWebhookPayloadFallback(
+  rawBody: string,
+  supabase: ReturnType<typeof createClient>,
+): Promise<ApiKeyValidation> {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(rawBody) as Record<string, unknown>;
+  } catch {
+    return { valid: false, key_id: null, key_name: null, scopes: null, error: "Invalid WhatsApp webhook JSON" };
+  }
+
+  if (payload.object !== "whatsapp_business_account") {
+    return { valid: false, key_id: null, key_name: null, scopes: null, error: "Webhook payload is not WhatsApp Business Account" };
+  }
+
+  const entry = Array.isArray(payload.entry) ? payload.entry[0] as Record<string, unknown> : undefined;
+  const changes = Array.isArray(entry?.changes) ? entry?.changes[0] as Record<string, unknown> : undefined;
+  const value = changes?.value as Record<string, unknown> | undefined;
+  const metadata = value?.metadata as Record<string, unknown> | undefined;
+  const phoneNumberId = String(metadata?.phone_number_id ?? "");
+  const businessAccountId = String(entry?.id ?? "");
+  const expectedPhoneNumberId = stripOptionalQuotes(Deno.env.get("META_WHATSAPP_PHONE_NUMBER_ID"));
+
+  if (expectedPhoneNumberId && phoneNumberId !== expectedPhoneNumberId) {
+    return { valid: false, key_id: null, key_name: null, scopes: null, error: "WhatsApp Phone Number ID does not match Edge Function env" };
+  }
+
+  const { data: settings } = await supabase
+    .from("whatsapp_settings")
+    .select("phone_number_id,business_account_id,active")
+    .eq("active", true)
+    .limit(10);
+
+  const matchesSettings = (settings ?? []).some((row) => {
+    const configuredPhoneId = String(row.phone_number_id ?? "");
+    const configuredBusinessId = String(row.business_account_id ?? "");
+    return configuredPhoneId === phoneNumberId && (!configuredBusinessId || configuredBusinessId === businessAccountId);
+  });
+
+  if (!matchesSettings && !expectedPhoneNumberId) {
+    return { valid: false, key_id: null, key_name: null, scopes: null, error: "WhatsApp webhook payload does not match active CRM settings" };
+  }
+
+  return { valid: true, key_id: null, key_name: "meta-webhook-fallback", scopes: ["crm:write"] };
 }
 
 async function createMetaSignature(rawBody: string, appSecret: string) {
