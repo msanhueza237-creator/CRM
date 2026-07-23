@@ -1136,6 +1136,29 @@ th {
   color: #21353c;
 }
 
+.admin-check-list {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.admin-check-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  color: #314b54;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.admin-check-list svg {
+  color: #0f7f8d;
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;

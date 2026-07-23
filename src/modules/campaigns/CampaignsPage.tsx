@@ -102,6 +102,11 @@ function canReceiveInstallerBenefit(company: Company) {
   return company.type === "tecnico" || company.type === "instalador grande";
 }
 
+function canReceiveWhatsAppCampaign(company: Company) {
+  const status = company.whatsappStatus || (company.whatsappOptIn ? "opt_in" : "sin_consentimiento");
+  return !["opt_out", "bloqueado", "invalido", "no_contactar"].includes(status);
+}
+
 function normalizeComparablePhone(value: string) {
   const digits = value.replace(/\D/g, "");
   if (!digits) return "";
@@ -1205,6 +1210,20 @@ export function CampaignsPage() {
         success: 0,
         failed: selectedCompanies.length,
         log: ["Campana bloqueada: la plantilla de cuenta instalador solo se puede usar con empresas tipo tecnico o instalador grande."],
+      });
+      setSendingCampaign(false);
+      return;
+    }
+
+    const blockedRecipients = selectedCompanies.filter((company) => !canReceiveWhatsAppCampaign(company));
+    if (blockedRecipients.length) {
+      setSendingResults({
+        success: 0,
+        failed: blockedRecipients.length,
+        log: [
+          `Campana bloqueada: ${blockedRecipients.length} destinatario(s) tienen WhatsApp opt-out, bloqueado, invalido o no_contactar.`,
+          ...blockedRecipients.slice(0, 8).map((company) => `${company.name}: ${company.whatsappStatus || "sin_consentimiento"}`),
+        ],
       });
       setSendingCampaign(false);
       return;

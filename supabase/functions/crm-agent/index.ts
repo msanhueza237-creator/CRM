@@ -1494,6 +1494,12 @@ async function handleSendCampaign(context: RouteContext, validation: ApiKeyValid
   for (const recipient of recipients) {
     const company = companiesById.get(recipient.companyId);
     const hasOptIn = Boolean(company?.whatsapp_opt_in);
+    const whatsappStatus = String(company?.whatsapp_status || (hasOptIn ? "opt_in" : "sin_consentimiento"));
+
+    if (["opt_out", "bloqueado", "invalido", "no_contactar"].includes(whatsappStatus)) {
+      results.push({ phone: recipient.phone, success: false, error: `Company WhatsApp status blocks sending: ${whatsappStatus}` });
+      continue;
+    }
 
     if (!hasOptIn && !allowWithoutOptIn) {
       results.push({ phone: recipient.phone, success: false, error: "Company does not have WhatsApp opt-in" });

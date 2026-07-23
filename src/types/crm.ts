@@ -3,7 +3,7 @@ export type CompanyStatus = "prospecto" | "contactado" | "interesado" | "cotizad
 export type Priority = "alta" | "media" | "baja";
 export type CampaignType = "email" | "WhatsApp" | "mixta";
 export type CampaignStatus = "borrador" | "programada" | "enviada" | "pausada" | "finalizada";
-export type WhatsAppStatus = "sin_consentimiento" | "opt_in" | "bloqueado" | "invalido";
+export type WhatsAppStatus = "sin_consentimiento" | "opt_in" | "opt_out" | "bloqueado" | "invalido" | "no_contactar";
 
 export interface Company {
   id: string;

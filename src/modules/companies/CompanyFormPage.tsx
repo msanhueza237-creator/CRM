@@ -8,6 +8,14 @@ import { chileData, normalizeString } from "../../data/chileData";
 const companyTypes: CompanyType[] = ["distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia", "otro"];
 const statuses: CompanyStatus[] = ["prospecto", "contactado", "interesado", "cotizado", "cliente", "descartado"];
 const priorities: Priority[] = ["alta", "media", "baja"];
+const whatsappStatuses: NonNullable<Company["whatsappStatus"]>[] = [
+  "sin_consentimiento",
+  "opt_in",
+  "opt_out",
+  "bloqueado",
+  "invalido",
+  "no_contactar",
+];
 
 const emptyCompany: Omit<Company, "id"> = {
   name: "",
@@ -154,8 +162,12 @@ export function CompanyFormPage() {
           <SelectField
             label="Estado WhatsApp"
             value={form.whatsappStatus ?? "sin_consentimiento"}
-            options={["sin_consentimiento", "opt_in", "bloqueado", "invalido"]}
-            onChange={(value) => updateField("whatsappStatus", value)}
+            options={whatsappStatuses}
+            onChange={(value) => {
+              updateField("whatsappStatus", value);
+              if (value === "opt_in") updateField("whatsappOptIn", true);
+              if (["opt_out", "bloqueado", "invalido", "no_contactar"].includes(value)) updateField("whatsappOptIn", false);
+            }}
           />
           <TextField label="Telefono" value={form.phone} onChange={(value) => updateField("phone", value)} />
         </FormSection>
@@ -166,7 +178,14 @@ export function CompanyFormPage() {
           <TextField label="Cargo del contacto" value={form.contactRole} onChange={(value) => updateField("contactRole", value)} />
           <TextField label="Fuente del dato" value={form.source} onChange={(value) => updateField("source", value)} />
           <TextField label="Etiquetas separadas por coma" value={form.tags} onChange={(value) => updateField("tags", value)} />
-          <CheckboxField label="Consentimiento WhatsApp comercial" checked={Boolean(form.whatsappOptIn)} onChange={(value) => updateField("whatsappOptIn", value)} />
+          <CheckboxField
+            label="Consentimiento WhatsApp comercial"
+            checked={Boolean(form.whatsappOptIn)}
+            onChange={(value) => {
+              updateField("whatsappOptIn", value);
+              updateField("whatsappStatus", value ? "opt_in" : "sin_consentimiento");
+            }}
+          />
         </FormSection>
 
         <div className="form-actions">

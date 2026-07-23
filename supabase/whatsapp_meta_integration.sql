@@ -13,7 +13,7 @@ alter table public.companies
 
 alter table public.companies
   add constraint companies_whatsapp_status_check
-  check (whatsapp_status in ('sin_consentimiento', 'opt_in', 'bloqueado', 'invalido'));
+  check (whatsapp_status in ('sin_consentimiento', 'opt_in', 'opt_out', 'bloqueado', 'invalido', 'no_contactar'));
 
 create table if not exists public.whatsapp_settings (
   id uuid primary key default gen_random_uuid(),

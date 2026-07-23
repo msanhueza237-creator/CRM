@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Database, Mail, MapPinned, MessageCircle, RefreshCw, Save, Send, ShieldCheck, Unplug, Users } from "lucide-react";
+import { CheckCircle2, Database, Mail, MapPinned, MessageCircle, RefreshCw, Save, Send, ShieldCheck, Unplug, Users, XCircle } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
 import {
@@ -699,6 +699,56 @@ export function AdminPage() {
           </div>
         </div>
       </form>
+
+      <div className="panel admin-integration-form">
+        <div className="panel-heading">
+          <div>
+            <h2>Preparacion para revision Meta</h2>
+            <span>Controles minimos antes de pasar WhatsApp a produccion</span>
+          </div>
+          <span className="status-badge programada">Demo interna</span>
+        </div>
+
+        <div className="admin-integration-summary">
+          <ShieldCheck size={24} />
+          <div>
+            <strong>Seguridad y datos personales</strong>
+            <p className="muted">
+              El CRM separa configuracion visible de secretos, guarda respuestas entrantes, usa roles del CRM y registra interacciones comerciales.
+              Antes de publicar en Meta faltan politica de privacidad publica, video demo y revision de negocio.
+            </p>
+          </div>
+        </div>
+
+        <div className="admin-metric-grid">
+          <div>
+            <span>Recepcion WhatsApp</span>
+            <strong>{whatsappInboundMessages.length ? "Probada" : "Pendiente prueba real"}</strong>
+          </div>
+          <div>
+            <span>Opt-out / no contactar</span>
+            <strong>Activo en ficha</strong>
+          </div>
+          <div>
+            <span>Campañas</span>
+            <strong>Bloquean excluidos</strong>
+          </div>
+          <div>
+            <span>Secretos</span>
+            <strong>Solo backend</strong>
+          </div>
+        </div>
+
+        <ul className="admin-check-list">
+          <li><CheckCircle2 size={16} /> Roles del CRM: administrador, vendedor y visualizador.</li>
+          <li><CheckCircle2 size={16} /> Estados WhatsApp: sin_consentimiento, opt_in, opt_out, bloqueado, invalido y no_contactar.</li>
+          <li><CheckCircle2 size={16} /> Respuestas entrantes quedan en historial y se pueden sincronizar con campañas.</li>
+          <li><CheckCircle2 size={16} /> Campañas WhatsApp no envian a contactos opt-out, bloqueados, invalidos o no contactar.</li>
+          <li><XCircle size={16} /> Pendiente: URL publica de politica de privacidad de Climactiva.</li>
+          <li><XCircle size={16} /> Pendiente: video demo para App Review de Meta.</li>
+          <li><XCircle size={16} /> Pendiente: verificacion de negocio y Access Verification en Meta.</li>
+        </ul>
+      </div>
     </section>
   );
 }
