@@ -70,6 +70,8 @@ export function AdminPage() {
   const [whatsappSettings, setWhatsappSettings] = useState<WhatsAppSettingsForm>(emptyWhatsAppSettings);
   const [savingWhatsApp, setSavingWhatsApp] = useState(false);
   const [whatsappNotice, setWhatsappNotice] = useState("");
+  const [whatsappNoticeType, setWhatsappNoticeType] = useState<"info" | "success" | "error">("info");
+  const [refreshingWhatsAppReplies, setRefreshingWhatsAppReplies] = useState(false);
   const [whatsappInboundMessages, setWhatsappInboundMessages] = useState<WhatsAppInboundMessage[]>([]);
   const [gmailStatus, setGmailStatus] = useState<GmailStatus>(emptyGmailStatus);
   const [gmailNotice, setGmailNotice] = useState("");
@@ -120,6 +122,7 @@ export function AdminPage() {
 
   async function loadWhatsAppInboundMessages() {
     if (!isSupabaseConfigured || !supabase || !user) return;
+    setRefreshingWhatsAppReplies(true);
     const { data, error } = await supabase
       .from("whatsapp_messages")
       .select("id,company_id,phone_number,body,message_type,occurred_at,companies(name)")
@@ -127,7 +130,18 @@ export function AdminPage() {
       .order("occurred_at", { ascending: false })
       .limit(8);
 
-    if (!error) setWhatsappInboundMessages((data ?? []) as WhatsAppInboundMessage[]);
+    setRefreshingWhatsAppReplies(false);
+
+    if (error) {
+      setWhatsappNoticeType("error");
+      setWhatsappNotice(error.message);
+      return;
+    }
+
+    const messages = (data ?? []) as WhatsAppInboundMessage[];
+    setWhatsappInboundMessages(messages);
+    setWhatsappNoticeType(messages.length > 0 ? "success" : "info");
+    setWhatsappNotice(messages.length > 0 ? "Respuestas WhatsApp actualizadas." : "No hay respuestas WhatsApp nuevas registradas todavia.");
   }
 
   useEffect(() => {
@@ -307,6 +321,7 @@ export function AdminPage() {
     event.preventDefault();
 
     if (!isSupabaseConfigured || !supabase) {
+      setWhatsappNoticeType("info");
       setWhatsappNotice("Modo demo: conecta Supabase para guardar la configuracion.");
       return;
     }
@@ -333,11 +348,13 @@ export function AdminPage() {
     setSavingWhatsApp(false);
 
     if (error) {
+      setWhatsappNoticeType("error");
       setWhatsappNotice(error.message);
       return;
     }
 
     setWhatsappSettings((current) => ({ ...current, id: String(data.id) }));
+    setWhatsappNoticeType("success");
     setWhatsappNotice("Configuracion WhatsApp guardada. Los secretos deben configurarse como variables de entorno del backend.");
     await loadWhatsAppInboundMessages();
   }
@@ -349,6 +366,7 @@ export function AdminPage() {
       lastConnectionCheckedAt: new Date().toISOString(),
       lastError: current.phoneNumberId && current.businessAccountId ? "" : "Faltan Phone Number ID o WABA ID.",
     }));
+    setWhatsappNoticeType("info");
     setWhatsappNotice("Prueba real pendiente: requiere META_WHATSAPP_ACCESS_TOKEN configurado en la Edge Function.");
   }
 
@@ -638,15 +656,15 @@ export function AdminPage() {
           <p className="muted">Ultima revision: {new Date(whatsappSettings.lastConnectionCheckedAt).toLocaleString()}</p>
         ) : null}
         {whatsappSettings.lastError ? <p className="form-error">{whatsappSettings.lastError}</p> : null}
-        {whatsappNotice ? <p className="muted">{whatsappNotice}</p> : null}
+        {whatsappNotice ? <p className={`gmail-notice ${whatsappNoticeType}`}>{whatsappNotice}</p> : null}
 
         <div className="form-actions">
           <button className="ghost-button" type="button" onClick={markConnectionCheck}>
             Probar conexion
           </button>
-          <button className="ghost-button" type="button" onClick={loadWhatsAppInboundMessages}>
+          <button className="ghost-button" type="button" onClick={loadWhatsAppInboundMessages} disabled={refreshingWhatsAppReplies}>
             <RefreshCw size={18} />
-            Actualizar respuestas
+            {refreshingWhatsAppReplies ? "Actualizando..." : "Actualizar respuestas"}
           </button>
           <button className="ghost-button" type="button" disabled title="Disponible cuando el backend de prueba quede configurado">
             Enviar mensaje de prueba

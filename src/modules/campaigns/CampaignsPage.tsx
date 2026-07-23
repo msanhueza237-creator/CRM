@@ -34,6 +34,8 @@ interface RecipientState {
   replyReceivedAt?: string;
   replyGmailMessageId?: string;
   replyGmailUrl?: string;
+  replyChannel?: "gmail" | "whatsapp" | "manual";
+  replyPhone?: string;
 }
 
 type Row = Record<string, unknown>;
@@ -98,6 +100,14 @@ function isInstallerAccountTemplate(template?: MessageTemplate) {
 
 function canReceiveInstallerBenefit(company: Company) {
   return company.type === "tecnico" || company.type === "instalador grande";
+}
+
+function normalizeComparablePhone(value: string) {
+  const digits = value.replace(/\D/g, "");
+  if (!digits) return "";
+  if (digits.startsWith("56")) return digits;
+  if (digits.startsWith("9") && digits.length === 9) return `56${digits}`;
+  return digits;
 }
 
 function getCampaignBenefitForCompany(campaign: CampaignDraft, company: Company) {
@@ -274,6 +284,7 @@ export function CampaignsPage() {
   const [sendingResults, setSendingResults] = useState<{ success: number; failed: number; log: string[] } | null>(null);
   const [gmailConnected, setGmailConnected] = useState(false);
   const [syncingReplies, setSyncingReplies] = useState(false);
+  const [syncingWhatsAppReplies, setSyncingWhatsAppReplies] = useState(false);
   const [campaignFormError, setCampaignFormError] = useState("");
   const [form, setForm] = useState({
     name: "",
@@ -1417,6 +1428,110 @@ export function CampaignsPage() {
     }
   }
 
+  async function syncRepliesFromWhatsApp() {
+    if (!selectedCampaign || !isSupabaseConfigured || !supabase) return;
+    setSyncingWhatsAppReplies(true);
+    setSendingResults(null);
+
+    try {
+      const selectedCompanyIds = new Set(selectedCompanies.map((company) => company.id));
+      const selectedPhones = new Map<string, Company>();
+      selectedCompanies.forEach((company) => {
+        [company.whatsapp, company.whatsappNumber ?? "", company.phone]
+          .map((value) => normalizeComparablePhone(value || ""))
+          .filter(Boolean)
+          .forEach((phone) => selectedPhones.set(phone, company));
+      });
+
+      const { data, error } = await supabase
+        .from("whatsapp_messages")
+        .select("id,company_id,phone_number,body,message_type,occurred_at")
+        .eq("direction", "inbound")
+        .order("occurred_at", { ascending: false })
+        .limit(200);
+
+      if (error) throw error;
+
+      const replies = ((data ?? []) as Array<{
+        id: string;
+        company_id: string | null;
+        phone_number: string;
+        body: string | null;
+        message_type: string | null;
+        occurred_at: string;
+      }>)
+        .map((reply) => {
+          const phone = normalizeComparablePhone(reply.phone_number || "");
+          const company =
+            (reply.company_id && selectedCompanyIds.has(reply.company_id)
+              ? selectedCompanies.find((item) => item.id === reply.company_id)
+              : null) || selectedPhones.get(phone);
+          return company ? { ...reply, company, phone } : null;
+        })
+        .filter(Boolean) as Array<{
+          id: string;
+          company_id: string | null;
+          phone_number: string;
+          body: string | null;
+          message_type: string | null;
+          occurred_at: string;
+          company: Company;
+          phone: string;
+        }>;
+
+      const latestReplyByCompany = new Map<string, (typeof replies)[number]>();
+      replies.forEach((reply) => {
+        if (!latestReplyByCompany.has(reply.company.id)) latestReplyByCompany.set(reply.company.id, reply);
+      });
+
+      if (latestReplyByCompany.size) {
+        const nextRecipients = recipients.map((recipient) => {
+          if (recipient.campaignId !== selectedCampaign.id) return recipient;
+          const reply = latestReplyByCompany.get(recipient.companyId);
+          if (!reply) return recipient;
+          return {
+            ...recipient,
+            replied: true,
+            replyChannel: "whatsapp" as const,
+            replyPhone: reply.phone_number,
+            replySubject: "Respuesta WhatsApp",
+            replySnippet: reply.body || `Mensaje WhatsApp tipo ${reply.message_type || "desconocido"}`,
+            replyBody: reply.body || "Respuesta WhatsApp recibida sin texto disponible.",
+            replyReceivedAt: reply.occurred_at,
+          };
+        });
+        persistRecipients(nextRecipients);
+
+        if (isSupabaseConfigured && supabase) {
+          const repliedAt = new Date().toISOString();
+          await supabase
+            .from("campaign_recipients")
+            .update({ replied_at: repliedAt })
+            .eq("campaign_id", selectedCampaign.id)
+            .in("company_id", Array.from(latestReplyByCompany.keys()));
+        }
+      }
+
+      setSendingResults({
+        success: latestReplyByCompany.size,
+        failed: 0,
+        log: latestReplyByCompany.size
+          ? Array.from(latestReplyByCompany.values()).map(
+              (reply) => `${reply.company.name}: respondió por WhatsApp ${reply.body ? `"${reply.body}"` : "(sin texto)"}`,
+            )
+          : ["No hay respuestas WhatsApp nuevas para esta campaña."],
+      });
+    } catch (error) {
+      setSendingResults({
+        success: 0,
+        failed: 1,
+        log: [error instanceof Error ? error.message : "No se pudieron sincronizar respuestas WhatsApp."],
+      });
+    } finally {
+      setSyncingWhatsAppReplies(false);
+    }
+  }
+
   function updateRecipient(companyId: string, field: keyof Omit<RecipientState, "campaignId" | "companyId">) {
     if (!selectedCampaign) return;
     const existing = recipients.find((recipient) => recipient.campaignId === selectedCampaign.id && recipient.companyId === companyId);
@@ -1713,6 +1828,7 @@ export function CampaignsPage() {
                       Marcar como enviada
                     </button>
                     {["WhatsApp", "mixta"].includes(selectedCampaign.type) && (
+                      <>
                       <button 
                         className="primary-button" 
                         type="button" 
@@ -1727,6 +1843,17 @@ export function CampaignsPage() {
                         <Send size={18} />
                         Enviar vía Meta API
                       </button>
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        onClick={syncRepliesFromWhatsApp}
+                        disabled={syncingWhatsAppReplies || !isSupabaseConfigured}
+                        title="Busca respuestas entrantes de WhatsApp registradas por el webhook y actualiza esta campana."
+                      >
+                        <CheckCircle2 size={18} />
+                        {syncingWhatsAppReplies ? "Sincronizando..." : "Sincronizar respuestas WhatsApp"}
+                      </button>
+                      </>
                     )}
                     {["email", "mixta"].includes(selectedCampaign.type) && (
                       <>
@@ -1775,7 +1902,7 @@ export function CampaignsPage() {
               {selectedReplies.length ? (
                 <div className="panel">
                   <div className="panel-heading">
-                    <h2>Respuestas recibidas Gmail</h2>
+                    <h2>Respuestas recibidas</h2>
                     <span>{selectedReplies.length} respuesta{selectedReplies.length === 1 ? "" : "s"}</span>
                   </div>
                   <div className="response-list" style={{ display: "grid", gap: "12px" }}>
@@ -1785,11 +1912,13 @@ export function CampaignsPage() {
                           <div>
                             <strong>{company?.name}</strong>
                             <p className="muted" style={{ margin: "4px 0 0" }}>
-                              {recipient.replyFromEmail || company?.email || "Correo no identificado"}
+                              {recipient.replyChannel === "whatsapp"
+                                ? `WhatsApp ${recipient.replyPhone || company?.whatsapp || company?.phone || ""}`
+                                : recipient.replyFromEmail || company?.email || "Correo no identificado"}
                               {recipient.replyReceivedAt ? ` · ${new Date(recipient.replyReceivedAt).toLocaleString("es-CL")}` : ""}
                             </p>
                           </div>
-                          {recipient.replyGmailMessageId ? (
+                          {recipient.replyChannel !== "whatsapp" && recipient.replyGmailMessageId ? (
                             <a
                               className="ghost-button"
                               href={recipient.replyGmailUrl || `https://mail.google.com/mail/u/msanhueza%40latinchile.cl/#inbox/${recipient.replyGmailMessageId}`}
