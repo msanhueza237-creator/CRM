@@ -123,6 +123,7 @@ export function AdminPage() {
   async function loadWhatsAppInboundMessages() {
     if (!isSupabaseConfigured || !supabase || !user) return;
     setRefreshingWhatsAppReplies(true);
+    const previousLatestId = whatsappInboundMessages[0]?.id ?? "";
     const { data, error } = await supabase
       .from("whatsapp_messages")
       .select("id,company_id,phone_number,body,message_type,occurred_at,companies(name)")
@@ -139,9 +140,18 @@ export function AdminPage() {
     }
 
     const messages = (data ?? []) as WhatsAppInboundMessage[];
+    const latest = messages[0];
+    const hasNewLatest = Boolean(latest?.id && latest.id !== previousLatestId);
+    const latestTime = latest?.occurred_at ? new Date(latest.occurred_at).toLocaleString("es-CL") : "";
     setWhatsappInboundMessages(messages);
-    setWhatsappNoticeType(messages.length > 0 ? "success" : "info");
-    setWhatsappNotice(messages.length > 0 ? "Respuestas WhatsApp actualizadas." : "No hay respuestas WhatsApp nuevas registradas todavia.");
+    setWhatsappNoticeType(hasNewLatest ? "success" : "info");
+    setWhatsappNotice(
+      !messages.length
+        ? "No hay respuestas WhatsApp registradas todavia."
+        : hasNewLatest
+          ? `Nueva respuesta WhatsApp recibida. Ultima: ${latestTime}.`
+          : `Sin respuestas nuevas. Ultima registrada: ${latestTime}.`,
+    );
   }
 
   useEffect(() => {
