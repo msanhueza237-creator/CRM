@@ -46,6 +46,7 @@ const emptyWhatsAppSettings: WhatsAppSettingsForm = {
 };
 
 const whatsappWebhookUrl = "https://supabase.latinchile.cl/functions/v1/crm-agent/whatsapp-webhook";
+const climactivaPrivacyPolicyUrl = "https://www.climactiva.cl/politica-de-privacidad/";
 
 interface ProspectingIntegrationStatus {
   provider: "google_places" | "brave_search";
@@ -725,7 +726,13 @@ export function AdminPage() {
             <strong>Seguridad y datos personales</strong>
             <p className="muted">
               El CRM separa configuracion visible de secretos, guarda respuestas entrantes, usa roles del CRM y registra interacciones comerciales.
-              Antes de publicar en Meta faltan politica de privacidad publica, video demo y revision de negocio.
+              La politica de privacidad publica ya esta disponible en Climactiva. Antes de publicar en Meta faltan video demo y revision de negocio.
+            </p>
+            <p className="muted">
+              Politica de privacidad:{" "}
+              <a href={climactivaPrivacyPolicyUrl} target="_blank" rel="noreferrer">
+                {climactivaPrivacyPolicyUrl}
+              </a>
             </p>
           </div>
         </div>
@@ -754,7 +761,7 @@ export function AdminPage() {
           <li><CheckCircle2 size={16} /> Estados WhatsApp: sin_consentimiento, opt_in, opt_out, bloqueado, invalido y no_contactar.</li>
           <li><CheckCircle2 size={16} /> Respuestas entrantes quedan en historial y se pueden sincronizar con campañas.</li>
           <li><CheckCircle2 size={16} /> Campañas WhatsApp no envian a contactos opt-out, bloqueados, invalidos o no contactar.</li>
-          <li><XCircle size={16} /> Pendiente: URL publica de politica de privacidad de Climactiva.</li>
+          <li><CheckCircle2 size={16} /> Politica de privacidad publica: {climactivaPrivacyPolicyUrl}</li>
           <li><XCircle size={16} /> Pendiente: video demo para App Review de Meta.</li>
           <li><XCircle size={16} /> Pendiente: verificacion de negocio y Access Verification en Meta.</li>
         </ul>
