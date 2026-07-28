@@ -115,6 +115,17 @@ Deno.serve(async (req) => {
       );
     }
 
+    const hubRouteIndex = pathParts.lastIndexOf("hub");
+    if (hubRouteIndex >= 0) {
+      const validation = await validateApiKey(req, supabase, "agent-hub:execute");
+      if (!validation.valid) return unauthorized("API key missing agent-hub:execute scope");
+      return await handleAgentHubRoute(
+        { req, url, supabase },
+        validation,
+        pathParts.slice(hubRouteIndex + 1),
+      );
+    }
+
     if (readableTables.has(route) && req.method === "GET") {
       const validation = await validateApiKey(req, supabase, "crm:read");
       if (!validation.valid) return unauthorized();
@@ -165,6 +176,179 @@ async function validateApiKey(
   }
 
   return data[0] as ApiKeyValidation;
+}
+
+async function handleAgentHubRoute(
+  context: RouteContext,
+  validation: ApiKeyValidation,
+  routeParts: string[],
+) {
+  if (context.req.method !== "POST" || !validation.key_id) {
+    return json({ error: "Agent Hub route not found" }, 404);
+  }
+  const payload = await readJsonObject(context.req);
+  const operation = routeParts.join("/");
+
+  if (operation === "integrations/status") {
+    return withProspectingIdempotency(
+      context,
+      validation,
+      "hub/integrations/status",
+      payload,
+      async () => {
+        const provider = requiredString(payload.provider, "provider", 40);
+        const status = requiredString(payload.status, "status", 40);
+        const message = requiredString(payload.message, "message", 500);
+        if (!["facto", "tiendanube"].includes(provider)) {
+          throw new RequestValidationError("Unsupported Agent Hub provider");
+        }
+        if (!["pending_configuration", "checking", "connected", "degraded", "error", "disabled"].includes(status)) {
+          throw new RequestValidationError("Unsupported integration status");
+        }
+        const now = new Date().toISOString();
+        const { error } = await context.supabase.from("integration_connections").upsert({
+          provider,
+          enabled: Boolean(payload.enabled),
+          read_only: payload.read_only !== false,
+          status,
+          message,
+          last_checked_at: now,
+          last_success_at: status === "connected" ? now : undefined,
+          updated_at: now,
+        }, { onConflict: "provider" });
+        if (error) return { body: { error: error.message }, status: 400 };
+        return { body: { ok: true } };
+      },
+    );
+  }
+
+  if (operation === "integrations/records/batch") {
+    return withProspectingIdempotency(
+      context,
+      validation,
+      "hub/integrations/records/batch",
+      payload,
+      async () => {
+        const provider = requiredString(payload.provider, "provider", 40);
+        const resource = requiredString(payload.resource, "resource", 60);
+        if (!["facto", "tiendanube"].includes(provider) || resource !== "products") {
+          throw new RequestValidationError("Unsupported read-only integration resource");
+        }
+        if (!Array.isArray(payload.records) || payload.records.length > 100) {
+          throw new RequestValidationError("records must contain at most 100 items");
+        }
+        const observedAt = new Date().toISOString();
+        const rows = [];
+        for (const item of payload.records) {
+          const record = asObject(item);
+          const externalId = requiredString(record.external_id, "external_id", 200);
+          const recordPayload = asObject(record.payload);
+          rows.push({
+            provider,
+            resource,
+            external_id: externalId,
+            payload: recordPayload,
+            payload_hash: await sha256Hex(JSON.stringify(recordPayload)),
+            observed_at: observedAt,
+            updated_at: observedAt,
+          });
+        }
+        const { error } = await context.supabase.from("integration_records").upsert(rows, {
+          onConflict: "provider,resource,external_id",
+        });
+        if (error) return { body: { error: error.message }, status: 400 };
+        return { body: { ok: true, accepted: rows.length } };
+      },
+    );
+  }
+
+  if (operation === "tasks/claim") {
+    return withProspectingIdempotency(
+      context,
+      validation,
+      "hub/tasks/claim",
+      payload,
+      async () => {
+        const workerId = requiredString(payload.worker_id, "worker_id", 120);
+        const leaseSeconds = clampNumber(String(payload.lease_seconds ?? "120"), 30, 600, 120);
+        const { data, error } = await context.supabase.rpc("claim_business_agent_task", {
+          p_worker_id: workerId,
+          p_lease_seconds: leaseSeconds,
+        });
+        if (error) return rpcErrorResult(error);
+        const row = Array.isArray(data) ? data[0] : data;
+        if (!row) return { body: { task: null } };
+        return {
+          body: {
+            task: row.task,
+            lease_token: row.lease_token,
+            lease_expires_at: row.lease_expires_at,
+          },
+        };
+      },
+    );
+  }
+
+  if (routeParts.length !== 3 || routeParts[0] !== "tasks") {
+    return json({ error: "Agent Hub route not found" }, 404);
+  }
+  const taskId = routeParts[1];
+  const action = routeParts[2];
+  if (!isUuid(taskId) || !["heartbeat", "complete", "fail"].includes(action)) {
+    return json({ error: "Agent Hub route not found" }, 404);
+  }
+
+  return withProspectingIdempotency(
+    context,
+    validation,
+    `hub/tasks/${taskId}/${action}`,
+    payload,
+    async () => {
+      const workerId = requiredString(payload.worker_id, "worker_id", 120);
+      const leaseToken = requiredString(payload.lease_token, "lease_token", 36);
+      if (!isUuid(leaseToken)) throw new RequestValidationError("lease_token must be a UUID");
+
+      if (action === "heartbeat") {
+        const leaseSeconds = clampNumber(String(payload.lease_seconds ?? "120"), 30, 600, 120);
+        const { data, error } = await context.supabase.rpc(
+          "heartbeat_business_agent_task",
+          {
+            p_task_id: taskId,
+            p_worker_id: workerId,
+            p_lease_token: leaseToken,
+            p_lease_seconds: leaseSeconds,
+          },
+        );
+        if (error) return rpcErrorResult(error);
+        return { body: { ok: true, lease_expires_at: data } };
+      }
+
+      if (action === "complete") {
+        const result = asObject(payload.result);
+        if (!result.summary || typeof result.summary !== "string") {
+          throw new RequestValidationError("result.summary is required");
+        }
+        const { error } = await context.supabase.rpc("complete_business_agent_task", {
+          p_task_id: taskId,
+          p_worker_id: workerId,
+          p_lease_token: leaseToken,
+          p_result: result,
+        });
+        if (error) return rpcErrorResult(error);
+        return { body: { ok: true } };
+      }
+
+      const errorCode = requiredString(payload.error, "error", 200);
+      const { error } = await context.supabase.rpc("fail_business_agent_task", {
+        p_task_id: taskId,
+        p_worker_id: workerId,
+        p_lease_token: leaseToken,
+        p_error: errorCode,
+      });
+      if (error) return rpcErrorResult(error);
+      return { body: { ok: true } };
+    },
+  );
 }
 
 async function handleReadTable(table: string, context: RouteContext) {

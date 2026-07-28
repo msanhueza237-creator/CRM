@@ -10,6 +10,7 @@ import { CompanyFormPage } from "./modules/companies/CompanyFormPage";
 import { DashboardPage } from "./modules/dashboard/DashboardPage";
 import { TemplatesPage } from "./modules/templates/TemplatesPage";
 import { ProspectingPage } from "./modules/prospecting/ProspectingPage";
+import { AgentsPage } from "./modules/agents/AgentsPage";
 
 export function App() {
   return (
@@ -32,6 +33,7 @@ export function App() {
         <Route path="/prospeccion" element={<ProspectingPage />} />
         <Route path="/plantillas" element={<TemplatesPage />} />
         <Route path="/administracion" element={<AdminPage />} />
+        <Route path="/agentes" element={<AgentsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

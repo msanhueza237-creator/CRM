@@ -9,6 +9,7 @@ import {
   Radar,
   Settings,
   Snowflake,
+  Bot,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 
@@ -16,6 +17,7 @@ const navItems = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/empresas", label: "Empresas", icon: Building2 },
   { to: "/prospeccion", label: "Prospeccion", icon: Radar },
+  { to: "/agentes", label: "Agentes", icon: Bot },
   { to: "/campanas", label: "Campanas", icon: Megaphone },
   { to: "/plantillas", label: "Plantillas", icon: FileText },
   { to: "/administracion", label: "Administracion", icon: Settings },

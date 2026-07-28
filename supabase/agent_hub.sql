@@ -1,0 +1,370 @@
+-- Clima Activa Agent Hub v1
+-- Ejecutar una sola vez en Supabase SQL Editor antes del redeploy del CRM.
+-- Las integraciones Facto/Tiendanube permanecen en modo lectura y sus secretos
+-- nunca se almacenan en estas tablas.
+
+create extension if not exists pgcrypto;
+
+create table if not exists public.integration_connections (
+  provider text primary key check (provider in ('facto','tiendanube','gmail','brave','meta_whatsapp')),
+  enabled boolean not null default false,
+  read_only boolean not null default true,
+  status text not null default 'pending_configuration'
+    check (status in ('pending_configuration','checking','connected','degraded','error','disabled')),
+  message text,
+  last_checked_at timestamptz,
+  last_success_at timestamptz,
+  metadata jsonb not null default '{}'::jsonb,
+  updated_at timestamptz not null default now()
+);
+
+insert into public.integration_connections(provider, enabled, read_only, status, message)
+values
+  ('facto', false, true, 'pending_configuration', 'Credenciales pendientes en Agent Hub'),
+  ('tiendanube', false, true, 'pending_configuration', 'Credenciales pendientes en Agent Hub'),
+  ('gmail', true, false, 'connected', 'Integracion existente'),
+  ('brave', true, true, 'connected', 'Integracion existente'),
+  ('meta_whatsapp', false, false, 'disabled', 'Pendiente de aprobacion de Meta')
+on conflict (provider) do nothing;
+
+create table if not exists public.integration_sync_runs (
+  id uuid primary key default gen_random_uuid(),
+  provider text not null references public.integration_connections(provider),
+  resource text not null,
+  status text not null default 'pending'
+    check (status in ('pending','running','completed','partial','failed')),
+  read_count integer not null default 0 check (read_count >= 0),
+  written_count integer not null default 0 check (written_count >= 0),
+  error_code text,
+  started_at timestamptz,
+  finished_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.integration_records (
+  id uuid primary key default gen_random_uuid(),
+  provider text not null references public.integration_connections(provider),
+  resource text not null,
+  external_id text not null,
+  payload jsonb not null,
+  payload_hash text not null,
+  observed_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique(provider, resource, external_id)
+);
+
+create index if not exists integration_records_resource_idx
+  on public.integration_records(provider, resource, updated_at desc);
+
+create table if not exists public.business_agent_tasks (
+  id uuid primary key default gen_random_uuid(),
+  agent_type text not null check (agent_type in
+    ('commercial','marketing','finance','collections','foreign_trade','executive')),
+  action text not null,
+  payload jsonb not null default '{}'::jsonb,
+  status text not null default 'pending'
+    check (status in ('pending','in_progress','completed','failed','cancelled')),
+  priority smallint not null default 50 check (priority between 0 and 100),
+  requested_by uuid references auth.users(id),
+  worker_id text,
+  lease_token uuid,
+  lease_expires_at timestamptz,
+  attempts integer not null default 0,
+  result jsonb,
+  error_code text,
+  created_at timestamptz not null default now(),
+  started_at timestamptz,
+  completed_at timestamptz,
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists business_agent_tasks_claim_idx
+  on public.business_agent_tasks(status, priority desc, created_at);
+
+create table if not exists public.agent_task_events (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid not null references public.business_agent_tasks(id) on delete cascade,
+  level text not null default 'info' check (level in ('debug','info','warning','error')),
+  stage text not null,
+  message text not null,
+  metrics jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.action_proposals (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid references public.business_agent_tasks(id) on delete set null,
+  kind text not null check (kind in
+    ('campaign_draft','collection_reminder','purchase_order','commercial_follow_up','executive_alert')),
+  title text not null,
+  summary text not null,
+  payload jsonb not null default '{}'::jsonb,
+  risk_level text not null default 'medium' check (risk_level in ('low','medium','high','critical')),
+  status text not null default 'pending'
+    check (status in ('pending','approved','rejected','executed','cancelled')),
+  created_at timestamptz not null default now(),
+  decided_at timestamptz,
+  decided_by uuid references auth.users(id),
+  decision_note text
+);
+
+create table if not exists public.action_approvals (
+  id uuid primary key default gen_random_uuid(),
+  proposal_id uuid not null references public.action_proposals(id) on delete cascade,
+  decision text not null check (decision in ('approved','rejected')),
+  decided_by uuid not null references auth.users(id),
+  note text,
+  decided_at timestamptz not null default now()
+);
+
+create unique index if not exists action_approvals_one_decision_idx
+  on public.action_approvals(proposal_id);
+
+create table if not exists public.business_settings (
+  key text primary key,
+  value jsonb not null,
+  description text,
+  updated_by uuid references auth.users(id),
+  updated_at timestamptz not null default now()
+);
+
+insert into public.business_settings(key,value,description) values
+ ('foreign_trade.production_days','45','Dias de produccion en fabrica china'),
+ ('foreign_trade.sea_travel_days','45','Dias de viaje internacional'),
+ ('foreign_trade.customs_delay_days','5','Holgura de aduana y recepcion'),
+ ('foreign_trade.safety_stock_days','30','Stock de seguridad'),
+ ('foreign_trade.review_period_days','30','Periodo de revision de compra'),
+ ('foreign_trade.target_coverage_days','155','Cobertura objetivo'),
+ ('foreign_trade.factory_shutdown_months','[2]','Pausa productiva china configurable'),
+ ('foreign_trade.high_season_months','[11,12,1,2]','Temporada alta de Clima Activa'),
+ ('foreign_trade.purchase_target_min_usd','50000','Rango objetivo inferior por orden'),
+ ('foreign_trade.purchase_hard_max_usd','70000','Maximo duro por orden'),
+ ('foreign_trade.nearby_order_window_days','30','Ventana para detectar division de orden')
+on conflict (key) do nothing;
+
+create table if not exists public.suppliers (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  country_code text not null default 'CN',
+  factory_city text,
+  default_production_days integer not null default 45,
+  active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.supplier_products (
+  id uuid primary key default gen_random_uuid(),
+  supplier_id uuid not null references public.suppliers(id),
+  sku text not null,
+  supplier_sku text,
+  unit_cost_usd numeric(14,4) not null default 0,
+  minimum_order_qty numeric(14,2) not null default 0,
+  production_days integer,
+  active boolean not null default true,
+  unique(supplier_id, sku)
+);
+
+create table if not exists public.import_shipments (
+  id uuid primary key default gen_random_uuid(),
+  supplier_id uuid references public.suppliers(id),
+  reference text not null unique,
+  transport_type text not null default 'sea',
+  origin_port text,
+  destination_port text,
+  order_date date,
+  production_ready_date date,
+  estimated_departure date,
+  estimated_arrival date,
+  customs_release_date date,
+  warehouse_receipt_date date,
+  status text not null default 'planned'
+    check (status in ('planned','production','ready','in_transit','customs','received','delayed','cancelled')),
+  value_usd numeric(14,2) not null default 0,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.shipment_milestones (
+  id uuid primary key default gen_random_uuid(),
+  shipment_id uuid not null references public.import_shipments(id) on delete cascade,
+  milestone text not null,
+  expected_at timestamptz,
+  occurred_at timestamptz,
+  status text not null default 'pending',
+  evidence jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.demand_forecasts (
+  id uuid primary key default gen_random_uuid(),
+  sku text not null,
+  period_start date not null,
+  period_end date not null,
+  expected_units numeric(14,2) not null,
+  source text not null default 'agent',
+  confidence numeric(5,2),
+  assumptions jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  unique(sku, period_start, period_end)
+);
+
+create table if not exists public.replenishment_recommendations (
+  id uuid primary key default gen_random_uuid(),
+  task_id uuid references public.business_agent_tasks(id),
+  sku text not null,
+  available_units numeric(14,2) not null,
+  committed_units numeric(14,2) not null default 0,
+  confirmed_inbound_units numeric(14,2) not null default 0,
+  reorder_point_units numeric(14,2) not null,
+  target_units numeric(14,2) not null,
+  recommended_units numeric(14,2) not null,
+  recommended_value_usd numeric(14,2) not null,
+  required_order_date date,
+  projected_stockout_date date,
+  severity text not null check (severity in ('low','medium','high','critical')),
+  purchase_policy text not null,
+  warnings jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.inventory_risk_alerts (
+  id uuid primary key default gen_random_uuid(),
+  sku text not null,
+  severity text not null check (severity in ('low','medium','high','critical')),
+  title text not null,
+  detail text not null,
+  status text not null default 'open' check (status in ('open','acknowledged','resolved')),
+  recommendation_id uuid references public.replenishment_recommendations(id),
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz
+);
+
+create or replace function public.claim_business_agent_task(
+  p_worker_id text, p_lease_seconds integer default 120
+) returns table(task jsonb, lease_token uuid, lease_expires_at timestamptz)
+language plpgsql security definer set search_path=public,pg_temp as $$
+declare v_task public.business_agent_tasks%rowtype; v_token uuid := gen_random_uuid();
+begin
+  select * into v_task from public.business_agent_tasks
+   where status='pending'
+      or (status='in_progress' and lease_expires_at < now())
+   order by priority desc, created_at
+   for update skip locked limit 1;
+  if not found then return; end if;
+  update public.business_agent_tasks set
+    status='in_progress', worker_id=p_worker_id, lease_token=v_token,
+    lease_expires_at=now()+make_interval(secs=>greatest(30,p_lease_seconds)),
+    attempts=attempts+1, started_at=coalesce(started_at,now()), updated_at=now()
+  where id=v_task.id
+  returning to_jsonb(business_agent_tasks.*), business_agent_tasks.lease_token,
+            business_agent_tasks.lease_expires_at
+  into task, lease_token, lease_expires_at;
+  return next;
+end $$;
+
+create or replace function public.heartbeat_business_agent_task(
+ p_task_id uuid,p_worker_id text,p_lease_token uuid,p_lease_seconds integer default 120
+) returns timestamptz language plpgsql security definer set search_path=public,pg_temp as $$
+declare v_expiry timestamptz;
+begin
+ update public.business_agent_tasks set
+   lease_expires_at=now()+make_interval(secs=>greatest(30,p_lease_seconds)),updated_at=now()
+ where id=p_task_id and status='in_progress' and worker_id=p_worker_id
+   and lease_token=p_lease_token and lease_expires_at>now()
+ returning lease_expires_at into v_expiry;
+ if v_expiry is null then raise exception 'lease_lost'; end if;
+ return v_expiry;
+end $$;
+
+create or replace function public.complete_business_agent_task(
+ p_task_id uuid,p_worker_id text,p_lease_token uuid,p_result jsonb
+) returns void language plpgsql security definer set search_path=public,pg_temp as $$
+declare v_proposal jsonb;
+begin
+ update public.business_agent_tasks set status='completed',result=p_result,
+   completed_at=now(),updated_at=now(),lease_expires_at=null
+ where id=p_task_id and status='in_progress' and worker_id=p_worker_id and lease_token=p_lease_token;
+ if not found then raise exception 'lease_lost'; end if;
+ for v_proposal in select value from jsonb_array_elements(coalesce(p_result->'proposals','[]'::jsonb))
+ loop
+   insert into public.action_proposals(task_id,kind,title,summary,payload,risk_level)
+   values(p_task_id,v_proposal->>'kind',v_proposal->>'title',v_proposal->>'summary',
+     coalesce(v_proposal->'payload','{}'::jsonb),coalesce(v_proposal->>'risk_level','medium'));
+ end loop;
+end $$;
+
+create or replace function public.fail_business_agent_task(
+ p_task_id uuid,p_worker_id text,p_lease_token uuid,p_error text
+) returns void language plpgsql security definer set search_path=public,pg_temp as $$
+begin
+ update public.business_agent_tasks set status='failed',error_code=left(p_error,200),
+   completed_at=now(),updated_at=now(),lease_expires_at=null
+ where id=p_task_id and status='in_progress' and worker_id=p_worker_id and lease_token=p_lease_token;
+ if not found then raise exception 'lease_lost'; end if;
+end $$;
+
+create or replace function public.decide_action_proposal(
+ p_proposal_id uuid,p_decision text,p_note text default null
+) returns void language plpgsql security definer set search_path=public,pg_temp as $$
+begin
+ if public.current_role() <> 'administrador' then raise exception 'forbidden'; end if;
+ if p_decision not in ('approved','rejected') then raise exception 'invalid_decision'; end if;
+ insert into public.action_approvals(proposal_id,decision,decided_by,note)
+ values(p_proposal_id,p_decision,auth.uid(),p_note);
+ update public.action_proposals set status=p_decision,decided_by=auth.uid(),
+   decision_note=p_note,decided_at=now() where id=p_proposal_id and status='pending';
+ if not found then raise exception 'proposal_not_pending'; end if;
+end $$;
+
+alter table public.integration_connections enable row level security;
+alter table public.integration_sync_runs enable row level security;
+alter table public.integration_records enable row level security;
+alter table public.business_agent_tasks enable row level security;
+alter table public.agent_task_events enable row level security;
+alter table public.action_proposals enable row level security;
+alter table public.action_approvals enable row level security;
+alter table public.business_settings enable row level security;
+alter table public.suppliers enable row level security;
+alter table public.supplier_products enable row level security;
+alter table public.import_shipments enable row level security;
+alter table public.shipment_milestones enable row level security;
+alter table public.demand_forecasts enable row level security;
+alter table public.replenishment_recommendations enable row level security;
+alter table public.inventory_risk_alerts enable row level security;
+
+do $$ declare t text;
+begin
+ foreach t in array array[
+  'integration_connections','integration_sync_runs','integration_records','business_agent_tasks','agent_task_events',
+  'action_proposals','action_approvals','business_settings','suppliers','supplier_products',
+  'import_shipments','shipment_milestones','demand_forecasts','replenishment_recommendations',
+  'inventory_risk_alerts'
+ ] loop
+  execute format('drop policy if exists "authenticated read %s" on public.%I',t,t);
+  execute format('create policy "authenticated read %s" on public.%I for select to authenticated using (true)',t,t);
+  execute format('drop policy if exists "admins manage %s" on public.%I',t,t);
+  execute format('create policy "admins manage %s" on public.%I for all to authenticated using (public.current_role()=''administrador'') with check (public.current_role()=''administrador'')',t,t);
+ end loop;
+end $$;
+
+grant select on public.integration_connections,public.integration_sync_runs,
+ public.integration_records,public.business_agent_tasks,public.agent_task_events,public.action_proposals,
+ public.action_approvals,public.business_settings,public.suppliers,public.supplier_products,
+ public.import_shipments,public.shipment_milestones,public.demand_forecasts,
+ public.replenishment_recommendations,public.inventory_risk_alerts to authenticated;
+grant all on public.integration_connections,public.integration_sync_runs,
+ public.integration_records,public.business_agent_tasks,public.agent_task_events,public.action_proposals,
+ public.action_approvals,public.business_settings,public.suppliers,public.supplier_products,
+ public.import_shipments,public.shipment_milestones,public.demand_forecasts,
+ public.replenishment_recommendations,public.inventory_risk_alerts to service_role;
+revoke all on function public.claim_business_agent_task(text,integer) from public;
+revoke all on function public.heartbeat_business_agent_task(uuid,text,uuid,integer) from public;
+revoke all on function public.complete_business_agent_task(uuid,text,uuid,jsonb) from public;
+revoke all on function public.fail_business_agent_task(uuid,text,uuid,text) from public;
+grant execute on function public.claim_business_agent_task(text,integer) to service_role;
+grant execute on function public.heartbeat_business_agent_task(uuid,text,uuid,integer) to service_role;
+grant execute on function public.complete_business_agent_task(uuid,text,uuid,jsonb) to service_role;
+grant execute on function public.fail_business_agent_task(uuid,text,uuid,text) to service_role;
+grant execute on function public.decide_action_proposal(uuid,text,text) to authenticated;
