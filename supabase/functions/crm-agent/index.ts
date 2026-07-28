@@ -78,6 +78,14 @@ Deno.serve(async (req) => {
       return await handleGmailWebhook({ req, url, supabase }, validation);
     }
 
+    const tiendanubePrivacyRouteIndex = pathParts.lastIndexOf("tiendanube-privacy");
+    if (tiendanubePrivacyRouteIndex >= 0 && req.method === "POST") {
+      return await handleTiendanubePrivacyWebhook(
+        { req, url, supabase },
+        pathParts.slice(tiendanubePrivacyRouteIndex + 1),
+      );
+    }
+
     if (route === "send-campaign" && req.method === "POST") {
       const validation = await validateApiKey(req, supabase, "crm:write");
       if (!validation.valid) return unauthorized();
@@ -1789,6 +1797,41 @@ async function handleSendCampaign(context: RouteContext, validation: ApiKeyValid
   });
 
   return json({ success: true, results });
+}
+
+async function handleTiendanubePrivacyWebhook(context: RouteContext, routePath: string[]) {
+  const topic = routePath[0] || "";
+  const allowedTopics = new Set(["store-redact", "customers-redact", "customers-data-request"]);
+
+  if (!allowedTopics.has(topic)) {
+    return json({ error: "Tiendanube privacy webhook route not found" }, 404);
+  }
+
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = await readJsonObject(context.req);
+  } catch {
+    payload = {};
+  }
+
+  await context.supabase.from("activity_logs").insert({
+    entity_type: "integration",
+    entity_id: null,
+    action: `tiendanube_privacy_${topic.replaceAll("-", "_")}`,
+    metadata: {
+      provider: "tiendanube",
+      topic,
+      store_id: payload.store_id ?? payload.id ?? null,
+      received_at: new Date().toISOString(),
+    },
+  });
+
+  return json({
+    ok: true,
+    provider: "tiendanube",
+    topic,
+    message: "Privacy webhook received",
+  });
 }
 
 function clampNumber(value: string | null, min: number, max: number, fallback: number) {
