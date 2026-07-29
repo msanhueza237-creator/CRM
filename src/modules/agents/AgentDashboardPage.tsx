@@ -82,13 +82,17 @@ const CHILE_VAT_FACTOR = 1.19;
 
 function netUnitPrice(item: Snapshot) {
   const normalizedPrice = Number(item.unit_price ?? 0);
+  const hasSourcePrice = Number(item.unit_price_source ?? 0) > 0;
   const sourcePrice = Number(item.unit_price_source ?? normalizedPrice);
 
-  // Los snapshots nuevos ya guardan unit_price sin IVA. Los registros antiguos
-  // pueden contener el precio bruto; en ese caso se normalizan aquí una sola vez.
+  // Regla comercial de Clima Activa: el precio original del catálogo Facto
+  // corresponde al valor final con IVA, incluso cuando el proveedor lo etiqueta
+  // como unit_net. El dashboard siempre trabaja con el precio neto sin IVA.
+  if (hasSourcePrice) return sourcePrice / CHILE_VAT_FACTOR;
+
+  // Compatibilidad con snapshots antiguos que no conservaron el precio original.
   if (item.unit_price_is_net === true) return normalizedPrice;
-  if (item.source_price_includes_tax === false) return sourcePrice;
-  return sourcePrice / CHILE_VAT_FACTOR;
+  return normalizedPrice / CHILE_VAT_FACTOR;
 }
 
 async function loadAllSnapshots(): Promise<Snapshot[]> {
