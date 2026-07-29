@@ -246,6 +246,7 @@ async function handleAgentHubRoute(
             "product_details",
             "document_details",
             "inventory_snapshots",
+            "financial_snapshots",
           ]
           : ["products"];
         if (!["facto", "tiendanube"].includes(provider) || !allowedResources.includes(resource)) {
