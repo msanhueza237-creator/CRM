@@ -60,7 +60,11 @@ const agentNames: Record<string, string> = {
 };
 
 const formatNumber = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 });
-const formatSourceAmount = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 0 });
+const formatCurrency = new Intl.NumberFormat("es-CL", {
+  style: "currency",
+  currency: "CLP",
+  maximumFractionDigits: 0,
+});
 
 async function loadAllSnapshots(): Promise<Snapshot[]> {
   if (!supabase) return [];
@@ -130,17 +134,35 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     const outOfStock = withStock.filter((item) => Number(item.available_units ?? 0) <= 0);
     const withoutStockEvidence = snapshots.filter((item) => !item.stock_known);
     const withCost = snapshots.filter((item) => item.cost_available_in_source);
+    const withPrice = snapshots.filter((item) => item.price_known);
     const withSales = snapshots.filter((item) => item.demand_available);
+    const valuedAtCost = withCost.filter((item) => item.stock_known);
+    const valuedAtSalePrice = withPrice.filter((item) => item.stock_known);
+    const valuedAtBoth = snapshots.filter(
+      (item) => item.stock_known && item.cost_available_in_source && item.price_known,
+    );
     return {
       withStock,
       inStock,
       outOfStock,
       withoutStockEvidence,
       withCost,
+      withPrice,
       withSales,
       totalUnits: withStock.reduce((sum, item) => sum + Number(item.available_units ?? 0), 0),
-      sourceValue: withCost.reduce(
+      costValue: valuedAtCost.reduce(
         (sum, item) => sum + Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0),
+        0,
+      ),
+      saleValue: valuedAtSalePrice.reduce(
+        (sum, item) => sum + Number(item.available_units ?? 0) * Number(item.unit_price ?? 0),
+        0,
+      ),
+      potentialGrossMargin: valuedAtBoth.reduce(
+        (sum, item) =>
+          sum +
+          Number(item.available_units ?? 0) *
+            (Number(item.unit_price ?? 0) - Number(item.unit_cost_source ?? 0)),
         0,
       ),
     };
@@ -162,6 +184,12 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         return (
           Number(right.available_units ?? 0) * Number(right.unit_cost_source ?? 0) -
           Number(left.available_units ?? 0) * Number(left.unit_cost_source ?? 0)
+        );
+      }
+      if (sort === "sale_value") {
+        return (
+          Number(right.available_units ?? 0) * Number(right.unit_price ?? 0) -
+          Number(left.available_units ?? 0) * Number(left.unit_price ?? 0)
         );
       }
       return Number(right.available_units ?? 0) - Number(left.available_units ?? 0);
@@ -209,9 +237,21 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </article>
         <article>
           <CircleDollarSign size={22} />
-          <span>Valor según costo fuente</span>
-          <strong>{formatSourceAmount.format(metrics.sourceValue)}</strong>
-          <small>{metrics.withCost.length} productos · moneda informada por Facto</small>
+          <span>Valor del inventario a costo</span>
+          <strong>{formatCurrency.format(metrics.costValue)}</strong>
+          <small>Stock × costo informado por Facto</small>
+        </article>
+        <article>
+          <CircleDollarSign size={22} />
+          <span>Valor potencial de venta</span>
+          <strong>{formatCurrency.format(metrics.saleValue)}</strong>
+          <small>Stock × precio neto de Facto</small>
+        </article>
+        <article>
+          <TrendingUp size={22} />
+          <span>Margen bruto potencial</span>
+          <strong>{formatCurrency.format(metrics.potentialGrossMargin)}</strong>
+          <small>Antes de impuestos y otros gastos</small>
         </article>
         <article>
           <TrendingUp size={22} />
@@ -240,6 +280,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
           {[
             ["Stock por producto", metrics.withStock.length, snapshots.length],
             ["Costo de origen", metrics.withCost.length, snapshots.length],
+            ["Precio de venta", metrics.withPrice.length, snapshots.length],
             ["Ventas por SKU", metrics.withSales.length, snapshots.length],
           ].map(([label, count, total]) => {
             const percentage = Number(total) ? (Number(count) / Number(total)) * 100 : 0;
@@ -265,19 +306,21 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
             <option value="all">Todos</option><option value="in_stock">Con stock</option><option value="out_of_stock">Sin stock confirmado</option><option value="with_sales">Con ventas observadas</option><option value="without_sales">Sin ventas disponibles</option>
           </select>
           <select aria-label="Ordenar inventario" onChange={(event) => setSort(event.target.value)} value={sort}>
-            <option value="stock">Mayor stock</option><option value="value">Mayor valor de inventario</option><option value="name">Nombre A-Z</option>
+            <option value="stock">Mayor stock</option><option value="value">Mayor valor a costo</option><option value="sale_value">Mayor valor potencial de venta</option><option value="name">Nombre A-Z</option>
           </select>
         </div>
         <div className="logistics-table-wrap">
           <table className="logistics-table">
-            <thead><tr><th>Producto</th><th>SKU</th><th>Stock</th><th>Costo origen</th><th>Precio</th><th>Ventas / rotación</th></tr></thead>
+            <thead><tr><th>Producto</th><th>SKU</th><th>Stock</th><th>Costo unitario</th><th>Precio neto</th><th>Valor a costo</th><th>Valor potencial de venta</th><th>Ventas / rotación</th></tr></thead>
             <tbody>
               {filtered.slice(0, 250).map((item) => (
                 <tr key={item.sku}>
                   <td><strong>{item.name || "Sin nombre"}</strong></td><td>{item.sku}</td>
                   <td><span className={`inventory-status ${Number(item.available_units ?? 0) > 0 ? "ok" : "empty"}`}>{item.stock_known ? formatNumber.format(Number(item.available_units ?? 0)) : "Sin dato"}</span></td>
-                  <td>{item.cost_available_in_source ? formatSourceAmount.format(Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
-                  <td>{item.price_known ? formatSourceAmount.format(Number(item.unit_price ?? 0)) : "Sin dato"}</td>
+                  <td>{item.cost_available_in_source ? formatCurrency.format(Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
+                  <td>{item.price_known ? formatCurrency.format(Number(item.unit_price ?? 0)) : "Sin dato"}</td>
+                  <td>{item.stock_known && item.cost_available_in_source ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
+                  <td>{item.stock_known && item.price_known ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_price ?? 0)) : "Sin dato"}</td>
                   <td>{item.demand_available ? `${formatNumber.format(Number(item.average_daily_demand ?? 0))}/día` : "Pendiente de ventas SKU"}</td>
                 </tr>
               ))}
