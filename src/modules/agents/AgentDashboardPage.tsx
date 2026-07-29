@@ -128,12 +128,14 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     const withStock = snapshots.filter((item) => item.stock_known);
     const inStock = withStock.filter((item) => Number(item.available_units ?? 0) > 0);
     const outOfStock = withStock.filter((item) => Number(item.available_units ?? 0) <= 0);
+    const withoutStockEvidence = snapshots.filter((item) => !item.stock_known);
     const withCost = snapshots.filter((item) => item.cost_available_in_source);
     const withSales = snapshots.filter((item) => item.demand_available);
     return {
       withStock,
       inStock,
       outOfStock,
+      withoutStockEvidence,
       withCost,
       withSales,
       totalUnits: withStock.reduce((sum, item) => sum + Number(item.available_units ?? 0), 0),
@@ -195,9 +197,15 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </article>
         <article className={metrics.outOfStock.length ? "risk" : ""}>
           <AlertTriangle size={22} />
-          <span>Sin stock</span>
+          <span>Sin stock confirmado</span>
           <strong>{formatNumber.format(metrics.outOfStock.length)}</strong>
-          <small>Stock comprobado en Facto</small>
+          <small>Existencia comprobada en cero</small>
+        </article>
+        <article className={metrics.withoutStockEvidence.length ? "risk" : ""}>
+          <Database size={22} />
+          <span>Sin dato de bodega</span>
+          <strong>{formatNumber.format(metrics.withoutStockEvidence.length)}</strong>
+          <small>No se clasifica como stock cero</small>
         </article>
         <article>
           <CircleDollarSign size={22} />
@@ -223,7 +231,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
                 <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.available_units ?? 0) / maxStock) * 100)}%` }} /></div>
               </article>
             ))}
-            {!topStock.length ? <p>Facto todavía no entregó existencias positivas.</p> : null}
+            {!topStock.length ? <p>No hay existencias positivas confirmadas en la última sincronización de Bodega Facto.</p> : null}
           </div>
         </section>
 
@@ -254,7 +262,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         <div className="logistics-controls">
           <label><Search size={18} /><input aria-label="Buscar producto" onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por SKU o nombre" value={query} /></label>
           <select aria-label="Filtrar inventario" onChange={(event) => setFilter(event.target.value)} value={filter}>
-            <option value="all">Todos</option><option value="in_stock">Con stock</option><option value="out_of_stock">Sin stock</option><option value="with_sales">Con ventas observadas</option><option value="without_sales">Sin ventas disponibles</option>
+            <option value="all">Todos</option><option value="in_stock">Con stock</option><option value="out_of_stock">Sin stock confirmado</option><option value="with_sales">Con ventas observadas</option><option value="without_sales">Sin ventas disponibles</option>
           </select>
           <select aria-label="Ordenar inventario" onChange={(event) => setSort(event.target.value)} value={sort}>
             <option value="stock">Mayor stock</option><option value="value">Mayor valor de inventario</option><option value="name">Nombre A-Z</option>
