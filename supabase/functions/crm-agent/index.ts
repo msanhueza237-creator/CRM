@@ -240,7 +240,13 @@ async function handleAgentHubRoute(
         const provider = requiredString(payload.provider, "provider", 40);
         const resource = requiredString(payload.resource, "resource", 60);
         const allowedResources = provider === "facto"
-          ? ["products", "documents", "inventory_snapshots"]
+          ? [
+            "products",
+            "documents",
+            "product_details",
+            "document_details",
+            "inventory_snapshots",
+          ]
           : ["products"];
         if (!["facto", "tiendanube"].includes(provider) || !allowedResources.includes(resource)) {
           throw new RequestValidationError("Unsupported read-only integration resource");
