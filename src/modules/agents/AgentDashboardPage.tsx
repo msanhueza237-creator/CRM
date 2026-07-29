@@ -43,7 +43,9 @@ type Snapshot = {
   cost_available_in_source?: boolean;
   cost_requires_usd_conversion?: boolean;
   unit_price?: number;
+  unit_price_source?: number;
   unit_price_is_net?: boolean;
+  source_price_includes_tax?: boolean;
   price_known?: boolean;
   margin_percent?: number | null;
   average_daily_demand?: number;
@@ -79,8 +81,14 @@ const formatCurrency = new Intl.NumberFormat("es-CL", {
 const CHILE_VAT_FACTOR = 1.19;
 
 function netUnitPrice(item: Snapshot) {
-  const sourcePrice = Number(item.unit_price ?? 0);
-  return item.unit_price_is_net ? sourcePrice : sourcePrice / CHILE_VAT_FACTOR;
+  const normalizedPrice = Number(item.unit_price ?? 0);
+  const sourcePrice = Number(item.unit_price_source ?? normalizedPrice);
+
+  // Los snapshots nuevos ya guardan unit_price sin IVA. Los registros antiguos
+  // pueden contener el precio bruto; en ese caso se normalizan aquí una sola vez.
+  if (item.unit_price_is_net === true) return normalizedPrice;
+  if (item.source_price_includes_tax === false) return sourcePrice;
+  return sourcePrice / CHILE_VAT_FACTOR;
 }
 
 async function loadAllSnapshots(): Promise<Snapshot[]> {
@@ -435,7 +443,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
             <option value="sale_value">Por valor neto de venta</option>
           </select>
         </div>
-        <div className="stock-bars product-ranking-scroll">
+        <div className="stock-bars product-ranking-list product-ranking-scroll">
           {topInventory.map((item) => (
             <article key={item.sku}>
               <div>
@@ -499,7 +507,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
               value={salesRankingMode}
             >
               <option value="units">Por unidades vendidas</option>
-              <option value="sale_value">Por venta valorizada</option>
+              <option value="sale_value">Por venta neta sin IVA</option>
             </select>
           </div>
           <div className="stock-bars sales-bars product-ranking-list">
@@ -530,7 +538,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
             >
               <option value="stock">Por unidades</option>
               <option value="cost_value">Por dinero a costo</option>
-              <option value="sale_value">Por valor de venta</option>
+              <option value="sale_value">Por valor neto sin IVA</option>
             </select>
           </div>
           <div className="stock-bars idle-bars product-ranking-list">

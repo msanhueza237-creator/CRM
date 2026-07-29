@@ -3856,8 +3856,27 @@ th {
 }
 
 .product-ranking-list {
-  overflow: visible;
+  height: 535px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-color: #9eb7bc #edf3f4;
+  scrollbar-width: thin;
   width: 100%;
+}
+
+.product-ranking-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.product-ranking-list::-webkit-scrollbar-track {
+  background: #edf3f4;
+  border-radius: 999px;
+}
+
+.product-ranking-list::-webkit-scrollbar-thumb {
+  background: #9eb7bc;
+  border-radius: 999px;
 }
 
 .stock-bars article,
