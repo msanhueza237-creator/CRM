@@ -133,6 +133,67 @@ function GenericAgentDashboard({ agentType, tasks }: { agentType: string; tasks:
   );
 }
 
+type DonutSlice = {
+  label: string;
+  value: number;
+  color: string;
+};
+
+function DonutChart({
+  title,
+  subtitle,
+  slices,
+  centerValue,
+  centerLabel,
+  formatter = (value: number) => formatNumber.format(value),
+}: {
+  title: string;
+  subtitle: string;
+  slices: DonutSlice[];
+  centerValue: string;
+  centerLabel: string;
+  formatter?: (value: number) => string;
+}) {
+  const total = slices.reduce((sum, slice) => sum + Math.max(0, slice.value), 0);
+  let cursor = 0;
+  const stops = slices.map((slice) => {
+    const start = cursor;
+    cursor += total ? (Math.max(0, slice.value) / total) * 100 : 0;
+    return `${slice.color} ${start}% ${cursor}%`;
+  });
+  const background = total ? `conic-gradient(${stops.join(", ")})` : "#e8eff0";
+
+  return (
+    <article className="data-card logistics-donut-card">
+      <div className="section-title">
+        <div>
+          <h2>{title}</h2>
+          <p>{subtitle}</p>
+        </div>
+      </div>
+      <div className="donut-chart-layout">
+        <div aria-label={`${title}: ${centerValue}`} className="donut-ring" role="img" style={{ background }}>
+          <div className="donut-center">
+            <strong>{centerValue}</strong>
+            <span>{centerLabel}</span>
+          </div>
+        </div>
+        <div className="donut-legend">
+          {slices.map((slice) => (
+            <article key={slice.label}>
+              <span className="donut-legend-color" style={{ background: slice.color }} />
+              <div>
+                <span>{slice.label}</span>
+                <strong>{formatter(slice.value)}</strong>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    </article>
+  );
+}
+
 function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshots: Snapshot[] }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
@@ -237,7 +298,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     [rankingMode],
   );
   const topInventory = useMemo(
-    () => [...metrics.inStock].sort((a, b) => rankingValue(b) - rankingValue(a)).slice(0, 8),
+    () => [...metrics.inStock].sort((a, b) => rankingValue(b) - rankingValue(a)).slice(0, 30),
     [metrics.inStock, rankingValue],
   );
   const maxRankingValue = Math.max(...topInventory.map(rankingValue), 1);
@@ -245,7 +306,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     () =>
       [...metrics.withSales]
         .sort((a, b) => Number(b.units_sold_observed ?? 0) - Number(a.units_sold_observed ?? 0))
-        .slice(0, 8),
+        .slice(0, 30),
     [metrics.withSales],
   );
   const maxSold = Math.max(...bestSellers.map((item) => Number(item.units_sold_observed ?? 0)), 1);
@@ -257,7 +318,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
             Number(b.available_units ?? 0) * Number(b.unit_cost_source ?? 0) -
             Number(a.available_units ?? 0) * Number(a.unit_cost_source ?? 0),
         )
-        .slice(0, 8),
+        .slice(0, 30),
     [metrics.withoutMovement],
   );
   const maxTrappedValue = Math.max(
@@ -266,26 +327,11 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     ),
     1,
   );
-  const scatterProducts = useMemo(
-    () =>
-      metrics.inStock
-        .filter((item) => item.cost_available_in_source)
-        .sort(
-          (a, b) =>
-            Number(b.available_units ?? 0) * Number(b.unit_cost_source ?? 0) -
-            Number(a.available_units ?? 0) * Number(a.unit_cost_source ?? 0),
-        )
-        .slice(0, 50),
-    [metrics.inStock],
+  const salesHistoryWithoutSales = Math.max(
+    0,
+    metrics.withSalesHistory.length - metrics.withSales.length,
   );
-  const maxScatterStock = Math.max(
-    ...scatterProducts.map((item) => Math.log1p(Number(item.available_units ?? 0))),
-    1,
-  );
-  const maxScatterCost = Math.max(
-    ...scatterProducts.map((item) => Math.log1p(Number(item.unit_cost_source ?? 0))),
-    1,
-  );
+  const grossMarginValue = Math.max(0, metrics.potentialGrossMargin);
   const filteredUnits = filtered.reduce(
     (sum, item) => sum + Number(item.available_units ?? 0),
     0,
@@ -374,7 +420,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
               <option value="sale_value">Por valor de venta</option>
             </select>
           </div>
-          <div className="stock-bars">
+          <div className="stock-bars product-ranking-scroll">
             {topInventory.map((item) => (
               <article key={item.sku}>
                 <div>
@@ -411,40 +457,52 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </section>
       </div>
 
-      <section className="logistics-insights-grid">
-        <article className="data-card logistics-scatter-card">
-          <div className="section-title">
-            <div><h2>Stock versus costo unitario</h2><p>Los círculos grandes concentran más dinero inmovilizado.</p></div>
-          </div>
-          <div className="scatter-wrap">
-            <svg aria-label="Gráfico de stock versus costo unitario" role="img" viewBox="0 0 720 300">
-              <line x1="58" x2="696" y1="260" y2="260" />
-              <line x1="58" x2="58" y1="22" y2="260" />
-              <text x="330" y="292">Stock disponible (escala logarítmica)</text>
-              <text transform="translate(16 190) rotate(-90)">Costo unitario</text>
-              {scatterProducts.map((item) => {
-                const stock = Number(item.available_units ?? 0);
-                const cost = Number(item.unit_cost_source ?? 0);
-                const inventoryValue = stock * cost;
-                const x = 58 + (Math.log1p(stock) / maxScatterStock) * 620;
-                const y = 260 - (Math.log1p(cost) / maxScatterCost) * 220;
-                const radius = Math.min(16, Math.max(5, Math.sqrt(inventoryValue / 100000)));
-                return (
-                  <circle key={item.sku} cx={x} cy={y} r={radius}>
-                    <title>{`${item.name || item.sku}\nStock: ${formatNumber.format(stock)}\nCosto unitario: ${formatCurrency.format(cost)}\nValor a costo: ${formatCurrency.format(inventoryValue)}`}</title>
-                  </circle>
-                );
-              })}
-            </svg>
-          </div>
-          <small>Pasa el cursor sobre un punto para ver producto, stock y valorización.</small>
-        </article>
+      <section className="logistics-donut-grid">
+        <DonutChart
+          centerLabel="productos"
+          centerValue={formatNumber.format(snapshots.length)}
+          slices={[
+            { label: "Con existencia", value: metrics.inStock.length, color: "#07869a" },
+            { label: "Sin stock", value: metrics.outOfStock.length, color: "#e07832" },
+            { label: "Sin dato de bodega", value: metrics.withoutStockEvidence.length, color: "#b6c5c8" },
+          ]}
+          subtitle="Distribución real según la última sincronización de Facto."
+          title="Estado del catálogo"
+        />
+        <DonutChart
+          centerLabel="venta potencial"
+          centerValue={formatCurrency.format(metrics.saleValue)}
+          formatter={(value) => formatCurrency.format(value)}
+          slices={[
+            { label: "Costo del inventario", value: metrics.costValue, color: "#075968" },
+            { label: "Margen bruto potencial", value: grossMarginValue, color: "#27af86" },
+          ]}
+          subtitle="Compara capital invertido y margen bruto antes de gastos."
+          title="Composición del valor"
+        />
+        <DonutChart
+          centerLabel="SKU"
+          centerValue={formatNumber.format(snapshots.length)}
+          slices={[
+            { label: "Con ventas observadas", value: metrics.withSales.length, color: "#2b78c5" },
+            { label: "Con historial, sin ventas", value: salesHistoryWithoutSales, color: "#e39a27" },
+            {
+              label: "Sin historial disponible",
+              value: Math.max(0, snapshots.length - metrics.withSalesHistory.length),
+              color: "#c5ced1",
+            },
+          ]}
+          subtitle="Cobertura disponible para rotación y decisiones de compra."
+          title="Evidencia de ventas"
+        />
+      </section>
 
+      <section className="logistics-insights-grid">
         <article className="data-card">
           <div className="section-title">
             <div><h2>Productos más vendidos</h2><p>Unidades observadas en documentos emitidos de Facto.</p></div>
           </div>
-          <div className="stock-bars sales-bars">
+          <div className="stock-bars sales-bars product-ranking-scroll">
             {bestSellers.map((item) => (
               <article key={item.sku}>
                 <div>
@@ -462,7 +520,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
           <div className="section-title">
             <div><h2>Stock sin movimiento</h2><p>Existencia con cero ventas en el período observado.</p></div>
           </div>
-          <div className="stock-bars idle-bars">
+          <div className="stock-bars idle-bars product-ranking-scroll">
             {trappedStock.map((item) => {
               const value = Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0);
               return (
@@ -505,28 +563,54 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </button>
         {showInventory ? (
           <>
-            <div className="logistics-table-wrap">
-              <table className="logistics-table">
-                <thead><tr><th>Producto</th><th>SKU</th><th>Stock</th><th>Costo unitario</th><th>Precio neto</th><th>Valor a costo</th><th>Valor potencial de venta</th><th>Ventas / rotación</th></tr></thead>
-                <tbody>
-                  {visibleInventory.map((item) => (
-                    <tr key={item.sku}>
-                      <td data-label="Producto"><strong>{item.name || "Sin nombre"}</strong></td>
-                      <td data-label="SKU">{item.sku}</td>
-                      <td data-label="Stock"><span className={`inventory-status ${Number(item.available_units ?? 0) > 0 ? "ok" : "empty"}`}>{item.stock_known ? formatNumber.format(Number(item.available_units ?? 0)) : "Sin dato"}</span></td>
-                      <td data-label="Costo unitario">{item.cost_available_in_source ? formatCurrency.format(Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
-                      <td data-label="Precio neto">{item.price_known ? formatCurrency.format(Number(item.unit_price ?? 0)) : "Sin dato"}</td>
-                      <td data-label="Valor a costo">{item.stock_known && item.cost_available_in_source ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
-                      <td data-label="Valor de venta">{item.stock_known && item.price_known ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_price ?? 0)) : "Sin dato"}</td>
-                      <td data-label="Ventas / rotacion">
+            <div className="inventory-product-list">
+              {visibleInventory.map((item) => {
+                const stock = Number(item.available_units ?? 0);
+                const unitCost = Number(item.unit_cost_source ?? 0);
+                const unitPrice = Number(item.unit_price ?? 0);
+                return (
+                  <article className="inventory-product-row" key={item.sku}>
+                    <div className="inventory-product-identity">
+                      <strong>{item.name || "Sin nombre"}</strong>
+                      <span>SKU: {item.sku || "Sin SKU"}</span>
+                    </div>
+                    <div className="inventory-product-metric">
+                      <span>Existencia</span>
+                      <strong className={`inventory-status ${stock > 0 ? "ok" : "empty"}`}>
+                        {item.stock_known ? formatNumber.format(stock) : "Sin dato"}
+                      </strong>
+                    </div>
+                    <div className="inventory-product-metric">
+                      <span>Costo / precio neto</span>
+                      <strong>
+                        {item.cost_available_in_source ? formatCurrency.format(unitCost) : "Sin costo"}
+                        {" · "}
+                        {item.price_known ? formatCurrency.format(unitPrice) : "Sin precio"}
+                      </strong>
+                    </div>
+                    <div className="inventory-product-metric">
+                      <span>Valor costo / venta</span>
+                      <strong>
+                        {item.stock_known && item.cost_available_in_source
+                          ? formatCurrency.format(stock * unitCost)
+                          : "Sin dato"}
+                        {" · "}
+                        {item.stock_known && item.price_known
+                          ? formatCurrency.format(stock * unitPrice)
+                          : "Sin dato"}
+                      </strong>
+                    </div>
+                    <div className="inventory-product-metric">
+                      <span>Ventas / demanda diaria</span>
+                      <strong>
                         {item.sales_history_available
                           ? `${formatNumber.format(Number(item.units_sold_observed ?? 0))} un. · ${formatNumber.format(Number(item.average_daily_demand ?? 0))}/día`
                           : "Pendiente de historial"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                      </strong>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
             <nav aria-label="Paginación de inventario" className="inventory-pagination">
               <button disabled={inventoryPage <= 1} type="button" onClick={() => setInventoryPage((page) => Math.max(1, page - 1))}><ChevronLeft size={17} /> Anterior</button>
