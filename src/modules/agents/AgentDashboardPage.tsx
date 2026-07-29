@@ -422,56 +422,32 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </article>
       </section>
 
-      <div className="logistics-dashboard-grid">
-        <section className="data-card logistics-chart">
-          <div className="section-title logistics-chart-title">
-            <div><h2>Mayor existencia y valorización</h2><p>Compara unidades, capital a costo o valor potencial de venta.</p></div>
-            <select
-              aria-label="Métrica del ranking de inventario"
-              onChange={(event) => setRankingMode(event.target.value as "stock" | "cost_value" | "sale_value")}
-              value={rankingMode}
-            >
-              <option value="stock">Por unidades</option>
-              <option value="cost_value">Por dinero a costo</option>
-              <option value="sale_value">Por valor de venta</option>
-            </select>
-          </div>
-          <div className="stock-bars product-ranking-scroll">
-            {topInventory.map((item) => (
-              <article key={item.sku}>
-                <div>
-                  <strong title={item.name || item.sku}>{item.name || item.sku}</strong>
-                  <span>{rankingMode === "stock" ? `${formatNumber.format(rankingValue(item))} un.` : formatCurrency.format(rankingValue(item))}</span>
-                </div>
-                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (rankingValue(item) / maxRankingValue) * 100)}%` }} /></div>
-              </article>
-            ))}
-            {!topInventory.length ? <p>No hay existencias positivas confirmadas en la última sincronización de Bodega Facto.</p> : null}
-          </div>
-        </section>
-
-        <section className="data-card evidence-coverage">
-          <div className="section-title"><div><h2>Cobertura de evidencia</h2><p>Qué análisis puede sostener hoy la información real.</p></div></div>
-          {[
-            ["Stock por producto", metrics.withStock.length, snapshots.length],
-            ["Costo de origen", metrics.withCost.length, snapshots.length],
-            ["Precio de venta", metrics.withPrice.length, snapshots.length],
-            ["Historial de ventas", metrics.withSalesHistory.length, snapshots.length],
-          ].map(([label, count, total]) => {
-            const percentage = Number(total) ? (Number(count) / Number(total)) * 100 : 0;
-            return (
-              <article key={String(label)}>
-                <div><strong>{label}</strong><span>{Math.round(percentage)}%</span></div>
-                <div className="coverage-track"><span style={{ width: `${percentage}%` }} /></div>
-              </article>
-            );
-          })}
-          {!metrics.withSalesHistory.length ? (
-            <div className="dashboard-warning"><AlertTriangle size={18} />El historial de ventas aún se está sincronizando desde Facto. Los rankings se habilitarán sólo con documentos reales.</div>
-          ) : null}
-          {latest?.result?.summary ? <p className="agent-result-summary">{latest.result.summary}</p> : null}
-        </section>
-      </div>
+      <section className="data-card logistics-chart logistics-primary-ranking">
+        <div className="section-title logistics-chart-title">
+          <div><h2>Mayor existencia y valorización</h2><p>Compara unidades, capital a costo o valor potencial de venta neto.</p></div>
+          <select
+            aria-label="Métrica del ranking de inventario"
+            onChange={(event) => setRankingMode(event.target.value as "stock" | "cost_value" | "sale_value")}
+            value={rankingMode}
+          >
+            <option value="stock">Por unidades</option>
+            <option value="cost_value">Por dinero a costo</option>
+            <option value="sale_value">Por valor neto de venta</option>
+          </select>
+        </div>
+        <div className="stock-bars product-ranking-scroll">
+          {topInventory.map((item) => (
+            <article key={item.sku}>
+              <div>
+                <strong title={item.name || item.sku}>{item.name || item.sku}</strong>
+                <span>{rankingMode === "stock" ? `${formatNumber.format(rankingValue(item))} un.` : formatCurrency.format(rankingValue(item))}</span>
+              </div>
+              <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (rankingValue(item) / maxRankingValue) * 100)}%` }} /></div>
+            </article>
+          ))}
+          {!topInventory.length ? <p>No hay existencias positivas confirmadas en la última sincronización de Bodega Facto.</p> : null}
+        </div>
+      </section>
 
       <section className="logistics-donut-grid">
         <DonutChart

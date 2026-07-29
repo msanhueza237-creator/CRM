@@ -3716,16 +3716,13 @@ th {
   font-size: clamp(22px, 2.2vw, 32px);
 }
 
-.logistics-dashboard-grid {
-  display: grid;
-  gap: 18px;
-  grid-template-columns: minmax(0, 1.2fr) minmax(330px, 0.8fr);
-}
-
-.logistics-dashboard-grid > *,
 .logistics-insights-grid > *,
 .logistics-donut-grid > * {
   min-width: 0;
+}
+
+.logistics-primary-ranking {
+  width: 100%;
 }
 
 .logistics-chart-title {
@@ -4155,10 +4152,6 @@ th {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .logistics-dashboard-grid {
-    grid-template-columns: 1fr;
-  }
-
   .logistics-insights-grid {
     grid-template-columns: 1fr;
   }
@@ -4372,7 +4365,6 @@ th {
     font-size: 11px;
   }
 
-  .logistics-dashboard-grid,
   .logistics-insights-grid,
   .logistics-donut-grid {
     gap: 12px;
