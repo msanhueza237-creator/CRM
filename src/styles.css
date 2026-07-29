@@ -3764,16 +3764,17 @@ th {
 .donut-chart-layout {
   align-items: center;
   display: grid;
-  gap: 18px;
-  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 16px;
+  grid-template-columns: 1fr;
+  justify-items: center;
 }
 
 .donut-ring {
   border-radius: 50%;
   display: grid;
-  height: 150px;
+  height: 142px;
   place-items: center;
-  width: 150px;
+  width: 142px;
 }
 
 .donut-center {
@@ -3782,18 +3783,18 @@ th {
   border-radius: 50%;
   box-shadow: 0 0 0 1px rgba(10, 100, 112, 0.08);
   display: grid;
-  height: 92px;
+  height: 96px;
   justify-items: center;
   padding: 8px;
   text-align: center;
-  width: 92px;
+  width: 96px;
 }
 
 .donut-center strong {
   color: #123a40;
-  font-size: clamp(17px, 1.4vw, 23px);
+  font-size: clamp(15px, 1.2vw, 20px);
   line-height: 1.05;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .donut-center span {
@@ -3806,6 +3807,7 @@ th {
 .donut-legend {
   display: grid;
   gap: 10px;
+  width: 100%;
 }
 
 .donut-legend article {
@@ -3825,8 +3827,9 @@ th {
 
 .donut-legend article span:not(.donut-legend-color) {
   color: #607077;
-  font-size: 12px;
-  overflow-wrap: anywhere;
+  font-size: 11px;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .donut-legend article strong {
@@ -3855,21 +3858,9 @@ th {
   gap: 13px;
 }
 
-.product-ranking-scroll {
-  max-height: 430px;
-  overflow-y: auto;
-  overscroll-behavior-y: contain;
-  padding-right: 8px;
-  scrollbar-gutter: stable;
-}
-
-.product-ranking-scroll::-webkit-scrollbar {
-  width: 8px;
-}
-
-.product-ranking-scroll::-webkit-scrollbar-thumb {
-  background: #b7c9cc;
-  border-radius: 999px;
+.product-ranking-list {
+  overflow: visible;
+  width: 100%;
 }
 
 .stock-bars article,
@@ -3887,16 +3878,20 @@ th {
 }
 
 .stock-bars strong {
-  max-width: 75%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.25;
+  max-width: calc(100% - 112px);
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .stock-bars span,
 .evidence-coverage span {
   color: #52676d;
+  flex: 0 0 auto;
+  font-size: 12px;
   font-weight: 800;
+  text-align: right;
 }
 
 .stock-bar-track,
@@ -4410,10 +4405,6 @@ th {
 
   .donut-legend {
     width: 100%;
-  }
-
-  .product-ranking-scroll {
-    max-height: 390px;
   }
 
   .logistics-controls {

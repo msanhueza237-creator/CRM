@@ -199,6 +199,8 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("stock");
   const [rankingMode, setRankingMode] = useState<"stock" | "cost_value" | "sale_value">("stock");
+  const [salesRankingMode, setSalesRankingMode] = useState<"units" | "sale_value">("units");
+  const [idleRankingMode, setIdleRankingMode] = useState<"stock" | "cost_value" | "sale_value">("cost_value");
   const [showInventory, setShowInventory] = useState(false);
   const [inventoryPage, setInventoryPage] = useState(1);
   const pageSize = 25;
@@ -302,31 +304,38 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     [metrics.inStock, rankingValue],
   );
   const maxRankingValue = Math.max(...topInventory.map(rankingValue), 1);
+  const salesRankingValue = useCallback(
+    (item: Snapshot) => {
+      const units = Number(item.units_sold_observed ?? 0);
+      return salesRankingMode === "sale_value" ? units * Number(item.unit_price ?? 0) : units;
+    },
+    [salesRankingMode],
+  );
   const bestSellers = useMemo(
     () =>
       [...metrics.withSales]
-        .sort((a, b) => Number(b.units_sold_observed ?? 0) - Number(a.units_sold_observed ?? 0))
+        .sort((a, b) => salesRankingValue(b) - salesRankingValue(a))
         .slice(0, 30),
-    [metrics.withSales],
+    [metrics.withSales, salesRankingValue],
   );
-  const maxSold = Math.max(...bestSellers.map((item) => Number(item.units_sold_observed ?? 0)), 1);
+  const maxSold = Math.max(...bestSellers.map(salesRankingValue), 1);
+  const idleRankingValue = useCallback(
+    (item: Snapshot) => {
+      const stock = Number(item.available_units ?? 0);
+      if (idleRankingMode === "cost_value") return stock * Number(item.unit_cost_source ?? 0);
+      if (idleRankingMode === "sale_value") return stock * Number(item.unit_price ?? 0);
+      return stock;
+    },
+    [idleRankingMode],
+  );
   const trappedStock = useMemo(
     () =>
       [...metrics.withoutMovement]
-        .sort(
-          (a, b) =>
-            Number(b.available_units ?? 0) * Number(b.unit_cost_source ?? 0) -
-            Number(a.available_units ?? 0) * Number(a.unit_cost_source ?? 0),
-        )
+        .sort((a, b) => idleRankingValue(b) - idleRankingValue(a))
         .slice(0, 30),
-    [metrics.withoutMovement],
+    [idleRankingValue, metrics.withoutMovement],
   );
-  const maxTrappedValue = Math.max(
-    ...trappedStock.map(
-      (item) => Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0),
-    ),
-    1,
-  );
+  const maxTrappedValue = Math.max(...trappedStock.map(idleRankingValue), 1);
   const salesHistoryWithoutSales = Math.max(
     0,
     metrics.withSalesHistory.length - metrics.withSales.length,
@@ -499,17 +508,29 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
 
       <section className="logistics-insights-grid">
         <article className="data-card">
-          <div className="section-title">
+          <div className="section-title logistics-chart-title">
             <div><h2>Productos más vendidos</h2><p>Unidades observadas en documentos emitidos de Facto.</p></div>
+            <select
+              aria-label="Métrica de productos más vendidos"
+              onChange={(event) => setSalesRankingMode(event.target.value as "units" | "sale_value")}
+              value={salesRankingMode}
+            >
+              <option value="units">Por unidades vendidas</option>
+              <option value="sale_value">Por venta valorizada</option>
+            </select>
           </div>
-          <div className="stock-bars sales-bars product-ranking-scroll">
+          <div className="stock-bars sales-bars product-ranking-list">
             {bestSellers.map((item) => (
               <article key={item.sku}>
                 <div>
                   <strong title={item.name || item.sku}>{item.name || item.sku}</strong>
-                  <span>{formatNumber.format(Number(item.units_sold_observed ?? 0))} un.</span>
+                  <span>
+                    {salesRankingMode === "units"
+                      ? `${formatNumber.format(salesRankingValue(item))} un.`
+                      : formatCurrency.format(salesRankingValue(item))}
+                  </span>
                 </div>
-                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.units_sold_observed ?? 0) / maxSold) * 100)}%` }} /></div>
+                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (salesRankingValue(item) / maxSold) * 100)}%` }} /></div>
               </article>
             ))}
             {!bestSellers.length ? <p>Sin ventas relacionadas todavía. La sincronización anual puede tardar unos minutos.</p> : null}
@@ -517,17 +538,30 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </article>
 
         <article className="data-card">
-          <div className="section-title">
+          <div className="section-title logistics-chart-title">
             <div><h2>Stock sin movimiento</h2><p>Existencia con cero ventas en el período observado.</p></div>
+            <select
+              aria-label="Métrica de stock sin movimiento"
+              onChange={(event) => setIdleRankingMode(event.target.value as "stock" | "cost_value" | "sale_value")}
+              value={idleRankingMode}
+            >
+              <option value="stock">Por unidades</option>
+              <option value="cost_value">Por dinero a costo</option>
+              <option value="sale_value">Por valor de venta</option>
+            </select>
           </div>
-          <div className="stock-bars idle-bars product-ranking-scroll">
+          <div className="stock-bars idle-bars product-ranking-list">
             {trappedStock.map((item) => {
-              const value = Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0);
+              const value = idleRankingValue(item);
               return (
                 <article key={item.sku}>
                   <div>
                     <strong title={item.name || item.sku}>{item.name || item.sku}</strong>
-                    <span>{formatCurrency.format(value)}</span>
+                    <span>
+                      {idleRankingMode === "stock"
+                        ? `${formatNumber.format(value)} un.`
+                        : formatCurrency.format(value)}
+                    </span>
                   </div>
                   <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (value / maxTrappedValue) * 100)}%` }} /></div>
                 </article>
