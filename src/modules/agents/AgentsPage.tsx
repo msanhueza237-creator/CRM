@@ -164,6 +164,32 @@ export function AgentsPage() {
       {notice ? <div className="notice-banner info">{notice}</div> : null}
       {!canManage ? <div className="notice-banner info">Vista de solo lectura. Solo un administrador puede solicitar análisis o decidir propuestas.</div> : null}
 
+      <section className="agent-command-card">
+        <div>
+          <span className="eyebrow">REGLAS DEL CENTRO</span>
+          <h2>El CRM decide; los agentes preparan evidencia</h2>
+          <p>
+            Facto es la fuente principal para stock, ventas y documentos. Tiendanube complementa productos,
+            pedidos web y clientes online. Los agentes solo preparan analisis y propuestas: ninguna compra,
+            cobranza o campana sale sin revision humana.
+          </p>
+        </div>
+        <div className="agent-policy-grid">
+          <article>
+            <strong>95 dias</strong>
+            <span>45 produccion · 45 viaje · 5 aduana</span>
+          </article>
+          <article>
+            <strong>USD 50k-70k</strong>
+            <span>rango objetivo por orden china</span>
+          </article>
+          <article>
+            <strong>Nov-Feb</strong>
+            <span>temporada alta; febrero baja produccion china</span>
+          </article>
+        </div>
+      </section>
+
       <div className="agent-grid">
         {agents.map((agent) => {
           const latest = tasks.find((task) => task.agent_type === agent.type);
