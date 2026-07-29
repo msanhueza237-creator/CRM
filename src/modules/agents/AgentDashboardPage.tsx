@@ -5,6 +5,10 @@ import {
   BarChart3,
   Boxes,
   CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
   CircleDollarSign,
   Database,
   PackageCheck,
@@ -45,6 +49,12 @@ type Snapshot = {
   demand_available?: boolean;
   sales_history_available?: boolean;
   units_sold_observed?: number;
+  sales_revenue_observed?: number;
+  sales_document_count?: number;
+  last_sale_at?: string | null;
+  has_observed_sales?: boolean;
+  sales_history_start?: string | null;
+  sales_history_end?: string | null;
   demand_observation_days?: number;
   source?: string;
 };
@@ -127,6 +137,10 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState("all");
   const [sort, setSort] = useState("stock");
+  const [rankingMode, setRankingMode] = useState<"stock" | "cost_value" | "sale_value">("stock");
+  const [showInventory, setShowInventory] = useState(false);
+  const [inventoryPage, setInventoryPage] = useState(1);
+  const pageSize = 25;
 
   const metrics = useMemo(() => {
     const withStock = snapshots.filter((item) => item.stock_known);
@@ -135,7 +149,15 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     const withoutStockEvidence = snapshots.filter((item) => !item.stock_known);
     const withCost = snapshots.filter((item) => item.cost_available_in_source);
     const withPrice = snapshots.filter((item) => item.price_known);
-    const withSales = snapshots.filter((item) => item.demand_available);
+    const withSalesHistory = snapshots.filter((item) => item.sales_history_available);
+    const withSales = snapshots.filter((item) => Number(item.units_sold_observed ?? 0) > 0);
+    const withoutMovement = snapshots.filter(
+      (item) =>
+        item.sales_history_available &&
+        item.stock_known &&
+        Number(item.available_units ?? 0) > 0 &&
+        Number(item.units_sold_observed ?? 0) === 0,
+    );
     const valuedAtCost = withCost.filter((item) => item.stock_known);
     const valuedAtSalePrice = withPrice.filter((item) => item.stock_known);
     const valuedAtBoth = snapshots.filter(
@@ -149,6 +171,8 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
       withCost,
       withPrice,
       withSales,
+      withSalesHistory,
+      withoutMovement,
       totalUnits: withStock.reduce((sum, item) => sum + Number(item.available_units ?? 0), 0),
       costValue: valuedAtCost.reduce(
         (sum, item) => sum + Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0),
@@ -174,8 +198,11 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
       if (normalized && !`${item.sku ?? ""} ${item.name ?? ""}`.toLocaleLowerCase("es-CL").includes(normalized)) return false;
       if (filter === "in_stock") return Number(item.available_units ?? 0) > 0;
       if (filter === "out_of_stock") return item.stock_known && Number(item.available_units ?? 0) <= 0;
-      if (filter === "with_sales") return Boolean(item.demand_available);
-      if (filter === "without_sales") return !item.demand_available;
+      if (filter === "with_sales") return Number(item.units_sold_observed ?? 0) > 0;
+      if (filter === "without_movement") {
+        return Boolean(item.sales_history_available) && Number(item.units_sold_observed ?? 0) === 0;
+      }
+      if (filter === "without_history") return !item.sales_history_available;
       return true;
     });
     return rows.sort((left, right) => {
@@ -196,11 +223,83 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     });
   }, [filter, query, snapshots, sort]);
 
-  const topStock = useMemo(
-    () => [...metrics.inStock].sort((a, b) => Number(b.available_units ?? 0) - Number(a.available_units ?? 0)).slice(0, 8),
+  useEffect(() => {
+    setInventoryPage(1);
+  }, [filter, query, sort]);
+
+  const rankingValue = useCallback(
+    (item: Snapshot) => {
+      const stock = Number(item.available_units ?? 0);
+      if (rankingMode === "cost_value") return stock * Number(item.unit_cost_source ?? 0);
+      if (rankingMode === "sale_value") return stock * Number(item.unit_price ?? 0);
+      return stock;
+    },
+    [rankingMode],
+  );
+  const topInventory = useMemo(
+    () => [...metrics.inStock].sort((a, b) => rankingValue(b) - rankingValue(a)).slice(0, 8),
+    [metrics.inStock, rankingValue],
+  );
+  const maxRankingValue = Math.max(...topInventory.map(rankingValue), 1);
+  const bestSellers = useMemo(
+    () =>
+      [...metrics.withSales]
+        .sort((a, b) => Number(b.units_sold_observed ?? 0) - Number(a.units_sold_observed ?? 0))
+        .slice(0, 8),
+    [metrics.withSales],
+  );
+  const maxSold = Math.max(...bestSellers.map((item) => Number(item.units_sold_observed ?? 0)), 1);
+  const trappedStock = useMemo(
+    () =>
+      [...metrics.withoutMovement]
+        .sort(
+          (a, b) =>
+            Number(b.available_units ?? 0) * Number(b.unit_cost_source ?? 0) -
+            Number(a.available_units ?? 0) * Number(a.unit_cost_source ?? 0),
+        )
+        .slice(0, 8),
+    [metrics.withoutMovement],
+  );
+  const maxTrappedValue = Math.max(
+    ...trappedStock.map(
+      (item) => Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0),
+    ),
+    1,
+  );
+  const scatterProducts = useMemo(
+    () =>
+      metrics.inStock
+        .filter((item) => item.cost_available_in_source)
+        .sort(
+          (a, b) =>
+            Number(b.available_units ?? 0) * Number(b.unit_cost_source ?? 0) -
+            Number(a.available_units ?? 0) * Number(a.unit_cost_source ?? 0),
+        )
+        .slice(0, 50),
     [metrics.inStock],
   );
-  const maxStock = Math.max(...topStock.map((item) => Number(item.available_units ?? 0)), 1);
+  const maxScatterStock = Math.max(
+    ...scatterProducts.map((item) => Math.log1p(Number(item.available_units ?? 0))),
+    1,
+  );
+  const maxScatterCost = Math.max(
+    ...scatterProducts.map((item) => Math.log1p(Number(item.unit_cost_source ?? 0))),
+    1,
+  );
+  const filteredUnits = filtered.reduce(
+    (sum, item) => sum + Number(item.available_units ?? 0),
+    0,
+  );
+  const filteredCostValue = filtered.reduce(
+    (sum, item) =>
+      sum + Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0),
+    0,
+  );
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const visibleInventory = filtered.slice(
+    (inventoryPage - 1) * pageSize,
+    inventoryPage * pageSize,
+  );
   const latest = tasks[0];
 
   return (
@@ -255,23 +354,37 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </article>
         <article>
           <TrendingUp size={22} />
-          <span>Con ventas por SKU</span>
+          <span>Productos con ventas</span>
           <strong>{formatNumber.format(metrics.withSales.length)}</strong>
-          <small>Base para rotación real</small>
+          <small>Ventas reales relacionadas con el catálogo</small>
         </article>
       </section>
 
       <div className="logistics-dashboard-grid">
         <section className="data-card logistics-chart">
-          <div className="section-title"><div><h2>Mayor existencia en bodega</h2><p>Unidades disponibles informadas por Facto.</p></div></div>
+          <div className="section-title logistics-chart-title">
+            <div><h2>Mayor existencia y valorización</h2><p>Compara unidades, capital a costo o valor potencial de venta.</p></div>
+            <select
+              aria-label="Métrica del ranking de inventario"
+              onChange={(event) => setRankingMode(event.target.value as "stock" | "cost_value" | "sale_value")}
+              value={rankingMode}
+            >
+              <option value="stock">Por unidades</option>
+              <option value="cost_value">Por dinero a costo</option>
+              <option value="sale_value">Por valor de venta</option>
+            </select>
+          </div>
           <div className="stock-bars">
-            {topStock.map((item) => (
+            {topInventory.map((item) => (
               <article key={item.sku}>
-                <div><strong>{item.name || item.sku}</strong><span>{formatNumber.format(Number(item.available_units ?? 0))}</span></div>
-                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.available_units ?? 0) / maxStock) * 100)}%` }} /></div>
+                <div>
+                  <strong title={item.name || item.sku}>{item.name || item.sku}</strong>
+                  <span>{rankingMode === "stock" ? `${formatNumber.format(rankingValue(item))} un.` : formatCurrency.format(rankingValue(item))}</span>
+                </div>
+                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (rankingValue(item) / maxRankingValue) * 100)}%` }} /></div>
               </article>
             ))}
-            {!topStock.length ? <p>No hay existencias positivas confirmadas en la última sincronización de Bodega Facto.</p> : null}
+            {!topInventory.length ? <p>No hay existencias positivas confirmadas en la última sincronización de Bodega Facto.</p> : null}
           </div>
         </section>
 
@@ -281,7 +394,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
             ["Stock por producto", metrics.withStock.length, snapshots.length],
             ["Costo de origen", metrics.withCost.length, snapshots.length],
             ["Precio de venta", metrics.withPrice.length, snapshots.length],
-            ["Ventas por SKU", metrics.withSales.length, snapshots.length],
+            ["Historial de ventas", metrics.withSalesHistory.length, snapshots.length],
           ].map(([label, count, total]) => {
             const percentage = Number(total) ? (Number(count) / Number(total)) * 100 : 0;
             return (
@@ -291,43 +404,136 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
               </article>
             );
           })}
-          {!metrics.withSales.length ? (
-            <div className="dashboard-warning"><AlertTriangle size={18} />Rotación, días en bodega y productos más vendidos aparecerán cuando Facto entregue líneas de venta por SKU. No se muestran estimaciones inventadas.</div>
+          {!metrics.withSalesHistory.length ? (
+            <div className="dashboard-warning"><AlertTriangle size={18} />El historial de ventas aún se está sincronizando desde Facto. Los rankings se habilitarán sólo con documentos reales.</div>
           ) : null}
           {latest?.result?.summary ? <p className="agent-result-summary">{latest.result.summary}</p> : null}
         </section>
       </div>
 
+      <section className="logistics-insights-grid">
+        <article className="data-card logistics-scatter-card">
+          <div className="section-title">
+            <div><h2>Stock versus costo unitario</h2><p>Los círculos grandes concentran más dinero inmovilizado.</p></div>
+          </div>
+          <div className="scatter-wrap">
+            <svg aria-label="Gráfico de stock versus costo unitario" role="img" viewBox="0 0 720 300">
+              <line x1="58" x2="696" y1="260" y2="260" />
+              <line x1="58" x2="58" y1="22" y2="260" />
+              <text x="330" y="292">Stock disponible (escala logarítmica)</text>
+              <text transform="translate(16 190) rotate(-90)">Costo unitario</text>
+              {scatterProducts.map((item) => {
+                const stock = Number(item.available_units ?? 0);
+                const cost = Number(item.unit_cost_source ?? 0);
+                const inventoryValue = stock * cost;
+                const x = 58 + (Math.log1p(stock) / maxScatterStock) * 620;
+                const y = 260 - (Math.log1p(cost) / maxScatterCost) * 220;
+                const radius = Math.min(16, Math.max(5, Math.sqrt(inventoryValue / 100000)));
+                return (
+                  <circle key={item.sku} cx={x} cy={y} r={radius}>
+                    <title>{`${item.name || item.sku}\nStock: ${formatNumber.format(stock)}\nCosto unitario: ${formatCurrency.format(cost)}\nValor a costo: ${formatCurrency.format(inventoryValue)}`}</title>
+                  </circle>
+                );
+              })}
+            </svg>
+          </div>
+          <small>Pasa el cursor sobre un punto para ver producto, stock y valorización.</small>
+        </article>
+
+        <article className="data-card">
+          <div className="section-title">
+            <div><h2>Productos más vendidos</h2><p>Unidades observadas en documentos emitidos de Facto.</p></div>
+          </div>
+          <div className="stock-bars sales-bars">
+            {bestSellers.map((item) => (
+              <article key={item.sku}>
+                <div>
+                  <strong title={item.name || item.sku}>{item.name || item.sku}</strong>
+                  <span>{formatNumber.format(Number(item.units_sold_observed ?? 0))} un.</span>
+                </div>
+                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.units_sold_observed ?? 0) / maxSold) * 100)}%` }} /></div>
+              </article>
+            ))}
+            {!bestSellers.length ? <p>Sin ventas relacionadas todavía. La sincronización anual puede tardar unos minutos.</p> : null}
+          </div>
+        </article>
+
+        <article className="data-card">
+          <div className="section-title">
+            <div><h2>Stock sin movimiento</h2><p>Existencia con cero ventas en el período observado.</p></div>
+          </div>
+          <div className="stock-bars idle-bars">
+            {trappedStock.map((item) => {
+              const value = Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0);
+              return (
+                <article key={item.sku}>
+                  <div>
+                    <strong title={item.name || item.sku}>{item.name || item.sku}</strong>
+                    <span>{formatCurrency.format(value)}</span>
+                  </div>
+                  <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (value / maxTrappedValue) * 100)}%` }} /></div>
+                </article>
+              );
+            })}
+            {!metrics.withSalesHistory.length ? <p>Pendiente de historial de ventas.</p> : null}
+            {metrics.withSalesHistory.length && !trappedStock.length ? <p>No hay productos sin movimiento dentro del historial disponible.</p> : null}
+          </div>
+        </article>
+      </section>
+
       <section className="data-card logistics-catalog">
-        <div className="section-title"><div><h2>Inventario completo</h2><p>{filtered.length} productos coinciden con los filtros.</p></div></div>
+        <div className="section-title">
+          <div><h2>Inventario completo</h2><p>Filtra y resume el catálogo sin desplegar cientos de filas.</p></div>
+        </div>
         <div className="logistics-controls">
           <label><Search size={18} /><input aria-label="Buscar producto" onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por SKU o nombre" value={query} /></label>
           <select aria-label="Filtrar inventario" onChange={(event) => setFilter(event.target.value)} value={filter}>
-            <option value="all">Todos</option><option value="in_stock">Con stock</option><option value="out_of_stock">Sin stock confirmado</option><option value="with_sales">Con ventas observadas</option><option value="without_sales">Sin ventas disponibles</option>
+            <option value="all">Todos</option><option value="in_stock">Con stock</option><option value="out_of_stock">Sin stock confirmado</option><option value="with_sales">Con ventas observadas</option><option value="without_movement">Sin movimiento</option><option value="without_history">Sin historial disponible</option>
           </select>
           <select aria-label="Ordenar inventario" onChange={(event) => setSort(event.target.value)} value={sort}>
             <option value="stock">Mayor stock</option><option value="value">Mayor valor a costo</option><option value="sale_value">Mayor valor potencial de venta</option><option value="name">Nombre A-Z</option>
           </select>
         </div>
-        <div className="logistics-table-wrap">
-          <table className="logistics-table">
-            <thead><tr><th>Producto</th><th>SKU</th><th>Stock</th><th>Costo unitario</th><th>Precio neto</th><th>Valor a costo</th><th>Valor potencial de venta</th><th>Ventas / rotación</th></tr></thead>
-            <tbody>
-              {filtered.slice(0, 250).map((item) => (
-                <tr key={item.sku}>
-                  <td><strong>{item.name || "Sin nombre"}</strong></td><td>{item.sku}</td>
-                  <td><span className={`inventory-status ${Number(item.available_units ?? 0) > 0 ? "ok" : "empty"}`}>{item.stock_known ? formatNumber.format(Number(item.available_units ?? 0)) : "Sin dato"}</span></td>
-                  <td>{item.cost_available_in_source ? formatCurrency.format(Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
-                  <td>{item.price_known ? formatCurrency.format(Number(item.unit_price ?? 0)) : "Sin dato"}</td>
-                  <td>{item.stock_known && item.cost_available_in_source ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
-                  <td>{item.stock_known && item.price_known ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_price ?? 0)) : "Sin dato"}</td>
-                  <td>{item.demand_available ? `${formatNumber.format(Number(item.average_daily_demand ?? 0))}/día` : "Pendiente de ventas SKU"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="inventory-filter-summary">
+          <article><span>Productos</span><strong>{formatNumber.format(filtered.length)}</strong></article>
+          <article><span>Unidades</span><strong>{formatNumber.format(filteredUnits)}</strong></article>
+          <article><span>Valor a costo</span><strong>{formatCurrency.format(filteredCostValue)}</strong></article>
         </div>
-        {filtered.length > 250 ? <small>Se muestran los primeros 250 resultados filtrados.</small> : null}
+        <button className="inventory-disclosure" type="button" onClick={() => setShowInventory((current) => !current)}>
+          {showInventory ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+          {showInventory ? "Ocultar detalle" : `Ver inventario filtrado (${filtered.length})`}
+        </button>
+        {showInventory ? (
+          <>
+            <div className="logistics-table-wrap">
+              <table className="logistics-table">
+                <thead><tr><th>Producto</th><th>SKU</th><th>Stock</th><th>Costo unitario</th><th>Precio neto</th><th>Valor a costo</th><th>Valor potencial de venta</th><th>Ventas / rotación</th></tr></thead>
+                <tbody>
+                  {visibleInventory.map((item) => (
+                    <tr key={item.sku}>
+                      <td><strong>{item.name || "Sin nombre"}</strong></td><td>{item.sku}</td>
+                      <td><span className={`inventory-status ${Number(item.available_units ?? 0) > 0 ? "ok" : "empty"}`}>{item.stock_known ? formatNumber.format(Number(item.available_units ?? 0)) : "Sin dato"}</span></td>
+                      <td>{item.cost_available_in_source ? formatCurrency.format(Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
+                      <td>{item.price_known ? formatCurrency.format(Number(item.unit_price ?? 0)) : "Sin dato"}</td>
+                      <td>{item.stock_known && item.cost_available_in_source ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
+                      <td>{item.stock_known && item.price_known ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_price ?? 0)) : "Sin dato"}</td>
+                      <td>
+                        {item.sales_history_available
+                          ? `${formatNumber.format(Number(item.units_sold_observed ?? 0))} un. · ${formatNumber.format(Number(item.average_daily_demand ?? 0))}/día`
+                          : "Pendiente de historial"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <nav aria-label="Paginación de inventario" className="inventory-pagination">
+              <button disabled={inventoryPage <= 1} type="button" onClick={() => setInventoryPage((page) => Math.max(1, page - 1))}><ChevronLeft size={17} /> Anterior</button>
+              <span>Página {inventoryPage} de {totalPages}</span>
+              <button disabled={inventoryPage >= totalPages} type="button" onClick={() => setInventoryPage((page) => Math.min(totalPages, page + 1))}>Siguiente <ChevronRight size={17} /></button>
+            </nav>
+          </>
+        ) : null}
       </section>
     </>
   );

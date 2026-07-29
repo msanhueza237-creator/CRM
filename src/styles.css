@@ -3459,6 +3459,12 @@ th {
 .agents-page {
   display: grid;
   gap: 22px;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.agent-dashboard-page > * {
+  min-width: 0;
 }
 
 .agent-heading {
@@ -3646,7 +3652,7 @@ th {
 .agent-dashboard-kpis {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .agent-dashboard-kpis article {
@@ -3693,6 +3699,82 @@ th {
   display: grid;
   gap: 18px;
   grid-template-columns: minmax(0, 1.2fr) minmax(330px, 0.8fr);
+}
+
+.logistics-dashboard-grid > *,
+.logistics-insights-grid > * {
+  min-width: 0;
+}
+
+.logistics-chart-title {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.logistics-chart-title select {
+  background: #fff;
+  border: 1px solid #ccdadd;
+  border-radius: 9px;
+  color: #173b41;
+  min-height: 40px;
+  padding: 0 10px;
+}
+
+.logistics-insights-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.logistics-scatter-card {
+  grid-column: 1 / -1;
+}
+
+.scatter-wrap {
+  background: linear-gradient(180deg, #f7fbfb, #fff);
+  border: 1px solid #e2ebec;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.scatter-wrap svg {
+  display: block;
+  max-height: 330px;
+  width: 100%;
+}
+
+.scatter-wrap line {
+  stroke: #9fb3b7;
+  stroke-width: 1.5;
+}
+
+.scatter-wrap text {
+  fill: #607077;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scatter-wrap circle {
+  cursor: help;
+  fill: rgba(10, 129, 144, 0.68);
+  stroke: #08717e;
+  stroke-width: 1.5;
+  transition: fill 160ms ease, opacity 160ms ease;
+}
+
+.scatter-wrap circle:hover {
+  fill: #27aa89;
+  opacity: 1;
+}
+
+.sales-bars .stock-bar-track > span {
+  background: linear-gradient(90deg, #087f8d, #316fc3);
+}
+
+.idle-bars .stock-bar-track > span {
+  background: linear-gradient(90deg, #d26b37, #e1a33b);
 }
 
 .stock-bars,
@@ -3803,6 +3885,7 @@ th {
 
 .logistics-table-wrap {
   max-height: 620px;
+  max-width: 100%;
   overflow: auto;
 }
 
@@ -3849,6 +3932,83 @@ th {
   color: #a84329;
 }
 
+.inventory-filter-summary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.inventory-filter-summary article {
+  background: #f4f8f8;
+  border: 1px solid #e0e9ea;
+  border-radius: 10px;
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+}
+
+.inventory-filter-summary span {
+  color: #607077;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.inventory-filter-summary strong {
+  color: #123a40;
+  font-size: 22px;
+}
+
+.inventory-disclosure {
+  align-items: center;
+  background: #edf7f6;
+  border: 1px solid #bcdedc;
+  border-radius: 10px;
+  color: #086d79;
+  cursor: pointer;
+  display: inline-flex;
+  font-weight: 900;
+  gap: 8px;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 16px;
+  width: 100%;
+}
+
+.inventory-pagination {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  justify-content: flex-end;
+  padding-top: 14px;
+}
+
+.inventory-pagination button {
+  align-items: center;
+  background: #fff;
+  border: 1px solid #ccdadd;
+  border-radius: 8px;
+  color: #17434a;
+  cursor: pointer;
+  display: inline-flex;
+  font-weight: 800;
+  gap: 5px;
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.inventory-pagination button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.inventory-pagination span {
+  color: #607077;
+  font-weight: 700;
+}
+
 @media (max-width: 1000px) {
   .agent-command-card,
   .agent-grid,
@@ -3868,6 +4028,14 @@ th {
   .logistics-dashboard-grid {
     grid-template-columns: 1fr;
   }
+
+  .logistics-insights-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .logistics-scatter-card {
+    grid-column: auto;
+  }
 }
 
 @media (max-width: 720px) {
@@ -3883,6 +4051,16 @@ th {
   .agent-dashboard-kpis,
   .logistics-controls {
     grid-template-columns: 1fr;
+  }
+
+  .inventory-filter-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .logistics-chart-title,
+  .inventory-pagination {
+    align-items: stretch;
+    display: grid;
   }
 
   .agent-dashboard-kpis article {
