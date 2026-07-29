@@ -3555,6 +3555,20 @@ th {
   color: #607077;
 }
 
+.agent-card .agent-result-summary {
+  background: #eef8f6;
+  border-left: 3px solid #0a8190;
+  border-radius: 6px;
+  margin-top: 10px;
+  padding: 9px 10px;
+}
+
+.agent-card .agent-result-warning {
+  color: #8a5a00;
+  display: block;
+  margin-top: 6px;
+}
+
 .agent-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;

@@ -31,7 +31,11 @@ interface AgentTask {
   action: string;
   status: string;
   created_at: string;
-  result?: { summary?: string } | null;
+  result?: {
+    summary?: string;
+    warnings?: string[];
+    metrics?: Record<string, string | number | boolean | null>;
+  } | null;
   error_code?: string | null;
 }
 
@@ -199,14 +203,26 @@ export function AgentsPage() {
               },
             }));
           if (!tasks.length) {
-            setBusy("");
-            setNotice("Facto aun no tiene suficiente evidencia de stock, costo y ventas por SKU. El agente no inventara una compra: espera la siguiente sincronizacion o revisa que Facto exponga productos y documentos.");
-            await load();
-            return;
+            const readiness = {
+              catalog_count: snapshots.length,
+              stock_known: snapshots.filter((item) => item.stock_known).length,
+              cost_known: snapshots.filter((item) => item.cost_known).length,
+              demand_available: snapshots.filter((item) => item.demand_available).length,
+              eligible: 0,
+            };
+            const { error: insertError } = await supabase.from("business_agent_tasks").insert({
+              agent_type: "foreign_trade",
+              action: "review_inventory_readiness",
+              requested_by: user.id,
+              payload: readiness,
+            });
+            error = insertError;
+            successMessage = `Diagnostico enviado: Facto sincronizo ${snapshots.length} productos, pero aun no entrega stock, costo y ventas completas por SKU. El agente mostrara el resultado sin inventar una compra.`;
+          } else {
+            const { error: insertError } = await supabase.from("business_agent_tasks").insert(tasks);
+            error = insertError;
+            successMessage = `${tasks.length} SKU con evidencia de Facto fueron enviados a revision de comercio exterior. Las compras seguiran requiriendo aprobacion humana.`;
           }
-          const { error: insertError } = await supabase.from("business_agent_tasks").insert(tasks);
-          error = insertError;
-          successMessage = `${tasks.length} SKU con evidencia de Facto fueron enviados a revision de comercio exterior. Las compras seguiran requiriendo aprobacion humana.`;
         }
       }
     } else {
@@ -288,6 +304,13 @@ export function AgentsPage() {
                 <h2>{agent.title}</h2>
                 <p>{agent.description}</p>
                 <small>Última tarea: {latest ? `${latest.status} · ${new Date(latest.created_at).toLocaleString("es-CL")}` : "sin ejecutar"}</small>
+                {latest?.result?.summary ? <p className="agent-result-summary">{latest.result.summary}</p> : null}
+                {latest?.result?.warnings?.map((warning) => (
+                  <small className="agent-result-warning" key={warning}>{warning}</small>
+                ))}
+                {latest?.status === "failed" ? (
+                  <p className="agent-result-warning">El análisis falló{latest.error_code ? ` (${latest.error_code})` : ""}. Puedes solicitarlo nuevamente.</p>
+                ) : null}
               </div>
               <button className="primary-button" type="button" disabled={!canManage || busy === agent.type} onClick={() => void requestAgent(agent.type)}>
                 {busy === agent.type ? "Solicitando..." : "Solicitar análisis"}
