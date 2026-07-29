@@ -247,6 +247,38 @@ export function AgentsPage() {
           }
         }
       }
+    } else if (type === "finance") {
+      const { data: financialRows, error: financialError } = await supabase
+        .from("integration_records")
+        .select("payload")
+        .eq("provider", "facto")
+        .eq("resource", "financial_snapshots")
+        .order("updated_at", { ascending: false })
+        .limit(1);
+      if (financialError) {
+        error = financialError;
+      } else {
+        const financialSnapshot = financialRows?.[0]?.payload;
+        if (!financialSnapshot) {
+          setBusy("");
+          setNotice("Facto aun esta preparando el resumen financiero. Espera la siguiente sincronizacion y vuelve a intentarlo.");
+          await load();
+          return;
+        }
+        const { data: insertedTask, error: insertError } = await supabase
+          .from("business_agent_tasks")
+          .insert({
+            agent_type: "finance",
+            action: defaultAction.finance,
+            requested_by: user.id,
+            payload: { financial_snapshot: financialSnapshot },
+          })
+          .select("id")
+          .single();
+        error = insertError;
+        dashboardTaskId = insertedTask?.id ?? "";
+        successMessage = `Analisis financiero enviado con ${Number(financialSnapshot.document_count ?? 0)} documentos reales de Facto.`;
+      }
     } else {
       const response = await supabase.from("business_agent_tasks").insert({
         agent_type: type,

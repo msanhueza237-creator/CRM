@@ -62,6 +62,42 @@ type Snapshot = {
   source?: string;
 };
 
+type FinancialMonth = {
+  month: string;
+  net_sales: number;
+  tax: number;
+  gross_sales: number;
+  documents: number;
+};
+
+type FinancialRanking = {
+  name?: string;
+  tax_id?: string;
+  sku?: string;
+  net_sales?: number;
+  net_sales_observed?: number;
+  documents?: number;
+  units?: number;
+};
+
+type FinancialReport = {
+  period_start?: string | null;
+  period_end?: string | null;
+  document_count: number;
+  net_sales: number;
+  tax: number;
+  gross_sales: number;
+  average_net_ticket: number;
+  reference_gross_margin: number;
+  reference_margin_available: boolean;
+  sales_by_month: FinancialMonth[];
+  top_customers: FinancialRanking[];
+  top_products: FinancialRanking[];
+  receivables_available: boolean;
+  expenses_available: boolean;
+  cash_balance_available: boolean;
+};
+
 const agentNames: Record<string, string> = {
   commercial: "Comercial",
   marketing: "Marketing",
@@ -210,6 +246,144 @@ function DonutChart({
         </div>
       </div>
     </article>
+  );
+}
+
+function financialReportFromTask(task?: AgentTask): FinancialReport | null {
+  for (const entry of task?.result?.evidence ?? []) {
+    const report = entry.financial_report;
+    if (report && typeof report === "object") return report as FinancialReport;
+  }
+  return null;
+}
+
+function monthLabel(value: string) {
+  if (value === "sin_fecha") return "Sin fecha";
+  const [year, month] = value.split("-").map(Number);
+  if (!year || !month) return value;
+  return new Intl.DateTimeFormat("es-CL", { month: "short", year: "2-digit" })
+    .format(new Date(year, month - 1, 1))
+    .replace(".", "");
+}
+
+function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
+  const latest = tasks[0];
+  const report = financialReportFromTask(latest);
+  const [selectedMonth, setSelectedMonth] = useState("all");
+
+  if (!report) {
+    return (
+      <section className="data-card agent-dashboard-summary">
+        <span className="eyebrow">FINANZAS TRAZABLES</span>
+        <h2>{latest?.status === "pending" || latest?.status === "in_progress" ? "Análisis en proceso" : "Sin informe financiero"}</h2>
+        <p>{latest?.result?.summary ?? "Solicita el análisis desde el Centro de agentes. Facto debe completar primero su sincronización de documentos."}</p>
+      </section>
+    );
+  }
+
+  const months = report.sales_by_month ?? [];
+  const selected = selectedMonth === "all" ? null : months.find((item) => item.month === selectedMonth) ?? null;
+  const netSales = selected?.net_sales ?? report.net_sales;
+  const tax = selected?.tax ?? report.tax;
+  const grossSales = selected?.gross_sales ?? report.gross_sales;
+  const documents = selected?.documents ?? report.document_count;
+  const averageTicket = documents ? netSales / documents : 0;
+  const maximumMonth = Math.max(...months.map((item) => Number(item.net_sales ?? 0)), 1);
+  const customerMaximum = Math.max(...(report.top_customers ?? []).map((item) => Number(item.net_sales ?? 0)), 1);
+  const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
+
+  return (
+    <>
+      {latest?.status === "pending" || latest?.status === "in_progress" ? (
+        <div className="notice-banner info">El informe financiero se está actualizando con la evidencia más reciente.</div>
+      ) : null}
+
+      <section className="finance-toolbar data-card">
+        <div>
+          <span className="eyebrow">PERÍODO OBSERVADO EN FACTO</span>
+          <strong>{report.period_start ?? "Sin fecha"} al {report.period_end ?? "Sin fecha"}</strong>
+        </div>
+        <label>
+          Ver período
+          <select value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)}>
+            <option value="all">Todo el período</option>
+            {[...months].reverse().map((item) => <option key={item.month} value={item.month}>{monthLabel(item.month)}</option>)}
+          </select>
+        </label>
+      </section>
+
+      <section className="agent-dashboard-kpis finance-kpis">
+        <article><CircleDollarSign size={22} /><span>Ventas netas sin IVA</span><strong>{formatCurrency.format(netSales)}</strong><small>Ingreso comercial antes de IVA</small></article>
+        <article><Database size={22} /><span>IVA de documentos</span><strong>{formatCurrency.format(tax)}</strong><small>No se considera ingreso</small></article>
+        <article><BarChart3 size={22} /><span>Documentos emitidos</span><strong>{formatNumber.format(documents)}</strong><small>Facturas, exentas y boletas válidas</small></article>
+        <article><TrendingUp size={22} /><span>Ticket neto promedio</span><strong>{formatCurrency.format(averageTicket)}</strong><small>Venta neta ÷ documentos</small></article>
+        <article><CircleDollarSign size={22} /><span>Venta total con IVA</span><strong>{formatCurrency.format(grossSales)}</strong><small>Total documentado a clientes</small></article>
+        <article className={!report.reference_margin_available ? "risk" : ""}>
+          <TrendingUp size={22} /><span>Margen bruto referencial</span>
+          <strong>{report.reference_margin_available ? formatCurrency.format(report.reference_gross_margin) : "Pendiente"}</strong>
+          <small>Costo actual relacionado; no reemplaza contabilidad</small>
+        </article>
+      </section>
+
+      <section className="finance-main-grid">
+        <article className="data-card finance-monthly-card">
+          <div className="section-title"><div><h2>Ventas netas por mes</h2><p>Evolución real de documentos emitidos, siempre sin IVA.</p></div></div>
+          <div className="finance-month-bars">
+            {months.map((item) => (
+              <article key={item.month}>
+                <div className="finance-month-value">{formatCurrency.format(item.net_sales)}</div>
+                <div className="finance-column-track"><span style={{ height: `${Math.max(4, (item.net_sales / maximumMonth) * 100)}%` }} /></div>
+                <strong>{monthLabel(item.month)}</strong><small>{item.documents} doc.</small>
+              </article>
+            ))}
+          </div>
+        </article>
+        <DonutChart
+          centerLabel="total con IVA"
+          centerValue={formatCurrency.format(report.gross_sales)}
+          formatter={(value) => formatCurrency.format(value)}
+          slices={[{ label: "Venta neta", value: report.net_sales, color: "#07869a" }, { label: "IVA", value: report.tax, color: "#e39a27" }]}
+          subtitle="Separa el ingreso neto del impuesto incluido en los documentos."
+          title="Composición de la venta"
+        />
+      </section>
+
+      <section className="finance-rankings">
+        <article className="data-card">
+          <div className="section-title"><div><h2>Principales clientes</h2><p>Ordenados por venta neta documentada.</p></div></div>
+          <div className="stock-bars product-ranking-list finance-ranking-scroll">
+            {(report.top_customers ?? []).map((item, index) => (
+              <article key={`${item.tax_id || item.name}-${index}`}>
+                <div><strong title={item.name}>{item.name || "Cliente no identificado"}</strong><span>{formatCurrency.format(Number(item.net_sales ?? 0))}</span></div>
+                <small>{item.documents ?? 0} documentos{item.tax_id ? ` · ${item.tax_id}` : ""}</small>
+                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.net_sales ?? 0) / customerMaximum) * 100)}%` }} /></div>
+              </article>
+            ))}
+          </div>
+        </article>
+        <article className="data-card">
+          <div className="section-title"><div><h2>Productos que generan ventas</h2><p>Relación por SKU observada en Facto.</p></div></div>
+          <div className="stock-bars product-ranking-list finance-ranking-scroll">
+            {(report.top_products ?? []).map((item, index) => (
+              <article key={`${item.sku || item.name}-${index}`}>
+                <div><strong title={item.name}>{item.name || item.sku || "Producto sin nombre"}</strong><span>{formatCurrency.format(Number(item.net_sales_observed ?? 0))}</span></div>
+                <small>{formatNumber.format(Number(item.units ?? 0))} unidades · SKU {item.sku || "sin dato"}</small>
+                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.net_sales_observed ?? 0) / productMaximum) * 100)}%` }} /></div>
+              </article>
+            ))}
+          </div>
+        </article>
+      </section>
+
+      <section className="data-card finance-next-data">
+        <div><span className="eyebrow">SIGUIENTE AMPLIACIÓN</span><h2>Caja, gastos y cuentas por cobrar</h2><p>Este informe no inventa saldos. Esos indicadores aparecerán al confirmar en Facto los recursos de pagos, vencimientos, compras y bancos.</p></div>
+        <div>
+          <span className={report.receivables_available ? "ready" : "pending"}>Cobranza {report.receivables_available ? "disponible" : "pendiente"}</span>
+          <span className={report.expenses_available ? "ready" : "pending"}>Gastos {report.expenses_available ? "disponibles" : "pendientes"}</span>
+          <span className={report.cash_balance_available ? "ready" : "pending"}>Caja {report.cash_balance_available ? "disponible" : "pendiente"}</span>
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -700,7 +874,8 @@ export function AgentDashboardPage() {
       {notice ? <div className="notice-banner error">{notice}</div> : null}
       {loading ? <div className="data-card">Cargando información real de la empresa…</div> : null}
       {!loading && agentType === "logistics" ? <LogisticsDashboard snapshots={snapshots} tasks={tasks} /> : null}
-      {!loading && agentType !== "logistics" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
+      {!loading && agentType === "finance" ? <FinanceDashboard tasks={tasks} /> : null}
+      {!loading && agentType !== "logistics" && agentType !== "finance" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
     </section>
   );
 }
