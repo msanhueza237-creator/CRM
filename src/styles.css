@@ -18,6 +18,13 @@ body {
   min-width: 320px;
 }
 
+html,
+body,
+#root {
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
 button,
 input,
 select {
@@ -274,6 +281,7 @@ a {
 
 .main-shell {
   min-width: 0;
+  width: 100%;
 }
 
 .topbar {
@@ -337,7 +345,9 @@ a {
 }
 
 .content-shell {
+  min-width: 0;
   padding: 28px;
+  width: 100%;
 }
 
 .page-stack {
@@ -3642,11 +3652,16 @@ th {
 .agent-dashboard-page .back-link {
   align-items: center;
   color: #0a7584;
-  display: inline-flex;
+  display: flex;
   font-weight: 800;
   gap: 6px;
   margin-bottom: 14px;
   text-decoration: none;
+  width: fit-content;
+}
+
+.agent-heading .eyebrow {
+  display: block;
 }
 
 .agent-dashboard-kpis {
@@ -4065,5 +4080,326 @@ th {
 
   .agent-dashboard-kpis article {
     min-height: 0;
+  }
+}
+
+/* Mobile application shell: one stable bottom bar for every CRM module. */
+@media (max-width: 1080px) {
+  .app-shell {
+    padding-bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+
+  .command-panel {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    max-width: calc(100vw - 20px);
+    overflow: hidden;
+  }
+
+  .sidebar nav {
+    display: flex;
+    gap: 4px;
+    grid-template-columns: none;
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    touch-action: pan-x;
+  }
+
+  .sidebar nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .sidebar a {
+    flex: 1 0 76px;
+    scroll-snap-align: start;
+  }
+}
+
+@media (max-width: 720px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+
+  .content-shell {
+    padding: 14px 12px 20px;
+  }
+
+  .topbar {
+    min-height: 58px;
+    padding: 8px 12px;
+  }
+
+  .topbar-title strong {
+    font-size: 15px;
+  }
+
+  .topbar-user {
+    flex: 0 0 auto;
+  }
+
+  .page-heading,
+  .agent-heading {
+    gap: 12px;
+    min-width: 0;
+  }
+
+  .heading-actions {
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .heading-actions > * {
+    justify-content: center;
+    min-height: 46px;
+    width: 100%;
+  }
+
+  .command-panel {
+    gap: 14px;
+    padding: 16px;
+  }
+
+  .command-main h2 {
+    font-size: clamp(22px, 7vw, 28px);
+    overflow-wrap: anywhere;
+  }
+
+  .command-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .command-metrics article {
+    grid-template-columns: minmax(0, 1fr) auto;
+    padding: 12px;
+  }
+
+  .command-metrics article small {
+    grid-column: 1 / -1;
+  }
+
+  .admin-integration-form,
+  .admin-integration-summary,
+  .admin-integration-summary > * {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .admin-integration-summary p,
+  .admin-integration-summary code {
+    overflow-wrap: anywhere;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .page-heading > *,
+  .agent-heading > *,
+  .data-card,
+  .agent-card,
+  .panel,
+  .campaign-card,
+  .template-card {
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .page-heading h1,
+  .agent-heading h1,
+  .data-card h2,
+  .agent-card h2 {
+    overflow-wrap: anywhere;
+  }
+
+  .agent-heading > .ghost-button {
+    justify-content: center;
+    min-height: 46px;
+    width: 100%;
+  }
+
+  .agents-page {
+    gap: 14px;
+  }
+
+  .agent-dashboard-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .agent-dashboard-kpis article {
+    align-content: start;
+    padding: 14px;
+  }
+
+  .agent-dashboard-kpis strong {
+    font-size: clamp(19px, 6.2vw, 27px);
+    overflow-wrap: anywhere;
+  }
+
+  .agent-dashboard-kpis span {
+    font-size: 10px;
+  }
+
+  .agent-dashboard-kpis small {
+    font-size: 11px;
+  }
+
+  .logistics-dashboard-grid,
+  .logistics-insights-grid {
+    gap: 12px;
+  }
+
+  .logistics-chart-title {
+    gap: 10px;
+  }
+
+  .logistics-chart-title select {
+    min-height: 46px;
+    width: 100%;
+  }
+
+  .stock-bars article > div:first-child {
+    align-items: flex-start;
+  }
+
+  .stock-bars strong {
+    max-width: 68%;
+    overflow: visible;
+    text-overflow: initial;
+    white-space: normal;
+  }
+
+  .scatter-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .scatter-wrap svg {
+    max-width: none;
+    min-width: 620px;
+  }
+
+  .logistics-controls {
+    gap: 9px;
+  }
+
+  .logistics-controls label,
+  .logistics-controls input,
+  .logistics-controls select {
+    min-height: 48px;
+  }
+
+  .inventory-filter-summary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .inventory-filter-summary article {
+    padding: 10px 8px;
+    text-align: center;
+  }
+
+  .inventory-filter-summary strong {
+    font-size: clamp(16px, 5vw, 21px);
+    overflow-wrap: anywhere;
+  }
+
+  .logistics-table-wrap {
+    max-height: none;
+    overflow: visible;
+    width: 100%;
+  }
+
+  .logistics-table {
+    min-width: 0;
+  }
+
+  .logistics-table thead {
+    display: none;
+  }
+
+  .logistics-table,
+  .logistics-table tbody,
+  .logistics-table tr,
+  .logistics-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .logistics-table tbody {
+    display: grid;
+    gap: 12px;
+    padding-top: 14px;
+  }
+
+  .logistics-table tr {
+    border: 1px solid #dce5e7;
+    border-radius: 12px;
+    overflow: hidden;
+    padding: 7px 12px;
+  }
+
+  .logistics-table td {
+    align-items: start;
+    border-bottom: 1px solid #edf1f2;
+    display: grid;
+    gap: 12px;
+    grid-template-columns: minmax(105px, 0.42fr) minmax(0, 1fr);
+    overflow-wrap: anywhere;
+    padding: 9px 0;
+    text-align: right;
+  }
+
+  .logistics-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .logistics-table td::before {
+    color: #607077;
+    content: attr(data-label);
+    font-size: 10px;
+    font-weight: 900;
+    letter-spacing: 0.04em;
+    text-align: left;
+    text-transform: uppercase;
+  }
+
+  .logistics-table td > * {
+    justify-self: end;
+  }
+
+  .inventory-pagination {
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inventory-pagination span {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    text-align: center;
+  }
+
+  .inventory-pagination button {
+    justify-content: center;
+    min-height: 44px;
+    width: 100%;
+  }
+}
+
+@media (max-width: 360px) {
+  .agent-dashboard-kpis,
+  .inventory-filter-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar a {
+    flex-basis: 68px;
   }
 }

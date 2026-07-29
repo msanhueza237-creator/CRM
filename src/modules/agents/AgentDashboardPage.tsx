@@ -511,13 +511,14 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
                 <tbody>
                   {visibleInventory.map((item) => (
                     <tr key={item.sku}>
-                      <td><strong>{item.name || "Sin nombre"}</strong></td><td>{item.sku}</td>
-                      <td><span className={`inventory-status ${Number(item.available_units ?? 0) > 0 ? "ok" : "empty"}`}>{item.stock_known ? formatNumber.format(Number(item.available_units ?? 0)) : "Sin dato"}</span></td>
-                      <td>{item.cost_available_in_source ? formatCurrency.format(Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
-                      <td>{item.price_known ? formatCurrency.format(Number(item.unit_price ?? 0)) : "Sin dato"}</td>
-                      <td>{item.stock_known && item.cost_available_in_source ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
-                      <td>{item.stock_known && item.price_known ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_price ?? 0)) : "Sin dato"}</td>
-                      <td>
+                      <td data-label="Producto"><strong>{item.name || "Sin nombre"}</strong></td>
+                      <td data-label="SKU">{item.sku}</td>
+                      <td data-label="Stock"><span className={`inventory-status ${Number(item.available_units ?? 0) > 0 ? "ok" : "empty"}`}>{item.stock_known ? formatNumber.format(Number(item.available_units ?? 0)) : "Sin dato"}</span></td>
+                      <td data-label="Costo unitario">{item.cost_available_in_source ? formatCurrency.format(Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
+                      <td data-label="Precio neto">{item.price_known ? formatCurrency.format(Number(item.unit_price ?? 0)) : "Sin dato"}</td>
+                      <td data-label="Valor a costo">{item.stock_known && item.cost_available_in_source ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_cost_source ?? 0)) : "Sin dato"}</td>
+                      <td data-label="Valor de venta">{item.stock_known && item.price_known ? formatCurrency.format(Number(item.available_units ?? 0) * Number(item.unit_price ?? 0)) : "Sin dato"}</td>
+                      <td data-label="Ventas / rotacion">
                         {item.sales_history_available
                           ? `${formatNumber.format(Number(item.units_sold_observed ?? 0))} un. · ${formatNumber.format(Number(item.average_daily_demand ?? 0))}/día`
                           : "Pendiente de historial"}
@@ -547,7 +548,12 @@ export function AgentDashboardPage() {
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
-    if (!isSupabaseConfigured || !supabase) return;
+    if (!isSupabaseConfigured || !supabase) {
+      setTasks([]);
+      setSnapshots([]);
+      setLoading(false);
+      return;
+    }
     setNotice("");
     try {
       const { data, error } = await supabase.from("business_agent_tasks").select("id,agent_type,status,created_at,completed_at,result,error_code").eq("agent_type", agentType).order("created_at", { ascending: false }).limit(20);

@@ -37,9 +37,14 @@ export function AppLayout() {
           </div>
         </div>
 
-        <nav>
+        <nav aria-label="Navegacion principal">
           {navItems.map((item) => (
-            <NavLink key={item.to} to={item.to} className={({ isActive }) => (isActive ? "active" : undefined)}>
+            <NavLink
+              key={item.to}
+              to={item.to}
+              title={item.label}
+              className={({ isActive }) => (isActive ? "active" : undefined)}
+            >
               <item.icon size={19} />
               <span>{item.label}</span>
             </NavLink>
