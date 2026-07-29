@@ -43,6 +43,7 @@ type Snapshot = {
   cost_available_in_source?: boolean;
   cost_requires_usd_conversion?: boolean;
   unit_price?: number;
+  unit_price_is_net?: boolean;
   price_known?: boolean;
   margin_percent?: number | null;
   average_daily_demand?: number;
@@ -75,6 +76,12 @@ const formatCurrency = new Intl.NumberFormat("es-CL", {
   currency: "CLP",
   maximumFractionDigits: 0,
 });
+const CHILE_VAT_FACTOR = 1.19;
+
+function netUnitPrice(item: Snapshot) {
+  const sourcePrice = Number(item.unit_price ?? 0);
+  return item.unit_price_is_net ? sourcePrice : sourcePrice / CHILE_VAT_FACTOR;
+}
 
 async function loadAllSnapshots(): Promise<Snapshot[]> {
   if (!supabase) return [];
@@ -242,14 +249,14 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         0,
       ),
       saleValue: valuedAtSalePrice.reduce(
-        (sum, item) => sum + Number(item.available_units ?? 0) * Number(item.unit_price ?? 0),
+        (sum, item) => sum + Number(item.available_units ?? 0) * netUnitPrice(item),
         0,
       ),
       potentialGrossMargin: valuedAtBoth.reduce(
         (sum, item) =>
           sum +
           Number(item.available_units ?? 0) *
-            (Number(item.unit_price ?? 0) - Number(item.unit_cost_source ?? 0)),
+            (netUnitPrice(item) - Number(item.unit_cost_source ?? 0)),
         0,
       ),
     };
@@ -278,8 +285,8 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
       }
       if (sort === "sale_value") {
         return (
-          Number(right.available_units ?? 0) * Number(right.unit_price ?? 0) -
-          Number(left.available_units ?? 0) * Number(left.unit_price ?? 0)
+          Number(right.available_units ?? 0) * netUnitPrice(right) -
+          Number(left.available_units ?? 0) * netUnitPrice(left)
         );
       }
       return Number(right.available_units ?? 0) - Number(left.available_units ?? 0);
@@ -294,7 +301,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     (item: Snapshot) => {
       const stock = Number(item.available_units ?? 0);
       if (rankingMode === "cost_value") return stock * Number(item.unit_cost_source ?? 0);
-      if (rankingMode === "sale_value") return stock * Number(item.unit_price ?? 0);
+      if (rankingMode === "sale_value") return stock * netUnitPrice(item);
       return stock;
     },
     [rankingMode],
@@ -307,7 +314,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
   const salesRankingValue = useCallback(
     (item: Snapshot) => {
       const units = Number(item.units_sold_observed ?? 0);
-      return salesRankingMode === "sale_value" ? units * Number(item.unit_price ?? 0) : units;
+      return salesRankingMode === "sale_value" ? units * netUnitPrice(item) : units;
     },
     [salesRankingMode],
   );
@@ -323,7 +330,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
     (item: Snapshot) => {
       const stock = Number(item.available_units ?? 0);
       if (idleRankingMode === "cost_value") return stock * Number(item.unit_cost_source ?? 0);
-      if (idleRankingMode === "sale_value") return stock * Number(item.unit_price ?? 0);
+      if (idleRankingMode === "sale_value") return stock * netUnitPrice(item);
       return stock;
     },
     [idleRankingMode],
@@ -399,7 +406,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
           <CircleDollarSign size={22} />
           <span>Valor potencial de venta</span>
           <strong>{formatCurrency.format(metrics.saleValue)}</strong>
-          <small>Stock × precio neto de Facto</small>
+          <small>Stock × precio neto sin IVA</small>
         </article>
         <article>
           <TrendingUp size={22} />
@@ -486,7 +493,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
             { label: "Costo del inventario", value: metrics.costValue, color: "#075968" },
             { label: "Margen bruto potencial", value: grossMarginValue, color: "#27af86" },
           ]}
-          subtitle="Compara capital invertido y margen bruto antes de gastos."
+          subtitle="Compara capital invertido y margen bruto usando precios netos sin IVA."
           title="Composición del valor"
         />
         <DonutChart
@@ -601,7 +608,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
               {visibleInventory.map((item) => {
                 const stock = Number(item.available_units ?? 0);
                 const unitCost = Number(item.unit_cost_source ?? 0);
-                const unitPrice = Number(item.unit_price ?? 0);
+                const unitPrice = netUnitPrice(item);
                 return (
                   <article className="inventory-product-row" key={item.sku}>
                     <div className="inventory-product-identity">
@@ -615,7 +622,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
                       </strong>
                     </div>
                     <div className="inventory-product-metric">
-                      <span>Costo / precio neto</span>
+                      <span>Costo / precio neto sin IVA</span>
                       <strong>
                         {item.cost_available_in_source ? formatCurrency.format(unitCost) : "Sin costo"}
                         {" · "}
