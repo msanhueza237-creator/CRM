@@ -60,6 +60,20 @@ interface Connection {
   last_success_at: string | null;
 }
 
+interface InventorySnapshotRecord {
+  payload: {
+    sku?: string;
+    available_units?: number;
+    unit_cost_usd?: number;
+    average_daily_demand?: number;
+    stock_known?: boolean;
+    cost_known?: boolean;
+    demand_available?: boolean;
+    demand_observation_days?: number;
+    units_sold_observed?: number;
+  };
+}
+
 const agents: Array<{
   type: AgentType;
   title: string;
@@ -120,18 +134,63 @@ export function AgentsPage() {
     if (!supabase || !user) return;
     setBusy(type);
     setNotice("");
-    const payload =
-      type === "foreign_trade"
-        ? { sku: "REVISION_GENERAL", as_of: new Date().toISOString().slice(0, 10) }
-        : {};
-    const { error } = await supabase.from("business_agent_tasks").insert({
-      agent_type: type,
-      action: defaultAction[type],
-      payload,
-      requested_by: user.id,
-    });
+    let error: { message: string } | null = null;
+    let successMessage = "Tarea agregada. El Agent Hub la procesara con lease seguro.";
+    if (type === "foreign_trade") {
+      const { data, error: snapshotError } = await supabase
+        .from("integration_records")
+        .select("payload")
+        .eq("provider", "facto")
+        .eq("resource", "inventory_snapshots")
+        .limit(100);
+      if (snapshotError) {
+        error = snapshotError;
+      } else {
+        const today = new Date().toISOString().slice(0, 10);
+        const tasks = ((data ?? []) as InventorySnapshotRecord[])
+          .map((row) => row.payload)
+          .filter((item) => item.sku && item.stock_known && item.cost_known && item.demand_available)
+          .slice(0, 50)
+          .map((item) => ({
+            agent_type: type,
+            action: defaultAction[type],
+            requested_by: user.id,
+            payload: {
+              sku: item.sku,
+              available_units: item.available_units ?? 0,
+              committed_units: 0,
+              confirmed_inbound_units: 0,
+              average_daily_demand: item.average_daily_demand ?? 0,
+              unit_cost_usd: item.unit_cost_usd ?? 0,
+              as_of: today,
+              evidence: {
+                source: "facto_read_only",
+                observation_days: item.demand_observation_days ?? 0,
+                units_sold_observed: item.units_sold_observed ?? 0,
+              },
+            },
+          }));
+        if (!tasks.length) {
+          setBusy("");
+          setNotice("Facto aun no tiene suficiente evidencia de stock, costo y ventas por SKU. El agente no inventara una compra: espera la siguiente sincronizacion o revisa que Facto exponga productos y documentos.");
+          await load();
+          return;
+        }
+        const { error: insertError } = await supabase.from("business_agent_tasks").insert(tasks);
+        error = insertError;
+        successMessage = `${tasks.length} SKU con evidencia de Facto fueron enviados a revision de comercio exterior. Las compras seguiran requiriendo aprobacion humana.`;
+      }
+    } else {
+      const response = await supabase.from("business_agent_tasks").insert({
+        agent_type: type,
+        action: defaultAction[type],
+        payload: {},
+        requested_by: user.id,
+      });
+      error = response.error;
+    }
     setBusy("");
-    setNotice(error ? error.message : "Tarea agregada. El Agent Hub la procesará con lease seguro.");
+    setNotice(error ? error.message : successMessage);
     await load();
   }
 
