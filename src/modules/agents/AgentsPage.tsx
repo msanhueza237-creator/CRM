@@ -8,6 +8,7 @@ import {
   PackageSearch,
   RefreshCw,
   Sparkles,
+  Truck,
   UserRoundSearch,
   WalletCards,
   XCircle,
@@ -20,6 +21,7 @@ type AgentType =
   | "marketing"
   | "finance"
   | "collections"
+  | "logistics"
   | "foreign_trade"
   | "executive";
 
@@ -71,6 +73,12 @@ interface InventorySnapshotRecord {
     demand_available?: boolean;
     demand_observation_days?: number;
     units_sold_observed?: number;
+    name?: string;
+    price_known?: boolean;
+    unit_price?: number;
+    unit_margin?: number | null;
+    margin_percent?: number | null;
+    sales_history_available?: boolean;
   };
 }
 
@@ -84,6 +92,7 @@ const agents: Array<{
   { type: "marketing", title: "Agente marketing", description: "Borradores de campañas.", icon: Megaphone },
   { type: "finance", title: "Agente finanzas", description: "Márgenes y anomalías.", icon: CircleDollarSign },
   { type: "collections", title: "Agente cobranza", description: "Cartera vencida y recordatorios.", icon: WalletCards },
+  { type: "logistics", title: "Agente logistico", description: "Rotacion, margen, sobrestock y bodega.", icon: Truck },
   { type: "foreign_trade", title: "Comercio exterior", description: "Stock, compras e importaciones.", icon: PackageSearch },
   { type: "executive", title: "Agente gerente", description: "Resumen y alertas prioritarias.", icon: Sparkles },
 ];
@@ -93,6 +102,7 @@ const defaultAction: Record<AgentType, string> = {
   marketing: "draft_campaign",
   finance: "review_margin",
   collections: "review_aging",
+  logistics: "review_logistics",
   foreign_trade: "review_inventory_risk",
   executive: "prepare_brief",
 };
@@ -136,7 +146,7 @@ export function AgentsPage() {
     setNotice("");
     let error: { message: string } | null = null;
     let successMessage = "Tarea agregada. El Agent Hub la procesara con lease seguro.";
-    if (type === "foreign_trade") {
+    if (type === "foreign_trade" || type === "logistics") {
       const { data, error: snapshotError } = await supabase
         .from("integration_records")
         .select("payload")
@@ -146,39 +156,58 @@ export function AgentsPage() {
       if (snapshotError) {
         error = snapshotError;
       } else {
-        const today = new Date().toISOString().slice(0, 10);
-        const tasks = ((data ?? []) as InventorySnapshotRecord[])
+        const snapshots = ((data ?? []) as InventorySnapshotRecord[])
           .map((row) => row.payload)
-          .filter((item) => item.sku && item.stock_known && item.cost_known && item.demand_available)
-          .slice(0, 50)
-          .map((item) => ({
-            agent_type: type,
-            action: defaultAction[type],
-            requested_by: user.id,
-            payload: {
-              sku: item.sku,
-              available_units: item.available_units ?? 0,
-              committed_units: 0,
-              confirmed_inbound_units: 0,
-              average_daily_demand: item.average_daily_demand ?? 0,
-              unit_cost_usd: item.unit_cost_usd ?? 0,
-              as_of: today,
-              evidence: {
-                source: "facto_read_only",
-                observation_days: item.demand_observation_days ?? 0,
-                units_sold_observed: item.units_sold_observed ?? 0,
-              },
-            },
-          }));
-        if (!tasks.length) {
+          .filter((item) => item.sku);
+        if (!snapshots.length) {
           setBusy("");
-          setNotice("Facto aun no tiene suficiente evidencia de stock, costo y ventas por SKU. El agente no inventara una compra: espera la siguiente sincronizacion o revisa que Facto exponga productos y documentos.");
+          setNotice("Facto aun no entrego productos para el analisis. Espera la siguiente sincronizacion.");
           await load();
           return;
         }
-        const { error: insertError } = await supabase.from("business_agent_tasks").insert(tasks);
-        error = insertError;
-        successMessage = `${tasks.length} SKU con evidencia de Facto fueron enviados a revision de comercio exterior. Las compras seguiran requiriendo aprobacion humana.`;
+        if (type === "logistics") {
+          const { error: insertError } = await supabase.from("business_agent_tasks").insert({
+            agent_type: "logistics",
+            action: defaultAction.logistics,
+            requested_by: user.id,
+            payload: { products: snapshots.slice(0, 100) },
+          });
+          error = insertError;
+          successMessage = `Analisis logistico enviado con ${snapshots.length} SKU sincronizados desde Facto. Los hallazgos se transformaran en propuestas revisables.`;
+        } else {
+          const today = new Date().toISOString().slice(0, 10);
+          const tasks = snapshots
+            .filter((item) => item.stock_known && item.cost_known && item.demand_available)
+            .slice(0, 50)
+            .map((item) => ({
+              agent_type: "foreign_trade" as const,
+              action: defaultAction.foreign_trade,
+              requested_by: user.id,
+              payload: {
+                sku: item.sku,
+                available_units: item.available_units ?? 0,
+                committed_units: 0,
+                confirmed_inbound_units: 0,
+                average_daily_demand: item.average_daily_demand ?? 0,
+                unit_cost_usd: item.unit_cost_usd ?? 0,
+                as_of: today,
+                evidence: {
+                  source: "facto_read_only",
+                  observation_days: item.demand_observation_days ?? 0,
+                  units_sold_observed: item.units_sold_observed ?? 0,
+                },
+              },
+            }));
+          if (!tasks.length) {
+            setBusy("");
+            setNotice("Facto aun no tiene suficiente evidencia de stock, costo y ventas por SKU. El agente no inventara una compra: espera la siguiente sincronizacion o revisa que Facto exponga productos y documentos.");
+            await load();
+            return;
+          }
+          const { error: insertError } = await supabase.from("business_agent_tasks").insert(tasks);
+          error = insertError;
+          successMessage = `${tasks.length} SKU con evidencia de Facto fueron enviados a revision de comercio exterior. Las compras seguiran requiriendo aprobacion humana.`;
+        }
       }
     } else {
       const response = await supabase.from("business_agent_tasks").insert({
