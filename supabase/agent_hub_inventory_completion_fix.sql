@@ -1,7 +1,6 @@
--- Agent Hub inventory analysis v1
--- Execute this once AFTER supabase/agent_hub.sql.
--- It persists evidence-backed replenishment recommendations and opens a
--- review alert. It never creates or sends a purchase order.
+-- Hotfix: PostgreSQL gives JSON extraction operators a different precedence
+-- than string concatenation. Parenthesize extracted values before composing
+-- the human-readable inventory alert.
 
 create or replace function public.complete_business_agent_task(
  p_task_id uuid,p_worker_id text,p_lease_token uuid,p_result jsonb
