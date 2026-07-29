@@ -74,6 +74,8 @@ interface InventorySnapshotRecord {
     average_daily_demand?: number;
     stock_known?: boolean;
     cost_known?: boolean;
+    cost_available_in_source?: boolean;
+    cost_requires_usd_conversion?: boolean;
     demand_available?: boolean;
     demand_observation_days?: number;
     units_sold_observed?: number;
@@ -207,6 +209,8 @@ export function AgentsPage() {
               catalog_count: snapshots.length,
               stock_known: snapshots.filter((item) => item.stock_known).length,
               cost_known: snapshots.filter((item) => item.cost_known).length,
+              cost_available_in_source: snapshots.filter((item) => item.cost_available_in_source).length,
+              cost_requires_usd_conversion: snapshots.filter((item) => item.cost_requires_usd_conversion).length,
               demand_available: snapshots.filter((item) => item.demand_available).length,
               eligible: 0,
             };
@@ -217,7 +221,10 @@ export function AgentsPage() {
               payload: readiness,
             });
             error = insertError;
-            successMessage = `Diagnostico enviado: Facto sincronizo ${snapshots.length} productos, pero aun no entrega stock, costo y ventas completas por SKU. El agente mostrara el resultado sin inventar una compra.`;
+            const withStock = snapshots.filter((item) => item.stock_known).length;
+            const withSourceCost = snapshots.filter((item) => item.cost_available_in_source).length;
+            const withDemand = snapshots.filter((item) => item.demand_available).length;
+            successMessage = `Diagnostico enviado: ${snapshots.length} productos; ${withStock} con stock, ${withSourceCost} con costo de origen y ${withDemand} con ventas por SKU. El agente mostrara lo que falta sin inventar una compra.`;
           } else {
             const { error: insertError } = await supabase.from("business_agent_tasks").insert(tasks);
             error = insertError;
