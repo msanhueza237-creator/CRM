@@ -11,6 +11,7 @@ import { DashboardPage } from "./modules/dashboard/DashboardPage";
 import { TemplatesPage } from "./modules/templates/TemplatesPage";
 import { ProspectingPage } from "./modules/prospecting/ProspectingPage";
 import { AgentsPage } from "./modules/agents/AgentsPage";
+import { AgentDashboardPage } from "./modules/agents/AgentDashboardPage";
 
 export function App() {
   return (
@@ -34,6 +35,7 @@ export function App() {
         <Route path="/plantillas" element={<TemplatesPage />} />
         <Route path="/administracion" element={<AdminPage />} />
         <Route path="/agentes" element={<AgentsPage />} />
+        <Route path="/agentes/:agentType/dashboard" element={<AgentDashboardPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

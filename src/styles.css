@@ -3628,6 +3628,227 @@ th {
   padding: 14px;
 }
 
+.agent-dashboard-link {
+  justify-content: center;
+  text-decoration: none;
+}
+
+.agent-dashboard-page .back-link {
+  align-items: center;
+  color: #0a7584;
+  display: inline-flex;
+  font-weight: 800;
+  gap: 6px;
+  margin-bottom: 14px;
+  text-decoration: none;
+}
+
+.agent-dashboard-kpis {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.agent-dashboard-kpis article {
+  background: #fff;
+  border: 1px solid #dce5e7;
+  border-radius: 14px;
+  display: grid;
+  gap: 7px;
+  min-height: 145px;
+  padding: 18px;
+}
+
+.agent-dashboard-kpis article > svg {
+  color: #087f8d;
+}
+
+.agent-dashboard-kpis article.risk {
+  background: #fff8f5;
+  border-color: #f2c9bc;
+}
+
+.agent-dashboard-kpis article.risk > svg {
+  color: #c55332;
+}
+
+.agent-dashboard-kpis span,
+.agent-dashboard-kpis small {
+  color: #607077;
+}
+
+.agent-dashboard-kpis span {
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.agent-dashboard-kpis strong {
+  color: #123a40;
+  font-size: clamp(22px, 2.2vw, 32px);
+}
+
+.logistics-dashboard-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: minmax(0, 1.2fr) minmax(330px, 0.8fr);
+}
+
+.stock-bars,
+.evidence-coverage {
+  display: grid;
+  gap: 13px;
+}
+
+.stock-bars article,
+.evidence-coverage > article {
+  display: grid;
+  gap: 7px;
+}
+
+.stock-bars article > div:first-child,
+.evidence-coverage > article > div:first-child {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.stock-bars strong {
+  max-width: 75%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stock-bars span,
+.evidence-coverage span {
+  color: #52676d;
+  font-weight: 800;
+}
+
+.stock-bar-track,
+.coverage-track {
+  background: #e8eff0;
+  border-radius: 999px;
+  height: 10px;
+  overflow: hidden;
+}
+
+.stock-bar-track > span,
+.coverage-track > span {
+  background: linear-gradient(90deg, #0a8190, #28aa8a);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+}
+
+.dashboard-warning {
+  align-items: flex-start;
+  background: #fff7e7;
+  border: 1px solid #f1d59b;
+  border-radius: 10px;
+  color: #72500e;
+  display: flex;
+  gap: 9px;
+  line-height: 1.45;
+  margin-top: 8px;
+  padding: 12px;
+}
+
+.dashboard-warning svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.agent-dashboard-summary p,
+.evidence-coverage .agent-result-summary {
+  color: #52676d;
+  line-height: 1.55;
+}
+
+.logistics-controls {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(250px, 1fr) minmax(170px, 0.3fr) minmax(170px, 0.3fr);
+  margin-bottom: 16px;
+}
+
+.logistics-controls label {
+  align-items: center;
+  border: 1px solid #ccdadd;
+  border-radius: 9px;
+  display: flex;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.logistics-controls input,
+.logistics-controls select {
+  background: #fff;
+  border: 1px solid #ccdadd;
+  border-radius: 9px;
+  color: #173b41;
+  min-height: 44px;
+  padding: 0 12px;
+  width: 100%;
+}
+
+.logistics-controls label input {
+  border: 0;
+  outline: 0;
+  padding: 0;
+}
+
+.logistics-table-wrap {
+  max-height: 620px;
+  overflow: auto;
+}
+
+.logistics-table {
+  border-collapse: collapse;
+  min-width: 900px;
+  width: 100%;
+}
+
+.logistics-table th {
+  background: #f3f7f7;
+  color: #52676d;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  position: sticky;
+  text-align: left;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+
+.logistics-table th,
+.logistics-table td {
+  border-bottom: 1px solid #e5ebec;
+  padding: 12px 10px;
+  vertical-align: top;
+}
+
+.inventory-status {
+  border-radius: 999px;
+  display: inline-flex;
+  font-weight: 900;
+  min-width: 42px;
+  padding: 4px 9px;
+}
+
+.inventory-status.ok {
+  background: #e2f7eb;
+  color: #14703e;
+}
+
+.inventory-status.empty {
+  background: #fde9e4;
+  color: #a84329;
+}
+
 @media (max-width: 1000px) {
   .agent-command-card,
   .agent-grid,
@@ -3638,6 +3859,14 @@ th {
   .agent-grid,
   .connection-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .agent-dashboard-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .logistics-dashboard-grid {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -3650,7 +3879,13 @@ th {
 
   .agent-policy-grid,
   .agent-grid,
-  .connection-grid {
+  .connection-grid,
+  .agent-dashboard-kpis,
+  .logistics-controls {
     grid-template-columns: 1fr;
+  }
+
+  .agent-dashboard-kpis article {
+    min-height: 0;
   }
 }

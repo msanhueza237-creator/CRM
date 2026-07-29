@@ -13,6 +13,7 @@ import {
   WalletCards,
   XCircle,
 } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
 
@@ -114,6 +115,7 @@ const defaultAction: Record<AgentType, string> = {
 };
 
 export function AgentsPage() {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const canManage = user?.role === "administrador";
   const [tasks, setTasks] = useState<AgentTask[]>([]);
@@ -151,20 +153,28 @@ export function AgentsPage() {
     setBusy(type);
     setNotice("");
     let error: { message: string } | null = null;
+    let dashboardTaskId = "";
     let successMessage = "Tarea agregada. El Agent Hub la procesara con lease seguro.";
     if (type === "foreign_trade" || type === "logistics") {
-      const { data, error: snapshotError } = await supabase
-        .from("integration_records")
-        .select("payload")
-        .eq("provider", "facto")
-        .eq("resource", "inventory_snapshots")
-        .limit(100);
-      if (snapshotError) {
-        error = snapshotError;
-      } else {
-        const snapshots = ((data ?? []) as InventorySnapshotRecord[])
+      const snapshots: InventorySnapshotRecord["payload"][] = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error: snapshotError } = await supabase
+          .from("integration_records")
+          .select("payload")
+          .eq("provider", "facto")
+          .eq("resource", "inventory_snapshots")
+          .range(from, from + 999);
+        if (snapshotError) {
+          error = snapshotError;
+          break;
+        }
+        const page = ((data ?? []) as InventorySnapshotRecord[])
           .map((row) => row.payload)
           .filter((item) => item.sku);
+        snapshots.push(...page);
+        if ((data ?? []).length < 1000) break;
+      }
+      if (!error) {
         if (!snapshots.length) {
           setBusy("");
           setNotice("Facto aun no entrego productos para el analisis. Espera la siguiente sincronizacion.");
@@ -172,13 +182,18 @@ export function AgentsPage() {
           return;
         }
         if (type === "logistics") {
-          const { error: insertError } = await supabase.from("business_agent_tasks").insert({
-            agent_type: "logistics",
-            action: defaultAction.logistics,
-            requested_by: user.id,
-            payload: { products: snapshots.slice(0, 100) },
-          });
+          const { data: insertedTask, error: insertError } = await supabase
+            .from("business_agent_tasks")
+            .insert({
+              agent_type: "logistics",
+              action: defaultAction.logistics,
+              requested_by: user.id,
+              payload: { products: snapshots },
+            })
+            .select("id")
+            .single();
           error = insertError;
+          dashboardTaskId = insertedTask?.id ?? "";
           successMessage = `Analisis logistico enviado con ${snapshots.length} SKU sincronizados desde Facto. Los hallazgos se transformaran en propuestas revisables.`;
         } else {
           const today = new Date().toISOString().slice(0, 10);
@@ -244,6 +259,9 @@ export function AgentsPage() {
     setBusy("");
     setNotice(error ? error.message : successMessage);
     await load();
+    if (!error && type === "logistics" && dashboardTaskId) {
+      navigate(`/agentes/logistics/dashboard?task=${dashboardTaskId}`);
+    }
   }
 
   async function decideProposal(id: string, decision: "approved" | "rejected") {
@@ -322,6 +340,9 @@ export function AgentsPage() {
               <button className="primary-button" type="button" disabled={!canManage || busy === agent.type} onClick={() => void requestAgent(agent.type)}>
                 {busy === agent.type ? "Solicitando..." : "Solicitar análisis"}
               </button>
+              <Link className="ghost-button agent-dashboard-link" to={`/agentes/${agent.type}/dashboard`}>
+                Ver dashboard
+              </Link>
             </article>
           );
         })}
