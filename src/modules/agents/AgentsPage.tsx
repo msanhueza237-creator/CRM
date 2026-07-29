@@ -259,8 +259,9 @@ export function AgentsPage() {
     setBusy("");
     setNotice(error ? error.message : successMessage);
     await load();
-    if (!error && type === "logistics" && dashboardTaskId) {
-      navigate(`/agentes/logistics/dashboard?task=${dashboardTaskId}`);
+    if (!error) {
+      const taskQuery = dashboardTaskId ? `?task=${dashboardTaskId}` : "";
+      navigate(`/agentes/${type}/dashboard${taskQuery}`);
     }
   }
 
