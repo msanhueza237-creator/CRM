@@ -235,6 +235,18 @@ type CommercialCustomer = {
   crm_type?: string;
   crm_status?: string;
   crm_priority?: string;
+  email_ready?: boolean;
+  whatsapp_ready?: boolean;
+  purchase_events?: number;
+  average_net_ticket?: number;
+  commercial_value?: number;
+  commercial_score?: number;
+  value_tier?: "A" | "B" | "C" | "D";
+  recommended_action?: string;
+  recommended_action_label?: string;
+  opportunity_priority?: "urgent" | "high" | "medium" | "normal";
+  top_products?: Array<{ name: string; units: number }>;
+  product_families?: Array<{ name: string; units: number }>;
 };
 
 type CommercialSegment = {
@@ -245,6 +257,10 @@ type CommercialSegment = {
   count: number;
   customer_keys?: string[];
   company_ids?: string[];
+  priority?: "urgent" | "high" | "medium" | "normal";
+  email_count?: number;
+  whatsapp_count?: number;
+  filters?: Record<string, string | number | boolean | string[]>;
 };
 
 type CommercialReport = {
@@ -257,6 +273,13 @@ type CommercialReport = {
     facto_customers: number;
     tiendanube_customers: number;
     crm_companies: number;
+    email_ready?: number;
+    whatsapp_ready?: number;
+    active_customers?: number;
+    customers_at_risk?: number;
+    omnichannel_customers?: number;
+    high_value_customers?: number;
+    campaign_ready?: number;
   };
   source_counts: Record<string, number>;
   lifecycle_counts: Record<string, number>;
@@ -268,6 +291,8 @@ type CommercialReport = {
     returning_customers: number;
   }>;
   segments: CommercialSegment[];
+  opportunity_counts?: Record<string, number>;
+  top_opportunities?: CommercialCustomer[];
   methodology: string;
 };
 
@@ -472,6 +497,24 @@ const commercialLifecycleLabels: Record<string, string> = {
   no_purchase: "Sin compra vinculada",
 };
 
+const commercialActionLabels: Record<string, string> = {
+  rescue_priority: "Recuperar cliente valioso",
+  convert_web_to_b2b: "Convertir comprador web a B2B",
+  reactivate: "Reactivar relación comercial",
+  onboard: "Acompañar primera recompra",
+  loyalty_cross_sell: "Fidelizar y ofrecer venta cruzada",
+  complete_contact: "Completar datos de contacto",
+  qualify: "Calificar oportunidad",
+  follow_up: "Realizar seguimiento",
+};
+
+const commercialPriorityLabels: Record<string, string> = {
+  urgent: "Urgente",
+  high: "Alta",
+  medium: "Media",
+  normal: "Normal",
+};
+
 function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
   const report = commercialReportFromTasks(tasks);
   const [query, setQuery] = useState("");
@@ -479,7 +522,9 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [lifecycle, setLifecycle] = useState("all");
   const [companyType, setCompanyType] = useState("all");
   const [region, setRegion] = useState("all");
-  const [sort, setSort] = useState("sales_desc");
+  const [valueTier, setValueTier] = useState("all");
+  const [recommendedAction, setRecommendedAction] = useState("all");
+  const [sort, setSort] = useState("score_desc");
 
   const companyTypes = useMemo(
     () =>
@@ -503,6 +548,22 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
       ).sort((left, right) => left.localeCompare(right, "es-CL")),
     [report?.customers],
   );
+  const commercialActions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (report?.customers ?? [])
+            .map((customer) => customer.recommended_action)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ).sort((left, right) =>
+        (commercialActionLabels[left] ?? left).localeCompare(
+          commercialActionLabels[right] ?? right,
+          "es-CL",
+        ),
+      ),
+    [report?.customers],
+  );
   const filteredCustomers = useMemo(() => {
     const normalizedQuery = normalizeCustomerSearch(query);
     return (report?.customers ?? [])
@@ -511,6 +572,13 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
         if (lifecycle !== "all" && customer.lifecycle !== lifecycle) return false;
         if (companyType !== "all" && customer.crm_type !== companyType) return false;
         if (region !== "all" && customer.region !== region) return false;
+        if (valueTier !== "all" && customer.value_tier !== valueTier) return false;
+        if (
+          recommendedAction !== "all" &&
+          customer.recommended_action !== recommendedAction
+        ) {
+          return false;
+        }
         if (!normalizedQuery) return true;
         return [
           customer.name,
@@ -523,6 +591,9 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
         ].some((value) => normalizeCustomerSearch(value).includes(normalizedQuery));
       })
       .sort((left, right) => {
+        if (sort === "score_desc") {
+          return Number(right.commercial_score ?? 0) - Number(left.commercial_score ?? 0);
+        }
         if (sort === "orders_desc") {
           return (
             Number(right.facto_documents ?? 0) +
@@ -542,9 +613,20 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
             "es-CL",
           );
         }
-        return Number(right.facto_net_sales ?? 0) - Number(left.facto_net_sales ?? 0);
+        return Number(right.commercial_value ?? right.facto_net_sales ?? 0) -
+          Number(left.commercial_value ?? left.facto_net_sales ?? 0);
       });
-  }, [companyType, lifecycle, query, region, report?.customers, sort, source]);
+  }, [
+    companyType,
+    lifecycle,
+    query,
+    recommendedAction,
+    region,
+    report?.customers,
+    sort,
+    source,
+    valueTier,
+  ]);
 
   if (!report) {
     return (
@@ -585,6 +667,13 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
       color: "#b9c9cc",
     },
   ];
+  const topOpportunities = (
+    report.top_opportunities ??
+    [...report.customers].sort(
+      (left, right) =>
+        Number(right.commercial_score ?? 0) - Number(left.commercial_score ?? 0),
+    )
+  ).slice(0, 12);
 
   return (
     <>
@@ -597,21 +686,36 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
         </article>
         <article>
           <CheckCircle2 size={22} />
-          <span>Contactables</span>
-          <strong>{formatNumber.format(report.metrics.contactable)}</strong>
-          <small>Email, teléfono o WhatsApp disponible</small>
+          <span>Clientes activos</span>
+          <strong>{formatNumber.format(report.metrics.active_customers ?? 0)}</strong>
+          <small>Compraron recientemente</small>
+        </article>
+        <article className="commercial-kpi-alert">
+          <AlertTriangle size={22} />
+          <span>Requieren recuperación</span>
+          <strong>{formatNumber.format(report.metrics.customers_at_risk ?? 0)}</strong>
+          <small>Clientes en riesgo o inactivos</small>
+        </article>
+        <article>
+          <TrendingUp size={22} />
+          <span>Clientes omnicanal</span>
+          <strong>{formatNumber.format(report.metrics.omnichannel_customers ?? 0)}</strong>
+          <small>Compran en Facto y Climactiva.cl</small>
+        </article>
+        <article>
+          <CheckCircle2 size={22} />
+          <span>Listos para campañas</span>
+          <strong>{formatNumber.format(report.metrics.campaign_ready ?? 0)}</strong>
+          <small>
+            {formatNumber.format(report.metrics.email_ready ?? 0)} email ·{" "}
+            {formatNumber.format(report.metrics.whatsapp_ready ?? 0)} WhatsApp
+          </small>
         </article>
         <article>
           <CircleDollarSign size={22} />
           <span>Venta neta Facto</span>
           <strong>{formatCurrency.format(report.metrics.facto_net_sales)}</strong>
           <small>Fuente financiera única; sin duplicar Tiendanube</small>
-        </article>
-        <article>
-          <TrendingUp size={22} />
-          <span>Clientes Climactiva.cl</span>
-          <strong>{formatNumber.format(report.metrics.tiendanube_customers)}</strong>
-          <small>{formatNumber.format(report.metrics.crm_companies)} vinculados al CRM</small>
         </article>
       </section>
 
@@ -673,6 +777,86 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
         </article>
       </section>
 
+      <section className="data-card commercial-opportunities">
+        <div className="section-title">
+          <div>
+            <span className="eyebrow">PRIORIDAD DIARIA</span>
+            <h2>Oportunidades comerciales recomendadas</h2>
+            <p>
+              Ordenadas por valor, recencia, frecuencia, origen y disponibilidad de contacto.
+            </p>
+          </div>
+          <strong className="commercial-priority-summary">
+            {formatNumber.format(report.opportunity_counts?.urgent ?? 0)} urgentes ·{" "}
+            {formatNumber.format(report.opportunity_counts?.high ?? 0)} altas
+          </strong>
+        </div>
+        <div className="commercial-opportunity-list">
+          {topOpportunities.map((customer) => {
+            const customerName = customer.name || customer.legal_name || "Cliente sin nombre";
+            const action =
+              customer.recommended_action_label ||
+              commercialActionLabels[customer.recommended_action ?? ""] ||
+              "Realizar seguimiento";
+            return (
+              <article
+                className={`priority-${customer.opportunity_priority ?? "normal"}`}
+                key={`opportunity-${customer.customer_key}`}
+              >
+                <div className="commercial-score">
+                  <strong>{formatNumber.format(customer.commercial_score ?? 0)}</strong>
+                  <span>puntos</span>
+                  <b>Tier {customer.value_tier ?? "D"}</b>
+                </div>
+                <div className="commercial-opportunity-identity">
+                  {customer.crm_company_id ? (
+                    <Link to={`/empresas/${customer.crm_company_id}`}>{customerName}</Link>
+                  ) : (
+                    <strong>{customerName}</strong>
+                  )}
+                  <span>{customer.tax_id || "RUT pendiente"}</span>
+                  <small>
+                    {commercialSourceLabels[customer.source_channel ?? ""] ??
+                      customer.source_channel ??
+                      "Origen pendiente"}
+                  </small>
+                </div>
+                <div className="commercial-opportunity-action">
+                  <span>
+                    {commercialPriorityLabels[customer.opportunity_priority ?? "normal"] ??
+                      "Normal"}
+                  </span>
+                  <strong>{action}</strong>
+                  <small>
+                    {customer.email_ready ? "Email" : ""}
+                    {customer.email_ready && customer.whatsapp_ready ? " · " : ""}
+                    {customer.whatsapp_ready ? "WhatsApp" : ""}
+                    {!customer.email_ready && !customer.whatsapp_ready
+                      ? "Completar contacto"
+                      : ""}
+                  </small>
+                </div>
+                <div className="commercial-opportunity-value">
+                  <span>Valor observado</span>
+                  <strong>
+                    {formatCurrency.format(
+                      Number(customer.commercial_value ?? customer.facto_net_sales ?? 0),
+                    )}
+                  </strong>
+                  <small>
+                    {formatNumber.format(customer.purchase_events ?? 0)} compras · ticket{" "}
+                    {formatCurrency.format(Number(customer.average_net_ticket ?? 0))}
+                  </small>
+                </div>
+              </article>
+            );
+          })}
+          {!topOpportunities.length ? (
+            <p>No hay oportunidades priorizadas con la información disponible.</p>
+          ) : null}
+        </div>
+      </section>
+
       <section className="data-card">
         <div className="section-title">
           <div>
@@ -684,11 +868,21 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
         </div>
         <div className="commercial-segment-grid">
           {report.segments.map((segment) => (
-            <article key={segment.id}>
-              <span>{segment.channel}</span>
+            <article
+              className={`priority-${segment.priority ?? "normal"}`}
+              key={segment.id}
+            >
+              <div className="commercial-segment-heading">
+                <span>{segment.channel}</span>
+                <b>{commercialPriorityLabels[segment.priority ?? "normal"] ?? "Normal"}</b>
+              </div>
               <strong>{segment.name}</strong>
-              <b>{formatNumber.format(segment.count)} clientes</b>
+              <em>{formatNumber.format(segment.count)} clientes</em>
               <p>{segment.reason}</p>
+              <div className="commercial-segment-channels">
+                <span>{formatNumber.format(segment.email_count ?? 0)} con email</span>
+                <span>{formatNumber.format(segment.whatsapp_count ?? 0)} con WhatsApp</span>
+              </div>
             </article>
           ))}
           {!report.segments.length ? <p>No hay segmentos contactables con las reglas actuales.</p> : null}
@@ -733,7 +927,27 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
             <option value="all">Todas las regiones</option>
             {regions.map((value) => <option key={value} value={value}>{value}</option>)}
           </select>
+          <select aria-label="Filtrar por valor" onChange={(event) => setValueTier(event.target.value)} value={valueTier}>
+            <option value="all">Todos los niveles</option>
+            <option value="A">Tier A · estratégico</option>
+            <option value="B">Tier B · alto valor</option>
+            <option value="C">Tier C · desarrollo</option>
+            <option value="D">Tier D · calificación</option>
+          </select>
+          <select
+            aria-label="Filtrar por acción sugerida"
+            onChange={(event) => setRecommendedAction(event.target.value)}
+            value={recommendedAction}
+          >
+            <option value="all">Todas las acciones</option>
+            {commercialActions.map((value) => (
+              <option key={value} value={value}>
+                {commercialActionLabels[value] ?? value}
+              </option>
+            ))}
+          </select>
           <select aria-label="Ordenar cartera" onChange={(event) => setSort(event.target.value)} value={sort}>
+            <option value="score_desc">Mayor prioridad comercial</option>
             <option value="sales_desc">Mayor venta Facto</option>
             <option value="orders_desc">Mayor frecuencia</option>
             <option value="recent_desc">Compra más reciente</option>
@@ -757,30 +971,58 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
                   <small>{contact}</small>
                 </div>
                 <div>
-                  <span>Origen</span>
-                  <strong>{commercialSourceLabels[customer.source_channel ?? ""] ?? customer.source_channel ?? "Sin fuente"}</strong>
-                  <small>{(customer.sources ?? []).join(" · ")}</small>
-                </div>
-                <div>
-                  <span>Clasificación</span>
-                  <strong>{customer.crm_type || "Sin clasificar"}</strong>
-                  <small>{[customer.region, customer.city].filter(Boolean).join(" · ") || "Territorio pendiente"}</small>
-                </div>
-                <div>
-                  <span>Actividad</span>
-                  <strong>{commercialLifecycleLabels[customer.lifecycle ?? ""] ?? customer.lifecycle ?? "Sin dato"}</strong>
+                  <span>Prioridad comercial</span>
+                  <strong>
+                    {formatNumber.format(customer.commercial_score ?? 0)} puntos · Tier{" "}
+                    {customer.value_tier ?? "D"}
+                  </strong>
                   <small>
-                    {customer.last_purchase_at
-                      ? `Última compra: ${financialDateLabel(customer.last_purchase_at)}`
-                      : "Sin compra vinculada"}
+                    {customer.recommended_action_label ||
+                      commercialActionLabels[customer.recommended_action ?? ""] ||
+                      "Realizar seguimiento"}
                   </small>
                 </div>
                 <div>
-                  <span>Facto / web</span>
-                  <strong>{formatCurrency.format(Number(customer.facto_net_sales ?? 0))}</strong>
+                  <span>Origen y canales</span>
+                  <strong>{commercialSourceLabels[customer.source_channel ?? ""] ?? customer.source_channel ?? "Sin fuente"}</strong>
                   <small>
-                    {formatNumber.format(Number(customer.facto_documents ?? 0))} docs Facto ·{" "}
-                    {formatNumber.format(Number(customer.tiendanube_orders ?? 0))} pedidos web
+                    {customer.email_ready ? "Email" : ""}
+                    {customer.email_ready && customer.whatsapp_ready ? " · " : ""}
+                    {customer.whatsapp_ready ? "WhatsApp" : ""}
+                    {!customer.email_ready && !customer.whatsapp_ready
+                      ? (customer.sources ?? []).join(" · ") || "Sin canal directo"
+                      : ""}
+                  </small>
+                </div>
+                <div>
+                  <span>Perfil y actividad</span>
+                  <strong>
+                    {customer.crm_type || "Sin clasificar"} ·{" "}
+                    {commercialLifecycleLabels[customer.lifecycle ?? ""] ??
+                      customer.lifecycle ??
+                      "Sin dato"}
+                  </strong>
+                  <small>
+                    {[customer.region, customer.city].filter(Boolean).join(" · ") ||
+                      "Territorio pendiente"}
+                    {" · "}
+                    {customer.last_purchase_at
+                      ? `última: ${financialDateLabel(customer.last_purchase_at)}`
+                      : "sin compra vinculada"}
+                  </small>
+                </div>
+                <div>
+                  <span>Valor y preferencia</span>
+                  <strong>
+                    {formatCurrency.format(
+                      Number(customer.commercial_value ?? customer.facto_net_sales ?? 0),
+                    )}
+                  </strong>
+                  <small>
+                    {formatNumber.format(customer.purchase_events ?? 0)} compras ·{" "}
+                    {customer.product_families?.[0]?.name ||
+                      customer.top_products?.[0]?.name ||
+                      "Interés por identificar"}
                   </small>
                 </div>
               </article>
