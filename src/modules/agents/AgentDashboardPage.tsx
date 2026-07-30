@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   BarChart3,
   Boxes,
+  Building2,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -15,9 +16,12 @@ import {
   RefreshCw,
   Search,
   TrendingUp,
+  UserPlus,
 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
+import type { Company } from "../../types/crm";
+import { useCompanyStore } from "../companies/CompanyStore";
 
 type AgentTask = {
   id: string;
@@ -249,6 +253,19 @@ type CommercialCustomer = {
   product_families?: Array<{ name: string; units: number }>;
 };
 
+type CommercialRanking = CommercialCustomer & {
+  documents?: number;
+  gross_sales?: number;
+  net_sales?: number;
+};
+
+type CommercialSalesProduct = {
+  name?: string;
+  sku?: string;
+  units?: number;
+  net_sales?: number;
+};
+
 type CommercialSegment = {
   id: string;
   name: string;
@@ -293,6 +310,9 @@ type CommercialReport = {
   segments: CommercialSegment[];
   opportunity_counts?: Record<string, number>;
   top_opportunities?: CommercialCustomer[];
+  facto_ranking?: CommercialRanking[];
+  tiendanube_ranking?: CommercialRanking[];
+  sales_products?: CommercialSalesProduct[];
   methodology: string;
 };
 
@@ -515,7 +535,110 @@ const commercialPriorityLabels: Record<string, string> = {
   normal: "Normal",
 };
 
+function normalizeExactRut(value?: string) {
+  return (value ?? "").replace(/[^0-9kK]/g, "").toUpperCase();
+}
+
+function normalizeExactEmail(value?: string) {
+  return (value ?? "").trim().toLocaleLowerCase("es-CL");
+}
+
+function normalizeExactPhone(value?: string) {
+  const digits = (value ?? "").replace(/\D/g, "");
+  if (digits.length === 9 && digits.startsWith("9")) return `56${digits}`;
+  return digits;
+}
+
+function findMatchingCompany(customer: CommercialCustomer, companies: Company[]) {
+  if (customer.crm_company_id) {
+    const linked = companies.find((company) => company.id === customer.crm_company_id);
+    if (linked) return linked;
+  }
+  const rut = normalizeExactRut(customer.tax_id);
+  const email = normalizeExactEmail(customer.email);
+  const phones = new Set(
+    [customer.whatsapp, customer.phone].map(normalizeExactPhone).filter(Boolean),
+  );
+  return companies.find((company) => {
+    if (rut && normalizeExactRut(company.rut) === rut) return true;
+    if (email && normalizeExactEmail(company.email) === email) return true;
+    return [company.whatsapp, company.whatsappNumber, company.phone]
+      .map(normalizeExactPhone)
+      .some((phone) => phone && phones.has(phone));
+  });
+}
+
+function customerImportKey(customer: CommercialCustomer) {
+  const rut = normalizeExactRut(customer.tax_id);
+  if (rut) return `rut:${rut}`;
+  const email = normalizeExactEmail(customer.email);
+  if (email) return `email:${email}`;
+  const phone = normalizeExactPhone(customer.whatsapp || customer.phone);
+  if (phone) return `phone:${phone}`;
+  return "";
+}
+
+function companyDraftFromCustomer(customer: CommercialCustomer): Omit<Company, "id"> {
+  const sourceLabel =
+    commercialSourceLabels[customer.source_channel ?? ""] ||
+    (customer.sources ?? []).join(" + ") ||
+    "Agente Comercial";
+  const normalizedPhone = normalizeExactPhone(customer.whatsapp || customer.phone);
+  const whatsappNumber =
+    normalizeExactPhone(customer.whatsapp) ||
+    (normalizedPhone.startsWith("569") ? normalizedPhone : "");
+  const whatsapp = whatsappNumber ? `+${whatsappNumber}` : "";
+  const phone = normalizedPhone ? `+${normalizedPhone}` : "";
+  const sourceTags = [
+    ...(customer.sources?.includes("facto") ? ["facto"] : []),
+    ...(customer.sources?.includes("tiendanube") ? ["tiendanube", "climactiva.cl"] : []),
+  ];
+  const priority =
+    customer.value_tier === "A"
+      ? "alta"
+      : customer.value_tier === "B"
+        ? "media"
+        : "baja";
+
+  return {
+    name: customer.name || customer.legal_name || customer.tax_id || "Cliente por identificar",
+    legalName: customer.legal_name || customer.name || "",
+    description: `Cliente identificado por el Agente Comercial desde ${sourceLabel}.`,
+    rut: customer.tax_id || "",
+    businessLine: "Cliente HVAC por clasificar",
+    type: "otro",
+    city: customer.city || "",
+    region: customer.region || "",
+    address: "",
+    website: "",
+    instagram: "",
+    facebook: "",
+    whatsapp,
+    whatsappNumber: whatsapp,
+    whatsappOptIn: false,
+    whatsappStatus: "sin_consentimiento",
+    phone,
+    email: normalizeExactEmail(customer.email),
+    contactName: "",
+    contactRole: "",
+    priority,
+    source: sourceLabel,
+    notes: [
+      "Importado manualmente desde el dashboard del Agente Comercial.",
+      `Identidad externa: ${customer.customer_key}.`,
+      `Valor observado: ${formatCurrency.format(
+        Number(customer.commercial_value ?? customer.facto_net_sales ?? 0),
+      )}.`,
+      "Requiere revisión humana de clasificación y consentimiento antes de campañas.",
+    ].join(" "),
+    status: Number(customer.purchase_events ?? 0) > 0 ? "cliente" : "prospecto",
+    nextFollowUp: "",
+    tags: ["cliente importado", "agente comercial", ...sourceTags],
+  };
+}
+
 function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
+  const { companies, createCompanies } = useCompanyStore();
   const report = commercialReportFromTasks(tasks);
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("all");
@@ -525,6 +648,11 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [valueTier, setValueTier] = useState("all");
   const [recommendedAction, setRecommendedAction] = useState("all");
   const [sort, setSort] = useState("score_desc");
+  const [rankingChannel, setRankingChannel] = useState<"facto" | "tiendanube">("facto");
+  const [rankingQuery, setRankingQuery] = useState("");
+  const [rankingSort, setRankingSort] = useState("amount_desc");
+  const [importNotice, setImportNotice] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
 
   const companyTypes = useMemo(
     () =>
@@ -627,6 +755,105 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
     source,
     valueTier,
   ]);
+  const factoRanking = useMemo<CommercialRanking[]>(() => {
+    if (report?.facto_ranking?.length) return report.facto_ranking;
+    return (report?.customers ?? [])
+      .filter((customer) => customer.sources?.includes("facto"))
+      .map((customer) => ({
+        ...customer,
+        documents: customer.facto_documents,
+        net_sales: customer.facto_net_sales,
+      }))
+      .sort((left, right) => Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0));
+  }, [report]);
+  const tiendanubeRanking = useMemo<CommercialRanking[]>(() => {
+    if (report?.tiendanube_ranking?.length) return report.tiendanube_ranking;
+    return (report?.customers ?? [])
+      .filter((customer) => customer.sources?.includes("tiendanube"))
+      .map((customer) => ({
+        ...customer,
+        documents: customer.tiendanube_orders,
+        gross_sales: customer.tiendanube_gross_sales,
+        net_sales: Number(customer.tiendanube_gross_sales ?? 0) / CHILE_VAT_FACTOR,
+      }))
+      .sort((left, right) => Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0));
+  }, [report]);
+  const filteredRanking = useMemo(() => {
+    const normalizedQuery = normalizeCustomerSearch(rankingQuery);
+    const rows = rankingChannel === "facto" ? factoRanking : tiendanubeRanking;
+    return rows
+      .filter((customer) => {
+        if (!normalizedQuery) return true;
+        return [
+          customer.name,
+          customer.legal_name,
+          customer.tax_id,
+          customer.email,
+          customer.phone,
+          customer.whatsapp,
+        ].some((value) => normalizeCustomerSearch(value).includes(normalizedQuery));
+      })
+      .sort((left, right) => {
+        if (rankingSort === "amount_asc") {
+          return Number(left.net_sales ?? 0) - Number(right.net_sales ?? 0);
+        }
+        if (rankingSort === "documents_desc") {
+          return Number(right.documents ?? 0) - Number(left.documents ?? 0);
+        }
+        if (rankingSort === "name_asc") {
+          return (left.name ?? left.legal_name ?? "").localeCompare(
+            right.name ?? right.legal_name ?? "",
+            "es-CL",
+          );
+        }
+        return Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0);
+      });
+  }, [factoRanking, rankingChannel, rankingQuery, rankingSort, tiendanubeRanking]);
+  const importableRanking = useMemo(
+    () =>
+      filteredRanking.filter(
+        (customer) => customerImportKey(customer) && !findMatchingCompany(customer, companies),
+      ),
+    [companies, filteredRanking],
+  );
+
+  async function importCustomers(customersToImport: CommercialCustomer[]) {
+    const unique = new Map<string, CommercialCustomer>();
+    for (const customer of customersToImport) {
+      const key = customerImportKey(customer);
+      if (!key || findMatchingCompany(customer, companies) || unique.has(key)) continue;
+      unique.set(key, customer);
+    }
+    const candidates = [...unique.values()];
+    if (!candidates.length) {
+      setImportNotice("No hay clientes nuevos con RUT, email o teléfono verificable para importar.");
+      return;
+    }
+    if (
+      candidates.length > 1 &&
+      !window.confirm(
+        `Se agregarán ${candidates.length} clientes a Empresas. No se crearán campañas ni mensajes. ¿Continuar?`,
+      )
+    ) {
+      return;
+    }
+    setImportBusy(true);
+    setImportNotice("");
+    try {
+      await createCompanies(candidates.map(companyDraftFromCustomer));
+      setImportNotice(
+        `${candidates.length} ${
+          candidates.length === 1 ? "cliente fue agregado" : "clientes fueron agregados"
+        } a Empresas sin duplicar identidades exactas.`,
+      );
+    } catch (error) {
+      setImportNotice(
+        error instanceof Error ? error.message : "No se pudieron importar los clientes.",
+      );
+    } finally {
+      setImportBusy(false);
+    }
+  }
 
   if (!report) {
     return (
@@ -857,6 +1084,204 @@ function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
         </div>
       </section>
 
+      <section className="commercial-channel-grid">
+        <article className="data-card commercial-channel-ranking">
+          <div className="section-title">
+            <div>
+              <span className="eyebrow">CARTERA POR ORIGEN</span>
+              <h2>Ranking de clientes</h2>
+              <p>
+                Facto conserva la venta neta contable; Climactiva.cl muestra el canal web
+                sin mezclar ambos montos.
+              </p>
+            </div>
+            <strong className="finance-customer-count">
+              {filteredRanking.length} clientes
+            </strong>
+          </div>
+          <div className="commercial-channel-tabs" role="group" aria-label="Origen del ranking">
+            <button
+              className={rankingChannel === "facto" ? "active" : ""}
+              onClick={() => setRankingChannel("facto")}
+              type="button"
+            >
+              Facto ({factoRanking.length})
+            </button>
+            <button
+              className={rankingChannel === "tiendanube" ? "active" : ""}
+              onClick={() => setRankingChannel("tiendanube")}
+              type="button"
+            >
+              Climactiva.cl ({tiendanubeRanking.length})
+            </button>
+          </div>
+          <div className="finance-customer-tools commercial-ranking-tools">
+            <label className="finance-customer-search">
+              <Search aria-hidden="true" size={18} />
+              <span className="sr-only">Buscar cliente del canal</span>
+              <input
+                onChange={(event) => setRankingQuery(event.target.value)}
+                placeholder="RUT, razón social, email o teléfono"
+                type="search"
+                value={rankingQuery}
+              />
+            </label>
+            <label>
+              <span className="sr-only">Ordenar ranking</span>
+              <select
+                onChange={(event) => setRankingSort(event.target.value)}
+                value={rankingSort}
+              >
+                <option value="amount_desc">Mayor monto neto</option>
+                <option value="amount_asc">Menor monto neto</option>
+                <option value="documents_desc">Más compras</option>
+                <option value="name_asc">Razón social A-Z</option>
+              </select>
+            </label>
+          </div>
+          <div className="commercial-import-toolbar">
+            <div>
+              <Building2 size={18} />
+              <span>
+                {importableRanking.length} identificados aún no están en Empresas
+              </span>
+            </div>
+            <button
+              className="primary-button"
+              disabled={importBusy || !importableRanking.length}
+              onClick={() => void importCustomers(importableRanking)}
+              type="button"
+            >
+              <UserPlus size={17} />
+              {importBusy ? "Importando…" : "Agregar visibles a Empresas"}
+            </button>
+          </div>
+          {importNotice ? (
+            <div
+              className={
+                importNotice.startsWith("No ") || importNotice.startsWith("No se")
+                  ? "notice-banner warning"
+                  : "notice-banner success"
+              }
+            >
+              {importNotice}
+            </div>
+          ) : null}
+          <div className="commercial-ranking-list">
+            {filteredRanking.map((customer) => {
+              const existing = findMatchingCompany(customer, companies);
+              const canImport = Boolean(customerImportKey(customer));
+              return (
+                <article key={`${rankingChannel}-${customer.customer_key}`}>
+                  <div className="commercial-ranking-identity">
+                    <strong>{customer.name || customer.legal_name || "Cliente sin nombre"}</strong>
+                    <span>{customer.tax_id || "RUT no informado"}</span>
+                    <small>
+                      {customer.email || customer.whatsapp || customer.phone || "Contacto pendiente"}
+                    </small>
+                  </div>
+                  <div className="commercial-ranking-amount">
+                    <strong>{formatCurrency.format(Number(customer.net_sales ?? 0))}</strong>
+                    <span>
+                      {customer.documents ?? 0}{" "}
+                      {rankingChannel === "facto" ? "documentos" : "pedidos"}
+                    </span>
+                    {rankingChannel === "tiendanube" ? (
+                      <small>Monto neto estimado sin IVA</small>
+                    ) : (
+                      <small>Venta neta Facto</small>
+                    )}
+                  </div>
+                  <div className="commercial-ranking-action">
+                    {existing ? (
+                      <Link className="ghost-button" to={`/empresas/${existing.id}`}>
+                        Ver en Empresas
+                      </Link>
+                    ) : (
+                      <button
+                        className="ghost-button"
+                        disabled={importBusy || !canImport}
+                        onClick={() => void importCustomers([customer])}
+                        title={
+                          canImport
+                            ? "Agregar cliente a Empresas"
+                            : "Se necesita RUT, email o teléfono para evitar duplicados"
+                        }
+                        type="button"
+                      >
+                        <UserPlus size={16} />
+                        {canImport ? "Agregar a Empresas" : "Falta identidad"}
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+            {!filteredRanking.length ? (
+              <div className="finance-customer-empty">
+                <Search size={22} />
+                <strong>Sin clientes para este filtro</strong>
+                <span>Prueba con otro RUT, nombre, email o teléfono.</span>
+              </div>
+            ) : null}
+          </div>
+          <p className="finance-year-note">
+            La importación es manual y transaccional. No crea destinatarios ni envía
+            campañas; primero deja el cliente disponible en Empresas para revisión.
+          </p>
+        </article>
+
+        <article className="data-card commercial-sales-products">
+          <div className="section-title">
+            <div>
+              <span className="eyebrow">DEMANDA COMERCIAL</span>
+              <h2>Productos que generan ventas</h2>
+              <p>Unidades y venta neta por SKU observadas en los documentos de Facto.</p>
+            </div>
+          </div>
+          <div className="stock-bars product-ranking-list commercial-products-scroll">
+            {(report.sales_products ?? []).map((item, index) => {
+              const maximum = Math.max(
+                ...(report.sales_products ?? []).map((product) =>
+                  Number(product.net_sales ?? product.units ?? 0),
+                ),
+                1,
+              );
+              const observedValue = Number(item.net_sales ?? item.units ?? 0);
+              return (
+                <article key={`${item.sku || item.name}-${index}`}>
+                  <div>
+                    <strong title={item.name}>{item.name || item.sku || "Producto sin nombre"}</strong>
+                    <span>
+                      {Number(item.net_sales ?? 0) > 0
+                        ? formatCurrency.format(Number(item.net_sales))
+                        : `${formatNumber.format(Number(item.units ?? 0))} un.`}
+                    </span>
+                  </div>
+                  <small>
+                    {formatNumber.format(Number(item.units ?? 0))} unidades · SKU{" "}
+                    {item.sku || "sin dato"}
+                  </small>
+                  <div className="stock-bar-track">
+                    <span
+                      style={{
+                        width: `${Math.max(3, (observedValue / maximum) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                </article>
+              );
+            })}
+            {!report.sales_products?.length ? (
+              <p>
+                Solicita un nuevo análisis comercial para incorporar el historial de
+                productos vendidos.
+              </p>
+            ) : null}
+          </div>
+        </article>
+      </section>
+
       <section className="data-card">
         <div className="section-title">
           <div>
@@ -1051,35 +1476,10 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const latest = tasks[0];
   const report = financialReportFromTask(latest);
   const [selectedMonth, setSelectedMonth] = useState("all");
-  const [customerQuery, setCustomerQuery] = useState("");
-  const [customerSort, setCustomerSort] = useState("amount_desc");
   const [supplierQuery, setSupplierQuery] = useState("");
   const [supplierYear, setSupplierYear] = useState("all");
   const [collectionQuery, setCollectionQuery] = useState("");
   const [collectionSort, setCollectionSort] = useState("amount_desc");
-  const filteredCustomers = useMemo(() => {
-    const query = normalizeCustomerSearch(customerQuery);
-    const rows = (report?.top_customers ?? []).filter((item) => {
-      if (!query) return true;
-      return (
-        normalizeCustomerSearch(item.name).includes(query) ||
-        normalizeCustomerSearch(item.tax_id).includes(query)
-      );
-    });
-
-    return [...rows].sort((left, right) => {
-      if (customerSort === "amount_asc") {
-        return Number(left.net_sales ?? 0) - Number(right.net_sales ?? 0);
-      }
-      if (customerSort === "name_asc") {
-        return (left.name ?? "").localeCompare(right.name ?? "", "es-CL");
-      }
-      if (customerSort === "documents_desc") {
-        return Number(right.documents ?? 0) - Number(left.documents ?? 0);
-      }
-      return Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0);
-    });
-  }, [customerQuery, customerSort, report?.top_customers]);
   const filteredSuppliers = useMemo(() => {
     const query = normalizeCustomerSearch(supplierQuery);
     return (report?.top_suppliers ?? [])
@@ -1178,7 +1578,6 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
     : Number(purchaseGrowthPercent ?? 0) < 0
       ? "negative"
       : "neutral";
-  const customerMaximum = Math.max(...filteredCustomers.map((item) => Number(item.net_sales ?? 0)), 1);
   const supplierMaximum = Math.max(
     ...filteredSuppliers.map((item) => item.displayed_purchases),
     1,
@@ -1187,7 +1586,6 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
     (total, item) => total + item.displayed_purchases,
     0,
   );
-  const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
   const collections = report.collections;
   // A legacy snapshot may mark a payment ledger as authoritative. Accounts
   // receivable is valid only when it came from Facto's collections resource.
@@ -1456,67 +1854,6 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
             </div>
           ) : null}
         </div>
-      </section>
-
-      <section className="finance-rankings">
-        <article className="data-card">
-          <div className="section-title">
-            <div>
-              <h2>Ranking de clientes</h2>
-              <p>Busca por RUT o razón social y ordena los montos netos documentados.</p>
-            </div>
-            <strong className="finance-customer-count">{filteredCustomers.length} de {report.customer_count ?? report.top_customers?.length ?? 0}</strong>
-          </div>
-          <div className="finance-customer-tools">
-            <label className="finance-customer-search">
-              <Search aria-hidden="true" size={18} />
-              <span className="sr-only">Buscar cliente</span>
-              <input
-                onChange={(event) => setCustomerQuery(event.target.value)}
-                placeholder="Buscar por RUT o razón social"
-                type="search"
-                value={customerQuery}
-              />
-            </label>
-            <label>
-              <span className="sr-only">Ordenar clientes</span>
-              <select onChange={(event) => setCustomerSort(event.target.value)} value={customerSort}>
-                <option value="amount_desc">Mayor monto</option>
-                <option value="amount_asc">Menor monto</option>
-                <option value="documents_desc">Más documentos</option>
-                <option value="name_asc">Razón social A–Z</option>
-              </select>
-            </label>
-          </div>
-          <div className="stock-bars product-ranking-list finance-ranking-scroll">
-            {filteredCustomers.map((item, index) => (
-              <article key={`${item.tax_id || item.name}-${index}`}>
-                <div><strong title={item.name}>{item.name || "Cliente no identificado"}</strong><span>{formatCurrency.format(Number(item.net_sales ?? 0))}</span></div>
-                <small>{item.documents ?? 0} documentos{item.tax_id ? ` · ${item.tax_id}` : ""}</small>
-                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.net_sales ?? 0) / customerMaximum) * 100)}%` }} /></div>
-              </article>
-            ))}
-            {!filteredCustomers.length ? (
-              <div className="finance-customer-empty">
-                <Search size={22} />
-                <strong>Sin coincidencias</strong>
-                <span>Prueba con otro RUT o razón social.</span>
-              </div>
-            ) : null}
-          </div>
-        </article>
-        <article className="data-card">
-          <div className="section-title"><div><h2>Productos que generan ventas</h2><p>Relación por SKU observada en Facto.</p></div></div>
-          <div className="stock-bars product-ranking-list finance-ranking-scroll">
-            {(report.top_products ?? []).map((item, index) => (
-              <article key={`${item.sku || item.name}-${index}`}>
-                <div><strong title={item.name}>{item.name || item.sku || "Producto sin nombre"}</strong><span>{formatCurrency.format(Number(item.net_sales_observed ?? 0))}</span></div>
-                <small>{formatNumber.format(Number(item.units ?? 0))} unidades · SKU {item.sku || "sin dato"}</small>
-                <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.net_sales_observed ?? 0) / productMaximum) * 100)}%` }} /></div>
-              </article>
-            ))}
-          </div>
-        </article>
       </section>
 
       <section className="data-card finance-collections-header">

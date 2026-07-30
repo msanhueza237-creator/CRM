@@ -158,18 +158,30 @@ export function AgentsPage() {
     let dashboardTaskId = "";
     let successMessage = "Tarea agregada. El Agent Hub la procesara con lease seguro.";
     if (type === "commercial") {
-      const { data: commercialRows, error: commercialError } = await supabase
-        .from("integration_records")
-        .select("payload")
-        .eq("provider", "facto")
-        .eq("resource", "commercial_snapshots")
-        .order("updated_at", { ascending: false })
-        .limit(1);
-      if (commercialError) {
-        error = commercialError;
+      const [commercialResult, financialResult] = await Promise.all([
+        supabase
+          .from("integration_records")
+          .select("payload")
+          .eq("provider", "facto")
+          .eq("resource", "commercial_snapshots")
+          .order("updated_at", { ascending: false })
+          .limit(1),
+        supabase
+          .from("integration_records")
+          .select("payload")
+          .eq("provider", "facto")
+          .eq("resource", "financial_snapshots")
+          .order("updated_at", { ascending: false })
+          .limit(1),
+      ]);
+      if (commercialResult.error || financialResult.error) {
+        error = commercialResult.error || financialResult.error;
       } else {
-        const commercialSnapshot = commercialRows?.[0]?.payload as
+        const commercialSnapshot = commercialResult.data?.[0]?.payload as
           | { customers?: Array<Record<string, unknown>>; sources?: Record<string, number> }
+          | undefined;
+        const financialSnapshot = financialResult.data?.[0]?.payload as
+          | Record<string, unknown>
           | undefined;
         if (!commercialSnapshot?.customers?.length && !companies.length) {
           setBusy("");
@@ -203,6 +215,7 @@ export function AgentsPage() {
               commercial_snapshot: commercialSnapshot?.customers ?? [],
               crm_companies: crmCompanies,
               source_counts: commercialSnapshot?.sources ?? {},
+              financial_snapshot: financialSnapshot ?? {},
             },
           })
           .select("id")

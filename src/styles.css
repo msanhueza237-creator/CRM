@@ -4535,6 +4535,155 @@ th {
   padding: 9px 11px;
 }
 
+.commercial-channel-grid {
+  align-items: start;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.8fr);
+}
+
+.commercial-channel-tabs {
+  background: #eef4f5;
+  border-radius: 10px;
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 10px;
+  padding: 4px;
+}
+
+.commercial-channel-tabs button {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: #547078;
+  cursor: pointer;
+  font-weight: 900;
+  min-height: 38px;
+  padding: 6px 10px;
+}
+
+.commercial-channel-tabs button.active {
+  background: #087f8e;
+  color: #fff;
+}
+
+.commercial-ranking-tools {
+  margin-bottom: 10px;
+}
+
+.commercial-import-toolbar {
+  align-items: center;
+  background: #f2f8f8;
+  border: 1px solid #d8e6e8;
+  border-radius: 10px;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  padding: 9px 10px;
+}
+
+.commercial-import-toolbar > div,
+.commercial-import-toolbar button {
+  align-items: center;
+  display: flex;
+  gap: 7px;
+}
+
+.commercial-import-toolbar span {
+  color: #506d74;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.commercial-import-toolbar button {
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.commercial-ranking-list {
+  display: grid;
+  gap: 7px;
+  max-height: 620px;
+  overflow-y: auto;
+  padding-right: 5px;
+  scrollbar-color: #9eb7bc #edf3f4;
+  scrollbar-width: thin;
+}
+
+.commercial-ranking-list > article {
+  align-items: center;
+  border: 1px solid #dce6e8;
+  border-radius: 10px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(180px, 1.3fr) minmax(145px, 0.8fr) minmax(145px, auto);
+  padding: 10px 11px;
+}
+
+.commercial-ranking-identity,
+.commercial-ranking-amount {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.commercial-ranking-identity strong,
+.commercial-ranking-amount strong {
+  color: #173b41;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.commercial-ranking-identity span,
+.commercial-ranking-amount span {
+  color: #526f76;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.commercial-ranking-identity small,
+.commercial-ranking-amount small {
+  color: #6c8187;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.commercial-ranking-action {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.commercial-ranking-action .ghost-button {
+  align-items: center;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 5px;
+  justify-content: center;
+  min-height: 36px;
+  padding: 6px 9px;
+  text-align: center;
+}
+
+.commercial-ranking-action button:disabled,
+.commercial-import-toolbar button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.commercial-products-scroll {
+  max-height: 620px;
+  overflow-y: auto;
+  padding-right: 5px;
+  scrollbar-color: #9eb7bc #edf3f4;
+  scrollbar-width: thin;
+}
+
+.commercial-products-scroll > article div:first-child {
+  gap: 8px;
+}
+
 @media (max-width: 1280px) {
   .logistics-donut-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4554,6 +4703,10 @@ th {
 
   .commercial-donut-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .commercial-channel-grid {
+    grid-template-columns: 1fr;
   }
 
   .commercial-acquisition-card {
@@ -4626,6 +4779,15 @@ th {
   .commercial-priority-summary {
     text-align: left;
   }
+
+  .commercial-ranking-list > article {
+    grid-template-columns: minmax(0, 1fr) minmax(145px, 0.7fr);
+  }
+
+  .commercial-ranking-action {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
 }
 
 @media (max-width: 720px) {
@@ -4694,6 +4856,27 @@ th {
 
   .commercial-score {
     min-height: 66px;
+  }
+
+  .commercial-import-toolbar,
+  .commercial-ranking-list > article {
+    align-items: stretch;
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .commercial-ranking-action {
+    grid-column: auto;
+  }
+
+  .commercial-ranking-action .ghost-button,
+  .commercial-import-toolbar button {
+    width: 100%;
+  }
+
+  .commercial-products-scroll,
+  .commercial-ranking-list {
+    max-height: 540px;
   }
 }
 

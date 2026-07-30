@@ -12,6 +12,7 @@ interface CompanyStoreValue {
   companies: Company[];
   interactions: Interaction[];
   createCompany: (company: Omit<Company, "id">, options?: { localOnly?: boolean }) => Company;
+  createCompanies: (companies: Array<Omit<Company, "id">>) => Promise<Company[]>;
   createInteraction: (interaction: Omit<Interaction, "id">) => Interaction;
   updateCompany: (id: string, company: Omit<Company, "id">) => Promise<Company>;
   deleteCompany: (id: string) => Promise<void>;
@@ -111,12 +112,47 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
       interactions,
       createCompany: (company, options) => {
         const created = { ...company, id: crypto.randomUUID() };
-        const nextCompanies = [created, ...companies];
-        setCompanies(nextCompanies);
-        saveCompanies(nextCompanies);
+        setCompanies((currentCompanies) => {
+          const nextCompanies = [created, ...currentCompanies];
+          saveCompanies(nextCompanies);
+          return nextCompanies;
+        });
         if (!options?.localOnly && isSupabaseConfigured && supabase && user) {
-          void supabase.from("companies").insert(mapCompanyToSupabase(created));
+          void supabase
+            .from("companies")
+            .insert(mapCompanyToSupabase(created))
+            .then(async ({ error }) => {
+              if (error) {
+                console.error("No se pudo importar la empresa al CRM:", error.message);
+                return;
+              }
+              await saveCompanyTags(created.id, created.tags);
+            });
         }
+        return created;
+      },
+      createCompanies: async (newCompanies) => {
+        const created = newCompanies.map((company) => ({
+          ...company,
+          id: crypto.randomUUID(),
+        }));
+        if (!created.length) return [];
+
+        if (isSupabaseConfigured && supabase && user) {
+          const { error } = await supabase
+            .from("companies")
+            .insert(created.map(mapCompanyToSupabase));
+          if (error) {
+            throw new Error(`No se pudieron importar las empresas: ${error.message}`);
+          }
+          await Promise.all(created.map((company) => saveCompanyTags(company.id, company.tags)));
+        }
+
+        setCompanies((currentCompanies) => {
+          const nextCompanies = [...created, ...currentCompanies];
+          saveCompanies(nextCompanies);
+          return nextCompanies;
+        });
         return created;
       },
       createInteraction: (interaction) => {
