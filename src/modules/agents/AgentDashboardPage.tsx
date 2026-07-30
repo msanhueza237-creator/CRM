@@ -80,6 +80,28 @@ type FinancialRanking = {
   units?: number;
 };
 
+type FinancialYearMonthComparison = {
+  month: number;
+  label: string;
+  current_net_sales: number;
+  previous_net_sales: number;
+};
+
+type FinancialYearComparison = {
+  current_year: number;
+  previous_year: number;
+  cutoff_date: string;
+  previous_cutoff_date: string;
+  current_ytd_net_sales: number;
+  previous_ytd_net_sales: number;
+  previous_full_year_net_sales: number;
+  growth_amount: number;
+  growth_percent?: number | null;
+  current_ytd_documents: number;
+  previous_ytd_documents: number;
+  months: FinancialYearMonthComparison[];
+};
+
 type FinancialReport = {
   period_start?: string | null;
   period_end?: string | null;
@@ -91,6 +113,7 @@ type FinancialReport = {
   reference_gross_margin: number;
   reference_margin_available: boolean;
   sales_by_month: FinancialMonth[];
+  year_comparison?: FinancialYearComparison;
   top_customers: FinancialRanking[];
   customer_count?: number;
   top_products: FinancialRanking[];
@@ -275,6 +298,17 @@ function normalizeCustomerSearch(value: string | undefined) {
     .toLocaleLowerCase("es-CL");
 }
 
+function financialDateLabel(value: string | undefined) {
+  if (!value) return "sin fecha";
+  const parsed = new Date(`${value}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return new Intl.DateTimeFormat("es-CL", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  }).format(parsed);
+}
+
 function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const latest = tasks[0];
   const report = financialReportFromTask(latest);
@@ -323,6 +357,24 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const documents = selected?.documents ?? report.document_count;
   const averageTicket = documents ? netSales / documents : 0;
   const maximumMonth = Math.max(...months.map((item) => Number(item.net_sales ?? 0)), 1);
+  const comparison = report.year_comparison;
+  const comparisonMonths = comparison?.months ?? [];
+  const comparisonMaximum = Math.max(
+    ...comparisonMonths.flatMap((item) => [
+      Number(item.current_net_sales ?? 0),
+      Number(item.previous_net_sales ?? 0),
+    ]),
+    1,
+  );
+  const comparisonCutoffMonth = comparison
+    ? Number(comparison.cutoff_date.slice(5, 7))
+    : 12;
+  const growthPercent = comparison?.growth_percent;
+  const growthClass = Number(growthPercent ?? 0) > 0
+    ? "positive"
+    : Number(growthPercent ?? 0) < 0
+      ? "negative"
+      : "neutral";
   const customerMaximum = Math.max(...filteredCustomers.map((item) => Number(item.net_sales ?? 0)), 1);
   const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
 
@@ -361,16 +413,92 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
 
       <section className="finance-main-grid">
         <article className="data-card finance-monthly-card">
-          <div className="section-title"><div><h2>Ventas netas por mes</h2><p>Evolución real de documentos emitidos, siempre sin IVA.</p></div></div>
-          <div className="finance-month-bars">
-            {months.map((item) => (
-              <article key={item.month}>
-                <div className="finance-month-value">{formatCurrency.format(item.net_sales)}</div>
-                <div className="finance-column-track"><span style={{ height: `${Math.max(4, (item.net_sales / maximumMonth) * 100)}%` }} /></div>
-                <strong>{monthLabel(item.month)}</strong><small>{item.documents} doc.</small>
-              </article>
-            ))}
-          </div>
+          {comparison ? (
+            <>
+              <div className="section-title">
+                <div>
+                  <h2>Crecimiento {comparison.current_year} vs {comparison.previous_year}</h2>
+                  <p>
+                    Ventas netas sin IVA comparadas hasta el mismo día:
+                    {" "}{financialDateLabel(comparison.cutoff_date)}.
+                  </p>
+                </div>
+              </div>
+              <div className="finance-growth-kpis">
+                <article>
+                  <span>Acumulado {comparison.current_year}</span>
+                  <strong>{formatCurrency.format(comparison.current_ytd_net_sales)}</strong>
+                  <small>{comparison.current_ytd_documents} documentos</small>
+                </article>
+                <article>
+                  <span>Mismo período {comparison.previous_year}</span>
+                  <strong>{formatCurrency.format(comparison.previous_ytd_net_sales)}</strong>
+                  <small>{comparison.previous_ytd_documents} documentos</small>
+                </article>
+                <article className={growthClass}>
+                  <span>Variación interanual</span>
+                  <strong>
+                    {growthPercent == null
+                      ? "Sin base"
+                      : `${growthPercent >= 0 ? "+" : ""}${formatNumber.format(growthPercent)}%`}
+                  </strong>
+                  <small>{formatCurrency.format(comparison.growth_amount)}</small>
+                </article>
+                <article>
+                  <span>Total completo {comparison.previous_year}</span>
+                  <strong>{formatCurrency.format(comparison.previous_full_year_net_sales)}</strong>
+                  <small>Referencia de 12 meses</small>
+                </article>
+              </div>
+              <div className="finance-year-legend" aria-label="Leyenda del gráfico">
+                <span><i className="previous" />{comparison.previous_year}</span>
+                <span><i className="current" />{comparison.current_year}</span>
+              </div>
+              <div className="finance-year-bars">
+                {comparisonMonths.map((item) => {
+                  const futureCurrentMonth = item.month > comparisonCutoffMonth;
+                  const previousHeight = (item.previous_net_sales / comparisonMaximum) * 100;
+                  const currentHeight = (item.current_net_sales / comparisonMaximum) * 100;
+                  return (
+                    <article key={item.month}>
+                      <div className="finance-year-pair">
+                        <span
+                          className="previous"
+                          style={{ height: `${item.previous_net_sales ? Math.max(3, previousHeight) : 0}%` }}
+                          title={`${item.label} ${comparison.previous_year}: ${formatCurrency.format(item.previous_net_sales)}`}
+                        />
+                        <span
+                          className={`current${futureCurrentMonth ? " future" : ""}`}
+                          style={{ height: `${item.current_net_sales ? Math.max(3, currentHeight) : 0}%` }}
+                          title={futureCurrentMonth
+                            ? `${item.label} ${comparison.current_year}: período aún no transcurrido`
+                            : `${item.label} ${comparison.current_year}: ${formatCurrency.format(item.current_net_sales)}`}
+                        />
+                      </div>
+                      <strong>{item.label}</strong>
+                    </article>
+                  );
+                })}
+              </div>
+              <p className="finance-year-note">
+                Las barras posteriores a {financialDateLabel(comparison.cutoff_date)} no se consideran
+                como ventas cero; corresponden a meses aún no transcurridos.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="section-title"><div><h2>Ventas netas por mes</h2><p>Evolución real de documentos emitidos, siempre sin IVA.</p></div></div>
+              <div className="finance-month-bars">
+                {months.map((item) => (
+                  <article key={item.month}>
+                    <div className="finance-month-value">{formatCurrency.format(item.net_sales)}</div>
+                    <div className="finance-column-track"><span style={{ height: `${Math.max(4, (item.net_sales / maximumMonth) * 100)}%` }} /></div>
+                    <strong>{monthLabel(item.month)}</strong><small>{item.documents} doc.</small>
+                  </article>
+                ))}
+              </div>
+            </>
+          )}
         </article>
         <DonutChart
           centerLabel="total con IVA"
