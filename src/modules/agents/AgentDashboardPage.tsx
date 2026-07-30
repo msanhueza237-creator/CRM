@@ -125,6 +125,51 @@ type FinancialYearComparison = {
   months: FinancialYearMonthComparison[];
 };
 
+type CollectionAging = {
+  bucket: string;
+  amount: number;
+  documents: number;
+};
+
+type CollectionCustomer = {
+  name?: string;
+  tax_id?: string;
+  amount: number;
+  overdue: number;
+  due_next_30: number;
+  documents: number;
+  max_days_overdue: number;
+  oldest_due_date?: string | null;
+};
+
+type CollectionReport = {
+  mode: "registered_payments" | "documentary_credit";
+  payments_available: boolean;
+  as_of: string;
+  observed_amount: number;
+  overdue_amount: number;
+  due_next_30: number;
+  documents: number;
+  overdue_documents: number;
+  payments_registered: number;
+  payment_count: number;
+  aging: CollectionAging[];
+  customers: CollectionCustomer[];
+  payments_by_month: Array<{ month: string; amount: number; payments: number }>;
+  disclaimer: string;
+};
+
+type DocumentaryCashFlow = {
+  net_sales: number;
+  net_purchases: number;
+  documentary_difference: number;
+  payments_registered: number;
+  payment_count: number;
+  cash_balance_available: boolean;
+  bank_balance_available: boolean;
+  disclaimer: string;
+};
+
 type FinancialReport = {
   period_start?: string | null;
   period_end?: string | null;
@@ -146,6 +191,9 @@ type FinancialReport = {
   supplier_count?: number;
   purchases_available?: boolean;
   top_products: FinancialRanking[];
+  collections?: CollectionReport;
+  credit_exposure_available?: boolean;
+  documentary_cash_flow?: DocumentaryCashFlow;
   receivables_available: boolean;
   expenses_available: boolean;
   cash_balance_available: boolean;
@@ -346,6 +394,8 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [customerSort, setCustomerSort] = useState("amount_desc");
   const [supplierQuery, setSupplierQuery] = useState("");
   const [supplierYear, setSupplierYear] = useState("all");
+  const [collectionQuery, setCollectionQuery] = useState("");
+  const [collectionSort, setCollectionSort] = useState("amount_desc");
   const filteredCustomers = useMemo(() => {
     const query = normalizeCustomerSearch(customerQuery);
     const rows = (report?.top_customers ?? []).filter((item) => {
@@ -394,6 +444,29 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
       })
       .sort((left, right) => right.displayed_purchases - left.displayed_purchases);
   }, [report?.top_suppliers, supplierQuery, supplierYear]);
+  const filteredCollectionCustomers = useMemo(() => {
+    const query = normalizeCustomerSearch(collectionQuery);
+    const rows = (report?.collections?.customers ?? []).filter((item) => {
+      if (!query) return true;
+      return (
+        normalizeCustomerSearch(item.name).includes(query) ||
+        normalizeCustomerSearch(item.tax_id).includes(query)
+      );
+    });
+
+    return [...rows].sort((left, right) => {
+      if (collectionSort === "overdue_desc") {
+        return Number(right.overdue ?? 0) - Number(left.overdue ?? 0);
+      }
+      if (collectionSort === "days_desc") {
+        return Number(right.max_days_overdue ?? 0) - Number(left.max_days_overdue ?? 0);
+      }
+      if (collectionSort === "name_asc") {
+        return (left.name ?? "").localeCompare(right.name ?? "", "es-CL");
+      }
+      return Number(right.amount ?? 0) - Number(left.amount ?? 0);
+    });
+  }, [collectionQuery, collectionSort, report?.collections?.customers]);
 
   if (!report) {
     return (
@@ -454,6 +527,12 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
     0,
   );
   const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
+  const collections = report.collections;
+  const collectionMaximum = Math.max(
+    ...filteredCollectionCustomers.map((item) => Number(item.amount ?? 0)),
+    1,
+  );
+  const cashFlow = report.documentary_cash_flow;
 
   return (
     <>
@@ -765,7 +844,171 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
         </article>
       </section>
 
-      <section className="data-card finance-next-data">
+      <section className="data-card finance-collections-header">
+        <div>
+          <span className="eyebrow">COBRANZA TRAZABLE</span>
+          <h2>Caja y cuentas por cobrar</h2>
+          <p>
+            {collections?.mode === "registered_payments"
+              ? "Facturas menos pagos registrados en Facto. Los montos representan saldo observado por cobrar."
+              : "Facturas emitidas con condición de crédito. Se muestran como exposición documental hasta que Facto entregue el registro de pagos por API."}
+          </p>
+        </div>
+        <span className={collections?.payments_available ? "ready" : "pending"}>
+          {collections?.payments_available ? "Saldo respaldado por pagos" : "Exposición documental"}
+        </span>
+      </section>
+
+      <section className="agent-dashboard-kpis finance-collection-kpis">
+        <article>
+          <CircleDollarSign size={22} />
+          <span>{collections?.payments_available ? "Cuentas por cobrar" : "Exposición facturada a crédito"}</span>
+          <strong>{formatCurrency.format(Number(collections?.observed_amount ?? 0))}</strong>
+          <small>{collections?.documents ?? 0} documentos observados</small>
+        </article>
+        <article className={Number(collections?.overdue_amount ?? 0) > 0 ? "risk" : ""}>
+          <AlertTriangle size={22} />
+          <span>{collections?.payments_available ? "Cartera vencida" : "Exposición vencida"}</span>
+          <strong>{formatCurrency.format(Number(collections?.overdue_amount ?? 0))}</strong>
+          <small>{collections?.overdue_documents ?? 0} documentos fuera de plazo</small>
+        </article>
+        <article>
+          <TrendingUp size={22} />
+          <span>Vence en próximos 30 días</span>
+          <strong>{formatCurrency.format(Number(collections?.due_next_30 ?? 0))}</strong>
+          <small>Compromisos documentales próximos</small>
+        </article>
+        <article className={!collections?.payments_available ? "risk" : ""}>
+          <Database size={22} />
+          <span>Cobros registrados por API</span>
+          <strong>
+            {collections?.payments_available
+              ? formatCurrency.format(Number(collections.payments_registered ?? 0))
+              : "No disponibles"}
+          </strong>
+          <small>
+            {collections?.payments_available
+              ? `${collections.payment_count} pagos relacionados`
+              : "Facto no expone todavía un listado verificable"}
+          </small>
+        </article>
+      </section>
+
+      <section className="finance-collections-grid">
+        <DonutChart
+          centerLabel={collections?.payments_available ? "saldo observado" : "exposición"}
+          centerValue={formatCurrency.format(Number(collections?.observed_amount ?? 0))}
+          formatter={(value) => formatCurrency.format(value)}
+          slices={(collections?.aging ?? []).map((item, index) => ({
+            label: `${item.bucket} · ${item.documents} doc.`,
+            value: Number(item.amount ?? 0),
+            color: ["#27ad83", "#e3a12a", "#e17e31", "#d4563d", "#9f3547", "#8fa5aa"][index % 6],
+          }))}
+          subtitle={
+            collections?.payments_available
+              ? "Distribución del saldo por cobrar según su vencimiento."
+              : "Distribución estimada de facturas a crédito; no confirma que sigan impagas."
+          }
+          title={collections?.payments_available ? "Antigüedad de deuda" : "Vencimiento documental estimado"}
+        />
+
+        <article className="data-card finance-collection-card">
+          <div className="section-title">
+            <div>
+              <h2>Clientes por cobrar</h2>
+              <p>Busca por RUT o razón social y prioriza monto, atraso o antigüedad.</p>
+            </div>
+            <strong className="finance-customer-count">{filteredCollectionCustomers.length} clientes</strong>
+          </div>
+          <div className="finance-customer-tools">
+            <label className="finance-customer-search">
+              <Search aria-hidden="true" size={18} />
+              <span className="sr-only">Buscar cliente por cobrar</span>
+              <input
+                onChange={(event) => setCollectionQuery(event.target.value)}
+                placeholder="Buscar por RUT o razón social"
+                type="search"
+                value={collectionQuery}
+              />
+            </label>
+            <label>
+              <span className="sr-only">Ordenar cuentas por cobrar</span>
+              <select onChange={(event) => setCollectionSort(event.target.value)} value={collectionSort}>
+                <option value="amount_desc">Mayor saldo</option>
+                <option value="overdue_desc">Mayor vencido</option>
+                <option value="days_desc">Más días vencido</option>
+                <option value="name_asc">Razón social A–Z</option>
+              </select>
+            </label>
+          </div>
+          <div className="stock-bars product-ranking-list finance-ranking-scroll finance-collection-ranking">
+            {filteredCollectionCustomers.map((item, index) => (
+              <article key={`${item.tax_id || item.name}-${index}`}>
+                <div>
+                  <strong title={item.name}>{item.name || "Cliente no identificado"}</strong>
+                  <span>{formatCurrency.format(Number(item.amount ?? 0))}</span>
+                </div>
+                <small>
+                  {item.documents} documentos
+                  {item.tax_id ? ` · ${item.tax_id}` : ""}
+                  {item.overdue > 0 ? ` · Vencido ${formatCurrency.format(item.overdue)}` : ""}
+                  {item.max_days_overdue > 0 ? ` · ${item.max_days_overdue} días` : ""}
+                </small>
+                <div className="stock-bar-track">
+                  <span style={{ width: `${Math.max(3, (Number(item.amount ?? 0) / collectionMaximum) * 100)}%` }} />
+                </div>
+              </article>
+            ))}
+            {!filteredCollectionCustomers.length ? (
+              <div className="finance-customer-empty">
+                <Search size={22} />
+                <strong>Sin documentos de crédito para este filtro</strong>
+                <span>La sección se completará cuando Facto entregue facturas a crédito o pagos relacionados.</span>
+              </div>
+            ) : null}
+          </div>
+        </article>
+      </section>
+
+      <section className="data-card finance-cash-section">
+        <div className="section-title">
+          <div>
+            <span className="eyebrow">LIQUIDEZ SIN ESTIMACIONES INVENTADAS</span>
+            <h2>Caja y flujo documental</h2>
+            <p>Ventas menos compras ayuda a leer el movimiento comercial, pero no reemplaza el saldo real de caja ni bancos.</p>
+          </div>
+        </div>
+        <div className="finance-cash-grid">
+          <article>
+            <span>Ventas netas documentadas</span>
+            <strong>{formatCurrency.format(Number(cashFlow?.net_sales ?? report.net_sales))}</strong>
+            <small>Antes de IVA</small>
+          </article>
+          <article>
+            <span>Compras netas documentadas</span>
+            <strong>{formatCurrency.format(Number(cashFlow?.net_purchases ?? report.net_purchases ?? 0))}</strong>
+            <small>Documentos recibidos</small>
+          </article>
+          <article>
+            <span>Diferencia documental</span>
+            <strong>{formatCurrency.format(Number(cashFlow?.documentary_difference ?? 0))}</strong>
+            <small>No equivale a efectivo disponible</small>
+          </article>
+          <article className="pending">
+            <span>Saldo caja física</span>
+            <strong>Pendiente</strong>
+            <small>Requiere el módulo Caja o conciliación</small>
+          </article>
+          <article className="pending">
+            <span>Saldo en bancos</span>
+            <strong>Pendiente</strong>
+            <small>Requiere integración bancaria o conciliación</small>
+          </article>
+        </div>
+        <p className="finance-cash-note">{cashFlow?.disclaimer ?? collections?.disclaimer}</p>
+      </section>
+
+      <section className="data-card finance-next-data finance-next-data-hidden">
         <div><span className="eyebrow">SIGUIENTE AMPLIACIÓN</span><h2>Caja y cuentas por cobrar</h2><p>Compras y proveedores ya están integrados desde Facto. Los saldos de caja y cobranza aparecerán cuando se incorporen pagos, vencimientos y bancos, sin inventar valores.</p></div>
         <div>
           <span className={report.receivables_available ? "ready" : "pending"}>Cobranza {report.receivables_available ? "disponible" : "pendiente"}</span>
