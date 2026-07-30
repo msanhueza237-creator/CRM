@@ -92,6 +92,7 @@ type FinancialReport = {
   reference_margin_available: boolean;
   sales_by_month: FinancialMonth[];
   top_customers: FinancialRanking[];
+  customer_count?: number;
   top_products: FinancialRanking[];
   receivables_available: boolean;
   expenses_available: boolean;
@@ -266,10 +267,43 @@ function monthLabel(value: string) {
     .replace(".", "");
 }
 
+function normalizeCustomerSearch(value: string | undefined) {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toLocaleLowerCase("es-CL");
+}
+
 function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const latest = tasks[0];
   const report = financialReportFromTask(latest);
   const [selectedMonth, setSelectedMonth] = useState("all");
+  const [customerQuery, setCustomerQuery] = useState("");
+  const [customerSort, setCustomerSort] = useState("amount_desc");
+  const filteredCustomers = useMemo(() => {
+    const query = normalizeCustomerSearch(customerQuery);
+    const rows = (report?.top_customers ?? []).filter((item) => {
+      if (!query) return true;
+      return (
+        normalizeCustomerSearch(item.name).includes(query) ||
+        normalizeCustomerSearch(item.tax_id).includes(query)
+      );
+    });
+
+    return [...rows].sort((left, right) => {
+      if (customerSort === "amount_asc") {
+        return Number(left.net_sales ?? 0) - Number(right.net_sales ?? 0);
+      }
+      if (customerSort === "name_asc") {
+        return (left.name ?? "").localeCompare(right.name ?? "", "es-CL");
+      }
+      if (customerSort === "documents_desc") {
+        return Number(right.documents ?? 0) - Number(left.documents ?? 0);
+      }
+      return Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0);
+    });
+  }, [customerQuery, customerSort, report?.top_customers]);
 
   if (!report) {
     return (
@@ -289,7 +323,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const documents = selected?.documents ?? report.document_count;
   const averageTicket = documents ? netSales / documents : 0;
   const maximumMonth = Math.max(...months.map((item) => Number(item.net_sales ?? 0)), 1);
-  const customerMaximum = Math.max(...(report.top_customers ?? []).map((item) => Number(item.net_sales ?? 0)), 1);
+  const customerMaximum = Math.max(...filteredCustomers.map((item) => Number(item.net_sales ?? 0)), 1);
   const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
 
   return (
@@ -350,15 +384,49 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
 
       <section className="finance-rankings">
         <article className="data-card">
-          <div className="section-title"><div><h2>Principales clientes</h2><p>Ordenados por venta neta documentada.</p></div></div>
+          <div className="section-title">
+            <div>
+              <h2>Ranking de clientes</h2>
+              <p>Busca por RUT o razón social y ordena los montos netos documentados.</p>
+            </div>
+            <strong className="finance-customer-count">{filteredCustomers.length} de {report.customer_count ?? report.top_customers?.length ?? 0}</strong>
+          </div>
+          <div className="finance-customer-tools">
+            <label className="finance-customer-search">
+              <Search aria-hidden="true" size={18} />
+              <span className="sr-only">Buscar cliente</span>
+              <input
+                onChange={(event) => setCustomerQuery(event.target.value)}
+                placeholder="Buscar por RUT o razón social"
+                type="search"
+                value={customerQuery}
+              />
+            </label>
+            <label>
+              <span className="sr-only">Ordenar clientes</span>
+              <select onChange={(event) => setCustomerSort(event.target.value)} value={customerSort}>
+                <option value="amount_desc">Mayor monto</option>
+                <option value="amount_asc">Menor monto</option>
+                <option value="documents_desc">Más documentos</option>
+                <option value="name_asc">Razón social A–Z</option>
+              </select>
+            </label>
+          </div>
           <div className="stock-bars product-ranking-list finance-ranking-scroll">
-            {(report.top_customers ?? []).map((item, index) => (
+            {filteredCustomers.map((item, index) => (
               <article key={`${item.tax_id || item.name}-${index}`}>
                 <div><strong title={item.name}>{item.name || "Cliente no identificado"}</strong><span>{formatCurrency.format(Number(item.net_sales ?? 0))}</span></div>
                 <small>{item.documents ?? 0} documentos{item.tax_id ? ` · ${item.tax_id}` : ""}</small>
                 <div className="stock-bar-track"><span style={{ width: `${Math.max(3, (Number(item.net_sales ?? 0) / customerMaximum) * 100)}%` }} /></div>
               </article>
             ))}
+            {!filteredCustomers.length ? (
+              <div className="finance-customer-empty">
+                <Search size={22} />
+                <strong>Sin coincidencias</strong>
+                <span>Prueba con otro RUT o razón social.</span>
+              </div>
+            ) : null}
           </div>
         </article>
         <article className="data-card">
