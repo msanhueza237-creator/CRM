@@ -210,6 +210,67 @@ type FinancialReport = {
   cash_balance_available: boolean;
 };
 
+type CommercialCustomer = {
+  customer_key: string;
+  name?: string;
+  legal_name?: string;
+  tax_id?: string;
+  email?: string;
+  phone?: string;
+  whatsapp?: string;
+  region?: string;
+  city?: string;
+  sources?: string[];
+  source_channel?: "facto_only" | "tiendanube_only" | "both" | "crm_only";
+  lifecycle?: "new" | "active" | "at_risk" | "dormant" | "no_purchase";
+  contactable?: boolean;
+  facto_net_sales?: number;
+  facto_documents?: number;
+  tiendanube_gross_sales?: number;
+  tiendanube_orders?: number;
+  first_purchase_at?: string | null;
+  last_purchase_at?: string | null;
+  days_since_purchase?: number | null;
+  crm_company_id?: string;
+  crm_type?: string;
+  crm_status?: string;
+  crm_priority?: string;
+};
+
+type CommercialSegment = {
+  id: string;
+  name: string;
+  reason: string;
+  channel: string;
+  count: number;
+  customer_keys?: string[];
+  company_ids?: string[];
+};
+
+type CommercialReport = {
+  generated_at: string;
+  customers: CommercialCustomer[];
+  metrics: {
+    customers: number;
+    contactable: number;
+    facto_net_sales: number;
+    facto_customers: number;
+    tiendanube_customers: number;
+    crm_companies: number;
+  };
+  source_counts: Record<string, number>;
+  lifecycle_counts: Record<string, number>;
+  type_counts: Record<string, number>;
+  region_counts: Record<string, number>;
+  acquisition_by_month: Array<{
+    month: string;
+    new_customers: number;
+    returning_customers: number;
+  }>;
+  segments: CommercialSegment[];
+  methodology: string;
+};
+
 const agentNames: Record<string, string> = {
   commercial: "Comercial",
   marketing: "Marketing",
@@ -384,6 +445,353 @@ function normalizeCustomerSearch(value: string | undefined) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-zA-Z0-9]/g, "")
     .toLocaleLowerCase("es-CL");
+}
+
+function commercialReportFromTasks(tasks: AgentTask[]): CommercialReport | null {
+  for (const task of tasks) {
+    for (const entry of task.result?.evidence ?? []) {
+      const report = entry.commercial_report;
+      if (report && typeof report === "object") return report as CommercialReport;
+    }
+  }
+  return null;
+}
+
+const commercialSourceLabels: Record<string, string> = {
+  facto_only: "Sólo Facto",
+  tiendanube_only: "Sólo Climactiva.cl",
+  both: "Facto + Climactiva.cl",
+  crm_only: "Sólo CRM",
+};
+
+const commercialLifecycleLabels: Record<string, string> = {
+  new: "Nuevo",
+  active: "Activo",
+  at_risk: "En riesgo",
+  dormant: "Inactivo",
+  no_purchase: "Sin compra vinculada",
+};
+
+function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
+  const report = commercialReportFromTasks(tasks);
+  const [query, setQuery] = useState("");
+  const [source, setSource] = useState("all");
+  const [lifecycle, setLifecycle] = useState("all");
+  const [companyType, setCompanyType] = useState("all");
+  const [region, setRegion] = useState("all");
+  const [sort, setSort] = useState("sales_desc");
+
+  const companyTypes = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (report?.customers ?? [])
+            .map((customer) => customer.crm_type)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ).sort((left, right) => left.localeCompare(right, "es-CL")),
+    [report?.customers],
+  );
+  const regions = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          (report?.customers ?? [])
+            .map((customer) => customer.region)
+            .filter((value): value is string => Boolean(value)),
+        ),
+      ).sort((left, right) => left.localeCompare(right, "es-CL")),
+    [report?.customers],
+  );
+  const filteredCustomers = useMemo(() => {
+    const normalizedQuery = normalizeCustomerSearch(query);
+    return (report?.customers ?? [])
+      .filter((customer) => {
+        if (source !== "all" && customer.source_channel !== source) return false;
+        if (lifecycle !== "all" && customer.lifecycle !== lifecycle) return false;
+        if (companyType !== "all" && customer.crm_type !== companyType) return false;
+        if (region !== "all" && customer.region !== region) return false;
+        if (!normalizedQuery) return true;
+        return [
+          customer.name,
+          customer.legal_name,
+          customer.tax_id,
+          customer.email,
+          customer.phone,
+          customer.whatsapp,
+          customer.city,
+        ].some((value) => normalizeCustomerSearch(value).includes(normalizedQuery));
+      })
+      .sort((left, right) => {
+        if (sort === "orders_desc") {
+          return (
+            Number(right.facto_documents ?? 0) +
+            Number(right.tiendanube_orders ?? 0) -
+            Number(left.facto_documents ?? 0) -
+            Number(left.tiendanube_orders ?? 0)
+          );
+        }
+        if (sort === "recent_desc") {
+          return String(right.last_purchase_at ?? "").localeCompare(
+            String(left.last_purchase_at ?? ""),
+          );
+        }
+        if (sort === "name_asc") {
+          return (left.name ?? left.legal_name ?? "").localeCompare(
+            right.name ?? right.legal_name ?? "",
+            "es-CL",
+          );
+        }
+        return Number(right.facto_net_sales ?? 0) - Number(left.facto_net_sales ?? 0);
+      });
+  }, [companyType, lifecycle, query, region, report?.customers, sort, source]);
+
+  if (!report) {
+    return (
+      <section className="data-card agent-dashboard-summary">
+        <span className="eyebrow">CARTERA COMERCIAL</span>
+        <h2>El análisis todavía está en preparación</h2>
+        <p>
+          Solicita el análisis desde el Centro de agentes cuando termine la sincronización de
+          Facto y Tiendanube.
+        </p>
+      </section>
+    );
+  }
+
+  const months = report.acquisition_by_month ?? [];
+  const maxMonthlyCustomers = Math.max(
+    1,
+    ...months.map((item) => item.new_customers + item.returning_customers),
+  );
+  const sourceSlices: DonutSlice[] = [
+    { label: "Sólo Facto", value: report.source_counts.facto_only ?? 0, color: "#07869a" },
+    {
+      label: "Sólo Climactiva.cl",
+      value: report.source_counts.tiendanube_only ?? 0,
+      color: "#6b63c7",
+    },
+    { label: "Ambos canales", value: report.source_counts.both ?? 0, color: "#2eb28c" },
+    { label: "Sólo CRM", value: report.source_counts.crm_only ?? 0, color: "#e39a27" },
+  ];
+  const lifecycleSlices: DonutSlice[] = [
+    { label: "Activos", value: report.lifecycle_counts.active ?? 0, color: "#07869a" },
+    { label: "Nuevos", value: report.lifecycle_counts.new ?? 0, color: "#2eb28c" },
+    { label: "En riesgo", value: report.lifecycle_counts.at_risk ?? 0, color: "#e39a27" },
+    { label: "Inactivos", value: report.lifecycle_counts.dormant ?? 0, color: "#c86b35" },
+    {
+      label: "Sin compra",
+      value: report.lifecycle_counts.no_purchase ?? 0,
+      color: "#b9c9cc",
+    },
+  ];
+
+  return (
+    <>
+      <section className="agent-dashboard-kpis commercial-kpis">
+        <article>
+          <Database size={22} />
+          <span>Clientes unificados</span>
+          <strong>{formatNumber.format(report.metrics.customers)}</strong>
+          <small>Facto + Climactiva.cl + CRM</small>
+        </article>
+        <article>
+          <CheckCircle2 size={22} />
+          <span>Contactables</span>
+          <strong>{formatNumber.format(report.metrics.contactable)}</strong>
+          <small>Email, teléfono o WhatsApp disponible</small>
+        </article>
+        <article>
+          <CircleDollarSign size={22} />
+          <span>Venta neta Facto</span>
+          <strong>{formatCurrency.format(report.metrics.facto_net_sales)}</strong>
+          <small>Fuente financiera única; sin duplicar Tiendanube</small>
+        </article>
+        <article>
+          <TrendingUp size={22} />
+          <span>Clientes Climactiva.cl</span>
+          <strong>{formatNumber.format(report.metrics.tiendanube_customers)}</strong>
+          <small>{formatNumber.format(report.metrics.crm_companies)} vinculados al CRM</small>
+        </article>
+      </section>
+
+      <section className="logistics-donut-grid commercial-donut-grid">
+        <DonutChart
+          centerLabel="clientes"
+          centerValue={formatNumber.format(report.metrics.customers)}
+          slices={sourceSlices}
+          subtitle="Diferencia clientes contables, compradores web y empresas del CRM."
+          title="Origen de la cartera"
+        />
+        <DonutChart
+          centerLabel="clientes"
+          centerValue={formatNumber.format(report.metrics.customers)}
+          slices={lifecycleSlices}
+          subtitle="Recencia real basada en la última compra disponible."
+          title="Ciclo comercial"
+        />
+        <article className="data-card commercial-acquisition-card">
+          <div className="section-title">
+            <div>
+              <h2>Adquisición y recurrencia</h2>
+              <p>Clientes nuevos y compradores que regresaron por mes.</p>
+            </div>
+          </div>
+          <div className="commercial-acquisition-bars">
+            {months.map((item) => (
+              <article key={item.month}>
+                <div>
+                  <span
+                    className="returning"
+                    style={{
+                      height: `${Math.max(
+                        item.returning_customers ? 4 : 0,
+                        (item.returning_customers / maxMonthlyCustomers) * 100,
+                      )}%`,
+                    }}
+                    title={`${item.returning_customers} recurrentes`}
+                  />
+                  <span
+                    className="new"
+                    style={{
+                      height: `${Math.max(
+                        item.new_customers ? 4 : 0,
+                        (item.new_customers / maxMonthlyCustomers) * 100,
+                      )}%`,
+                    }}
+                    title={`${item.new_customers} nuevos`}
+                  />
+                </div>
+                <strong>{monthLabel(item.month)}</strong>
+              </article>
+            ))}
+          </div>
+          <div className="commercial-chart-legend">
+            <span><i className="new" /> Nuevos</span>
+            <span><i className="returning" /> Recurrentes</span>
+          </div>
+        </article>
+      </section>
+
+      <section className="data-card">
+        <div className="section-title">
+          <div>
+            <span className="eyebrow">CAMPAÑAS DIRIGIDAS</span>
+            <h2>Segmentos sugeridos para revisión</h2>
+            <p>Nunca se envían mensajes automáticamente; la selección pasa por Campañas.</p>
+          </div>
+          <Link className="ghost-button agent-dashboard-link" to="/campanas">Ir a Campañas</Link>
+        </div>
+        <div className="commercial-segment-grid">
+          {report.segments.map((segment) => (
+            <article key={segment.id}>
+              <span>{segment.channel}</span>
+              <strong>{segment.name}</strong>
+              <b>{formatNumber.format(segment.count)} clientes</b>
+              <p>{segment.reason}</p>
+            </article>
+          ))}
+          {!report.segments.length ? <p>No hay segmentos contactables con las reglas actuales.</p> : null}
+        </div>
+      </section>
+
+      <section className="data-card commercial-portfolio">
+        <div className="section-title">
+          <div>
+            <span className="eyebrow">CARTERA UNIFICADA</span>
+            <h2>Clientes de Facto, Climactiva.cl y CRM</h2>
+            <p>Busca por razón social, RUT, email o teléfono y combina filtros trazables.</p>
+          </div>
+          <strong className="finance-customer-count">
+            {formatNumber.format(filteredCustomers.length)} de{" "}
+            {formatNumber.format(report.customers.length)} clientes
+          </strong>
+        </div>
+        <div className="commercial-portfolio-tools">
+          <label>
+            <Search size={18} />
+            <input
+              aria-label="Buscar cliente comercial"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Razón social, RUT, email o teléfono"
+              value={query}
+            />
+          </label>
+          <select aria-label="Filtrar por fuente" onChange={(event) => setSource(event.target.value)} value={source}>
+            <option value="all">Todas las fuentes</option>
+            {Object.entries(commercialSourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+          <select aria-label="Filtrar por ciclo" onChange={(event) => setLifecycle(event.target.value)} value={lifecycle}>
+            <option value="all">Todos los ciclos</option>
+            {Object.entries(commercialLifecycleLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+          </select>
+          <select aria-label="Filtrar por tipo" onChange={(event) => setCompanyType(event.target.value)} value={companyType}>
+            <option value="all">Todos los tipos</option>
+            {companyTypes.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <select aria-label="Filtrar por región" onChange={(event) => setRegion(event.target.value)} value={region}>
+            <option value="all">Todas las regiones</option>
+            {regions.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <select aria-label="Ordenar cartera" onChange={(event) => setSort(event.target.value)} value={sort}>
+            <option value="sales_desc">Mayor venta Facto</option>
+            <option value="orders_desc">Mayor frecuencia</option>
+            <option value="recent_desc">Compra más reciente</option>
+            <option value="name_asc">Nombre A-Z</option>
+          </select>
+        </div>
+
+        <div className="commercial-customer-list">
+          {filteredCustomers.map((customer) => {
+            const customerName = customer.name || customer.legal_name || "Cliente sin nombre";
+            const contact = customer.email || customer.whatsapp || customer.phone || "Sin contacto";
+            return (
+              <article key={customer.customer_key}>
+                <div className="commercial-customer-name">
+                  {customer.crm_company_id ? (
+                    <Link to={`/empresas/${customer.crm_company_id}`}>{customerName}</Link>
+                  ) : (
+                    <strong>{customerName}</strong>
+                  )}
+                  <span>{customer.tax_id || "RUT no identificado"}</span>
+                  <small>{contact}</small>
+                </div>
+                <div>
+                  <span>Origen</span>
+                  <strong>{commercialSourceLabels[customer.source_channel ?? ""] ?? customer.source_channel ?? "Sin fuente"}</strong>
+                  <small>{(customer.sources ?? []).join(" · ")}</small>
+                </div>
+                <div>
+                  <span>Clasificación</span>
+                  <strong>{customer.crm_type || "Sin clasificar"}</strong>
+                  <small>{[customer.region, customer.city].filter(Boolean).join(" · ") || "Territorio pendiente"}</small>
+                </div>
+                <div>
+                  <span>Actividad</span>
+                  <strong>{commercialLifecycleLabels[customer.lifecycle ?? ""] ?? customer.lifecycle ?? "Sin dato"}</strong>
+                  <small>
+                    {customer.last_purchase_at
+                      ? `Última compra: ${financialDateLabel(customer.last_purchase_at)}`
+                      : "Sin compra vinculada"}
+                  </small>
+                </div>
+                <div>
+                  <span>Facto / web</span>
+                  <strong>{formatCurrency.format(Number(customer.facto_net_sales ?? 0))}</strong>
+                  <small>
+                    {formatNumber.format(Number(customer.facto_documents ?? 0))} docs Facto ·{" "}
+                    {formatNumber.format(Number(customer.tiendanube_orders ?? 0))} pedidos web
+                  </small>
+                </div>
+              </article>
+            );
+          })}
+          {!filteredCustomers.length ? <p>No hay clientes que coincidan con estos filtros.</p> : null}
+        </div>
+        <p className="finance-year-note commercial-methodology">{report.methodology}</p>
+      </section>
+    </>
+  );
 }
 
 function financialDateLabel(value: string | undefined) {
@@ -1545,7 +1953,8 @@ export function AgentDashboardPage() {
       {loading ? <div className="data-card">Cargando información real de la empresa…</div> : null}
       {!loading && agentType === "logistics" ? <LogisticsDashboard snapshots={snapshots} tasks={tasks} /> : null}
       {!loading && agentType === "finance" ? <FinanceDashboard tasks={tasks} /> : null}
-      {!loading && agentType !== "logistics" && agentType !== "finance" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
+      {!loading && agentType === "commercial" ? <CommercialDashboard tasks={tasks} /> : null}
+      {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
     </section>
   );
 }

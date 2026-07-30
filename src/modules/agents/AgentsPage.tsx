@@ -16,6 +16,7 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
+import { useCompanyStore } from "../companies/CompanyStore";
 
 type AgentType =
   | "commercial"
@@ -95,7 +96,7 @@ const agents: Array<{
   description: string;
   icon: typeof Bot;
 }> = [
-  { type: "commercial", title: "Agente comercial", description: "Prospectos y seguimientos.", icon: UserRoundSearch },
+  { type: "commercial", title: "Agente comercial", description: "Cartera unificada, recurrencia y segmentos HVAC.", icon: UserRoundSearch },
   { type: "marketing", title: "Agente marketing", description: "Borradores de campañas.", icon: Megaphone },
   { type: "finance", title: "Agente finanzas", description: "Márgenes y anomalías.", icon: CircleDollarSign },
   { type: "collections", title: "Agente cobranza", description: "Cartera vencida y recordatorios.", icon: WalletCards },
@@ -117,6 +118,7 @@ const defaultAction: Record<AgentType, string> = {
 export function AgentsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { companies } = useCompanyStore();
   const canManage = user?.role === "administrador";
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
@@ -155,7 +157,61 @@ export function AgentsPage() {
     let error: { message: string } | null = null;
     let dashboardTaskId = "";
     let successMessage = "Tarea agregada. El Agent Hub la procesara con lease seguro.";
-    if (type === "foreign_trade" || type === "logistics") {
+    if (type === "commercial") {
+      const { data: commercialRows, error: commercialError } = await supabase
+        .from("integration_records")
+        .select("payload")
+        .eq("provider", "facto")
+        .eq("resource", "commercial_snapshots")
+        .order("updated_at", { ascending: false })
+        .limit(1);
+      if (commercialError) {
+        error = commercialError;
+      } else {
+        const commercialSnapshot = commercialRows?.[0]?.payload as
+          | { customers?: Array<Record<string, unknown>>; sources?: Record<string, number> }
+          | undefined;
+        if (!commercialSnapshot?.customers?.length && !companies.length) {
+          setBusy("");
+          setNotice("Facto y Tiendanube aun estan preparando la cartera unificada. Espera la siguiente sincronizacion.");
+          await load();
+          return;
+        }
+        const crmCompanies = companies.map((company) => ({
+          id: company.id,
+          name: company.name,
+          legal_name: company.legalName,
+          rut: company.rut,
+          email: company.email,
+          phone: company.phone,
+          whatsapp: company.whatsapp,
+          whatsapp_number: company.whatsappNumber,
+          type: company.type,
+          status: company.status,
+          priority: company.priority,
+          region: company.region,
+          city: company.city,
+          source: company.source,
+        }));
+        const { data: insertedTask, error: insertError } = await supabase
+          .from("business_agent_tasks")
+          .insert({
+            agent_type: "commercial",
+            action: "review_customer_portfolio",
+            requested_by: user.id,
+            payload: {
+              commercial_snapshot: commercialSnapshot?.customers ?? [],
+              crm_companies: crmCompanies,
+              source_counts: commercialSnapshot?.sources ?? {},
+            },
+          })
+          .select("id")
+          .single();
+        error = insertError;
+        dashboardTaskId = insertedTask?.id ?? "";
+        successMessage = `Analisis comercial enviado con ${commercialSnapshot?.customers?.length ?? 0} identidades de Facto/Tiendanube y ${crmCompanies.length} empresas revisadas en el CRM.`;
+      }
+    } else if (type === "foreign_trade" || type === "logistics") {
       const snapshots: InventorySnapshotRecord["payload"][] = [];
       for (let from = 0; ; from += 1000) {
         const { data, error: snapshotError } = await supabase

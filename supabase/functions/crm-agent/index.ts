@@ -250,8 +250,10 @@ async function handleAgentHubRoute(
             "payments",
             "inventory_snapshots",
             "financial_snapshots",
+            "customers",
+            "commercial_snapshots",
           ]
-          : ["products"];
+          : ["products", "customers", "orders"];
         if (!["facto", "tiendanube"].includes(provider) || !allowedResources.includes(resource)) {
           throw new RequestValidationError("Unsupported read-only integration resource");
         }
