@@ -243,8 +243,11 @@ async function handleAgentHubRoute(
           ? [
             "products",
             "documents",
+            "purchase_documents",
             "product_details",
             "document_details",
+            "purchase_document_details",
+            "payments",
             "inventory_snapshots",
             "financial_snapshots",
           ]
