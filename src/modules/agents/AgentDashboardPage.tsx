@@ -143,7 +143,9 @@ type CollectionCustomer = {
 };
 
 type CollectionReport = {
-  mode: "registered_payments" | "documentary_credit";
+  mode: "facto_receivables" | "registered_payments" | "unavailable";
+  authoritative?: boolean;
+  receivables_available?: boolean;
   payments_available: boolean;
   as_of: string;
   reviewed_documents?: number;
@@ -537,41 +539,17 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   );
   const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
   const collections = report.collections;
+  const collectionsAuthoritative = Boolean(
+    collections?.authoritative ?? report.receivables_available,
+  );
   const reviewedCollectionDocuments = Number(
     collections?.reviewed_documents ?? collections?.documents ?? 0,
   );
-  const reviewedCollectionAmount = Number(
-    collections?.reviewed_amount ?? collections?.observed_amount ?? 0,
-  );
-  const cashCollectionDocuments = Number(collections?.cash_documents ?? 0);
-  const unclassifiedCollectionDocuments = Number(collections?.unclassified_documents ?? 0);
-  const showCollectionClassification =
-    !collections?.payments_available &&
-    Number(collections?.observed_amount ?? 0) <= 0 &&
-    reviewedCollectionDocuments > 0;
-  const collectionChartSlices = showCollectionClassification
-    ? [
-        {
-          label: `Declaradas a crédito · ${collections?.credit_documents ?? 0} doc.`,
-          value: Number(collections?.credit_amount ?? 0),
-          color: "#27ad83",
-        },
-        {
-          label: `Declaradas al contado · ${cashCollectionDocuments} doc.`,
-          value: Number(collections?.cash_amount ?? 0),
-          color: "#e3a12a",
-        },
-        {
-          label: `Sin clasificación · ${unclassifiedCollectionDocuments} doc.`,
-          value: Number(collections?.unclassified_amount ?? 0),
-          color: "#8fa5aa",
-        },
-      ].filter((item) => item.value > 0)
-    : (collections?.aging ?? []).map((item, index) => ({
-        label: `${item.bucket} · ${item.documents} doc.`,
-        value: Number(item.amount ?? 0),
-        color: ["#27ad83", "#e3a12a", "#e17e31", "#d4563d", "#9f3547", "#8fa5aa"][index % 6],
-      }));
+  const collectionChartSlices = (collections?.aging ?? []).map((item, index) => ({
+    label: `${item.bucket} · ${item.documents} doc.`,
+    value: Number(item.amount ?? 0),
+    color: ["#27ad83", "#e3a12a", "#e17e31", "#d4563d", "#9f3547", "#8fa5aa"][index % 6],
+  }));
   const collectionMaximum = Math.max(
     ...filteredCollectionCustomers.map((item) => Number(item.amount ?? 0)),
     1,
@@ -893,171 +871,141 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           <span className="eyebrow">COBRANZA TRAZABLE</span>
           <h2>Caja y cuentas por cobrar</h2>
           <p>
-            {collections?.mode === "registered_payments"
-              ? "Facturas menos pagos registrados en Facto. Los montos representan saldo observado por cobrar."
-              : reviewedCollectionDocuments > 0
-                ? `Facto entregó ${reviewedCollectionDocuments} facturas. El CRM separa las declaradas a crédito, al contado y sin condición de pago; no convierte ventas al contado en deuda.`
-                : "Aún no hay facturas con una condición de pago utilizable en la última sincronización de Facto."}
+            {collections?.mode === "facto_receivables"
+              ? "Cartera oficial de Cobranza → Documentos impagos, con el saldo pendiente informado por Facto después de abonos."
+              : collections?.mode === "registered_payments"
+                ? "Saldo calculado con un registro completo de pagos entregado por Facto."
+                : "El CRM no convierte facturas emitidas ni condiciones de pago en deuda. Sólo mostrará la cartera real de Documentos impagos de Facto."}
           </p>
         </div>
-        <span className={collections?.payments_available ? "ready" : "pending"}>
-          {collections?.payments_available
-            ? "Saldo respaldado por pagos"
-            : reviewedCollectionDocuments > 0
-              ? `${reviewedCollectionDocuments} facturas revisadas`
-              : "Esperando clasificación"}
+        <span className={collectionsAuthoritative ? "ready" : "pending"}>
+          {collectionsAuthoritative
+            ? "Saldo oficial disponible"
+            : "Esperando recurso de Cobranza"}
         </span>
       </section>
 
-      <section className="agent-dashboard-kpis finance-collection-kpis">
-        <article>
-          <CircleDollarSign size={22} />
-          <span>{collections?.payments_available ? "Cuentas por cobrar" : "Exposición facturada a crédito"}</span>
-          <strong>{formatCurrency.format(Number(collections?.observed_amount ?? 0))}</strong>
-          <small>
-            {collections?.documents ?? 0} documentos de crédito
-            {reviewedCollectionDocuments ? ` de ${reviewedCollectionDocuments} revisados` : ""}
-          </small>
-        </article>
-        <article className={Number(collections?.overdue_amount ?? 0) > 0 ? "risk" : ""}>
-          <AlertTriangle size={22} />
-          <span>{collections?.payments_available ? "Cartera vencida" : "Exposición vencida"}</span>
-          <strong>{formatCurrency.format(Number(collections?.overdue_amount ?? 0))}</strong>
-          <small>{collections?.overdue_documents ?? 0} documentos fuera de plazo</small>
-        </article>
-        <article>
-          <TrendingUp size={22} />
-          <span>Vence en próximos 30 días</span>
-          <strong>{formatCurrency.format(Number(collections?.due_next_30 ?? 0))}</strong>
-          <small>Compromisos documentales próximos</small>
-        </article>
-        <article className={unclassifiedCollectionDocuments > 0 ? "risk" : ""}>
-          <Database size={22} />
-          <span>
-            {collections?.payments_available
-              ? "Cobros registrados por API"
-              : "Facturación declarada al contado"}
-          </span>
-          <strong>
-            {collections?.payments_available
-              ? formatCurrency.format(Number(collections.payments_registered ?? 0))
-              : formatCurrency.format(Number(collections?.cash_amount ?? 0))}
-          </strong>
-          <small>
-            {collections?.payments_available
-              ? `${collections.payment_count} pagos relacionados`
-              : `${cashCollectionDocuments} documentos; no se consideran cuentas por cobrar`}
-          </small>
-        </article>
-      </section>
+      {collectionsAuthoritative ? (
+        <>
+          <section className="agent-dashboard-kpis finance-collection-kpis">
+            <article>
+              <CircleDollarSign size={22} />
+              <span>Cuentas por cobrar</span>
+              <strong>{formatCurrency.format(Number(collections?.observed_amount ?? 0))}</strong>
+              <small>{collections?.documents ?? 0} documentos impagos</small>
+            </article>
+            <article className={Number(collections?.overdue_amount ?? 0) > 0 ? "risk" : ""}>
+              <AlertTriangle size={22} />
+              <span>Cartera vencida</span>
+              <strong>{formatCurrency.format(Number(collections?.overdue_amount ?? 0))}</strong>
+              <small>{collections?.overdue_documents ?? 0} documentos fuera de plazo</small>
+            </article>
+            <article>
+              <TrendingUp size={22} />
+              <span>Vence en próximos 30 días</span>
+              <strong>{formatCurrency.format(Number(collections?.due_next_30 ?? 0))}</strong>
+              <small>Saldo pendiente con vencimiento próximo</small>
+            </article>
+            <article>
+              <Database size={22} />
+              <span>Fuente de cobranza</span>
+              <strong>{collections?.mode === "facto_receivables" ? "Facto" : "Pagos API"}</strong>
+              <small>
+                {collections?.mode === "facto_receivables"
+                  ? "Cobranza → Documentos impagos"
+                  : `${collections?.payment_count ?? 0} pagos relacionados`}
+              </small>
+            </article>
+          </section>
 
-      {unclassifiedCollectionDocuments > 0 ? (
-        <div className="notice-banner warning finance-collection-warning">
-          <strong>{unclassifiedCollectionDocuments} facturas no tienen una condición de pago reconocible.</strong>
-          <span>
-            Representan {formatCurrency.format(Number(collections?.unclassified_amount ?? 0))} y se
-            mantienen fuera de la deuda hasta clasificarlas en Facto.
-          </span>
-        </div>
-      ) : null}
+          <section className="finance-collections-grid">
+            <DonutChart
+              centerLabel="saldo pendiente"
+              centerValue={formatCurrency.format(Number(collections?.observed_amount ?? 0))}
+              formatter={(value) => formatCurrency.format(value)}
+              slices={collectionChartSlices}
+              subtitle="Distribución del saldo real informado por Facto según su vencimiento."
+              title="Antigüedad de la cartera"
+            />
 
-      <section className="finance-collections-grid">
-        <DonutChart
-          centerLabel={
-            showCollectionClassification
-              ? "facturación revisada"
-              : collections?.payments_available
-                ? "saldo observado"
-                : "exposición"
-          }
-          centerValue={formatCurrency.format(
-            showCollectionClassification
-              ? reviewedCollectionAmount
-              : Number(collections?.observed_amount ?? 0),
-          )}
-          formatter={(value) => formatCurrency.format(value)}
-          slices={collectionChartSlices}
-          subtitle={
-            showCollectionClassification
-              ? "Distribución real según la condición de pago declarada en las facturas de Facto."
-              : collections?.payments_available
-              ? "Distribución del saldo por cobrar según su vencimiento."
-              : "Distribución estimada de facturas a crédito; no confirma que sigan impagas."
-          }
-          title={
-            showCollectionClassification
-              ? "Condiciones de pago en Facto"
-              : collections?.payments_available
-                ? "Antigüedad de deuda"
-                : "Vencimiento documental estimado"
-          }
-        />
-
-        <article className="data-card finance-collection-card">
-          <div className="section-title">
-            <div>
-              <h2>Clientes por cobrar</h2>
-              <p>Busca por RUT o razón social y prioriza monto, atraso o antigüedad.</p>
-            </div>
-            <strong className="finance-customer-count">{filteredCollectionCustomers.length} clientes</strong>
-          </div>
-          <div className="finance-customer-tools">
-            <label className="finance-customer-search">
-              <Search aria-hidden="true" size={18} />
-              <span className="sr-only">Buscar cliente por cobrar</span>
-              <input
-                onChange={(event) => setCollectionQuery(event.target.value)}
-                placeholder="Buscar por RUT o razón social"
-                type="search"
-                value={collectionQuery}
-              />
-            </label>
-            <label>
-              <span className="sr-only">Ordenar cuentas por cobrar</span>
-              <select onChange={(event) => setCollectionSort(event.target.value)} value={collectionSort}>
-                <option value="amount_desc">Mayor saldo</option>
-                <option value="overdue_desc">Mayor vencido</option>
-                <option value="days_desc">Más días vencido</option>
-                <option value="name_asc">Razón social A–Z</option>
-              </select>
-            </label>
-          </div>
-          <div className="stock-bars product-ranking-list finance-ranking-scroll finance-collection-ranking">
-            {filteredCollectionCustomers.map((item, index) => (
-              <article key={`${item.tax_id || item.name}-${index}`}>
+            <article className="data-card finance-collection-card">
+              <div className="section-title">
                 <div>
-                  <strong title={item.name}>{item.name || "Cliente no identificado"}</strong>
-                  <span>{formatCurrency.format(Number(item.amount ?? 0))}</span>
+                  <h2>Clientes por cobrar</h2>
+                  <p>Busca por RUT o razón social y prioriza monto, atraso o antigüedad.</p>
                 </div>
-                <small>
-                  {item.documents} documentos
-                  {item.tax_id ? ` · ${item.tax_id}` : ""}
-                  {item.overdue > 0 ? ` · Vencido ${formatCurrency.format(item.overdue)}` : ""}
-                  {item.max_days_overdue > 0 ? ` · ${item.max_days_overdue} días` : ""}
-                </small>
-                <div className="stock-bar-track">
-                  <span style={{ width: `${Math.max(3, (Number(item.amount ?? 0) / collectionMaximum) * 100)}%` }} />
-                </div>
-              </article>
-            ))}
-            {!filteredCollectionCustomers.length ? (
-              <div className="finance-customer-empty">
-                <Search size={22} />
-                <strong>
-                  {reviewedCollectionDocuments > 0
-                    ? "No hay facturas declaradas a crédito para este filtro"
-                    : "Sin documentos de crédito para este filtro"}
-                </strong>
-                <span>
-                  {cashCollectionDocuments > 0
-                    ? `${cashCollectionDocuments} facturas están declaradas al contado en Facto y no se muestran como deuda.`
-                    : "La sección se completará cuando Facto entregue facturas a crédito o pagos relacionados."}
-                </span>
+                <strong className="finance-customer-count">{filteredCollectionCustomers.length} clientes</strong>
               </div>
-            ) : null}
+              <div className="finance-customer-tools">
+                <label className="finance-customer-search">
+                  <Search aria-hidden="true" size={18} />
+                  <span className="sr-only">Buscar cliente por cobrar</span>
+                  <input
+                    onChange={(event) => setCollectionQuery(event.target.value)}
+                    placeholder="Buscar por RUT o razón social"
+                    type="search"
+                    value={collectionQuery}
+                  />
+                </label>
+                <label>
+                  <span className="sr-only">Ordenar cuentas por cobrar</span>
+                  <select onChange={(event) => setCollectionSort(event.target.value)} value={collectionSort}>
+                    <option value="amount_desc">Mayor saldo</option>
+                    <option value="overdue_desc">Mayor vencido</option>
+                    <option value="days_desc">Más días vencido</option>
+                    <option value="name_asc">Razón social A–Z</option>
+                  </select>
+                </label>
+              </div>
+              <div className="stock-bars product-ranking-list finance-ranking-scroll finance-collection-ranking">
+                {filteredCollectionCustomers.map((item, index) => (
+                  <article key={`${item.tax_id || item.name}-${index}`}>
+                    <div>
+                      <strong title={item.name}>{item.name || "Cliente no identificado"}</strong>
+                      <span>{formatCurrency.format(Number(item.amount ?? 0))}</span>
+                    </div>
+                    <small>
+                      {item.documents} documentos
+                      {item.tax_id ? ` · ${item.tax_id}` : ""}
+                      {item.overdue > 0 ? ` · Vencido ${formatCurrency.format(item.overdue)}` : ""}
+                      {item.max_days_overdue > 0 ? ` · ${item.max_days_overdue} días` : ""}
+                    </small>
+                    <div className="stock-bar-track">
+                      <span style={{ width: `${Math.max(3, (Number(item.amount ?? 0) / collectionMaximum) * 100)}%` }} />
+                    </div>
+                  </article>
+                ))}
+                {!filteredCollectionCustomers.length ? (
+                  <div className="finance-customer-empty">
+                    <Search size={22} />
+                    <strong>Sin documentos impagos para este filtro</strong>
+                    <span>La cartera oficial de Facto no contiene coincidencias.</span>
+                  </div>
+                ) : null}
+              </div>
+            </article>
+          </section>
+        </>
+      ) : (
+        <section className="data-card finance-collection-card">
+          <div className="notice-banner warning">
+            <strong>La API conectada aún no entrega Cobranza → Documentos impagos.</strong>
+            <span>
+              Facto entregó {reviewedCollectionDocuments} facturas emitidas, pero una factura emitida
+              no demuestra que siga pendiente. Por seguridad, el CRM no muestra $0 ni calcula deuda
+              desde condiciones de pago.
+            </span>
           </div>
-        </article>
-      </section>
+          <div className="finance-customer-empty">
+            <Database size={24} />
+            <strong>Cartera real pendiente de habilitación en Facto</strong>
+            <span>
+              El conector ya está preparado para recibir saldo pendiente, abonos, vencimiento, RUT y
+              razón social desde un recurso oficial de solo lectura.
+            </span>
+          </div>
+        </section>
+      )}
 
       <section className="data-card finance-cash-section">
         <div className="section-title">
