@@ -947,8 +947,11 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   );
   const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
   const collections = report.collections;
-  const collectionsAuthoritative = Boolean(
-    collections?.authoritative ?? report.receivables_available,
+  // A legacy snapshot may mark a payment ledger as authoritative. Accounts
+  // receivable is valid only when it came from Facto's collections resource.
+  const collectionsAuthoritative = (
+    collections?.mode === "facto_receivables"
+    && Boolean(collections?.authoritative ?? report.receivables_available)
   );
   const reviewedCollectionDocuments = Number(
     collections?.reviewed_documents ?? collections?.documents ?? 0,
@@ -1281,9 +1284,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           <p>
             {collections?.mode === "facto_receivables"
               ? "Cartera oficial de Cobranza → Documentos impagos, con el saldo pendiente informado por Facto después de abonos."
-              : collections?.mode === "registered_payments"
-                ? "Saldo calculado con un registro completo de pagos entregado por Facto."
-                : "El CRM no convierte facturas emitidas ni condiciones de pago en deuda. Sólo mostrará la cartera real de Documentos impagos de Facto."}
+              : "El CRM no convierte facturas emitidas, condiciones de pago ni listados de abonos en deuda. Sólo mostrará la cartera real de Documentos impagos de Facto."}
           </p>
         </div>
         <span className={collectionsAuthoritative ? "ready" : "pending"}>
@@ -1317,12 +1318,8 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
             <article>
               <Database size={22} />
               <span>Fuente de cobranza</span>
-              <strong>{collections?.mode === "facto_receivables" ? "Facto" : "Pagos API"}</strong>
-              <small>
-                {collections?.mode === "facto_receivables"
-                  ? "Cobranza → Documentos impagos"
-                  : `${collections?.payment_count ?? 0} pagos relacionados`}
-              </small>
+              <strong>Facto</strong>
+              <small>Cobranza → Documentos impagos</small>
             </article>
           </section>
 

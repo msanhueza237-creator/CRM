@@ -335,6 +335,66 @@ export function AgentsPage() {
         dashboardTaskId = insertedTask?.id ?? "";
         successMessage = `Analisis financiero enviado con ${Number(financialSnapshot.document_count ?? 0)} documentos reales de Facto.`;
       }
+    } else if (type === "collections") {
+      const { data: financialRows, error: financialError } = await supabase
+        .from("integration_records")
+        .select("payload")
+        .eq("provider", "facto")
+        .eq("resource", "financial_snapshots")
+        .order("updated_at", { ascending: false })
+        .limit(1);
+      if (financialError) {
+        error = financialError;
+      } else {
+        const financialSnapshot = financialRows?.[0]?.payload as
+          | {
+              collections?: {
+                mode?: string;
+                authoritative?: boolean;
+                overdue_amount?: number;
+                documents_detail?: Array<{
+                  document_id?: string;
+                  document_number?: string;
+                  customer?: string;
+                  tax_id?: string;
+                  observed_amount?: number;
+                  days_overdue?: number;
+                }>;
+              };
+            }
+          | undefined;
+        const collections = financialSnapshot?.collections;
+        const officialCollections = (
+          collections?.mode === "facto_receivables"
+          && collections.authoritative === true
+        );
+        const documents = officialCollections
+          ? (collections?.documents_detail ?? []).filter((item) => Number(item.observed_amount ?? 0) > 0)
+          : [];
+        const { data: insertedTask, error: insertError } = await supabase
+          .from("business_agent_tasks")
+          .insert({
+            agent_type: "collections",
+            action: defaultAction.collections,
+            requested_by: user.id,
+            payload: {
+              source: officialCollections ? "facto_receivables" : "unavailable",
+              authoritative: officialCollections,
+              overdue_amount: officialCollections ? Number(collections?.overdue_amount ?? 0) : 0,
+              invoice_ids: documents
+                .map((item) => item.document_id)
+                .filter((item): item is string => Boolean(item)),
+              documents,
+            },
+          })
+          .select("id")
+          .single();
+        error = insertError;
+        dashboardTaskId = insertedTask?.id ?? "";
+        successMessage = officialCollections
+          ? `Cobranza oficial enviada con ${documents.length} documentos impagos informados por Facto.`
+          : "Facto aun no entrega la ruta oficial Cobranza -> Documentos impagos. No se calculo deuda desde facturas ni pagos.";
+      }
     } else {
       const response = await supabase.from("business_agent_tasks").insert({
         agent_type: type,
