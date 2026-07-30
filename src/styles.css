@@ -4504,18 +4504,24 @@ th {
 .finance-growth-kpis .positive strong{color:#14734f}
 .finance-growth-kpis .negative{background:#fff1e8;border-color:#f3d0b8}
 .finance-growth-kpis .negative strong{color:#a74f22}
-.finance-year-legend{align-items:center;display:flex;gap:1rem;justify-content:flex-end;margin:.8rem 0 .2rem}
+.finance-year-legend{align-items:center;display:flex;flex-wrap:wrap;gap:.55rem 1rem;justify-content:flex-end;margin:.8rem 0 .2rem}
 .finance-year-legend span{align-items:center;color:#53676d;display:flex;font-size:.72rem;font-weight:800;gap:.35rem}
 .finance-year-legend i{border-radius:3px;display:block;height:10px;width:10px}
 .finance-year-legend .previous,.finance-year-pair .previous{background:#e39a27}
 .finance-year-legend .current,.finance-year-pair .current{background:#07869a}
+.finance-year-legend .previous-purchase,.finance-year-pair .previous-purchase{background:#c86b35}
+.finance-year-legend .current-purchase,.finance-year-pair .current-purchase{background:#6b63c7}
 .finance-year-bars{align-items:end;display:flex;gap:.45rem;min-height:238px;overflow-x:auto;padding:.2rem 0 .35rem}
 .finance-year-bars>article{display:grid;flex:1 0 45px;gap:.3rem;grid-template-rows:195px auto;min-width:45px;text-align:center}
-.finance-year-pair{align-items:end;background:linear-gradient(180deg,transparent,#f2f6f7);border-bottom:1px solid #c9d9dc;display:flex;gap:3px;height:195px;justify-content:center;padding:0 4px}
-.finance-year-pair>span{border-radius:5px 5px 1px 1px;display:block;max-width:18px;min-height:0;transition:height 180ms ease;width:42%}
-.finance-year-pair .current.future{background:#d7e1e3}
+.finance-year-pair{align-items:end;background:linear-gradient(180deg,transparent,#f2f6f7);border-bottom:1px solid #c9d9dc;display:flex;gap:2px;height:195px;justify-content:center;padding:0 2px}
+.finance-year-pair>span{border-radius:5px 5px 1px 1px;display:block;max-width:12px;min-height:0;transition:height 180ms ease;width:23%}
+.finance-year-pair .current.future,.finance-year-pair .current-purchase.future{background:#d7e1e3}
 .finance-year-bars strong{color:#405a60;font-size:.7rem}
 .finance-year-note{color:#687c81;font-size:.68rem;margin:.35rem 0 0}
+.finance-import-context{background:#f1f7f8;border-left:4px solid #07869a;border-radius:8px;color:#4c656b;font-size:.75rem;line-height:1.45;margin:.75rem 0 0;padding:.65rem .75rem}
+.finance-import-context strong{color:#173f47}
+.finance-supplier-card{margin-top:1rem}
+.finance-supplier-ranking{height:380px}
 .finance-rankings{display:grid;gap:1rem;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:1rem}
 .finance-customer-count{background:#e8f7f4;border-radius:999px;color:#08736d;font-size:.74rem;padding:.4rem .65rem;white-space:nowrap}
 .finance-customer-tools{display:grid;gap:.65rem;grid-template-columns:minmax(0,1fr) 170px;margin:.8rem 0 1rem}

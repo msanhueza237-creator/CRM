@@ -70,6 +70,12 @@ type FinancialMonth = {
   documents: number;
 };
 
+type FinancialPurchaseMonth = {
+  month: string;
+  net_purchases: number;
+  documents: number;
+};
+
 type FinancialRanking = {
   name?: string;
   tax_id?: string;
@@ -80,11 +86,21 @@ type FinancialRanking = {
   units?: number;
 };
 
+type SupplierRanking = {
+  name?: string;
+  tax_id?: string;
+  net_purchases?: number;
+  documents?: number;
+  years?: Record<string, { net_purchases: number; documents: number }>;
+};
+
 type FinancialYearMonthComparison = {
   month: number;
   label: string;
   current_net_sales: number;
   previous_net_sales: number;
+  current_net_purchases?: number;
+  previous_net_purchases?: number;
 };
 
 type FinancialYearComparison = {
@@ -99,6 +115,13 @@ type FinancialYearComparison = {
   growth_percent?: number | null;
   current_ytd_documents: number;
   previous_ytd_documents: number;
+  current_ytd_net_purchases?: number;
+  previous_ytd_net_purchases?: number;
+  previous_full_year_net_purchases?: number;
+  purchase_growth_amount?: number;
+  purchase_growth_percent?: number | null;
+  current_ytd_purchase_documents?: number;
+  previous_ytd_purchase_documents?: number;
   months: FinancialYearMonthComparison[];
 };
 
@@ -109,13 +132,19 @@ type FinancialReport = {
   net_sales: number;
   tax: number;
   gross_sales: number;
+  net_purchases?: number;
+  purchase_document_count?: number;
   average_net_ticket: number;
   reference_gross_margin: number;
   reference_margin_available: boolean;
   sales_by_month: FinancialMonth[];
+  purchases_by_month?: FinancialPurchaseMonth[];
   year_comparison?: FinancialYearComparison;
   top_customers: FinancialRanking[];
   customer_count?: number;
+  top_suppliers?: SupplierRanking[];
+  supplier_count?: number;
+  purchases_available?: boolean;
   top_products: FinancialRanking[];
   receivables_available: boolean;
   expenses_available: boolean;
@@ -315,6 +344,8 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [selectedMonth, setSelectedMonth] = useState("all");
   const [customerQuery, setCustomerQuery] = useState("");
   const [customerSort, setCustomerSort] = useState("amount_desc");
+  const [supplierQuery, setSupplierQuery] = useState("");
+  const [supplierYear, setSupplierYear] = useState("all");
   const filteredCustomers = useMemo(() => {
     const query = normalizeCustomerSearch(customerQuery);
     const rows = (report?.top_customers ?? []).filter((item) => {
@@ -338,6 +369,31 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
       return Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0);
     });
   }, [customerQuery, customerSort, report?.top_customers]);
+  const filteredSuppliers = useMemo(() => {
+    const query = normalizeCustomerSearch(supplierQuery);
+    return (report?.top_suppliers ?? [])
+      .map((item) => {
+        const selectedYear = supplierYear === "all" ? null : item.years?.[supplierYear];
+        return {
+          ...item,
+          displayed_purchases: selectedYear
+            ? Number(selectedYear.net_purchases ?? 0)
+            : Number(item.net_purchases ?? 0),
+          displayed_documents: selectedYear
+            ? Number(selectedYear.documents ?? 0)
+            : Number(item.documents ?? 0),
+        };
+      })
+      .filter((item) => {
+        if (item.displayed_documents <= 0 && item.displayed_purchases === 0) return false;
+        if (!query) return true;
+        return (
+          normalizeCustomerSearch(item.name).includes(query) ||
+          normalizeCustomerSearch(item.tax_id).includes(query)
+        );
+      })
+      .sort((left, right) => right.displayed_purchases - left.displayed_purchases);
+  }, [report?.top_suppliers, supplierQuery, supplierYear]);
 
   if (!report) {
     return (
@@ -351,7 +407,12 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
 
   const months = report.sales_by_month ?? [];
   const selected = selectedMonth === "all" ? null : months.find((item) => item.month === selectedMonth) ?? null;
+  const purchaseMonths = report.purchases_by_month ?? [];
+  const selectedPurchases = selectedMonth === "all"
+    ? null
+    : purchaseMonths.find((item) => item.month === selectedMonth) ?? null;
   const netSales = selected?.net_sales ?? report.net_sales;
+  const netPurchases = selectedPurchases?.net_purchases ?? Number(report.net_purchases ?? 0);
   const tax = selected?.tax ?? report.tax;
   const grossSales = selected?.gross_sales ?? report.gross_sales;
   const documents = selected?.documents ?? report.document_count;
@@ -363,6 +424,8 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
     ...comparisonMonths.flatMap((item) => [
       Number(item.current_net_sales ?? 0),
       Number(item.previous_net_sales ?? 0),
+      Number(item.current_net_purchases ?? 0),
+      Number(item.previous_net_purchases ?? 0),
     ]),
     1,
   );
@@ -370,12 +433,26 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
     ? Number(comparison.cutoff_date.slice(5, 7))
     : 12;
   const growthPercent = comparison?.growth_percent;
+  const purchaseGrowthPercent = comparison?.purchase_growth_percent;
   const growthClass = Number(growthPercent ?? 0) > 0
     ? "positive"
     : Number(growthPercent ?? 0) < 0
       ? "negative"
       : "neutral";
+  const purchaseGrowthClass = Number(purchaseGrowthPercent ?? 0) > 0
+    ? "positive"
+    : Number(purchaseGrowthPercent ?? 0) < 0
+      ? "negative"
+      : "neutral";
   const customerMaximum = Math.max(...filteredCustomers.map((item) => Number(item.net_sales ?? 0)), 1);
+  const supplierMaximum = Math.max(
+    ...filteredSuppliers.map((item) => item.displayed_purchases),
+    1,
+  );
+  const supplierTotal = filteredSuppliers.reduce(
+    (total, item) => total + item.displayed_purchases,
+    0,
+  );
   const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
 
   return (
@@ -400,6 +477,11 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
 
       <section className="agent-dashboard-kpis finance-kpis">
         <article><CircleDollarSign size={22} /><span>Ventas netas sin IVA</span><strong>{formatCurrency.format(netSales)}</strong><small>Ingreso comercial antes de IVA</small></article>
+        <article className={!report.purchases_available ? "risk" : ""}>
+          <PackageCheck size={22} /><span>Compras netas</span>
+          <strong>{report.purchases_available ? formatCurrency.format(netPurchases) : "Pendiente"}</strong>
+          <small>{report.purchases_available ? `${selectedPurchases?.documents ?? report.purchase_document_count ?? 0} documentos recibidos` : "Facto aún no entrega compras"}</small>
+        </article>
         <article><Database size={22} /><span>IVA de documentos</span><strong>{formatCurrency.format(tax)}</strong><small>No se considera ingreso</small></article>
         <article><BarChart3 size={22} /><span>Documentos emitidos</span><strong>{formatNumber.format(documents)}</strong><small>Facturas, exentas y boletas válidas</small></article>
         <article><TrendingUp size={22} /><span>Ticket neto promedio</span><strong>{formatCurrency.format(averageTicket)}</strong><small>Venta neta ÷ documentos</small></article>
@@ -447,18 +529,48 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
                 <article>
                   <span>Total completo {comparison.previous_year}</span>
                   <strong>{formatCurrency.format(comparison.previous_full_year_net_sales)}</strong>
+                  <small>Ventas · referencia de 12 meses</small>
+                </article>
+                <article>
+                  <span>Compras {comparison.current_year}</span>
+                  <strong>{formatCurrency.format(Number(comparison.current_ytd_net_purchases ?? 0))}</strong>
+                  <small>{comparison.current_ytd_purchase_documents ?? 0} documentos recibidos</small>
+                </article>
+                <article>
+                  <span>Compras mismo período {comparison.previous_year}</span>
+                  <strong>{formatCurrency.format(Number(comparison.previous_ytd_net_purchases ?? 0))}</strong>
+                  <small>{comparison.previous_ytd_purchase_documents ?? 0} documentos recibidos</small>
+                </article>
+                <article className={purchaseGrowthClass}>
+                  <span>Variación de compras</span>
+                  <strong>
+                    {purchaseGrowthPercent == null
+                      ? "Sin base"
+                      : `${purchaseGrowthPercent >= 0 ? "+" : ""}${formatNumber.format(purchaseGrowthPercent)}%`}
+                  </strong>
+                  <small>{formatCurrency.format(Number(comparison.purchase_growth_amount ?? 0))}</small>
+                </article>
+                <article>
+                  <span>Compras completas {comparison.previous_year}</span>
+                  <strong>{formatCurrency.format(Number(comparison.previous_full_year_net_purchases ?? 0))}</strong>
                   <small>Referencia de 12 meses</small>
                 </article>
               </div>
               <div className="finance-year-legend" aria-label="Leyenda del gráfico">
-                <span><i className="previous" />{comparison.previous_year}</span>
-                <span><i className="current" />{comparison.current_year}</span>
+                <span><i className="previous" />Ventas {comparison.previous_year}</span>
+                <span><i className="previous-purchase" />Compras {comparison.previous_year}</span>
+                <span><i className="current" />Ventas {comparison.current_year}</span>
+                <span><i className="current-purchase" />Compras {comparison.current_year}</span>
               </div>
               <div className="finance-year-bars">
                 {comparisonMonths.map((item) => {
                   const futureCurrentMonth = item.month > comparisonCutoffMonth;
                   const previousHeight = (item.previous_net_sales / comparisonMaximum) * 100;
                   const currentHeight = (item.current_net_sales / comparisonMaximum) * 100;
+                  const previousNetPurchases = Number(item.previous_net_purchases ?? 0);
+                  const currentNetPurchases = Number(item.current_net_purchases ?? 0);
+                  const previousPurchaseHeight = (previousNetPurchases / comparisonMaximum) * 100;
+                  const currentPurchaseHeight = (currentNetPurchases / comparisonMaximum) * 100;
                   return (
                     <article key={item.month}>
                       <div className="finance-year-pair">
@@ -468,11 +580,23 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
                           title={`${item.label} ${comparison.previous_year}: ${formatCurrency.format(item.previous_net_sales)}`}
                         />
                         <span
+                          className="previous-purchase"
+                          style={{ height: `${previousNetPurchases ? Math.max(3, previousPurchaseHeight) : 0}%` }}
+                          title={`${item.label} compras ${comparison.previous_year}: ${formatCurrency.format(previousNetPurchases)}`}
+                        />
+                        <span
                           className={`current${futureCurrentMonth ? " future" : ""}`}
                           style={{ height: `${item.current_net_sales ? Math.max(3, currentHeight) : 0}%` }}
                           title={futureCurrentMonth
                             ? `${item.label} ${comparison.current_year}: período aún no transcurrido`
                             : `${item.label} ${comparison.current_year}: ${formatCurrency.format(item.current_net_sales)}`}
+                        />
+                        <span
+                          className={`current-purchase${futureCurrentMonth ? " future" : ""}`}
+                          style={{ height: `${currentNetPurchases ? Math.max(3, currentPurchaseHeight) : 0}%` }}
+                          title={futureCurrentMonth
+                            ? `${item.label} compras ${comparison.current_year}: período aún no transcurrido`
+                            : `${item.label} compras ${comparison.current_year}: ${formatCurrency.format(currentNetPurchases)}`}
                         />
                       </div>
                       <strong>{item.label}</strong>
@@ -482,7 +606,13 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
               </div>
               <p className="finance-year-note">
                 Las barras posteriores a {financialDateLabel(comparison.cutoff_date)} no se consideran
-                como ventas cero; corresponden a meses aún no transcurridos.
+                como ventas o compras cero; corresponden a meses aún no transcurridos.
+              </p>
+              <p className="finance-import-context">
+                <strong>Lectura operativa:</strong> Clima Activa observa que los meses de mayor venta
+                suelen seguir a llegadas de mercadería desde China. Aquí se comparan compras contables
+                y ventas; el cruce con la fecha real de arribo se incorporará desde Comercio Exterior
+                considerando el ciclo objetivo de 95 días.
               </p>
             </>
           ) : (
@@ -508,6 +638,70 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           subtitle="Separa el ingreso neto del impuesto incluido en los documentos."
           title="Composición de la venta"
         />
+      </section>
+
+      <section className="data-card finance-supplier-card">
+        <div className="section-title">
+          <div>
+            <h2>Proveedores con mayores compras</h2>
+            <p>Compras netas recibidas en Facto, descontando notas de crédito.</p>
+          </div>
+          <strong className="finance-customer-count">
+            {filteredSuppliers.length} de {report.supplier_count ?? report.top_suppliers?.length ?? 0}
+          </strong>
+        </div>
+        <div className="finance-customer-tools">
+          <label className="finance-customer-search">
+            <Search aria-hidden="true" size={18} />
+            <span className="sr-only">Buscar proveedor</span>
+            <input
+              onChange={(event) => setSupplierQuery(event.target.value)}
+              placeholder="Buscar por RUT o razón social"
+              type="search"
+              value={supplierQuery}
+            />
+          </label>
+          <label>
+            <span className="sr-only">Filtrar año de compras</span>
+            <select onChange={(event) => setSupplierYear(event.target.value)} value={supplierYear}>
+              <option value="all">Todo 2025–2026</option>
+              {comparison ? (
+                <>
+                  <option value={String(comparison.current_year)}>{comparison.current_year}</option>
+                  <option value={String(comparison.previous_year)}>{comparison.previous_year}</option>
+                </>
+              ) : null}
+            </select>
+          </label>
+        </div>
+        <div className="stock-bars product-ranking-list finance-ranking-scroll finance-supplier-ranking">
+          {filteredSuppliers.map((item, index) => {
+            const share = supplierTotal > 0 ? (item.displayed_purchases / supplierTotal) * 100 : 0;
+            return (
+              <article key={`${item.tax_id || item.name}-${index}`}>
+                <div>
+                  <strong title={item.name}>{item.name || "Proveedor no identificado"}</strong>
+                  <span>{formatCurrency.format(item.displayed_purchases)}</span>
+                </div>
+                <small>
+                  {item.displayed_documents} documentos
+                  {item.tax_id ? ` · ${item.tax_id}` : ""}
+                  {supplierTotal > 0 ? ` · ${formatNumber.format(share)}% del total filtrado` : ""}
+                </small>
+                <div className="stock-bar-track">
+                  <span style={{ width: `${Math.max(3, (item.displayed_purchases / supplierMaximum) * 100)}%` }} />
+                </div>
+              </article>
+            );
+          })}
+          {!filteredSuppliers.length ? (
+            <div className="finance-customer-empty">
+              <Search size={22} />
+              <strong>Sin compras para este filtro</strong>
+              <span>Prueba con otro año, RUT o razón social.</span>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <section className="finance-rankings">
@@ -572,10 +766,10 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
       </section>
 
       <section className="data-card finance-next-data">
-        <div><span className="eyebrow">SIGUIENTE AMPLIACIÓN</span><h2>Caja, gastos y cuentas por cobrar</h2><p>Este informe no inventa saldos. Esos indicadores aparecerán al confirmar en Facto los recursos de pagos, vencimientos, compras y bancos.</p></div>
+        <div><span className="eyebrow">SIGUIENTE AMPLIACIÓN</span><h2>Caja y cuentas por cobrar</h2><p>Compras y proveedores ya están integrados desde Facto. Los saldos de caja y cobranza aparecerán cuando se incorporen pagos, vencimientos y bancos, sin inventar valores.</p></div>
         <div>
           <span className={report.receivables_available ? "ready" : "pending"}>Cobranza {report.receivables_available ? "disponible" : "pendiente"}</span>
-          <span className={report.expenses_available ? "ready" : "pending"}>Gastos {report.expenses_available ? "disponibles" : "pendientes"}</span>
+          <span className={report.purchases_available ? "ready" : "pending"}>Compras {report.purchases_available ? "disponibles" : "pendientes"}</span>
           <span className={report.cash_balance_available ? "ready" : "pending"}>Caja {report.cash_balance_available ? "disponible" : "pendiente"}</span>
         </div>
       </section>
