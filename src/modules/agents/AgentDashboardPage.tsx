@@ -146,6 +146,15 @@ type CollectionReport = {
   mode: "registered_payments" | "documentary_credit";
   payments_available: boolean;
   as_of: string;
+  reviewed_documents?: number;
+  reviewed_amount?: number;
+  credit_documents?: number;
+  credit_amount?: number;
+  cash_documents?: number;
+  cash_amount?: number;
+  unclassified_documents?: number;
+  unclassified_amount?: number;
+  classification_status?: "complete" | "partial" | "missing";
   observed_amount: number;
   overdue_amount: number;
   due_next_30: number;
@@ -528,6 +537,41 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   );
   const productMaximum = Math.max(...(report.top_products ?? []).map((item) => Number(item.net_sales_observed ?? 0)), 1);
   const collections = report.collections;
+  const reviewedCollectionDocuments = Number(
+    collections?.reviewed_documents ?? collections?.documents ?? 0,
+  );
+  const reviewedCollectionAmount = Number(
+    collections?.reviewed_amount ?? collections?.observed_amount ?? 0,
+  );
+  const cashCollectionDocuments = Number(collections?.cash_documents ?? 0);
+  const unclassifiedCollectionDocuments = Number(collections?.unclassified_documents ?? 0);
+  const showCollectionClassification =
+    !collections?.payments_available &&
+    Number(collections?.observed_amount ?? 0) <= 0 &&
+    reviewedCollectionDocuments > 0;
+  const collectionChartSlices = showCollectionClassification
+    ? [
+        {
+          label: `Declaradas a crédito · ${collections?.credit_documents ?? 0} doc.`,
+          value: Number(collections?.credit_amount ?? 0),
+          color: "#27ad83",
+        },
+        {
+          label: `Declaradas al contado · ${cashCollectionDocuments} doc.`,
+          value: Number(collections?.cash_amount ?? 0),
+          color: "#e3a12a",
+        },
+        {
+          label: `Sin clasificación · ${unclassifiedCollectionDocuments} doc.`,
+          value: Number(collections?.unclassified_amount ?? 0),
+          color: "#8fa5aa",
+        },
+      ].filter((item) => item.value > 0)
+    : (collections?.aging ?? []).map((item, index) => ({
+        label: `${item.bucket} · ${item.documents} doc.`,
+        value: Number(item.amount ?? 0),
+        color: ["#27ad83", "#e3a12a", "#e17e31", "#d4563d", "#9f3547", "#8fa5aa"][index % 6],
+      }));
   const collectionMaximum = Math.max(
     ...filteredCollectionCustomers.map((item) => Number(item.amount ?? 0)),
     1,
@@ -851,11 +895,17 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           <p>
             {collections?.mode === "registered_payments"
               ? "Facturas menos pagos registrados en Facto. Los montos representan saldo observado por cobrar."
-              : "Facturas emitidas con condición de crédito. Se muestran como exposición documental hasta que Facto entregue el registro de pagos por API."}
+              : reviewedCollectionDocuments > 0
+                ? `Facto entregó ${reviewedCollectionDocuments} facturas. El CRM separa las declaradas a crédito, al contado y sin condición de pago; no convierte ventas al contado en deuda.`
+                : "Aún no hay facturas con una condición de pago utilizable en la última sincronización de Facto."}
           </p>
         </div>
         <span className={collections?.payments_available ? "ready" : "pending"}>
-          {collections?.payments_available ? "Saldo respaldado por pagos" : "Exposición documental"}
+          {collections?.payments_available
+            ? "Saldo respaldado por pagos"
+            : reviewedCollectionDocuments > 0
+              ? `${reviewedCollectionDocuments} facturas revisadas`
+              : "Esperando clasificación"}
         </span>
       </section>
 
@@ -864,7 +914,10 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           <CircleDollarSign size={22} />
           <span>{collections?.payments_available ? "Cuentas por cobrar" : "Exposición facturada a crédito"}</span>
           <strong>{formatCurrency.format(Number(collections?.observed_amount ?? 0))}</strong>
-          <small>{collections?.documents ?? 0} documentos observados</small>
+          <small>
+            {collections?.documents ?? 0} documentos de crédito
+            {reviewedCollectionDocuments ? ` de ${reviewedCollectionDocuments} revisados` : ""}
+          </small>
         </article>
         <article className={Number(collections?.overdue_amount ?? 0) > 0 ? "risk" : ""}>
           <AlertTriangle size={22} />
@@ -878,38 +931,66 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           <strong>{formatCurrency.format(Number(collections?.due_next_30 ?? 0))}</strong>
           <small>Compromisos documentales próximos</small>
         </article>
-        <article className={!collections?.payments_available ? "risk" : ""}>
+        <article className={unclassifiedCollectionDocuments > 0 ? "risk" : ""}>
           <Database size={22} />
-          <span>Cobros registrados por API</span>
+          <span>
+            {collections?.payments_available
+              ? "Cobros registrados por API"
+              : "Facturación declarada al contado"}
+          </span>
           <strong>
             {collections?.payments_available
               ? formatCurrency.format(Number(collections.payments_registered ?? 0))
-              : "No disponibles"}
+              : formatCurrency.format(Number(collections?.cash_amount ?? 0))}
           </strong>
           <small>
             {collections?.payments_available
               ? `${collections.payment_count} pagos relacionados`
-              : "Facto no expone todavía un listado verificable"}
+              : `${cashCollectionDocuments} documentos; no se consideran cuentas por cobrar`}
           </small>
         </article>
       </section>
 
+      {unclassifiedCollectionDocuments > 0 ? (
+        <div className="notice-banner warning finance-collection-warning">
+          <strong>{unclassifiedCollectionDocuments} facturas no tienen una condición de pago reconocible.</strong>
+          <span>
+            Representan {formatCurrency.format(Number(collections?.unclassified_amount ?? 0))} y se
+            mantienen fuera de la deuda hasta clasificarlas en Facto.
+          </span>
+        </div>
+      ) : null}
+
       <section className="finance-collections-grid">
         <DonutChart
-          centerLabel={collections?.payments_available ? "saldo observado" : "exposición"}
-          centerValue={formatCurrency.format(Number(collections?.observed_amount ?? 0))}
+          centerLabel={
+            showCollectionClassification
+              ? "facturación revisada"
+              : collections?.payments_available
+                ? "saldo observado"
+                : "exposición"
+          }
+          centerValue={formatCurrency.format(
+            showCollectionClassification
+              ? reviewedCollectionAmount
+              : Number(collections?.observed_amount ?? 0),
+          )}
           formatter={(value) => formatCurrency.format(value)}
-          slices={(collections?.aging ?? []).map((item, index) => ({
-            label: `${item.bucket} · ${item.documents} doc.`,
-            value: Number(item.amount ?? 0),
-            color: ["#27ad83", "#e3a12a", "#e17e31", "#d4563d", "#9f3547", "#8fa5aa"][index % 6],
-          }))}
+          slices={collectionChartSlices}
           subtitle={
-            collections?.payments_available
+            showCollectionClassification
+              ? "Distribución real según la condición de pago declarada en las facturas de Facto."
+              : collections?.payments_available
               ? "Distribución del saldo por cobrar según su vencimiento."
               : "Distribución estimada de facturas a crédito; no confirma que sigan impagas."
           }
-          title={collections?.payments_available ? "Antigüedad de deuda" : "Vencimiento documental estimado"}
+          title={
+            showCollectionClassification
+              ? "Condiciones de pago en Facto"
+              : collections?.payments_available
+                ? "Antigüedad de deuda"
+                : "Vencimiento documental estimado"
+          }
         />
 
         <article className="data-card finance-collection-card">
@@ -962,8 +1043,16 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
             {!filteredCollectionCustomers.length ? (
               <div className="finance-customer-empty">
                 <Search size={22} />
-                <strong>Sin documentos de crédito para este filtro</strong>
-                <span>La sección se completará cuando Facto entregue facturas a crédito o pagos relacionados.</span>
+                <strong>
+                  {reviewedCollectionDocuments > 0
+                    ? "No hay facturas declaradas a crédito para este filtro"
+                    : "Sin documentos de crédito para este filtro"}
+                </strong>
+                <span>
+                  {cashCollectionDocuments > 0
+                    ? `${cashCollectionDocuments} facturas están declaradas al contado en Facto y no se muestran como deuda.`
+                    : "La sección se completará cuando Facto entregue facturas a crédito o pagos relacionados."}
+                </span>
               </div>
             ) : null}
           </div>

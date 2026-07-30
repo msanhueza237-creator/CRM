@@ -4547,6 +4547,8 @@ th {
 .finance-collections-header .pending{background:#fff2df;color:#8c5616}
 .finance-collections-header .ready{background:#dcf6e9;color:#176b4a}
 .finance-collection-kpis{margin-top:1rem}
+.finance-collection-warning{align-items:flex-start;display:flex;flex-direction:column;gap:.2rem;margin-top:1rem}
+.finance-collection-warning span{font-size:.78rem;font-weight:600}
 .finance-collections-grid{display:grid;gap:1rem;grid-template-columns:minmax(330px,.82fr) minmax(0,1.18fr);margin-top:1rem}
 .finance-collection-card{min-width:0}
 .finance-collection-ranking{height:390px;max-height:390px}
