@@ -377,11 +377,11 @@ export function AgentsPage() {
             }
           | undefined;
         const collections = financialSnapshot?.collections;
-        const officialCollections = (
-          collections?.mode === "facto_receivables"
-          && collections.authoritative === true
+        const verifiedCollections = (
+          ["facto_receivables", "facto_document_pdf"].includes(collections?.mode ?? "")
+          && collections?.authoritative === true
         );
-        const documents = officialCollections
+        const documents = verifiedCollections
           ? (collections?.documents_detail ?? []).filter((item) => Number(item.observed_amount ?? 0) > 0)
           : [];
         const { data: insertedTask, error: insertError } = await supabase
@@ -391,9 +391,9 @@ export function AgentsPage() {
             action: defaultAction.collections,
             requested_by: user.id,
             payload: {
-              source: officialCollections ? "facto_receivables" : "unavailable",
-              authoritative: officialCollections,
-              overdue_amount: officialCollections ? Number(collections?.overdue_amount ?? 0) : 0,
+              source: verifiedCollections ? collections?.mode : "unavailable",
+              authoritative: verifiedCollections,
+              overdue_amount: verifiedCollections ? Number(collections?.overdue_amount ?? 0) : 0,
               invoice_ids: documents
                 .map((item) => item.document_id)
                 .filter((item): item is string => Boolean(item)),
@@ -404,9 +404,9 @@ export function AgentsPage() {
           .single();
         error = insertError;
         dashboardTaskId = insertedTask?.id ?? "";
-        successMessage = officialCollections
-          ? `Cobranza oficial enviada con ${documents.length} documentos impagos informados por Facto.`
-          : "Facto aun no entrega la ruta oficial Cobranza -> Documentos impagos. No se calculo deuda desde facturas ni pagos.";
+        successMessage = verifiedCollections
+          ? `Cobranza verificada enviada con ${documents.length} documentos y saldo exacto informado por Facto.`
+          : "Facto aun no entrega la ruta oficial Cobranza -> Documentos impagos ni saldos exactos en sus PDF. No se calculo deuda desde totales de facturas ni pagos.";
       }
     } else {
       const response = await supabase.from("business_agent_tasks").insert({

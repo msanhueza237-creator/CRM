@@ -147,9 +147,18 @@ type CollectionCustomer = {
 };
 
 type CollectionReport = {
-  mode: "facto_receivables" | "registered_payments" | "unavailable";
+  mode: "facto_receivables" | "facto_document_pdf" | "registered_payments" | "unavailable";
+  source?: string;
   authoritative?: boolean;
   receivables_available?: boolean;
+  portfolio_complete?: boolean;
+  pdf_coverage?: {
+    documents_examined?: number;
+    documents_with_pdf: number;
+    documents_with_balance: number;
+    percent: number;
+    complete: boolean;
+  };
   payments_available: boolean;
   as_of: string;
   reviewed_documents?: number;
@@ -1827,11 +1836,13 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   );
   const collections = report.collections;
   // A legacy snapshot may mark a payment ledger as authoritative. Accounts
-  // receivable is valid only when it came from Facto's collections resource.
+  // receivable is valid only when it came from Facto's collections resource
+  // or from the exact dated balance printed in Facto's official PDF.
   const collectionsAuthoritative = (
-    collections?.mode === "facto_receivables"
+    ["facto_receivables", "facto_document_pdf"].includes(collections?.mode ?? "")
     && Boolean(collections?.authoritative ?? report.receivables_available)
   );
+  const collectionsFromPdf = collections?.mode === "facto_document_pdf";
   const reviewedCollectionDocuments = Number(
     collections?.reviewed_documents ?? collections?.documents ?? 0,
   );
@@ -2102,12 +2113,16 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           <p>
             {collections?.mode === "facto_receivables"
               ? "Cartera oficial de Cobranza → Documentos impagos, con el saldo pendiente informado por Facto después de abonos."
+              : collectionsFromPdf
+                ? "Saldo pendiente exacto y fechado, leído desde el PDF oficial que Facto entrega por API para cada factura."
               : "El CRM no convierte facturas emitidas, condiciones de pago ni listados de abonos en deuda. Sólo mostrará la cartera real de Documentos impagos de Facto."}
           </p>
         </div>
         <span className={collectionsAuthoritative ? "ready" : "pending"}>
           {collectionsAuthoritative
-            ? "Saldo oficial disponible"
+            ? collectionsFromPdf
+              ? "Saldo PDF verificado"
+              : "Saldo oficial disponible"
             : "Esperando recurso de Cobranza"}
         </span>
       </section>
@@ -2117,7 +2132,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           <section className="agent-dashboard-kpis finance-collection-kpis">
             <article>
               <CircleDollarSign size={22} />
-              <span>Cuentas por cobrar</span>
+              <span>{collectionsFromPdf && !collections?.portfolio_complete ? "Saldo pendiente observado" : "Cuentas por cobrar"}</span>
               <strong>{formatCurrency.format(Number(collections?.observed_amount ?? 0))}</strong>
               <small>{collections?.documents ?? 0} documentos impagos</small>
             </article>
@@ -2137,9 +2152,29 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
               <Database size={22} />
               <span>Fuente de cobranza</span>
               <strong>Facto</strong>
-              <small>Cobranza → Documentos impagos</small>
+              <small>
+                {collectionsFromPdf
+                  ? `PDF oficial · ${collections?.pdf_coverage?.documents_with_balance ?? 0} saldos leídos`
+                  : "Cobranza → Documentos impagos"}
+              </small>
             </article>
           </section>
+
+          {collectionsFromPdf ? (
+            <div className={`notice-banner ${collections?.portfolio_complete ? "success" : "warning"}`}>
+              <strong>
+                {collections?.portfolio_complete
+                  ? "Cobertura PDF completa para los documentos consultados."
+                  : "Cobertura parcial: este monto no debe interpretarse todavía como toda la cartera."}
+              </strong>
+              <span>
+                Facto entregó {collections?.pdf_coverage?.documents_with_balance ?? 0} saldos exactos en
+                {` ${collections?.pdf_coverage?.documents_with_pdf ?? 0}`} PDF disponibles,
+                de {collections?.pdf_coverage?.documents_examined ?? reviewedCollectionDocuments} documentos examinados.
+                No se estiman los saldos faltantes.
+              </span>
+            </div>
+          ) : null}
 
           <section className="finance-collections-grid">
             <DonutChart
