@@ -12,9 +12,13 @@ import {
   ChevronUp,
   CircleDollarSign,
   Database,
+  Download,
+  FileSpreadsheet,
+  Landmark,
   PackageCheck,
   RefreshCw,
   Search,
+  ShieldCheck,
   TrendingUp,
   UserPlus,
 } from "lucide-react";
@@ -255,6 +259,85 @@ type FinancialReport = {
   receivables_available: boolean;
   expenses_available: boolean;
   cash_balance_available: boolean;
+};
+
+type AccountingPrebalanceRow = {
+  account_code: string;
+  account_name: string;
+  sum_debit: number;
+  sum_credit: number;
+  balance_debtor: number;
+  balance_creditor: number;
+  inventory_asset: number;
+  inventory_liability: number;
+  result_loss: number;
+  result_gain: number;
+  nature: string;
+};
+
+type AccountingBankSummary = {
+  account_code: string;
+  name: string;
+  balance_clp: number;
+};
+
+type AccountingPayrollPeriod = {
+  period: string;
+  taxable_salary: number;
+  net_payable: number;
+  employer_contributions: number;
+  total_employer_cost: number;
+  health_certified: boolean;
+  status: string;
+};
+
+type AccountingSnapshot = {
+  id: string;
+  fiscal_year: number;
+  version: number;
+  period_start: string;
+  period_end: string;
+  status: "provisional" | "reviewed" | "closed";
+  basis: string;
+  source_coverage: {
+    accounts?: Record<string, {
+      transactions?: number;
+      from?: string;
+      to?: string;
+      clp_valued?: number;
+      pending_fx?: number;
+    }>;
+    missing_sources?: string[];
+    payroll_periods?: number;
+    payroll_estimated_health_periods?: string[];
+  };
+  bank_summary: AccountingBankSummary[];
+  payroll_summary: {
+    employee_count?: number;
+    periods?: AccountingPayrollPeriod[];
+    total_taxable_salary?: number;
+    total_net_payable?: number;
+    total_employer_contributions?: number;
+    total_employer_cost?: number;
+    estimated_health_periods?: string[];
+    identity_redacted?: boolean;
+  };
+  prebalance_rows: AccountingPrebalanceRow[];
+  controls: {
+    journal_debit?: number;
+    journal_credit?: number;
+    journal_balanced?: boolean;
+    balance_sheet_balanced?: boolean;
+    bank_balance_clp?: number;
+    unclassified_debits?: number;
+    unidentified_credits?: number;
+    reconciliation_assets?: number;
+    movements_total?: number;
+    movements_pending_fx?: number;
+  };
+  findings: Array<{ severity?: string; title?: string; detail?: string }>;
+  artifact_metadata?: { workbook_name?: string; generated_at?: string };
+  updated_at?: string;
 };
 
 type CommercialCustomer = {
@@ -1754,6 +1837,261 @@ function financialDateLabel(value: string | undefined) {
   }).format(parsed);
 }
 
+function downloadPrebalanceCsv(snapshot: AccountingSnapshot) {
+  const headers = [
+    "Código",
+    "Cuenta",
+    "Débitos",
+    "Créditos",
+    "Saldo deudor",
+    "Saldo acreedor",
+    "Activo",
+    "Pasivo",
+    "Pérdida",
+    "Ganancia",
+  ];
+  const escape = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
+  const rows = snapshot.prebalance_rows.map((row) => [
+    row.account_code,
+    row.account_name,
+    row.sum_debit,
+    row.sum_credit,
+    row.balance_debtor,
+    row.balance_creditor,
+    row.inventory_asset,
+    row.inventory_liability,
+    row.result_loss,
+    row.result_gain,
+  ]);
+  const csv = `\ufeff${[headers, ...rows].map((row) => row.map(escape).join(";")).join("\r\n")}`;
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `prebalance-${snapshot.fiscal_year}-v${snapshot.version}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function AccountingDashboard({
+  snapshot,
+  error,
+}: {
+  snapshot: AccountingSnapshot | null;
+  error: string;
+}) {
+  if (!snapshot) {
+    return (
+      <section className="data-card accounting-empty">
+        <FileSpreadsheet size={30} />
+        <span className="eyebrow">CONTABILIDAD PROTEGIDA</span>
+        <h2>Prebalance aún no publicado en el CRM</h2>
+        <p>
+          {error || "El archivo de trabajo está preparado, pero falta publicar el corte privado en Supabase."}
+        </p>
+        <small>El módulo financiero general continúa funcionando aunque esta tabla todavía no exista.</small>
+      </section>
+    );
+  }
+
+  const controls = snapshot.controls ?? {};
+  const payroll = snapshot.payroll_summary ?? {};
+  const periods = payroll.periods ?? [];
+  const missingSources = snapshot.source_coverage?.missing_sources ?? [];
+  const totals = snapshot.prebalance_rows.reduce(
+    (result, row) => ({
+      debit: result.debit + Number(row.sum_debit ?? 0),
+      credit: result.credit + Number(row.sum_credit ?? 0),
+      debtor: result.debtor + Number(row.balance_debtor ?? 0),
+      creditor: result.creditor + Number(row.balance_creditor ?? 0),
+      asset: result.asset + Number(row.inventory_asset ?? 0),
+      liability: result.liability + Number(row.inventory_liability ?? 0),
+      loss: result.loss + Number(row.result_loss ?? 0),
+      gain: result.gain + Number(row.result_gain ?? 0),
+    }),
+    { debit: 0, credit: 0, debtor: 0, creditor: 0, asset: 0, liability: 0, loss: 0, gain: 0 },
+  );
+
+  return (
+    <>
+      <section className="data-card accounting-hero">
+        <div>
+          <span className="eyebrow">PREBALANCE DE 8 COLUMNAS · {snapshot.fiscal_year}</span>
+          <h2>Contabilidad provisional y conciliable</h2>
+          <p>{snapshot.basis}</p>
+          <div className="accounting-status-line">
+            <span className={`accounting-status ${snapshot.status}`}>{snapshot.status}</span>
+            <span>Corte: {financialDateLabel(snapshot.period_end)}</span>
+            <span>Versión {snapshot.version}</span>
+          </div>
+        </div>
+        <button className="ghost-button" type="button" onClick={() => downloadPrebalanceCsv(snapshot)}>
+          <Download size={18} /> Descargar CSV
+        </button>
+      </section>
+
+      <section className="agent-dashboard-kpis accounting-kpis">
+        <article>
+          <FileSpreadsheet size={22} />
+          <span>Movimientos bancarios</span>
+          <strong>{formatNumber.format(Number(controls.movements_total ?? 0))}</strong>
+          <small>{Number(controls.movements_pending_fx ?? 0)} pendientes de conversión</small>
+        </article>
+        <article>
+          <Landmark size={22} />
+          <span>Saldo bancario del corte</span>
+          <strong>{formatCurrency.format(Number(controls.bank_balance_clp ?? 0))}</strong>
+          <small>No incluye meses de cartola faltantes</small>
+        </article>
+        <article>
+          <CircleDollarSign size={22} />
+          <span>Costo empleador acumulado</span>
+          <strong>{formatCurrency.format(Number(payroll.total_employer_cost ?? 0))}</strong>
+          <small>{periods.length} períodos incorporados</small>
+        </article>
+        <article className="risk">
+          <AlertTriangle size={22} />
+          <span>Movimientos por identificar</span>
+          <strong>{formatCurrency.format(Number(controls.unclassified_debits ?? 0) + Number(controls.unidentified_credits ?? 0))}</strong>
+          <small>Requieren conciliación, no son gastos ni ventas automáticos</small>
+        </article>
+        <article className={controls.journal_balanced && controls.balance_sheet_balanced ? "" : "risk"}>
+          <ShieldCheck size={22} />
+          <span>Control contable</span>
+          <strong>{controls.journal_balanced && controls.balance_sheet_balanced ? "Cuadrado" : "Revisar"}</strong>
+          <small>Debe = Haber · Activo + pérdida = Pasivo + ganancia</small>
+        </article>
+      </section>
+
+      <section className="accounting-bank-grid">
+        <article className="data-card accounting-bank-card">
+          <div className="section-title">
+            <div><h2>Bancos y cobertura</h2><p>Saldo reconstruido y período realmente disponible por fuente.</p></div>
+          </div>
+          <div className="accounting-bank-list">
+            {snapshot.bank_summary.map((bank) => {
+              const sourceName = bank.name.replace(/ CLP$| convertido a CLP$/g, "");
+              const source = snapshot.source_coverage?.accounts?.[sourceName];
+              return (
+                <article key={bank.account_code}>
+                  <div><strong>{bank.name}</strong><small>{source?.transactions ?? 0} movimientos</small></div>
+                  <div><strong>{formatCurrency.format(Number(bank.balance_clp ?? 0))}</strong><small>{source?.from ?? "sin inicio"} · {source?.to ?? "sin cierre"}</small></div>
+                </article>
+              );
+            })}
+          </div>
+        </article>
+
+        <article className="data-card accounting-findings">
+          <div className="section-title"><div><h2>Alertas del corte</h2><p>Qué falta antes de usarlo como cierre definitivo.</p></div></div>
+          {snapshot.findings.map((finding, index) => (
+            <article className={finding.severity === "warning" ? "warning" : "info"} key={`${finding.title}-${index}`}>
+              {finding.severity === "warning" ? <AlertTriangle size={18} /> : <ShieldCheck size={18} />}
+              <div><strong>{finding.title}</strong><span>{finding.detail}</span></div>
+            </article>
+          ))}
+        </article>
+      </section>
+
+      <section className="data-card accounting-prebalance-card">
+        <div className="section-title accounting-prebalance-heading">
+          <div>
+            <span className="eyebrow">BALANCE TRIBUTARIO</span>
+            <h2>Prebalance {snapshot.fiscal_year} de 8 columnas</h2>
+            <p>Débitos, créditos, saldos, inventario y resultado por cuenta del mayor.</p>
+          </div>
+          <span className="accounting-control-pill">
+            {formatCurrency.format(totals.debit)} en movimientos cuadrados
+          </span>
+        </div>
+        <div className="accounting-table-wrap">
+          <table className="accounting-table">
+            <thead><tr><th>Cuenta</th><th>Débitos</th><th>Créditos</th><th>Saldo deudor</th><th>Saldo acreedor</th><th>Activo</th><th>Pasivo</th><th>Pérdida</th><th>Ganancia</th></tr></thead>
+            <tbody>
+              {snapshot.prebalance_rows.map((row) => (
+                <tr key={row.account_code}>
+                  <th><span>{row.account_code}</span>{row.account_name}<small>{row.nature}</small></th>
+                  <td data-label="Débitos">{formatCurrency.format(row.sum_debit)}</td>
+                  <td data-label="Créditos">{formatCurrency.format(row.sum_credit)}</td>
+                  <td data-label="Saldo deudor">{formatCurrency.format(row.balance_debtor)}</td>
+                  <td data-label="Saldo acreedor">{formatCurrency.format(row.balance_creditor)}</td>
+                  <td data-label="Activo">{formatCurrency.format(row.inventory_asset)}</td>
+                  <td data-label="Pasivo">{formatCurrency.format(row.inventory_liability)}</td>
+                  <td data-label="Pérdida">{formatCurrency.format(row.result_loss)}</td>
+                  <td data-label="Ganancia">{formatCurrency.format(row.result_gain)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot><tr><th>Totales</th><td>{formatCurrency.format(totals.debit)}</td><td>{formatCurrency.format(totals.credit)}</td><td>{formatCurrency.format(totals.debtor)}</td><td>{formatCurrency.format(totals.creditor)}</td><td>{formatCurrency.format(totals.asset)}</td><td>{formatCurrency.format(totals.liability)}</td><td>{formatCurrency.format(totals.loss)}</td><td>{formatCurrency.format(totals.gain)}</td></tr></tfoot>
+          </table>
+        </div>
+      </section>
+
+      <section className="accounting-payroll-grid">
+        <article className="data-card accounting-payroll-card">
+          <div className="section-title"><div><h2>Remuneraciones 2026</h2><p>Totales mensuales sin datos personales en el CRM.</p></div></div>
+          <div className="accounting-payroll-list">
+            {periods.map((period) => (
+              <article key={period.period}>
+                <strong>{monthLabel(period.period)}</strong>
+                <span>Imponible {formatCurrency.format(period.taxable_salary)}</span>
+                <span>Líquido {formatCurrency.format(period.net_payable)}</span>
+                <span>Costo empleador {formatCurrency.format(period.total_employer_cost)}</span>
+                <small className={period.health_certified ? "verified" : "estimated"}>{period.health_certified ? "Documentado" : "Salud estimada · revisar"}</small>
+              </article>
+            ))}
+          </div>
+        </article>
+
+        <article className="data-card accounting-facto-proposal">
+          <span className="eyebrow">PROPUESTA PROTEGIDA</span>
+          <h2>Alta laboral en Facto</h2>
+          <p>La información está preparada para revisión, pero el CRM no escribirá automáticamente en Facto.</p>
+          <ul>
+            <li>Confirmar módulo y ruta oficial de Facto.</li>
+            <li>Respaldar la configuración antes del alta.</li>
+            <li>Validar ficha, cuenta contable, centro de costo y fecha de inicio.</li>
+            <li>Aprobar manualmente cada efecto contable.</li>
+          </ul>
+          <div className="notice-banner info">Estado: pendiente de revisión humana. No se ha modificado Facto.</div>
+        </article>
+      </section>
+
+      {missingSources.length ? (
+        <section className="data-card accounting-missing">
+          <div className="section-title"><div><h2>Fuentes pendientes</h2><p>El corte seguirá marcado como provisional hasta completar estos antecedentes.</p></div></div>
+          <ul>{missingSources.map((source) => <li key={source}>{source}</li>)}</ul>
+        </section>
+      ) : null}
+    </>
+  );
+}
+
+function FinanceWorkspace({
+  tasks,
+  accountingSnapshot,
+  accountingError,
+}: {
+  tasks: AgentTask[];
+  accountingSnapshot: AccountingSnapshot | null;
+  accountingError: string;
+}) {
+  const [view, setView] = useState<"management" | "accounting">("management");
+  return (
+    <>
+      <nav aria-label="Secciones de finanzas" className="finance-workspace-tabs">
+        <button className={view === "management" ? "active" : ""} type="button" onClick={() => setView("management")}>
+          <TrendingUp size={18} /> Gestión financiera
+        </button>
+        <button className={view === "accounting" ? "active" : ""} type="button" onClick={() => setView("accounting")}>
+          <FileSpreadsheet size={18} /> Contabilidad 2026
+          {accountingSnapshot?.status === "provisional" ? <span>Provisional</span> : null}
+        </button>
+      </nav>
+      {view === "management" ? <FinanceDashboard tasks={tasks} /> : <AccountingDashboard snapshot={accountingSnapshot} error={accountingError} />}
+    </>
+  );
+}
+
 function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const latest = tasks[0];
   const report = financialReportFromTask(latest);
@@ -2863,6 +3201,8 @@ export function AgentDashboardPage() {
   const [commercialProducts, setCommercialProducts] = useState<
     CommercialSalesProduct[]
   >([]);
+  const [accountingSnapshot, setAccountingSnapshot] = useState<AccountingSnapshot | null>(null);
+  const [accountingError, setAccountingError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -2870,6 +3210,7 @@ export function AgentDashboardPage() {
     if (!isSupabaseConfigured || !supabase) {
       setTasks([]);
       setSnapshots([]);
+      setAccountingSnapshot(null);
       setLoading(false);
       return;
     }
@@ -2879,6 +3220,24 @@ export function AgentDashboardPage() {
       if (error) throw error;
       setTasks((data ?? []) as AgentTask[]);
       if (agentType === "logistics") setSnapshots(await loadAllSnapshots());
+      if (agentType === "finance") {
+        const accountingResult = await supabase
+          .from("accounting_snapshots")
+          .select("id,fiscal_year,version,period_start,period_end,status,basis,source_coverage,bank_summary,payroll_summary,prebalance_rows,controls,findings,artifact_metadata,updated_at")
+          .order("fiscal_year", { ascending: false })
+          .order("version", { ascending: false })
+          .limit(1);
+        if (accountingResult.error) {
+          setAccountingSnapshot(null);
+          setAccountingError("Falta instalar o publicar el módulo privado de contabilidad en Supabase.");
+        } else {
+          setAccountingSnapshot((accountingResult.data?.[0] as AccountingSnapshot | undefined) ?? null);
+          setAccountingError("");
+        }
+      } else {
+        setAccountingSnapshot(null);
+        setAccountingError("");
+      }
       if (agentType === "commercial") {
         const [commercialResult, financialResult] = await Promise.all([
           supabase
@@ -2934,7 +3293,13 @@ export function AgentDashboardPage() {
       {notice ? <div className="notice-banner error">{notice}</div> : null}
       {loading ? <div className="data-card">Cargando información real de la empresa…</div> : null}
       {!loading && agentType === "logistics" ? <LogisticsDashboard snapshots={snapshots} tasks={tasks} /> : null}
-      {!loading && agentType === "finance" ? <FinanceDashboard tasks={tasks} /> : null}
+      {!loading && agentType === "finance" ? (
+        <FinanceWorkspace
+          accountingError={accountingError}
+          accountingSnapshot={accountingSnapshot}
+          tasks={tasks}
+        />
+      ) : null}
       {!loading && agentType === "commercial" ? (
         <CommercialDashboard
           synchronizedCustomers={commercialSnapshot.customers}
