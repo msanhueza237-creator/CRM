@@ -224,6 +224,9 @@ type CommercialCustomer = {
   whatsapp?: string;
   region?: string;
   city?: string;
+  address?: string;
+  location_source?: string;
+  location_verified_at?: string | null;
   sources?: string[];
   source_channel?: "facto_only" | "tiendanube_only" | "both" | "crm_only";
   lifecycle?: "new" | "active" | "at_risk" | "dormant" | "no_purchase";
@@ -1646,6 +1649,11 @@ function CommercialDashboard({
                       ? `última: ${financialDateLabel(customer.last_purchase_at)}`
                       : "sin compra vinculada"}
                   </small>
+                  {customer.address ? (
+                    <small title={`Ubicación respaldada por ${customer.location_source ?? "fuente comercial"}`}>
+                      {customer.address}
+                    </small>
+                  ) : null}
                 </div>
                 <div>
                   <span>Valor y preferencia</span>
