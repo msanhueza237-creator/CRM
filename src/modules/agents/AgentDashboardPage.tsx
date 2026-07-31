@@ -144,10 +144,11 @@ type CollectionCustomer = {
   documents: number;
   max_days_overdue: number;
   oldest_due_date?: string | null;
+  folios?: string[];
 };
 
 type CollectionReport = {
-  mode: "facto_receivables" | "facto_document_pdf" | "registered_payments" | "unavailable";
+  mode: "facto_receivables" | "facto_document_pdf" | "manual_facto_verification" | "registered_payments" | "unavailable";
   source?: string;
   authoritative?: boolean;
   receivables_available?: boolean;
@@ -181,6 +182,39 @@ type CollectionReport = {
   customers: CollectionCustomer[];
   payments_by_month: Array<{ month: string; amount: number; payments: number }>;
   disclaimer: string;
+};
+
+const FACTO_MANUAL_RECEIVABLES_VERIFICATION: CollectionReport = {
+  mode: "manual_facto_verification",
+  source: "Facto web - Cobranza - Documentos impagos",
+  authoritative: true,
+  receivables_available: true,
+  portfolio_complete: false,
+  payments_available: false,
+  as_of: "2026-07-31T12:00:00-04:00",
+  reviewed_documents: 18,
+  reviewed_amount: 30_756_397,
+  observed_amount: 30_756_397,
+  overdue_amount: 0,
+  due_next_30: 0,
+  documents: 18,
+  overdue_documents: 0,
+  payments_registered: 0,
+  payment_count: 0,
+  aging: [],
+  customers: [
+    { name: "ANDREA DE LA LUZ GARAY MUNOZ", tax_id: "12.899.411-4", amount: 10_819_287, overdue: 0, due_next_30: 0, documents: 1, max_days_overdue: 0, folios: ["1.534"] },
+    { name: "MARIA ANGELICA ROJAS SANDOVAL", tax_id: "8.455.967-9", amount: 6_595_772, overdue: 0, due_next_30: 0, documents: 3, max_days_overdue: 0, folios: ["1.422", "1.508", "1.523"] },
+    { name: "MEGAFRIO SUR SPA", tax_id: "77.073.845-8", amount: 3_900_687, overdue: 0, due_next_30: 0, documents: 4, max_days_overdue: 0, folios: ["1.429", "1.444", "1.519", "1.520"] },
+    { name: "ACONDIPARTS CENTER SPA", tax_id: "76.792.857-2", amount: 3_396_759, overdue: 0, due_next_30: 0, documents: 2, max_days_overdue: 0, folios: ["1.512", "1.522"] },
+    { name: "MARBA - REFRIGERACION, AIRE ACONDICIONADO, CLIMATIZACION SPA", tax_id: "76.919.986-1", amount: 2_902_930, overdue: 0, due_next_30: 0, documents: 2, max_days_overdue: 0, folios: ["1.510", "1.535"] },
+    { name: "AIRE ACONDICIONADO LUIS SEBASTIAN VERGARA MARQUEZ E.I.R.L.", tax_id: "76.705.500-5", amount: 2_875_351, overdue: 0, due_next_30: 0, documents: 1, max_days_overdue: 0, folios: ["1.517"] },
+    { name: "MORETO CLIMA LIMITADA", tax_id: "76.344.054-0", amount: 225_624, overdue: 0, due_next_30: 0, documents: 1, max_days_overdue: 0, folios: ["1.513"] },
+    { name: "CLIMATIZA MYM SPA", tax_id: "77.956.938-1", amount: 20_150, overdue: 0, due_next_30: 0, documents: 3, max_days_overdue: 0, folios: ["1.353", "1.367", "1.447"] },
+    { name: "ELECTRONICOS ARCO SPA", tax_id: "77.339.672-8", amount: 19_837, overdue: 0, due_next_30: 0, documents: 1, max_days_overdue: 0, folios: ["1.420"] },
+  ],
+  payments_by_month: [],
+  disclaimer: "Corte verificado manualmente en Facto el 31-07-2026. No se actualiza automaticamente y sera reemplazado por la ruta API oficial de documentos impagos.",
 };
 
 type DocumentaryCashFlow = {
@@ -1728,6 +1762,11 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [supplierYear, setSupplierYear] = useState("all");
   const [collectionQuery, setCollectionQuery] = useState("");
   const [collectionSort, setCollectionSort] = useState("amount_desc");
+  const effectiveCollections = useMemo(() => {
+    const synced = report?.collections;
+    if (synced?.mode === "facto_receivables" && synced.authoritative) return synced;
+    return FACTO_MANUAL_RECEIVABLES_VERIFICATION;
+  }, [report?.collections]);
   const filteredSuppliers = useMemo(() => {
     const query = normalizeCustomerSearch(supplierQuery);
     return (report?.top_suppliers ?? [])
@@ -1755,7 +1794,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
   }, [report?.top_suppliers, supplierQuery, supplierYear]);
   const filteredCollectionCustomers = useMemo(() => {
     const query = normalizeCustomerSearch(collectionQuery);
-    const rows = (report?.collections?.customers ?? []).filter((item) => {
+    const rows = (effectiveCollections.customers ?? []).filter((item) => {
       if (!query) return true;
       return (
         normalizeCustomerSearch(item.name).includes(query) ||
@@ -1775,7 +1814,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
       }
       return Number(right.amount ?? 0) - Number(left.amount ?? 0);
     });
-  }, [collectionQuery, collectionSort, report?.collections?.customers]);
+  }, [collectionQuery, collectionSort, effectiveCollections.customers]);
 
   if (!report) {
     return (
@@ -1834,15 +1873,16 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
     (total, item) => total + item.displayed_purchases,
     0,
   );
-  const collections = report.collections;
+  const collections = effectiveCollections;
   // A legacy snapshot may mark a payment ledger as authoritative. Accounts
   // receivable is valid only when it came from Facto's collections resource
   // or from the exact dated balance printed in Facto's official PDF.
   const collectionsAuthoritative = (
-    ["facto_receivables", "facto_document_pdf"].includes(collections?.mode ?? "")
+    ["facto_receivables", "facto_document_pdf", "manual_facto_verification"].includes(collections?.mode ?? "")
     && Boolean(collections?.authoritative ?? report.receivables_available)
   );
   const collectionsFromPdf = collections?.mode === "facto_document_pdf";
+  const collectionsFromManualVerification = collections?.mode === "manual_facto_verification";
   const reviewedCollectionDocuments = Number(
     collections?.reviewed_documents ?? collections?.documents ?? 0,
   );
@@ -2115,14 +2155,18 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
               ? "Cartera oficial de Cobranza → Documentos impagos, con el saldo pendiente informado por Facto después de abonos."
               : collectionsFromPdf
                 ? "Saldo pendiente exacto y fechado, leído desde el PDF oficial que Facto entrega por API para cada factura."
+                : collectionsFromManualVerification
+                  ? "Corte verificado manualmente en Facto mientras esperamos la ruta API oficial de Cobranza."
               : "El CRM no convierte facturas emitidas, condiciones de pago ni listados de abonos en deuda. Sólo mostrará la cartera real de Documentos impagos de Facto."}
           </p>
         </div>
         <span className={collectionsAuthoritative ? "ready" : "pending"}>
           {collectionsAuthoritative
-            ? collectionsFromPdf
-              ? "Saldo PDF verificado"
-              : "Saldo oficial disponible"
+            ? collectionsFromManualVerification
+              ? "Verificación manual"
+              : collectionsFromPdf
+                ? "Saldo PDF verificado"
+                : "Saldo oficial disponible"
             : "Esperando recurso de Cobranza"}
         </span>
       </section>
@@ -2132,21 +2176,43 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
           <section className="agent-dashboard-kpis finance-collection-kpis">
             <article>
               <CircleDollarSign size={22} />
-              <span>{collectionsFromPdf && !collections?.portfolio_complete ? "Saldo pendiente observado" : "Cuentas por cobrar"}</span>
+              <span>
+                {collectionsFromManualVerification
+                  ? "Saldo pendiente verificado"
+                  : collectionsFromPdf && !collections?.portfolio_complete
+                    ? "Saldo pendiente observado"
+                    : "Cuentas por cobrar"}
+              </span>
               <strong>{formatCurrency.format(Number(collections?.observed_amount ?? 0))}</strong>
               <small>{collections?.documents ?? 0} documentos impagos</small>
             </article>
             <article className={Number(collections?.overdue_amount ?? 0) > 0 ? "risk" : ""}>
               <AlertTriangle size={22} />
               <span>Cartera vencida</span>
-              <strong>{formatCurrency.format(Number(collections?.overdue_amount ?? 0))}</strong>
-              <small>{collections?.overdue_documents ?? 0} documentos fuera de plazo</small>
+              <strong>
+                {collectionsFromManualVerification
+                  ? "Pendiente API"
+                  : formatCurrency.format(Number(collections?.overdue_amount ?? 0))}
+              </strong>
+              <small>
+                {collectionsFromManualVerification
+                  ? "Facto debe entregar fechas de vencimiento"
+                  : `${collections?.overdue_documents ?? 0} documentos fuera de plazo`}
+              </small>
             </article>
             <article>
               <TrendingUp size={22} />
               <span>Vence en próximos 30 días</span>
-              <strong>{formatCurrency.format(Number(collections?.due_next_30 ?? 0))}</strong>
-              <small>Saldo pendiente con vencimiento próximo</small>
+              <strong>
+                {collectionsFromManualVerification
+                  ? "Pendiente API"
+                  : formatCurrency.format(Number(collections?.due_next_30 ?? 0))}
+              </strong>
+              <small>
+                {collectionsFromManualVerification
+                  ? "No se estiman vencimientos"
+                  : "Saldo pendiente con vencimiento próximo"}
+              </small>
             </article>
             <article>
               <Database size={22} />
@@ -2155,7 +2221,9 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
               <small>
                 {collectionsFromPdf
                   ? `PDF oficial · ${collections?.pdf_coverage?.documents_with_balance ?? 0} saldos leídos`
-                  : "Cobranza → Documentos impagos"}
+                  : collectionsFromManualVerification
+                    ? "Facto web · corte 31-07-2026"
+                    : "Cobranza → Documentos impagos"}
               </small>
             </article>
           </section>
@@ -2176,15 +2244,44 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
             </div>
           ) : null}
 
+          {collectionsFromManualVerification ? (
+            <div className="notice-banner warning">
+              <strong>Corte manual temporal: 18 facturas, 9 clientes y $30.756.397 pendientes.</strong>
+              <span>
+                Verificado en Facto → Cobranza → Documentos impagos al 31-07-2026. Este corte no se
+                actualiza automáticamente y será reemplazado por la ruta API oficial, sin perder el historial.
+              </span>
+            </div>
+          ) : null}
+
           <section className="finance-collections-grid">
-            <DonutChart
-              centerLabel="saldo pendiente"
-              centerValue={formatCurrency.format(Number(collections?.observed_amount ?? 0))}
-              formatter={(value) => formatCurrency.format(value)}
-              slices={collectionChartSlices}
-              subtitle="Distribución del saldo real informado por Facto según su vencimiento."
-              title="Antigüedad de la cartera"
-            />
+            {collectionsFromManualVerification ? (
+              <article className="data-card finance-collection-card">
+                <div className="section-title">
+                  <div>
+                    <h2>Antigüedad de la cartera</h2>
+                    <p>La clasificación por vencimiento se activará con la ruta API oficial.</p>
+                  </div>
+                </div>
+                <div className="finance-customer-empty">
+                  <Database size={24} />
+                  <strong>No se inventan fechas ni mora</strong>
+                  <span>
+                    Facto confirmó los saldos pendientes en su plataforma, pero el corte manual no incluye
+                    vencimientos ni abonos estructurados para construir este gráfico con trazabilidad.
+                  </span>
+                </div>
+              </article>
+            ) : (
+              <DonutChart
+                centerLabel="saldo pendiente"
+                centerValue={formatCurrency.format(Number(collections?.observed_amount ?? 0))}
+                formatter={(value) => formatCurrency.format(value)}
+                slices={collectionChartSlices}
+                subtitle="Distribución del saldo real informado por Facto según su vencimiento."
+                title="Antigüedad de la cartera"
+              />
+            )}
 
             <article className="data-card finance-collection-card">
               <div className="section-title">
@@ -2225,6 +2322,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
                     <small>
                       {item.documents} documentos
                       {item.tax_id ? ` · ${item.tax_id}` : ""}
+                      {item.folios?.length ? ` · Folios ${item.folios.join(", ")}` : ""}
                       {item.overdue > 0 ? ` · Vencido ${formatCurrency.format(item.overdue)}` : ""}
                       {item.max_days_overdue > 0 ? ` · ${item.max_days_overdue} días` : ""}
                     </small>
