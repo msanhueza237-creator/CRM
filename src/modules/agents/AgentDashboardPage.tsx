@@ -629,7 +629,7 @@ function companyDraftFromCustomer(customer: CommercialCustomer): Omit<Company, "
     type: "otro",
     city: customer.city || "",
     region: customer.region || "",
-    address: "",
+    address: customer.address || "",
     website: "",
     instagram: "",
     facebook: "",
@@ -738,6 +738,15 @@ function mergeCommercialPortfolio(
         synchronized.first_purchase_at ?? existing.first_purchase_at ?? null,
       last_purchase_at:
         synchronized.last_purchase_at ?? existing.last_purchase_at ?? null,
+      region: synchronized.region || existing.region || "",
+      city: synchronized.city || existing.city || "",
+      address: synchronized.address || existing.address || "",
+      location_source:
+        synchronized.location_source || existing.location_source || "",
+      location_verified_at:
+        synchronized.location_verified_at ??
+        existing.location_verified_at ??
+        null,
       lifecycle: synchronized.lifecycle ?? existing.lifecycle,
       contactable: Boolean(
         existing.contactable ||
