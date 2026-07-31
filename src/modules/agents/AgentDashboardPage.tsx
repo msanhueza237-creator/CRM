@@ -316,6 +316,12 @@ type CommercialReport = {
   methodology: string;
 };
 
+type CommercialSnapshot = {
+  generated_at?: string;
+  customers: CommercialCustomer[];
+  sources?: Record<string, number>;
+};
+
 const agentNames: Record<string, string> = {
   commercial: "Comercial",
   marketing: "Marketing",
@@ -493,13 +499,24 @@ function normalizeCustomerSearch(value: string | undefined) {
 }
 
 function commercialReportFromTasks(tasks: AgentTask[]): CommercialReport | null {
+  let bestReport: CommercialReport | null = null;
+  let bestExternalCustomers = -1;
   for (const task of tasks) {
     for (const entry of task.result?.evidence ?? []) {
       const report = entry.commercial_report;
-      if (report && typeof report === "object") return report as CommercialReport;
+      if (report && typeof report === "object") {
+        const candidate = report as CommercialReport;
+        const externalCustomers =
+          Number(candidate.metrics?.facto_customers ?? 0) +
+          Number(candidate.metrics?.tiendanube_customers ?? 0);
+        if (!bestReport || externalCustomers > bestExternalCustomers) {
+          bestReport = candidate;
+          bestExternalCustomers = externalCustomers;
+        }
+      }
     }
   }
-  return null;
+  return bestReport;
 }
 
 const commercialSourceLabels: Record<string, string> = {
@@ -637,9 +654,203 @@ function companyDraftFromCustomer(customer: CommercialCustomer): Omit<Company, "
   };
 }
 
-function CommercialDashboard({ tasks }: { tasks: AgentTask[] }) {
+function mergeCommercialPortfolio(
+  report: CommercialReport | null,
+  synchronizedCustomers: CommercialCustomer[],
+  synchronizedProducts: CommercialSalesProduct[],
+): CommercialReport | null {
+  if (!report && !synchronizedCustomers.length) return null;
+
+  const base: CommercialReport = report ?? {
+    generated_at: new Date().toISOString(),
+    customers: [],
+    metrics: {
+      customers: 0,
+      contactable: 0,
+      facto_net_sales: 0,
+      facto_customers: 0,
+      tiendanube_customers: 0,
+      crm_companies: 0,
+    },
+    source_counts: {},
+    lifecycle_counts: {},
+    type_counts: {},
+    region_counts: {},
+    acquisition_by_month: [],
+    segments: [],
+    methodology:
+      "Cartera sincronizada directamente desde Facto y Climactiva.cl; requiere revisión humana.",
+  };
+
+  if (!synchronizedCustomers.length) {
+    return synchronizedProducts.length && !base.sales_products?.length
+      ? { ...base, sales_products: synchronizedProducts }
+      : base;
+  }
+
+  const customers = [...base.customers];
+  const identityIndex = new Map<string, number>();
+  customers.forEach((customer, index) => {
+    const key = customerImportKey(customer);
+    if (key) identityIndex.set(key, index);
+  });
+
+  for (const synchronized of synchronizedCustomers) {
+    const key = customerImportKey(synchronized);
+    const existingIndex = key ? identityIndex.get(key) : undefined;
+    if (existingIndex === undefined) {
+      customers.push(synchronized);
+      if (key) identityIndex.set(key, customers.length - 1);
+      continue;
+    }
+
+    const existing = customers[existingIndex];
+    const sources = Array.from(
+      new Set([...(synchronized.sources ?? []), ...(existing.sources ?? [])]),
+    );
+    const externalSources = sources.filter((source) =>
+      source === "facto" || source === "tiendanube",
+    );
+    customers[existingIndex] = {
+      ...synchronized,
+      ...existing,
+      sources,
+      source_channel:
+        externalSources.includes("facto") && externalSources.includes("tiendanube")
+          ? "both"
+          : externalSources.includes("tiendanube")
+            ? "tiendanube_only"
+            : externalSources.includes("facto")
+              ? "facto_only"
+              : "crm_only",
+      facto_net_sales: Number(synchronized.facto_net_sales ?? existing.facto_net_sales ?? 0),
+      facto_documents: Number(synchronized.facto_documents ?? existing.facto_documents ?? 0),
+      tiendanube_gross_sales: Number(
+        synchronized.tiendanube_gross_sales ?? existing.tiendanube_gross_sales ?? 0,
+      ),
+      tiendanube_orders: Number(
+        synchronized.tiendanube_orders ?? existing.tiendanube_orders ?? 0,
+      ),
+      first_purchase_at:
+        synchronized.first_purchase_at ?? existing.first_purchase_at ?? null,
+      last_purchase_at:
+        synchronized.last_purchase_at ?? existing.last_purchase_at ?? null,
+      lifecycle: synchronized.lifecycle ?? existing.lifecycle,
+      contactable: Boolean(
+        existing.contactable ||
+          synchronized.contactable ||
+          existing.email ||
+          existing.phone ||
+          existing.whatsapp ||
+          synchronized.email ||
+          synchronized.phone ||
+          synchronized.whatsapp,
+      ),
+    };
+  }
+
+  const sourceCounts: Record<string, number> = {};
+  const lifecycleCounts: Record<string, number> = {};
+  const factoRanking: CommercialRanking[] = [];
+  const tiendanubeRanking: CommercialRanking[] = [];
+  let contactable = 0;
+  let factoNetSales = 0;
+  let crmCompanies = 0;
+
+  for (const customer of customers) {
+    const channel = customer.source_channel ?? "crm_only";
+    sourceCounts[channel] = (sourceCounts[channel] ?? 0) + 1;
+    const lifecycle = customer.lifecycle ?? "no_purchase";
+    lifecycleCounts[lifecycle] = (lifecycleCounts[lifecycle] ?? 0) + 1;
+    if (
+      customer.contactable ||
+      customer.email ||
+      customer.phone ||
+      customer.whatsapp
+    ) {
+      contactable += 1;
+    }
+    if (customer.crm_company_id) crmCompanies += 1;
+    if (customer.sources?.includes("facto")) {
+      const netSales = Number(customer.facto_net_sales ?? 0);
+      factoNetSales += netSales;
+      factoRanking.push({
+        ...customer,
+        documents: Number(customer.facto_documents ?? 0),
+        net_sales: netSales,
+      });
+    }
+    if (customer.sources?.includes("tiendanube")) {
+      const grossSales = Number(customer.tiendanube_gross_sales ?? 0);
+      tiendanubeRanking.push({
+        ...customer,
+        documents: Number(customer.tiendanube_orders ?? 0),
+        gross_sales: grossSales,
+        net_sales: grossSales / CHILE_VAT_FACTOR,
+      });
+    }
+  }
+
+  factoRanking.sort((left, right) => Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0));
+  tiendanubeRanking.sort(
+    (left, right) => Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0),
+  );
+
+  return {
+    ...base,
+    customers,
+    metrics: {
+      ...base.metrics,
+      customers: customers.length,
+      contactable,
+      facto_net_sales: factoNetSales,
+      facto_customers: factoRanking.length,
+      tiendanube_customers: tiendanubeRanking.length,
+      crm_companies: crmCompanies,
+      omnichannel_customers: sourceCounts.both ?? 0,
+      campaign_ready: customers.filter(
+        (customer) =>
+          customer.email_ready ||
+          customer.whatsapp_ready ||
+          customer.email ||
+          customer.whatsapp,
+      ).length,
+      email_ready: customers.filter(
+        (customer) => customer.email_ready || customer.email,
+      ).length,
+      whatsapp_ready: customers.filter(
+        (customer) => customer.whatsapp_ready || customer.whatsapp,
+      ).length,
+    },
+    source_counts: sourceCounts,
+    lifecycle_counts: lifecycleCounts,
+    facto_ranking: factoRanking,
+    tiendanube_ranking: tiendanubeRanking,
+    sales_products:
+      base.sales_products?.length ? base.sales_products : synchronizedProducts,
+  };
+}
+
+function CommercialDashboard({
+  tasks,
+  synchronizedCustomers,
+  synchronizedProducts,
+}: {
+  tasks: AgentTask[];
+  synchronizedCustomers: CommercialCustomer[];
+  synchronizedProducts: CommercialSalesProduct[];
+}) {
   const { companies, createCompanies } = useCompanyStore();
-  const report = commercialReportFromTasks(tasks);
+  const taskReport = commercialReportFromTasks(tasks);
+  const report = useMemo(
+    () =>
+      mergeCommercialPortfolio(
+        taskReport,
+        synchronizedCustomers,
+        synchronizedProducts,
+      ),
+    [synchronizedCustomers, synchronizedProducts, taskReport],
+  );
   const [query, setQuery] = useState("");
   const [source, setSource] = useState("all");
   const [lifecycle, setLifecycle] = useState("all");
@@ -2485,6 +2696,12 @@ export function AgentDashboardPage() {
   const { agentType = "logistics" } = useParams();
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
+  const [commercialSnapshot, setCommercialSnapshot] = useState<CommercialSnapshot>({
+    customers: [],
+  });
+  const [commercialProducts, setCommercialProducts] = useState<
+    CommercialSalesProduct[]
+  >([]);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -2501,6 +2718,34 @@ export function AgentDashboardPage() {
       if (error) throw error;
       setTasks((data ?? []) as AgentTask[]);
       if (agentType === "logistics") setSnapshots(await loadAllSnapshots());
+      if (agentType === "commercial") {
+        const [commercialResult, financialResult] = await Promise.all([
+          supabase
+            .from("integration_records")
+            .select("payload")
+            .eq("provider", "facto")
+            .eq("resource", "commercial_snapshots")
+            .order("updated_at", { ascending: false })
+            .limit(1),
+          supabase
+            .from("integration_records")
+            .select("payload")
+            .eq("provider", "facto")
+            .eq("resource", "financial_snapshots")
+            .order("updated_at", { ascending: false })
+            .limit(1),
+        ]);
+        if (commercialResult.error) throw commercialResult.error;
+        if (financialResult.error) throw financialResult.error;
+        const synchronized = commercialResult.data?.[0]?.payload as
+          | CommercialSnapshot
+          | undefined;
+        const financial = financialResult.data?.[0]?.payload as
+          | { top_products?: CommercialSalesProduct[] }
+          | undefined;
+        setCommercialSnapshot(synchronized ?? { customers: [] });
+        setCommercialProducts(financial?.top_products ?? []);
+      }
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "No fue posible cargar el dashboard.");
     } finally {
@@ -2529,7 +2774,13 @@ export function AgentDashboardPage() {
       {loading ? <div className="data-card">Cargando información real de la empresa…</div> : null}
       {!loading && agentType === "logistics" ? <LogisticsDashboard snapshots={snapshots} tasks={tasks} /> : null}
       {!loading && agentType === "finance" ? <FinanceDashboard tasks={tasks} /> : null}
-      {!loading && agentType === "commercial" ? <CommercialDashboard tasks={tasks} /> : null}
+      {!loading && agentType === "commercial" ? (
+        <CommercialDashboard
+          synchronizedCustomers={commercialSnapshot.customers}
+          synchronizedProducts={commercialProducts}
+          tasks={tasks}
+        />
+      ) : null}
       {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
     </section>
   );
