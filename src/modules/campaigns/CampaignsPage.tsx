@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, Eye, Megaphone, Plus, Send, UserMinus, UserPlus, XCircle } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
 import { demoCampaigns, demoTemplates } from "../../data/demoData";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
@@ -70,6 +71,57 @@ interface ProposalOverride {
   subject?: string;
   message?: string;
 }
+
+interface CommercialSuggestionCustomer {
+  customer_key: string;
+  name?: string;
+  legal_name?: string;
+  tax_id?: string;
+  email?: string;
+  phone?: string;
+  whatsapp?: string;
+  crm_company_id?: string;
+}
+
+interface CommercialSuggestionSegment {
+  id: string;
+  name: string;
+  reason: string;
+  channel: string;
+  count: number;
+  customer_keys?: string[];
+  company_ids?: string[];
+  priority?: "urgent" | "high" | "medium" | "normal";
+  email_count?: number;
+  whatsapp_count?: number;
+}
+
+interface CommercialSuggestionReport {
+  generated_at?: string;
+  customers?: CommercialSuggestionCustomer[];
+  segments?: CommercialSuggestionSegment[];
+  metrics?: {
+    facto_customers?: number;
+    tiendanube_customers?: number;
+  };
+}
+
+interface SmartProposal {
+  id: string;
+  defaultName: string;
+  type: CampaignType;
+  segment: CampaignSegment;
+  description: string;
+  product: string;
+  coupon: string;
+  subject: string;
+  potentialCompanies: Company[];
+  defaultMessage: string;
+  source?: "commercial_agent" | "legacy";
+  calculatedCount?: number;
+  pendingImportCount?: number;
+  priority?: CommercialSuggestionSegment["priority"];
+}
 const segments: CampaignSegment[] = ["todas", "prioridad alta", "distribuidores y tiendas", "instaladores", "interesados"];
 const campaignTypes: CampaignType[] = ["email", "WhatsApp", "mixta"];
 const companyTypeFilters: CampaignCompanyTypeFilter[] = [
@@ -113,6 +165,79 @@ function normalizeComparablePhone(value: string) {
   if (digits.startsWith("56")) return digits;
   if (digits.startsWith("9") && digits.length === 9) return `56${digits}`;
   return digits;
+}
+
+function normalizeComparableIdentity(value?: string) {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toLowerCase();
+}
+
+function commercialCustomerMatchesCompany(customer: CommercialSuggestionCustomer, company: Company) {
+  if (customer.crm_company_id && customer.crm_company_id === company.id) return true;
+
+  const customerRut = normalizeComparableIdentity(customer.tax_id);
+  const companyRut = normalizeComparableIdentity(company.rut);
+  if (customerRut && companyRut && customerRut === companyRut) return true;
+
+  const customerEmail = (customer.email ?? "").trim().toLowerCase();
+  const companyEmail = (company.email ?? "").trim().toLowerCase();
+  if (customerEmail && companyEmail && customerEmail === companyEmail) return true;
+
+  const customerPhone = normalizeComparablePhone(customer.whatsapp || customer.phone || "");
+  const companyPhone = normalizeComparablePhone(company.whatsapp || company.whatsappNumber || company.phone || "");
+  return Boolean(customerPhone && companyPhone && customerPhone === companyPhone);
+}
+
+function proposalSegmentForCommercialSuggestion(segment: CommercialSuggestionSegment): CampaignSegment {
+  if (segment.id === "hvac_technicians") return "instaladores";
+  if (segment.id === "hvac_distribution") return "distribuidores y tiendas";
+  if (["valuable_customers_to_rescue", "loyal_customers_cross_sell"].includes(segment.id)) return "prioridad alta";
+  return "interesados";
+}
+
+function proposalTypeForCommercialSuggestion(channel: string): CampaignType {
+  if (channel.toLowerCase() === "whatsapp") return "WhatsApp";
+  if (channel.toLowerCase() === "email") return "email";
+  return "mixta";
+}
+
+function commercialSuggestionMessage(segment: CommercialSuggestionSegment) {
+  if (segment.id === "hvac_technicians") {
+    return `Hola {{nombre_contacto}},\n\nDesde Clima Activa queremos ayudarte con stock y soluciones para tus trabajos de climatización en {{ciudad}}. Contamos con {{producto_destacado}} y atención especializada para técnicos e instaladores.\n\n{{beneficio}}\n\n¿Te gustaría recibir información y disponibilidad?\n\nSaludos,\nEquipo Clima Activa`;
+  }
+
+  if (segment.id === "hvac_distribution") {
+    return `Hola {{nombre_contacto}},\n\nDesde Clima Activa queremos presentar una propuesta comercial para {{nombre_empresa}} en {{ciudad}}. Contamos con {{producto_destacado}}, stock y condiciones por volumen para distribuidores y tiendas HVAC.\n\n¿Podemos preparar una propuesta para ustedes?\n\nSaludos,\nEquipo Clima Activa`;
+  }
+
+  return `Hola {{nombre_contacto}},\n\nDesde Clima Activa queremos retomar el contacto con {{nombre_empresa}}. Tenemos novedades y disponibilidad de {{producto_destacado}} que pueden ser útiles para sus próximos proyectos de climatización.\n\n¿Te gustaría que te enviemos una propuesta?\n\nSaludos,\nEquipo Clima Activa`;
+}
+
+function commercialReportFromTaskRows(rows: Row[]) {
+  let bestReport: CommercialSuggestionReport | null = null;
+  let bestExternalCustomers = -1;
+
+  for (const row of rows) {
+    const result = asRecord(row.result);
+    const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+    for (const item of evidence) {
+      const report = asRecord(item).commercial_report;
+      if (!report || typeof report !== "object" || Array.isArray(report)) continue;
+      const candidate = report as CommercialSuggestionReport;
+      const externalCustomers =
+        Number(candidate.metrics?.facto_customers ?? 0) +
+        Number(candidate.metrics?.tiendanube_customers ?? 0);
+      if (!bestReport || externalCustomers > bestExternalCustomers) {
+        bestReport = candidate;
+        bestExternalCustomers = externalCustomers;
+      }
+    }
+  }
+
+  return bestReport;
 }
 
 function getCampaignBenefitForCompany(campaign: CampaignDraft, company: Company) {
@@ -272,6 +397,8 @@ function renderMessage(template: MessageTemplate, company: Company, campaign: Ca
 export function CampaignsPage() {
   const { user } = useAuth();
   const { companies } = useCompanyStore();
+  const [searchParams] = useSearchParams();
+  const requestedCommercialSegment = searchParams.get("segment") ?? "";
   const { activeTemplates } = useTemplateStore();
   const templates = activeTemplates.length ? activeTemplates : demoTemplates;
   const firstNonInstallerTemplateId = templates.find((template) => !isInstallerAccountTemplate(template))?.id ?? templates[0].id;
@@ -305,7 +432,12 @@ export function CampaignsPage() {
   });
 
   // Smart suggestions state variables
-  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(
+    () => searchParams.get("view") === "suggestions" || searchParams.get("source") === "commercial-agent",
+  );
+  const [commercialSuggestionReport, setCommercialSuggestionReport] =
+    useState<CommercialSuggestionReport | null>(null);
+  const [commercialSuggestionsLoading, setCommercialSuggestionsLoading] = useState(false);
   const [selectedProposalIndex, setSelectedProposalIndex] = useState(0);
   const [proposalForm, setProposalForm] = useState({
     name: "",
@@ -322,6 +454,34 @@ export function CampaignsPage() {
   const [proposalOverrides, setProposalOverrides] = useState<Record<string, ProposalOverride>>(loadProposalOverrides);
   const [dismissedProposalIds, setDismissedProposalIds] = useState<string[]>(loadDismissedProposals);
   const [proposalEditSavedMessage, setProposalEditSavedMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || !supabase || !user) return;
+
+    let active = true;
+    setCommercialSuggestionsLoading(true);
+    void supabase
+      .from("business_agent_tasks")
+      .select("result,created_at")
+      .eq("agent_type", "commercial")
+      .eq("status", "completed")
+      .order("created_at", { ascending: false })
+      .limit(30)
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          console.error("No se pudieron cargar las sugerencias del Agente Comercial:", error.message);
+          setCommercialSuggestionReport(null);
+        } else {
+          setCommercialSuggestionReport(commercialReportFromTaskRows((data ?? []) as Row[]));
+        }
+        setCommercialSuggestionsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [user]);
 
   // Attachment state variables
   const [formAttachments, setFormAttachments] = useState<{ name: string; url: string }[]>([]);
@@ -509,7 +669,7 @@ export function CampaignsPage() {
       (c) => c.status === "prospecto" || c.status === "contactado" || c.status === "cotizado"
     );
 
-    const baseProposals = [
+    const legacyProposals: SmartProposal[] = [
       {
         id: "prop-vip",
         defaultName: "Fidelización VIP - Distribuidores Principales",
@@ -520,6 +680,7 @@ export function CampaignsPage() {
         coupon: "VIPCLIMA15",
         subject: "Condiciones comerciales preferentes y stock garantizado",
         potentialCompanies: vipCompanies,
+        source: "legacy",
         defaultMessage: `Hola {{nombre_contacto}},\n\nEsperamos que estés muy bien. Como socio comercial clave de Clima Activa en {{ciudad}}, queremos ofrecerte prioridad y condiciones especiales en nuestro catálogo de {{producto_destacado}}.\n\nRecuerda que tienes habilitado tu código de descuento {{cupon}} para tu próxima facturación.\n\nQuedamos atentos a tus pedidos.\n\nSaludos,\nEquipo Clima Activa`,
       },
       {
@@ -532,6 +693,7 @@ export function CampaignsPage() {
         coupon: "TECHSTARS10",
         subject: "Herramientas técnicas premium en oferta",
         potentialCompanies: techCompanies,
+        source: "legacy",
         defaultMessage: `Estimado {{nombre_contacto}} de {{nombre_empresa}},\n\nEsperamos que sea una excelente temporada en {{ciudad}}. Desde Clima Activa te recordamos que contamos con stock de {{producto_destacado}} con un 10% de descuento usando el código {{cupon}}.\n\nEscríbenos directamente aquí para coordinar el despacho hoy mismo.\n\nAtentamente,\nClima Activa`,
       },
       {
@@ -544,9 +706,52 @@ export function CampaignsPage() {
         coupon: "REACTIVACLIMA",
         subject: "¿Conversamos sobre tus próximos proyectos de climatización?",
         potentialCompanies: leadCompanies,
+        source: "legacy",
         defaultMessage: `Hola {{nombre_contacto}},\n\nTe escribimos de Clima Activa. Hace un tiempo estuvimos conversando sobre soluciones de climatización para {{nombre_empresa}}.\n\nQueremos reactivar el contacto contigo en {{ciudad}} y comentarte que tenemos disponibilidad inmediata de {{producto_destacado}}.\n\nAdemás, habilitamos el beneficio especial {{cupon}} para que puedas concretar tu proyecto con un descuento extra.\n\n¿Te gustaría que agendemos una breve llamada de 5 minutos?\n\nSaludos cordiales,\nClima Activa`,
       },
     ];
+
+    const customerByKey = new Map(
+      (commercialSuggestionReport?.customers ?? []).map((customer) => [customer.customer_key, customer]),
+    );
+    const companyById = new Map(companies.map((company) => [company.id, company]));
+    const commercialAgentProposals: SmartProposal[] = (commercialSuggestionReport?.segments ?? []).map((segment) => {
+      const matchedCompanies = new Map<string, Company>();
+
+      for (const companyId of segment.company_ids ?? []) {
+        const company = companyById.get(companyId);
+        if (company) matchedCompanies.set(company.id, company);
+      }
+
+      for (const customerKey of segment.customer_keys ?? []) {
+        const customer = customerByKey.get(customerKey);
+        if (!customer) continue;
+        const company = companies.find((candidate) => commercialCustomerMatchesCompany(customer, candidate));
+        if (company) matchedCompanies.set(company.id, company);
+      }
+
+      const potentialCompanies = [...matchedCompanies.values()];
+      const calculatedCount = Math.max(Number(segment.count ?? 0), potentialCompanies.length);
+      const installerSegment = segment.id === "hvac_technicians";
+      return {
+        id: `agent-${segment.id}`,
+        defaultName: segment.name,
+        type: proposalTypeForCommercialSuggestion(segment.channel),
+        segment: proposalSegmentForCommercialSuggestion(segment),
+        description: segment.reason,
+        product: "soluciones, repuestos y herramientas para climatización HVAC",
+        coupon: installerSegment ? DEFAULT_INSTALLER_BENEFIT : "",
+        subject: `${segment.name} · propuesta Clima Activa`,
+        potentialCompanies,
+        defaultMessage: commercialSuggestionMessage(segment),
+        source: "commercial_agent",
+        calculatedCount,
+        pendingImportCount: Math.max(0, calculatedCount - potentialCompanies.length),
+        priority: segment.priority,
+      };
+    });
+
+    const baseProposals = commercialAgentProposals.length ? commercialAgentProposals : legacyProposals;
 
     return baseProposals
       .filter((prop) => !dismissedProposalIds.includes(prop.id))
@@ -564,7 +769,7 @@ export function CampaignsPage() {
           defaultMessage: override.message ?? prop.defaultMessage,
         };
       });
-  }, [companies, proposalOverrides, dismissedProposalIds]);
+  }, [commercialSuggestionReport, companies, proposalOverrides, dismissedProposalIds]);
 
   // Synchronize forms only when the user switches to a different proposal card.
   // Deliberately excludes `proposals` from the deps: saving an override edit
@@ -591,7 +796,14 @@ export function CampaignsPage() {
       setProposalAttachments([]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProposalIndex]);
+  }, [selectedProposalIndex, commercialSuggestionReport?.generated_at]);
+
+  useEffect(() => {
+    if (!requestedCommercialSegment || !proposals.length) return;
+    const requestedId = `agent-${requestedCommercialSegment}`;
+    const requestedIndex = proposals.findIndex((proposal) => proposal.id === requestedId);
+    if (requestedIndex >= 0) setSelectedProposalIndex(requestedIndex);
+  }, [proposals, requestedCommercialSegment]);
 
   function saveProposalEdits() {
     const prop = proposals[selectedProposalIndex];
@@ -2045,8 +2257,13 @@ export function CampaignsPage() {
               <div>
                 <h2 style={{ color: "#103842", margin: 0 }}>💡 Propuestas de Campañas Sugeridas</h2>
                 <p className="muted" style={{ fontSize: "14px", marginTop: "6px" }}>
-                  El CRM ha analizado tu base de datos de empresas y propone las siguientes campañas segmentadas. Revisa, edita los mensajes y desmarca a los clientes que prefieras excluir.
+                  {commercialSuggestionReport
+                    ? "Estas propuestas vienen del último análisis del Agente Comercial. Revisa los destinatarios y guarda un borrador; nunca se envían mensajes automáticamente."
+                    : "El CRM analiza tu base de Empresas y propone campañas segmentadas. Revisa, edita los mensajes y desmarca a los clientes que prefieras excluir."}
                 </p>
+                {commercialSuggestionsLoading ? (
+                  <small className="muted">Cargando el último análisis comercial...</small>
+                ) : null}
               </div>
               {dismissedProposalIds.length > 0 && (
                 <button type="button" className="link-button" onClick={restoreDismissedProposals}>
@@ -2080,7 +2297,7 @@ export function CampaignsPage() {
                         </span>
                         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                           <span style={{ fontSize: "12px", fontWeight: "bold", color: "#62717a" }}>
-                            👥 {prop.potentialCompanies.length} potenciales
+                            👥 {prop.calculatedCount ?? prop.potentialCompanies.length} detectados
                           </span>
                           <button
                             type="button"
@@ -2098,6 +2315,12 @@ export function CampaignsPage() {
                       </div>
                       <h4 style={{ margin: "0 0 6px 0", color: "#103842", fontSize: "15px", fontWeight: "bold" }}>{prop.defaultName}</h4>
                       <p className="muted" style={{ fontSize: "13px", margin: 0 }}>{prop.description}</p>
+                      {prop.source === "commercial_agent" ? (
+                        <p style={{ fontSize: "12px", margin: "8px 0 0", color: prop.pendingImportCount ? "#9a6700" : "#23734d" }}>
+                          {prop.potentialCompanies.length} listos en Empresas
+                          {prop.pendingImportCount ? ` · ${prop.pendingImportCount} pendientes de importar` : " · segmento listo"}
+                        </p>
+                      ) : null}
                     </div>
                   );
                 })}
@@ -2118,6 +2341,15 @@ export function CampaignsPage() {
                   )}
 
                   <h3 style={{ marginTop: 0, marginBottom: "20px", color: "#103842" }}>Configuración del Borrador</h3>
+
+                  {(proposals[selectedProposalIndex].pendingImportCount ?? 0) > 0 ? (
+                    <div style={{ background: "#fff9db", border: "1px solid #ffe066", color: "#795c00", padding: "14px", borderRadius: "8px", marginBottom: "20px", fontSize: "13px" }}>
+                      El Agente Comercial detectó {proposals[selectedProposalIndex].calculatedCount} clientes, pero sólo {proposals[selectedProposalIndex].potentialCompanies.length} ya están incorporados en Empresas. Para proteger la base y evitar duplicados, revisa e importa los restantes antes de convertirlos en destinatarios.{" "}
+                      <Link to="/agentes/commercial/dashboard" style={{ color: "#0b7285", fontWeight: 700 }}>
+                        Revisar cartera del agente
+                      </Link>
+                    </div>
+                  ) : null}
 
                   <div className="campaign-form" style={{ display: "grid", gap: "16px", background: "none", border: "none", boxShadow: "none", padding: 0 }}>
                     <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontWeight: "bold", fontSize: "14px", color: "#40515b" }}>

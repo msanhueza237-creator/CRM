@@ -1512,7 +1512,12 @@ function CommercialDashboard({
             <h2>Segmentos sugeridos para revisión</h2>
             <p>Nunca se envían mensajes automáticamente; la selección pasa por Campañas.</p>
           </div>
-          <Link className="ghost-button agent-dashboard-link" to="/campanas">Ir a Campañas</Link>
+          <Link
+            className="ghost-button agent-dashboard-link"
+            to="/campanas?view=suggestions&source=commercial-agent"
+          >
+            Ir a Campañas sugeridas
+          </Link>
         </div>
         <div className="commercial-segment-grid">
           {report.segments.map((segment) => (
@@ -1531,6 +1536,12 @@ function CommercialDashboard({
                 <span>{formatNumber.format(segment.email_count ?? 0)} con email</span>
                 <span>{formatNumber.format(segment.whatsapp_count ?? 0)} con WhatsApp</span>
               </div>
+              <Link
+                className="agent-dashboard-link"
+                to={`/campanas?view=suggestions&source=commercial-agent&segment=${encodeURIComponent(segment.id)}`}
+              >
+                Revisar y preparar campaña
+              </Link>
             </article>
           ))}
           {!report.segments.length ? <p>No hay segmentos contactables con las reglas actuales.</p> : null}
