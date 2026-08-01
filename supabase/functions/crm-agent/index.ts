@@ -544,8 +544,9 @@ async function collectExecutiveSignals(
       observed_at: record.updated_at,
       ...pickExecutiveFields(asObject(record.payload), [
         "document_id", "folio", "number", "document_number", "document_type", "date", "issued_at",
-        "receiver_business_name", "recipient_business_name", "customer_name", "customer", "net_total",
-        "net_amount", "total", "gross_total", "status",
+        "issue_date", "receiver_business_name", "receiver_legal_name", "recipient_business_name",
+        "customer_name", "customer", "net_total", "net_amount", "total", "total_amount", "gross_total",
+        "status", "document_status",
       ]),
     }))
     .slice(0, 20);
