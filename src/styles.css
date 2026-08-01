@@ -5143,6 +5143,380 @@ th {
     flex-basis: 68px;
   }
 }
+
+/* Foreign trade agent dashboard */
+.foreign-trade-kpis {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.foreign-trade-kpis article {
+  min-height: 156px;
+  padding: 16px;
+}
+
+.foreign-trade-kpis strong {
+  font-size: clamp(20px, 1.8vw, 29px);
+}
+
+.foreign-trade-overview-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(0, 1.35fr) minmax(340px, .85fr);
+}
+
+.foreign-trade-overview-grid > * {
+  min-width: 0;
+}
+
+.foreign-trade-timeline {
+  display: grid;
+  gap: 18px;
+}
+
+.import-timeline {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 45fr 45fr 5fr;
+}
+
+.import-timeline article {
+  background: linear-gradient(135deg, #e3f4f2, #edf7f8);
+  border: 1px solid #cae3e2;
+  border-radius: 12px;
+  display: grid;
+  gap: 2px;
+  min-width: 86px;
+  padding: 14px;
+}
+
+.import-timeline article:nth-child(2) {
+  background: linear-gradient(135deg, #e7f1fb, #f1f6fb);
+  border-color: #cedfeb;
+}
+
+.import-timeline article:nth-child(3) {
+  background: linear-gradient(135deg, #fff0df, #fff8ec);
+  border-color: #f0d5b0;
+}
+
+.import-timeline strong {
+  color: #0c5660;
+  font-size: 1.65rem;
+}
+
+.import-timeline span,
+.foreign-trade-policy-grid span {
+  color: #63767b;
+  font-size: .78rem;
+  font-weight: 800;
+}
+
+.foreign-trade-policy-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.foreign-trade-policy-grid > div {
+  background: #f5f8f8;
+  border: 1px solid #dce7e8;
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+}
+
+.foreign-trade-policy-grid strong {
+  color: #173f46;
+  overflow-wrap: anywhere;
+}
+
+.foreign-trade-cash-card {
+  align-items: center;
+  background: linear-gradient(120deg, #f2faf8, #fff9ee);
+  display: flex;
+  gap: 22px;
+  justify-content: space-between;
+}
+
+.foreign-trade-cash-card > div {
+  min-width: 0;
+}
+
+.foreign-trade-cash-card > strong {
+  color: #9a5a0b;
+  font-size: clamp(25px, 3vw, 38px);
+  white-space: nowrap;
+}
+
+.foreign-trade-proposal,
+.foreign-trade-catalog {
+  min-width: 0;
+}
+
+.foreign-trade-proposal .section-title,
+.foreign-trade-catalog .section-title {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.foreign-trade-table-wrap {
+  border: 1px solid #dce6e8;
+  border-radius: 12px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.foreign-trade-table {
+  border-collapse: collapse;
+  min-width: 940px;
+  width: 100%;
+}
+
+.foreign-trade-table th,
+.foreign-trade-table td {
+  border-bottom: 1px solid #e4ebed;
+  padding: 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.foreign-trade-table th {
+  background: #f1f6f6;
+  color: #577077;
+  font-size: .72rem;
+  letter-spacing: .025em;
+  position: sticky;
+  text-transform: uppercase;
+  top: 0;
+  z-index: 1;
+}
+
+.foreign-trade-table td {
+  color: #173a40;
+  font-size: .82rem;
+}
+
+.foreign-trade-table td strong,
+.foreign-trade-table td span {
+  display: block;
+}
+
+.foreign-trade-table td span {
+  color: #6a7c80;
+  font-size: .74rem;
+  margin-top: 3px;
+}
+
+.foreign-trade-catalog-controls {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, .28fr);
+  margin: 14px 0;
+}
+
+.foreign-trade-catalog-controls label {
+  align-items: center;
+  border: 1px solid #cbdadd;
+  border-radius: 10px;
+  display: flex;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.foreign-trade-catalog-controls input,
+.foreign-trade-catalog-controls select {
+  background: #fff;
+  border: 1px solid #cbdadd;
+  border-radius: 10px;
+  color: #173a40;
+  font: inherit;
+  min-height: 44px;
+  min-width: 0;
+  padding: 0 12px;
+  width: 100%;
+}
+
+.foreign-trade-catalog-controls label input {
+  border: 0;
+  padding: 0;
+}
+
+.foreign-trade-catalog-list {
+  border: 1px solid #dce7e8;
+  border-radius: 12px;
+  display: grid;
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+.foreign-trade-catalog-list > article {
+  align-items: center;
+  border-bottom: 1px solid #e4ebed;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(260px, 1.6fr) repeat(3, minmax(135px, .65fr));
+  padding: 12px 14px;
+}
+
+.foreign-trade-catalog-list > article:last-child {
+  border-bottom: 0;
+}
+
+.foreign-trade-catalog-list > article > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.foreign-trade-catalog-list strong,
+.foreign-trade-catalog-list span,
+.foreign-trade-catalog-list small {
+  overflow-wrap: anywhere;
+}
+
+.foreign-trade-catalog-list span,
+.foreign-trade-catalog-list small {
+  color: #687b80;
+  font-size: .75rem;
+}
+
+.foreign-trade-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.foreign-trade-source-list span {
+  align-items: center;
+  background: #edf7f6;
+  border: 1px solid #d1e6e4;
+  border-radius: 999px;
+  color: #31575d;
+  display: inline-flex;
+  font-size: .76rem;
+  font-weight: 800;
+  gap: 6px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 7px 10px;
+}
+
+.empty-state {
+  background: #f4f8f8;
+  border: 1px dashed #bfd2d5;
+  border-radius: 12px;
+  color: #5f7479;
+  padding: 20px;
+  text-align: center;
+}
+
+@media (max-width: 1180px) {
+  .foreign-trade-kpis {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .foreign-trade-overview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .foreign-trade-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .foreign-trade-kpis article {
+    min-height: 0;
+  }
+
+  .import-timeline,
+  .foreign-trade-policy-grid,
+  .foreign-trade-catalog-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .foreign-trade-cash-card,
+  .foreign-trade-proposal .section-title,
+  .foreign-trade-catalog .section-title {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .foreign-trade-cash-card > strong {
+    white-space: normal;
+  }
+
+  .foreign-trade-table-wrap {
+    border: 0;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .foreign-trade-table,
+  .foreign-trade-table tbody,
+  .foreign-trade-table tr,
+  .foreign-trade-table td {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .foreign-trade-table thead {
+    display: none;
+  }
+
+  .foreign-trade-table tr {
+    border: 1px solid #dce7e8;
+    border-radius: 12px;
+    margin-bottom: 12px;
+    overflow: hidden;
+  }
+
+  .foreign-trade-table td {
+    align-items: start;
+    border-bottom: 1px solid #e7edef;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(104px, .72fr) minmax(0, 1fr);
+    padding: 10px 12px;
+  }
+
+  .foreign-trade-table td::before {
+    color: #687b80;
+    content: attr(data-label);
+    font-size: .69rem;
+    font-weight: 900;
+    letter-spacing: .025em;
+    text-transform: uppercase;
+  }
+
+  .foreign-trade-table td:last-child {
+    border-bottom: 0;
+  }
+
+  .foreign-trade-catalog-list > article {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .foreign-trade-catalog-list > article > div:first-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 420px) {
+  .foreign-trade-kpis,
+  .foreign-trade-catalog-list > article {
+    grid-template-columns: 1fr;
+  }
+
+  .foreign-trade-catalog-list > article > div:first-child {
+    grid-column: auto;
+  }
+}
 /* Finance agent dashboard */
 .finance-toolbar{align-items:end;display:flex;justify-content:space-between;margin-bottom:1rem}
 .finance-toolbar>div,.finance-toolbar label{display:grid;gap:.35rem}

@@ -111,7 +111,7 @@ const defaultAction: Record<AgentType, string> = {
   finance: "review_margin",
   collections: "review_aging",
   logistics: "review_logistics",
-  foreign_trade: "review_inventory_risk",
+  foreign_trade: "review_import_plan",
   executive: "prepare_brief",
 };
 
@@ -266,54 +266,27 @@ export function AgentsPage() {
           successMessage = `Analisis logistico enviado con ${snapshots.length} SKU sincronizados desde Facto. Los hallazgos se transformaran en propuestas revisables.`;
         } else {
           const today = new Date().toISOString().slice(0, 10);
-          const tasks = snapshots
-            .filter((item) => item.stock_known && item.cost_known && item.demand_available)
-            .slice(0, 50)
-            .map((item) => ({
-              agent_type: "foreign_trade" as const,
+          const { data: insertedTask, error: insertError } = await supabase
+            .from("business_agent_tasks")
+            .insert({
+              agent_type: "foreign_trade",
               action: defaultAction.foreign_trade,
               requested_by: user.id,
               payload: {
-                sku: item.sku,
-                available_units: item.available_units ?? 0,
-                committed_units: 0,
-                confirmed_inbound_units: 0,
-                average_daily_demand: item.average_daily_demand ?? 0,
-                unit_cost_usd: item.unit_cost_usd ?? 0,
+                products: snapshots,
                 as_of: today,
-                evidence: {
-                  source: "facto_read_only",
-                  observation_days: item.demand_observation_days ?? 0,
-                  units_sold_observed: item.units_sold_observed ?? 0,
-                },
+                sources: [
+                  "facto_read_only",
+                  "google_drive/agente comercio exterior/chinafore proveedor",
+                  "google_drive/agente comercio exterior/agencia",
+                ],
               },
-            }));
-          if (!tasks.length) {
-            const readiness = {
-              catalog_count: snapshots.length,
-              stock_known: snapshots.filter((item) => item.stock_known).length,
-              cost_known: snapshots.filter((item) => item.cost_known).length,
-              cost_available_in_source: snapshots.filter((item) => item.cost_available_in_source).length,
-              cost_requires_usd_conversion: snapshots.filter((item) => item.cost_requires_usd_conversion).length,
-              demand_available: snapshots.filter((item) => item.demand_available).length,
-              eligible: 0,
-            };
-            const { error: insertError } = await supabase.from("business_agent_tasks").insert({
-              agent_type: "foreign_trade",
-              action: "review_inventory_readiness",
-              requested_by: user.id,
-              payload: readiness,
-            });
-            error = insertError;
-            const withStock = snapshots.filter((item) => item.stock_known).length;
-            const withSourceCost = snapshots.filter((item) => item.cost_available_in_source).length;
-            const withDemand = snapshots.filter((item) => item.demand_available).length;
-            successMessage = `Diagnostico enviado: ${snapshots.length} productos; ${withStock} con stock, ${withSourceCost} con costo de origen y ${withDemand} con ventas por SKU. El agente mostrara lo que falta sin inventar una compra.`;
-          } else {
-            const { error: insertError } = await supabase.from("business_agent_tasks").insert(tasks);
-            error = insertError;
-            successMessage = `${tasks.length} SKU con evidencia de Facto fueron enviados a revision de comercio exterior. Las compras seguiran requiriendo aprobacion humana.`;
-          }
+            })
+            .select("id")
+            .single();
+          error = insertError;
+          dashboardTaskId = insertedTask?.id ?? "";
+          successMessage = `Analisis de comercio exterior enviado con ${snapshots.length} SKU de Facto. Se cruzaran rotacion, stock, FOB, m3 y costos historicos en una sola propuesta revisable.`;
         }
       }
     } else if (type === "finance") {

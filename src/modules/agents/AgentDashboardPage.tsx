@@ -70,6 +70,96 @@ type Snapshot = {
   source?: string;
 };
 
+type ForeignTradeProduct = {
+  sku: string;
+  name?: string;
+  supplier?: string;
+  available_units: number;
+  average_daily_demand: number;
+  coverage_days?: number | null;
+  recommended_units: number;
+  order_multiple: number;
+  unit_fob_usd: number;
+  unit_cbm: number;
+  severity: string;
+  projected_stockout_date?: string | null;
+  required_order_date?: string | null;
+  projected_arrival_date?: string | null;
+  match_score: number;
+  match_method: string;
+  source_document?: string;
+  volume_evidence?: string;
+  costs: {
+    fob_usd: number;
+    freight_usd: number;
+    insurance_usd: number;
+    customs_duty_usd: number;
+    local_and_agency_usd: number;
+    landed_cost_usd: number;
+    recoverable_import_vat_cash_usd: number;
+    total_cbm: number;
+  };
+};
+
+type ForeignTradeReport = {
+  generated_at: string;
+  policy: {
+    production_days: number;
+    sea_travel_days: number;
+    customs_delay_days: number;
+    lead_time_days: number;
+    safety_stock_days: number;
+    review_period_days: number;
+    target_coverage_days: number;
+    high_season_months: number[];
+    factory_shutdown_months: number[];
+    purchase_range_usd: [number, number];
+    human_approval_required: boolean;
+  };
+  catalog: {
+    products: number;
+    with_sku: number;
+    with_fob: number;
+    with_cbm: number;
+    matched_inventory_products: number;
+    matched_with_cbm: number;
+    source_documents?: Array<{ file: string; kind: string }>;
+    items?: Array<{
+      sku?: string | null;
+      name?: string | null;
+      supplier?: string | null;
+      unit_fob_usd?: number | null;
+      unit_cbm?: number | null;
+      order_multiple?: number | null;
+      cartons?: number | null;
+      gross_weight_kg?: number | null;
+      source_document?: string | null;
+      source_row?: number | null;
+      volume_evidence?: string | null;
+    }>;
+  };
+  historical_cost_reference: {
+    reference?: Record<string, number | string>;
+    derived_rates?: Record<string, number>;
+    vat_policy?: string;
+    sources?: Array<{ file?: string; purpose?: string }>;
+  };
+  demand_multiplier: number;
+  projected_arrival_date: string;
+  products: ForeignTradeProduct[];
+  purchase_proposal: {
+    status: string;
+    items: ForeignTradeProduct[];
+    totals: ForeignTradeProduct["costs"];
+    container_reference_cbm: number;
+    container_utilization_percent: number;
+    required_order_date?: string | null;
+    projected_arrival_date: string;
+    warnings: string[];
+  };
+  methodology: string;
+};
+
 type FinancialMonth = {
   month: string;
   net_sales: number;
@@ -511,6 +601,11 @@ const formatCurrency = new Intl.NumberFormat("es-CL", {
   currency: "CLP",
   maximumFractionDigits: 0,
 });
+const formatUsd = new Intl.NumberFormat("es-CL", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0,
+});
 const CHILE_VAT_FACTOR = 1.19;
 
 function netUnitPrice(item: Snapshot) {
@@ -643,6 +738,232 @@ function DonutChart({
         </div>
       </div>
     </article>
+  );
+}
+
+function foreignTradeReportFromTasks(tasks: AgentTask[]): ForeignTradeReport | null {
+  for (const task of tasks) {
+    for (const entry of task.result?.evidence ?? []) {
+      const report = entry.foreign_trade_report;
+      if (report && typeof report === "object") return report as ForeignTradeReport;
+    }
+  }
+  return null;
+}
+
+function shortDate(value?: string | null) {
+  if (!value) return "Sin fecha";
+  return new Intl.DateTimeFormat("es-CL", {
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(`${value}T12:00:00`));
+}
+
+function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
+  const report = useMemo(() => foreignTradeReportFromTasks(tasks), [tasks]);
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const [volumeFilter, setVolumeFilter] = useState("all");
+  const latest = tasks[0];
+
+  const catalogItems = useMemo(() => {
+    if (!report) return [];
+    const normalized = catalogSearch.trim().toLocaleLowerCase("es-CL");
+    return (report.catalog.items ?? [])
+      .filter((item) => {
+        if (volumeFilter === "with_cbm" && !Number(item.unit_cbm ?? 0)) return false;
+        if (volumeFilter === "missing_cbm" && Number(item.unit_cbm ?? 0)) return false;
+        if (!normalized) return true;
+        return `${item.sku ?? ""} ${item.name ?? ""}`.toLocaleLowerCase("es-CL").includes(normalized);
+      })
+      .sort((a, b) => String(a.sku ?? a.name ?? "").localeCompare(String(b.sku ?? b.name ?? ""), "es"));
+  }, [catalogSearch, report, volumeFilter]);
+
+  if (!report) {
+    return (
+      <section className="data-card agent-dashboard-summary">
+        <span className="eyebrow">PLAN MAESTRO DE IMPORTACIÓN</span>
+        <h2>Análisis consolidado pendiente</h2>
+        <p>
+          {latest?.status === "pending" || latest?.status === "in_progress"
+            ? "El agente está cruzando stock y ventas de Facto con los documentos Chinafore y los costos históricos de aduana."
+            : "Solicita un análisis desde el Centro de agentes para generar la tabla de m³ y la propuesta de compra."}
+        </p>
+      </section>
+    );
+  }
+
+  const proposal = report.purchase_proposal;
+  const totals = proposal.totals;
+  const highRisk = report.products.filter((item) => item.severity === "critical" || item.severity === "high").length;
+  const costSlices: DonutSlice[] = [
+    { label: "Mercadería FOB", value: totals.fob_usd, color: "#0b8793" },
+    { label: "Flete internacional", value: totals.freight_usd, color: "#2f7ec8" },
+    { label: "Seguro", value: totals.insurance_usd, color: "#7c6bc4" },
+    { label: "Derechos aduaneros", value: totals.customs_duty_usd, color: "#e69b1f" },
+    { label: "Gastos locales y agencia", value: totals.local_and_agency_usd, color: "#d97732" },
+  ];
+
+  return (
+    <>
+      <section className="agent-dashboard-kpis foreign-trade-kpis">
+        <article>
+          <Database size={22} />
+          <span>Catálogo Chinafore</span>
+          <strong>{formatNumber.format(report.catalog.products)}</strong>
+          <small>{report.catalog.with_cbm} con m³ respaldado</small>
+        </article>
+        <article>
+          <PackageCheck size={22} />
+          <span>Cruce con Facto</span>
+          <strong>{formatNumber.format(report.catalog.matched_inventory_products)}</strong>
+          <small>SKU o nombre coincidente</small>
+        </article>
+        <article className={highRisk ? "risk" : ""}>
+          <AlertTriangle size={22} />
+          <span>Riesgo de quiebre</span>
+          <strong>{formatNumber.format(highRisk)}</strong>
+          <small>Crítico o alto</small>
+        </article>
+        <article>
+          <FileSpreadsheet size={22} />
+          <span>Productos propuestos</span>
+          <strong>{formatNumber.format(proposal.items.length)}</strong>
+          <small>Siempre con revisión humana</small>
+        </article>
+        <article>
+          <CircleDollarSign size={22} />
+          <span>Orden FOB sugerida</span>
+          <strong>{formatUsd.format(totals.fob_usd)}</strong>
+          <small>Rango objetivo USD 50–70 mil</small>
+        </article>
+        <article>
+          <Boxes size={22} />
+          <span>Volumen sugerido</span>
+          <strong>{formatNumber.format(totals.total_cbm)} m³</strong>
+          <small>{formatNumber.format(proposal.container_utilization_percent)}% del contenedor histórico</small>
+        </article>
+      </section>
+
+      <section className="foreign-trade-overview-grid">
+        <article className="data-card foreign-trade-timeline">
+          <div className="section-title">
+            <div>
+              <span className="eyebrow">CICLO DE ABASTECIMIENTO</span>
+              <h2>{report.policy.lead_time_days} días hasta bodega</h2>
+              <p>Política maestra configurable y aplicada a cada sugerencia.</p>
+            </div>
+          </div>
+          <div className="import-timeline">
+            <article><strong>{report.policy.production_days}</strong><span>días de producción</span></article>
+            <article><strong>{report.policy.sea_travel_days}</strong><span>días de viaje</span></article>
+            <article><strong>{report.policy.customs_delay_days}</strong><span>días de aduana</span></article>
+          </div>
+          <div className="foreign-trade-policy-grid">
+            <div><span>Stock de seguridad</span><strong>{report.policy.safety_stock_days} días</strong></div>
+            <div><span>Revisión de compra</span><strong>{report.policy.review_period_days} días</strong></div>
+            <div><span>Cobertura objetivo</span><strong>{report.policy.target_coverage_days} días</strong></div>
+            <div><span>Llegada proyectada</span><strong>{shortDate(report.projected_arrival_date)}</strong></div>
+          </div>
+          <div className="dashboard-warning"><AlertTriangle size={18} /> Temporada alta: noviembre a febrero. Pausa de fábrica china: febrero.</div>
+        </article>
+
+        <DonutChart
+          centerLabel="COSTO PUESTO"
+          centerValue={formatUsd.format(totals.landed_cost_usd)}
+          formatter={(value) => formatUsd.format(value)}
+          slices={costSlices}
+          subtitle="Estimación basada en el despacho real 49194. El IVA se informa aparte."
+          title="Composición del costo de importación"
+        />
+      </section>
+
+      <section className="data-card foreign-trade-cash-card">
+        <div>
+          <span className="eyebrow">NECESIDAD DE CAJA</span>
+          <h2>IVA de importación recuperable</h2>
+          <p>No se suma al costo del inventario; sí debe financiarse durante la internación.</p>
+        </div>
+        <strong>{formatUsd.format(totals.recoverable_import_vat_cash_usd)}</strong>
+      </section>
+
+      <section className="data-card foreign-trade-proposal">
+        <div className="section-title">
+          <div>
+            <span className="eyebrow">PROPUESTA CONSOLIDADA</span>
+            <h2>Compra sugerida a Chinafore</h2>
+            <p>
+              Ordenar antes de {shortDate(proposal.required_order_date)} para una llegada estimada el {shortDate(proposal.projected_arrival_date)}.
+            </p>
+          </div>
+          <span className={`status-chip ${proposal.items.length ? "partial" : "pending"}`}>
+            {proposal.items.length ? "Pendiente de aprobación" : "Sin compra necesaria"}
+          </span>
+        </div>
+        {proposal.items.length ? (
+          <div className="foreign-trade-table-wrap">
+            <table className="foreign-trade-table">
+              <thead>
+                <tr>
+                  <th>Producto</th><th>Stock / demanda</th><th>Cobertura</th><th>Compra sugerida</th><th>m³</th><th>FOB</th><th>Costo puesto</th>
+                </tr>
+              </thead>
+              <tbody>
+                {proposal.items.map((item) => (
+                  <tr key={`${item.sku}-${item.source_document}`}>
+                    <td data-label="Producto"><strong>{item.name || item.sku}</strong><span>{item.sku}</span></td>
+                    <td data-label="Stock / demanda"><strong>{formatNumber.format(item.available_units)} un.</strong><span>{formatNumber.format(item.average_daily_demand)} por día</span></td>
+                    <td data-label="Cobertura"><strong>{item.coverage_days == null ? "Sin demanda" : `${formatNumber.format(item.coverage_days)} días`}</strong><span>{item.severity}</span></td>
+                    <td data-label="Compra sugerida"><strong>{formatNumber.format(item.recommended_units)} un.</strong><span>Múltiplo {formatNumber.format(item.order_multiple)}</span></td>
+                    <td data-label="m³"><strong>{formatNumber.format(item.costs.total_cbm)}</strong><span>{item.unit_cbm ? `${item.unit_cbm.toFixed(5)} por unidad` : "Sin volumen"}</span></td>
+                    <td data-label="FOB"><strong>{formatUsd.format(item.costs.fob_usd)}</strong><span>{formatUsd.format(item.unit_fob_usd)} / un.</span></td>
+                    <td data-label="Costo puesto"><strong>{formatUsd.format(item.costs.landed_cost_usd)}</strong><span>IVA aparte</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : <div className="empty-state">La demanda y el stock observados no activan una reposición en este corte.</div>}
+        {proposal.warnings.map((warning) => <div className="dashboard-warning" key={warning}><AlertTriangle size={18} /> {warning}</div>)}
+      </section>
+
+      <section className="data-card foreign-trade-catalog">
+        <div className="section-title">
+          <div>
+            <span className="eyebrow">CATÁLOGO DE IMPORTACIÓN</span>
+            <h2>Productos, FOB y metro cúbico</h2>
+            <p>{catalogItems.length} referencias coinciden con los filtros. Cada dato conserva documento y fila de origen.</p>
+          </div>
+        </div>
+        <div className="foreign-trade-catalog-controls">
+          <label><Search size={18} /><input value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar SKU o producto" /></label>
+          <select value={volumeFilter} onChange={(event) => setVolumeFilter(event.target.value)}>
+            <option value="all">Todos los productos</option>
+            <option value="with_cbm">Con m³ documentado</option>
+            <option value="missing_cbm">Pendiente de m³</option>
+          </select>
+        </div>
+        <div className="foreign-trade-catalog-list">
+          {catalogItems.map((item, index) => (
+            <article key={`${item.sku}-${item.source_document}-${item.source_row}-${index}`}>
+              <div><strong>{item.name || item.sku || "Sin nombre"}</strong><span>SKU: {item.sku || "Pendiente"}</span></div>
+              <div><span>FOB unitario</span><strong>{item.unit_fob_usd ? formatUsd.format(item.unit_fob_usd) : "Pendiente"}</strong></div>
+              <div><span>m³ unitario</span><strong>{item.unit_cbm ? item.unit_cbm.toFixed(6) : "Pendiente"}</strong></div>
+              <div><span>Origen</span><strong>{item.source_document || "Sin documento"}</strong><small>Fila {item.source_row ?? "—"}</small></div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="data-card agent-dashboard-summary">
+        <span className="eyebrow">TRAZABILIDAD Y CONTROL</span>
+        <h2>Cómo se construyó este análisis</h2>
+        <p>{report.methodology}</p>
+        <div className="foreign-trade-source-list">
+          {(report.catalog.source_documents ?? []).map((source) => <span key={source.file}><ShieldCheck size={16} /> {source.file}</span>)}
+        </div>
+      </section>
+    </>
   );
 }
 
@@ -3589,6 +3910,7 @@ export function AgentDashboardPage() {
       {notice ? <div className="notice-banner error">{notice}</div> : null}
       {loading ? <div className="data-card">Cargando información real de la empresa…</div> : null}
       {!loading && agentType === "logistics" ? <LogisticsDashboard snapshots={snapshots} tasks={tasks} /> : null}
+      {!loading && agentType === "foreign_trade" ? <ForeignTradeDashboard tasks={tasks} /> : null}
       {!loading && agentType === "finance" ? (
         <FinanceWorkspace
           accountingError={accountingError}
@@ -3603,7 +3925,7 @@ export function AgentDashboardPage() {
           tasks={tasks}
         />
       ) : null}
-      {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
+      {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" && agentType !== "foreign_trade" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
     </section>
   );
 }
