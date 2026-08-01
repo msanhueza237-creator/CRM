@@ -65,6 +65,47 @@ body {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
+.executive-kpis .executive-kpi-button {
+  appearance: none;
+  background: #fff;
+  border: 1px solid #dce5e7;
+  border-radius: 14px;
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  gap: 7px;
+  min-height: 145px;
+  padding: 18px;
+  text-align: left;
+  touch-action: manipulation;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  width: 100%;
+}
+
+.executive-kpis .executive-kpi-button > svg {
+  color: #087f8d;
+}
+
+.executive-kpis .executive-kpi-button small {
+  color: #08727b;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.executive-kpis .executive-kpi-button:hover,
+.executive-kpis .executive-kpi-button:focus-visible {
+  border-color: #14949c;
+  box-shadow: 0 8px 22px rgba(8, 92, 100, 0.14);
+  outline: none;
+  transform: translateY(-2px);
+}
+
+.executive-kpis .executive-kpi-button.is-active {
+  background: #eaf8f7;
+  border-color: #087f8d;
+  box-shadow: 0 0 0 3px rgba(8, 127, 141, 0.13);
+}
+
 .executive-layout,
 .executive-operations-grid {
   display: grid;
@@ -80,6 +121,46 @@ body {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.executive-brief-card {
+  scroll-margin-top: 92px;
+}
+
+.executive-brief-actions {
+  align-items: flex-end;
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.executive-clear-filter {
+  background: #edf7f7;
+  border: 1px solid #b9dede;
+  border-radius: 999px;
+  color: #086c74;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 800;
+  min-height: 36px;
+  padding: 7px 12px;
+}
+
+.executive-clear-filter:hover,
+.executive-clear-filter:focus-visible {
+  background: #dff2f1;
+  border-color: #087f8d;
+  outline: none;
+}
+
+.executive-section-grid.is-filtered {
+  grid-template-columns: 1fr;
+}
+
+.executive-section-grid > article.is-focused {
+  background: #f1fbfa;
+  border-color: #74c5c6;
+  box-shadow: 0 8px 20px rgba(8, 92, 100, 0.08);
 }
 
 .executive-section-grid > article {
@@ -284,6 +365,25 @@ body {
   .executive-section-grid,
   .executive-channel-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .executive-kpis .executive-kpi-button {
+    min-height: 138px;
+    padding: 14px;
+  }
+
+  .executive-brief-card .section-title,
+  .executive-brief-actions {
+    align-items: start;
+    justify-items: start;
+  }
+
+  .executive-clear-filter {
+    min-height: 44px;
+  }
+
+  .executive-section-grid.is-filtered {
+    grid-template-columns: 1fr;
   }
 
   .executive-slot-list > div {
@@ -6381,4 +6481,25 @@ th {
 
 @media(max-width:390px){
   .marketing-evidence-metrics{grid-template-columns:1fr}
+}
+
+/* Mantiene el tablero gerencial táctil y compacto incluso bajo las reglas móviles globales. */
+@media (max-width: 720px) {
+  .agent-dashboard-kpis.executive-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .executive-kpis .executive-kpi-button {
+    min-height: 132px;
+  }
+
+  .executive-kpis .executive-kpi-button strong {
+    font-size: clamp(24px, 8vw, 34px);
+  }
+}
+
+@media (max-width: 370px) {
+  .agent-dashboard-kpis.executive-kpis {
+    grid-template-columns: 1fr;
+  }
 }

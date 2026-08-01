@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -1046,6 +1046,8 @@ function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [settings, setSettings] = useState<ExecutiveSettings | null>(null);
   const [slots, setSlots] = useState<ExecutiveScheduleSlot[]>([]);
   const [notifications, setNotifications] = useState<ExecutiveNotification[]>([]);
+  const [activeSectionKey, setActiveSectionKey] = useState<string | null>(null);
+  const briefCardRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!supabase) return;
@@ -1090,6 +1092,17 @@ function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
     { key: "integration_errors", label: "Integraciones con error", icon: Database },
   ];
   const sections = brief?.sections ?? [];
+  const visibleSections = activeSectionKey
+    ? sections.filter((section) => section.key === activeSectionKey)
+    : sections;
+
+  const openExecutiveSection = (metricKey: string) => {
+    const sectionKey = metricKey === "new_sales" ? "sales" : metricKey;
+    setActiveSectionKey(sectionKey);
+    window.requestAnimationFrame(() => {
+      briefCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
 
   return (
     <>
@@ -1108,35 +1121,55 @@ function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
       </section>
 
       <section className="agent-dashboard-kpis executive-kpis">
-        {kpis.map(({ key, label, icon: Icon }) => (
-          <article key={key}>
-            <Icon size={22} />
-            <span>{label}</span>
-            <strong>{formatNumber.format(Number(metrics[key] ?? 0))}</strong>
-          </article>
-        ))}
+        {kpis.map(({ key, label, icon: Icon }) => {
+          const sectionKey = key === "new_sales" ? "sales" : key;
+          const value = Number(metrics[key] ?? 0);
+          const isActive = activeSectionKey === sectionKey;
+          return (
+            <button
+              aria-label={`Ver detalle de ${label}: ${formatNumber.format(value)}`}
+              aria-pressed={isActive}
+              className={`executive-kpi-button${isActive ? " is-active" : ""}`}
+              key={key}
+              onClick={() => openExecutiveSection(key)}
+              type="button"
+            >
+              <Icon size={22} />
+              <span>{label}</span>
+              <strong>{formatNumber.format(value)}</strong>
+              <small>Ver detalle</small>
+            </button>
+          );
+        })}
       </section>
 
       <section className="executive-layout">
-        <article className="data-card executive-brief-card">
+        <article className="data-card executive-brief-card" ref={briefCardRef}>
           <div className="section-title">
             <div>
               <span className="eyebrow">ÚLTIMO CORTE GERENCIAL</span>
               <h2>Información que requiere conocimiento</h2>
             </div>
-            <small>
-              {brief?.generated_at
-                ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(brief.generated_at))
-                : latest?.created_at
-                  ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(latest.created_at))
-                  : "Sin análisis todavía"}
-            </small>
+            <div className="executive-brief-actions">
+              <small>
+                {brief?.generated_at
+                  ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(brief.generated_at))
+                  : latest?.created_at
+                    ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(latest.created_at))
+                    : "Sin análisis todavía"}
+              </small>
+              {activeSectionKey ? (
+                <button className="executive-clear-filter" onClick={() => setActiveSectionKey(null)} type="button">
+                  Ver todo el corte
+                </button>
+              ) : null}
+            </div>
           </div>
-          <div className="executive-section-grid">
-            {sections.map((section) => {
+          <div className={`executive-section-grid${activeSectionKey ? " is-filtered" : ""}`}>
+            {visibleSections.map((section) => {
               const Icon = executiveSectionIcons[section.key] ?? BarChart3;
               return (
-                <article className={section.count ? "has-items" : "is-empty"} key={section.key}>
+                <article className={`${section.count ? "has-items" : "is-empty"}${activeSectionKey ? " is-focused" : ""}`} key={section.key}>
                   <div className="executive-section-heading">
                     <Icon size={19} />
                     <div><strong>{section.title}</strong><span>{section.count} novedades</span></div>
