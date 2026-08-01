@@ -962,15 +962,19 @@ const executiveSectionIcons: Record<string, typeof TrendingUp> = {
   integration_errors: Database,
 };
 
-function executiveBriefFromTasks(tasks: AgentTask[]): ExecutiveBrief | null {
+function executiveReportFromTasks(tasks: AgentTask[]): { task: AgentTask; brief: ExecutiveBrief } | null {
+  const reports: Array<{ task: AgentTask; brief: ExecutiveBrief }> = [];
   for (const task of tasks) {
     const evidence = task.result?.evidence ?? [];
     for (const row of evidence) {
       const brief = row.executive_brief;
-      if (brief && typeof brief === "object") return brief as ExecutiveBrief;
+      if (brief && typeof brief === "object") {
+        reports.push({ task, brief: brief as ExecutiveBrief });
+        break;
+      }
     }
   }
-  return null;
+  return reports.find(({ brief }) => brief.mode === "manual") ?? reports[0] ?? null;
 }
 
 function executiveItemTitle(item: ExecutiveBriefItem) {
@@ -1032,9 +1036,13 @@ function executiveStatusLabel(status: string) {
 }
 
 function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
-  const brief = useMemo(() => executiveBriefFromTasks(tasks), [tasks]);
-  const latest = tasks[0];
-  const metrics = latest?.result?.metrics ?? {};
+  const report = useMemo(() => executiveReportFromTasks(tasks), [tasks]);
+  const brief = report?.brief ?? null;
+  const latest = report?.task ?? null;
+  const sectionCounts = Object.fromEntries(
+    (brief?.sections ?? []).map((section) => [section.key === "sales" ? "new_sales" : section.key, section.count]),
+  );
+  const metrics = { ...sectionCounts, ...(latest?.result?.metrics ?? {}) };
   const [settings, setSettings] = useState<ExecutiveSettings | null>(null);
   const [slots, setSlots] = useState<ExecutiveScheduleSlot[]>([]);
   const [notifications, setNotifications] = useState<ExecutiveNotification[]>([]);

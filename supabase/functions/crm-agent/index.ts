@@ -535,7 +535,10 @@ async function collectExecutiveSignals(
 
   const documentRows = rows(documentsResult.data);
   const currentSalesKeys = keys(documentRows, "external_id");
-  const sales = unseen(documentRows, previous.sales as unknown[], "external_id")
+  const selectedSales = slotKind === "morning"
+    ? documentRows
+    : unseen(documentRows, previous.sales as unknown[], "external_id");
+  const sales = selectedSales
     .map((record) => ({
       ...asObject(record.payload),
       external_id: record.external_id,
@@ -563,6 +566,12 @@ async function collectExecutiveSignals(
   const selectedIntegrations = slotKind === "morning"
     ? integrationRows
     : unseen(integrationRows, previous.integration_errors as unknown[], "provider");
+  const selectedReplies = slotKind === "morning"
+    ? replyRows
+    : unseen(replyRows, previous.campaign_replies as unknown[]);
+  const selectedTasks = slotKind === "morning"
+    ? taskRows
+    : unseen(taskRows, previous.agent_updates as unknown[]);
 
   const signals = {
     sales,
@@ -572,8 +581,8 @@ async function collectExecutiveSignals(
       observed_at: record.updated_at,
     })).slice(0, 30),
     opportunities: selectedProposals.slice(0, 20),
-    campaign_replies: unseen(replyRows, previous.campaign_replies as unknown[]).slice(0, 20),
-    agent_updates: unseen(taskRows, previous.agent_updates as unknown[]).slice(0, 20),
+    campaign_replies: selectedReplies.slice(0, 20),
+    agent_updates: selectedTasks.slice(0, 20),
     integration_errors: selectedIntegrations.slice(0, 10),
   };
   const relevantCount = Object.values(signals).reduce((total, value) => total + value.length, 0);
