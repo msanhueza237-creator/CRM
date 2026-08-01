@@ -75,6 +75,9 @@ type ForeignTradeProduct = {
   name?: string;
   supplier?: string;
   available_units: number;
+  confirmed_inbound_units?: number;
+  active_import_inbound_units?: number;
+  active_import_orders?: string[];
   average_daily_demand: number;
   coverage_days?: number | null;
   recommended_units: number;
@@ -144,6 +147,55 @@ type ForeignTradeReport = {
     vat_policy?: string;
     sources?: Array<{ file?: string; purpose?: string }>;
   };
+  active_imports?: Array<{
+    order_number: string;
+    reference?: string;
+    supplier: string;
+    proforma_date: string;
+    production_start_date: string;
+    production_start_basis?: string;
+    status: string;
+    inventory_status: string;
+    stock_policy: string;
+    container: string;
+    incoterm: string;
+    payment_terms?: string;
+    timeline: {
+      production_days: number;
+      sea_travel_days: number;
+      customs_days: number;
+      production_end_date: string;
+      estimated_port_arrival_date: string;
+      estimated_warehouse_date: string;
+      elapsed_production_days: number;
+      remaining_total_days: number;
+      production_progress_percent: number;
+    };
+    totals: {
+      fob_usd: number;
+      cartons: number;
+      gross_weight_kg: number;
+      total_cbm: number;
+    };
+    estimated_costs?: ForeignTradeProduct["costs"];
+    items: Array<{
+      line_number: number;
+      name: string;
+      sku?: string | null;
+      quantity: number;
+      unit: string;
+      unit_fob_usd: number;
+      total_fob_usd: number;
+      cartons: number;
+      gross_weight_kg: number;
+      total_cbm: number;
+      unit_cbm?: number | null;
+      volume_evidence: string;
+      status: string;
+      source_page: number;
+    }>;
+    source: { file: string; pages: number; kind: string };
+  }>;
   demand_multiplier: number;
   projected_arrival_date: string;
   products: ForeignTradeProduct[];
@@ -764,6 +816,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
   const report = useMemo(() => foreignTradeReportFromTasks(tasks), [tasks]);
   const [catalogSearch, setCatalogSearch] = useState("");
   const [volumeFilter, setVolumeFilter] = useState("all");
+  const [activeImportSearch, setActiveImportSearch] = useState("");
   const latest = tasks[0];
 
   const catalogItems = useMemo(() => {
@@ -778,6 +831,18 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
       })
       .sort((a, b) => String(a.sku ?? a.name ?? "").localeCompare(String(b.sku ?? b.name ?? ""), "es"));
   }, [catalogSearch, report, volumeFilter]);
+
+  const activeImportItems = useMemo(() => {
+    const activeImport = report?.active_imports?.[0];
+    if (!activeImport) return [];
+    const normalized = activeImportSearch.trim().toLocaleLowerCase("es-CL");
+    if (!normalized) return activeImport.items;
+    return activeImport.items.filter((item) =>
+      `${item.line_number} ${item.sku ?? ""} ${item.name}`
+        .toLocaleLowerCase("es-CL")
+        .includes(normalized),
+    );
+  }, [activeImportSearch, report]);
 
   if (!report) {
     return (
@@ -794,6 +859,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
   }
 
   const proposal = report.purchase_proposal;
+  const activeImport = report.active_imports?.[0];
   const totals = proposal.totals;
   const highRisk = report.products.filter((item) => item.severity === "critical" || item.severity === "high").length;
   const costSlices: DonutSlice[] = [
@@ -843,7 +909,89 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
           <strong>{formatNumber.format(totals.total_cbm)} m³</strong>
           <small>{formatNumber.format(proposal.container_utilization_percent)}% del contenedor histórico</small>
         </article>
+        <article className={activeImport ? "active-import" : ""}>
+          <PackageCheck size={22} />
+          <span>Mercadería en producción</span>
+          <strong>{formatNumber.format(activeImport?.items.length ?? 0)}</strong>
+          <small>{activeImport ? `Orden ${activeImport.order_number} · entrada confirmada` : "Sin órdenes activas"}</small>
+        </article>
       </section>
+
+      {activeImport ? (
+        <section className="data-card active-import-card">
+          <div className="section-title active-import-heading">
+            <div>
+              <span className="eyebrow">IMPORTACIÓN EN CURSO</span>
+              <h2>Orden {activeImport.order_number} · Chinafore</h2>
+              <p>
+                Mercadería confirmada en producción. Se considera en la planificación de reposición,
+                pero no aumenta el stock disponible hasta su recepción en bodega.
+              </p>
+            </div>
+            <span className="status-chip partial">En producción</span>
+          </div>
+
+          <div className="active-import-progress-head">
+            <strong>
+              Día {activeImport.timeline.elapsed_production_days} de {activeImport.timeline.production_days} de producción
+            </strong>
+            <span>{formatNumber.format(activeImport.timeline.production_progress_percent)}%</span>
+          </div>
+          <div className="active-import-progress" aria-label="Avance de producción">
+            <span style={{ width: `${Math.min(100, activeImport.timeline.production_progress_percent)}%` }} />
+          </div>
+
+          <div className="active-import-milestones">
+            <article><span>Inicio producción</span><strong>{shortDate(activeImport.production_start_date)}</strong></article>
+            <article><span>Fin producción</span><strong>{shortDate(activeImport.timeline.production_end_date)}</strong></article>
+            <article><span>Llegada a puerto</span><strong>{shortDate(activeImport.timeline.estimated_port_arrival_date)}</strong></article>
+            <article><span>Ingreso a bodega</span><strong>{shortDate(activeImport.timeline.estimated_warehouse_date)}</strong></article>
+          </div>
+
+          <div className="active-import-stats">
+            <article><span>FOB confirmado</span><strong>{formatUsd.format(activeImport.totals.fob_usd)}</strong></article>
+            <article><span>Volumen</span><strong>{formatNumber.format(activeImport.totals.total_cbm)} m³</strong></article>
+            <article><span>Cajas</span><strong>{formatNumber.format(activeImport.totals.cartons)}</strong></article>
+            <article><span>Peso bruto</span><strong>{formatNumber.format(activeImport.totals.gross_weight_kg)} kg</strong></article>
+            <article><span>Contenedor</span><strong>{activeImport.container}</strong></article>
+            <article><span>Costo puesto estimado</span><strong>{formatUsd.format(activeImport.estimated_costs?.landed_cost_usd ?? 0)}</strong></article>
+          </div>
+
+          <div className="active-import-alert">
+            <AlertTriangle size={18} />
+            <span>
+              Llegada estimada el <strong>{shortDate(activeImport.timeline.estimated_warehouse_date)}</strong>,
+              antes de la temporada alta noviembre–febrero. Faltan {activeImport.timeline.remaining_total_days} días.
+            </span>
+          </div>
+
+          <div className="active-import-products-title">
+            <div>
+              <h3>Partidas de la proforma</h3>
+              <p>{activeImportItems.length} de {activeImport.items.length} productos visibles.</p>
+            </div>
+            <label><Search size={18} /><input value={activeImportSearch} onChange={(event) => setActiveImportSearch(event.target.value)} placeholder="Buscar producto o SKU" /></label>
+          </div>
+          <div className="active-import-table-wrap">
+            <table className="foreign-trade-table active-import-table">
+              <thead><tr><th>Línea</th><th>Producto</th><th>Cantidad</th><th>FOB unitario</th><th>FOB total</th><th>m³</th></tr></thead>
+              <tbody>
+                {activeImportItems.map((item) => (
+                  <tr key={item.line_number}>
+                    <td data-label="Línea"><strong>{item.line_number}</strong></td>
+                    <td data-label="Producto"><strong>{item.name}</strong><span>{item.sku || "SKU por homologar"}</span></td>
+                    <td data-label="Cantidad"><strong>{formatNumber.format(item.quantity)} {item.unit}</strong><span>{formatNumber.format(item.cartons)} cajas</span></td>
+                    <td data-label="FOB unitario"><strong>{formatUsd.format(item.unit_fob_usd)}</strong></td>
+                    <td data-label="FOB total"><strong>{formatUsd.format(item.total_fob_usd)}</strong></td>
+                    <td data-label="m³"><strong>{item.total_cbm ? formatNumber.format(item.total_cbm) : "Pendiente"}</strong><span>Página {item.source_page}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <small className="active-import-source">Fuente: {activeImport.source.file}, {activeImport.source.pages} páginas · {activeImport.incoterm}</small>
+        </section>
+      ) : null}
 
       <section className="foreign-trade-overview-grid">
         <article className="data-card foreign-trade-timeline">
@@ -912,7 +1060,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
                 {proposal.items.map((item) => (
                   <tr key={`${item.sku}-${item.source_document}`}>
                     <td data-label="Producto"><strong>{item.name || item.sku}</strong><span>{item.sku}</span></td>
-                    <td data-label="Stock / demanda"><strong>{formatNumber.format(item.available_units)} un.</strong><span>{formatNumber.format(item.average_daily_demand)} por día</span></td>
+                    <td data-label="Stock / demanda"><strong>{formatNumber.format(item.available_units)} un.</strong><span>{formatNumber.format(item.average_daily_demand)} por día · {formatNumber.format(item.confirmed_inbound_units ?? 0)} en tránsito</span></td>
                     <td data-label="Cobertura"><strong>{item.coverage_days == null ? "Sin demanda" : `${formatNumber.format(item.coverage_days)} días`}</strong><span>{item.severity}</span></td>
                     <td data-label="Compra sugerida"><strong>{formatNumber.format(item.recommended_units)} un.</strong><span>Múltiplo {formatNumber.format(item.order_multiple)}</span></td>
                     <td data-label="m³"><strong>{formatNumber.format(item.costs.total_cbm)}</strong><span>{item.unit_cbm ? `${item.unit_cbm.toFixed(5)} por unidad` : "Sin volumen"}</span></td>
