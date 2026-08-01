@@ -109,6 +109,14 @@ class PostgrestQuery {
     return this;
   }
 
+  upsert(payload: unknown, options?: { onConflict?: string }) {
+    this.method = "POST";
+    this.payload = payload;
+    this.prefer = "resolution=merge-duplicates,return=representation";
+    if (options?.onConflict) this.params.set("on_conflict", options.onConflict);
+    return this;
+  }
+
   update(payload: unknown) {
     this.method = "PATCH";
     this.payload = payload;
@@ -230,6 +238,7 @@ Deno.serve(async (req) => {
     if ((route === "send-test" || route === "test-send") && req.method === "POST") return handleSendTest(req, supabase, user);
     if (route === "send-campaign" && req.method === "POST") return handleSendCampaign(req, supabase, user);
     if (route === "sync-replies" && req.method === "POST") return handleSyncReplies(supabase, user, req);
+    if (route === "sync-customs-references" && req.method === "POST") return handleSyncCustomsReferences(supabase, user, req);
 
     return json({ error: "Route not found" }, 404, req);
   } catch (error) {
@@ -707,6 +716,100 @@ async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedU
   return json({ checked: recipients.length, replies, log }, 200, req);
 }
 
+async function handleSyncCustomsReferences(
+  supabase: SupabaseClient,
+  _user: AuthenticatedUser,
+  req: Request,
+) {
+  const integration = await getIntegration(supabase, true);
+  if (!integration.refresh_token_encrypted) throw new HttpError("Gmail no esta conectado.", 400);
+
+  const refreshToken = await decryptSecret(integration.refresh_token_encrypted);
+  const accessToken = await refreshAccessToken(refreshToken);
+  const query = [
+    "has:attachment",
+    "{",
+    "from:j.rodriguez@agenciarodriguezpalma.cl",
+    "from:contable@agenciarodriguezpalma.cl",
+    "from:operaciones@agenciarodriguezpalma.cl",
+    "from:operaciones1@agenciarodriguezpalma.cl",
+    "from:operaciones2@agenciarodriguezpalma.cl",
+    "to:j.rodriguez@agenciarodriguezpalma.cl",
+    "cc:j.rodriguez@agenciarodriguezpalma.cl",
+    "}",
+  ].join(" ");
+  const messageIds = await listGmailMessageIds(accessToken, query, 500);
+  const observedAt = new Date().toISOString();
+  const records: Array<Record<string, unknown>> = [];
+
+  for (const messageId of messageIds) {
+    const message = await getGmailMessageFull(accessToken, messageId);
+    const from = getGmailHeader(message, "From");
+    const to = getGmailHeader(message, "To");
+    const cc = getGmailHeader(message, "Cc");
+    const subject = getGmailHeader(message, "Subject");
+    const referenceText = `${from} ${to} ${cc} ${subject}`.toLowerCase();
+    if (!referenceText.includes("agenciarodriguezpalma.cl") && !referenceText.includes("j.rodriguez@agenciarodriguezpalma.cl")) {
+      continue;
+    }
+
+    const internalDate = Number(message.internalDate || 0);
+    const headerDate = getGmailHeader(message, "Date");
+    const messageDate = internalDate > 0
+      ? new Date(internalDate).toISOString()
+      : safeIsoDate(headerDate) || observedAt;
+    const attachmentNames = collectGmailAttachmentNames(asObject(message.payload));
+    const dispatchMatch = subject.match(/desp(?:acho)?\.?\s*[:#-]?\s*(\d{4,})/i);
+    const payload = {
+      source: "gmail",
+      reference_type: "customs_and_local_cost_reference",
+      agency: "Agencia Rodriguez Palma",
+      reference_contact: "j.rodriguez@agenciarodriguezpalma.cl",
+      reference_domain: "agenciarodriguezpalma.cl",
+      gmail_message_id: messageId,
+      gmail_url: buildGmailMessageUrl(messageId, String(integration.connected_email || "")),
+      from,
+      to,
+      cc,
+      subject,
+      date: messageDate,
+      dispatch: dispatchMatch?.[1] || null,
+      attachment_names: attachmentNames,
+      attachment_count: attachmentNames.length,
+      snippet: String(message.snippet || "").slice(0, 500),
+      costs_are_variable: true,
+      fixed_tariff: false,
+      usage_note: "Referencia historica. Validar valores vigentes para cada nuevo despacho.",
+    };
+    records.push({
+      provider: "gmail",
+      resource: "customs_cost_references",
+      external_id: messageId,
+      payload,
+      payload_hash: await sha256Hex(JSON.stringify(payload)),
+      observed_at: messageDate,
+      updated_at: observedAt,
+    });
+  }
+
+  if (records.length) {
+    const { error } = await supabase.from("integration_records").upsert(records, {
+      onConflict: "provider,resource,external_id",
+    });
+    if (error) throw new HttpError((error as { message?: string }).message || "No se pudo guardar la evidencia Gmail.", 400);
+  }
+
+  return json({
+    success: true,
+    query,
+    checked: messageIds.length,
+    synced: records.length,
+    resource: "customs_cost_references",
+    costsAreVariable: true,
+    fixedTariff: false,
+  }, 200, req);
+}
+
 async function sendTrackedEmail(
   supabase: SupabaseClient,
   input: {
@@ -1075,6 +1178,59 @@ async function getGmailMessageMetadata(accessToken: string, messageId: string) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new HttpError(data.error?.message || "No se pudo leer el mensaje enviado en Gmail.", 400);
   return data as Record<string, unknown>;
+}
+
+async function listGmailMessageIds(accessToken: string, query: string, maximum: number) {
+  const ids: string[] = [];
+  let pageToken = "";
+
+  while (ids.length < maximum) {
+    const params = new URLSearchParams({ q: query, maxResults: String(Math.min(100, maximum - ids.length)) });
+    if (pageToken) params.set("pageToken", pageToken);
+    const res = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new HttpError(data.error?.message || "No se pudieron buscar referencias en Gmail.", 400);
+    const page = Array.isArray(data.messages) ? data.messages as Array<Record<string, unknown>> : [];
+    ids.push(...page.map((item) => String(item.id || "")).filter(Boolean));
+    pageToken = String(data.nextPageToken || "");
+    if (!pageToken || !page.length) break;
+  }
+
+  return Array.from(new Set(ids)).slice(0, maximum);
+}
+
+async function getGmailMessageFull(accessToken: string, messageId: string) {
+  const params = new URLSearchParams({ format: "full" });
+  const res = await fetchWithRetry(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(messageId)}?${params.toString()}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new HttpError(data.error?.message || "No se pudo leer una referencia de Gmail.", 400);
+  return data as Record<string, unknown>;
+}
+
+function collectGmailAttachmentNames(payload: Record<string, unknown>): string[] {
+  const names: string[] = [];
+  const filename = String(payload.filename || "").trim();
+  if (filename) names.push(filename);
+  const parts = Array.isArray(payload.parts) ? payload.parts as Array<Record<string, unknown>> : [];
+  for (const part of parts) names.push(...collectGmailAttachmentNames(part));
+  return Array.from(new Set(names));
+}
+
+function safeIsoDate(value: string) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString();
+}
+
+async function sha256Hex(value: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 async function findCustomerReplyInThread(

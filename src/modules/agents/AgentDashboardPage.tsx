@@ -147,6 +147,36 @@ type ForeignTradeReport = {
     vat_policy?: string;
     sources?: Array<{ file?: string; purpose?: string }>;
   };
+  customs_cost_reference?: {
+    reference_policy?: {
+      contact_email?: string;
+      accepted_domain?: string;
+      usage?: string;
+      fixed_tariff?: boolean;
+      costs_are_variable?: boolean;
+      note?: string;
+    };
+    verified_email_documents?: Array<{
+      message_id?: string;
+      email_date?: string;
+      sender?: string;
+      reference_contact?: string;
+      subject?: string;
+      dispatch?: string;
+      document_type?: string;
+      attachments?: string[];
+      source?: string;
+    }>;
+    summary?: {
+      verified_documents?: number;
+      latest_email_date?: string;
+      latest_dispatch?: string;
+      reference_contact?: string;
+      accepted_domain?: string;
+      fixed_tariff?: boolean;
+      costs_are_variable?: boolean;
+    };
+  };
   freight_reference?: {
     provider?: { name?: string; domain?: string };
     lane?: string;
@@ -157,10 +187,17 @@ type ForeignTradeReport = {
     };
     summary?: {
       latest_invoice_number?: string;
+      latest_invoice_date?: string;
       latest_verified_usd?: number;
+      latest_provider?: string;
+      latest_source?: string;
       historical_min_usd?: number;
       historical_max_usd?: number;
       historical_average_usd?: number;
+      crm_invoice_candidates?: number;
+      crm_usable_invoices?: number;
+      fallback_used?: boolean;
+      selection_basis?: string;
     };
   };
   active_imports?: Array<{
@@ -238,10 +275,17 @@ type ForeignTradeReport = {
     total_skus?: number;
     freight_reference?: {
       latest_invoice_number?: string;
+      latest_invoice_date?: string;
       latest_verified_usd?: number;
+      latest_provider?: string;
+      latest_source?: string;
       historical_min_usd?: number;
       historical_max_usd?: number;
       historical_average_usd?: number;
+      crm_invoice_candidates?: number;
+      crm_usable_invoices?: number;
+      fallback_used?: boolean;
+      selection_basis?: string;
     };
     required_order_date?: string | null;
     projected_arrival_date: string;
@@ -1218,9 +1262,25 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
           centerValue={formatUsd.format(totals.landed_cost_usd)}
           formatter={(value) => formatUsd.format(value)}
           slices={costSlices}
-          subtitle={`Flete ADS 20GP: ${formatUsd.format(proposal.freight_reference?.latest_verified_usd ?? totals.freight_usd)}. Otros costos según despacho 49194; IVA aparte.`}
+          subtitle={`Flete ${proposal.freight_reference?.latest_provider ?? "AD/ADS Cargas"} 20GP: ${formatUsd.format(proposal.freight_reference?.latest_verified_usd ?? totals.freight_usd)} (${proposal.freight_reference?.latest_source === "crm_facto_purchase_invoice" ? "factura Facto" : "respaldo histórico"}). Los demás costos usan referencias históricas variables de Agencia Rodríguez Palma; IVA aparte.`}
           title="Composición del costo de importación"
         />
+      </section>
+
+      <section className="data-card foreign-trade-cash-card">
+        <div>
+          <span className="eyebrow">TRAZABILIDAD DE OTROS COSTOS</span>
+          <h2>Agencia Rodríguez Palma</h2>
+          <p>
+            Facturas y solicitudes de fondos fechadas sirven como referencia por despacho. No son tarifas fijas y deben validarse antes de aprobar la compra.
+          </p>
+          <small>
+            Contacto de referencia: {report.customs_cost_reference?.summary?.reference_contact ?? "j.rodriguez@agenciarodriguezpalma.cl"}
+            {report.customs_cost_reference?.summary?.latest_dispatch ? ` · Último despacho ${report.customs_cost_reference.summary.latest_dispatch}` : ""}
+            {report.customs_cost_reference?.summary?.latest_email_date ? ` · ${shortDate(report.customs_cost_reference.summary.latest_email_date)}` : ""}
+          </small>
+        </div>
+        <strong>{formatNumber.format(report.customs_cost_reference?.summary?.verified_documents ?? 0)} documentos</strong>
       </section>
 
       <section className="data-card foreign-trade-cash-card">
@@ -1251,7 +1311,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
           <article><span>Volumen consolidado</span><strong>{formatNumber.format(totals.total_cbm)} m³</strong><small>Meta {formatNumber.format(proposal.container_reference_cbm)} m³</small></article>
           <article><span>Llenado {proposal.container_type ?? "20GP"}</span><strong>{formatNumber.format(proposal.container_utilization_percent)}%</strong><small>{formatNumber.format(proposal.container_remaining_cbm ?? Math.max(0, proposal.container_reference_cbm - totals.total_cbm))} m³ disponibles</small></article>
           <article><span>Total FOB</span><strong>{formatUsd.format(totals.fob_usd)}</strong></article>
-          <article><span>Flete ADS</span><strong>{formatUsd.format(totals.freight_usd)}</strong><small>Factura {proposal.freight_reference?.latest_invoice_number ?? "verificada"}</small></article>
+          <article><span>Flete internacional</span><strong>{formatUsd.format(totals.freight_usd)}</strong><small>{proposal.freight_reference?.latest_source === "crm_facto_purchase_invoice" ? "Factura Facto" : "Referencia histórica"} {proposal.freight_reference?.latest_invoice_number ?? "verificada"}</small></article>
           <article><span>Costo puesto</span><strong>{formatUsd.format(totals.landed_cost_usd)}</strong><small>IVA aparte</small></article>
           <article><span>IVA recuperable</span><strong>{formatUsd.format(totals.recoverable_import_vat_cash_usd)}</strong><small>Necesidad de caja</small></article>
         </div>

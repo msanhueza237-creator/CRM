@@ -14,6 +14,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
+import { syncGmailCustomsReferences } from "../../lib/gmailApi";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
 import { useCompanyStore } from "../companies/CompanyStore";
@@ -88,6 +89,38 @@ interface InventorySnapshotRecord {
     margin_percent?: number | null;
     sales_history_available?: boolean;
   };
+}
+
+interface IntegrationPayloadRecord {
+  external_id?: string | null;
+  resource: string;
+  payload: Record<string, unknown>;
+  updated_at?: string | null;
+}
+
+function normalizeSearchText(value: unknown) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+}
+
+function isAdCargasInvoice(row: IntegrationPayloadRecord) {
+  const searchable = normalizeSearchText(JSON.stringify(row.payload));
+  return [
+    "ad cargas internacional",
+    "ads cargas internacional",
+    "ads internacional cargo",
+    "adscargas",
+  ].some((alias) => searchable.includes(alias));
+}
+
+function isAgencyRodriguezReference(row: IntegrationPayloadRecord) {
+  const searchable = normalizeSearchText(JSON.stringify(row.payload));
+  return (
+    searchable.includes("agenciarodriguezpalma.cl") ||
+    searchable.includes("j.rodriguez@agenciarodriguezpalma.cl")
+  );
 }
 
 const agents: Array<{
@@ -266,6 +299,78 @@ export function AgentsPage() {
           successMessage = `Analisis logistico enviado con ${snapshots.length} SKU sincronizados desde Facto. Los hallazgos se transformaran en propuestas revisables.`;
         } else {
           const today = new Date().toISOString().slice(0, 10);
+          const freightRecords: IntegrationPayloadRecord[] = [];
+          for (let from = 0; ; from += 1000) {
+            const { data: freightPage, error: freightError } = await supabase
+              .from("integration_records")
+              .select("external_id,resource,payload,updated_at")
+              .eq("provider", "facto")
+              .in("resource", ["purchase_documents", "purchase_document_details"])
+              .range(from, from + 999);
+            if (freightError) {
+              error = freightError;
+              break;
+            }
+            freightRecords.push(...((freightPage ?? []) as IntegrationPayloadRecord[]));
+            if ((freightPage ?? []).length < 1000) break;
+          }
+          let gmailReferenceSyncNote = "";
+          try {
+            const gmailSync = await syncGmailCustomsReferences();
+            gmailReferenceSyncNote = `Gmail reviso ${gmailSync.checked} correo(s) y dejo ${gmailSync.synced} referencia(s) trazables.`;
+          } catch (gmailSyncError) {
+            const message = gmailSyncError instanceof Error ? gmailSyncError.message : "No se pudo actualizar Gmail.";
+            gmailReferenceSyncNote = `No se pudo refrescar Gmail en esta ejecucion (${message}); se conservaron las referencias historicas ya verificadas.`;
+          }
+          const customsReferenceRecords: IntegrationPayloadRecord[] = [];
+          for (let from = 0; ; from += 1000) {
+            const { data: gmailPage, error: gmailError } = await supabase
+              .from("integration_records")
+              .select("external_id,resource,payload,updated_at")
+              .eq("provider", "gmail")
+              .eq("resource", "customs_cost_references")
+              .range(from, from + 999);
+            if (gmailError) {
+              error = gmailError;
+              break;
+            }
+            customsReferenceRecords.push(...((gmailPage ?? []) as IntegrationPayloadRecord[]));
+            if ((gmailPage ?? []).length < 1000) break;
+          }
+          if (error) {
+            setBusy("");
+            setNotice(`No se pudieron consultar las evidencias de costos en el CRM: ${error.message}`);
+            await load();
+            return;
+          }
+          const freightByDocument = new Map<string, Record<string, unknown>>();
+          freightRecords
+            .filter(isAdCargasInvoice)
+            .sort((left, right) =>
+              left.resource === right.resource
+                ? 0
+                : left.resource === "purchase_documents"
+                  ? -1
+                  : 1,
+            )
+            .forEach((row, index) => {
+              const key = row.external_id || String(row.payload.document_id ?? row.payload.id ?? index);
+              freightByDocument.set(key, {
+                ...row.payload,
+                crm_external_id: row.external_id,
+                crm_resource: row.resource,
+                crm_updated_at: row.updated_at,
+              });
+            });
+          const freightInvoices = Array.from(freightByDocument.values());
+          const customsCostReferences = customsReferenceRecords
+            .filter(isAgencyRodriguezReference)
+            .map((row) => ({
+              ...row.payload,
+              crm_external_id: row.external_id,
+              crm_resource: row.resource,
+              crm_updated_at: row.updated_at,
+            }));
           const { data: insertedTask, error: insertError } = await supabase
             .from("business_agent_tasks")
             .insert({
@@ -275,8 +380,12 @@ export function AgentsPage() {
               payload: {
                 products: snapshots,
                 as_of: today,
+                freight_invoices: freightInvoices,
+                customs_cost_references: customsCostReferences,
                 sources: [
                   "facto_read_only",
+                  "crm/facto/purchase_documents/ad_cargas_internacional",
+                  "gmail/agenciarodriguezpalma.cl/j.rodriguez",
                   "google_drive/agente comercio exterior/chinafore proveedor",
                   "google_drive/agente comercio exterior/agencia",
                 ],
@@ -286,7 +395,7 @@ export function AgentsPage() {
             .single();
           error = insertError;
           dashboardTaskId = insertedTask?.id ?? "";
-          successMessage = `Analisis de comercio exterior enviado con ${snapshots.length} SKU de Facto. Se cruzaran rotacion, stock, FOB, m3 y costos historicos en una sola propuesta revisable.`;
+          successMessage = `Analisis de comercio exterior enviado con ${snapshots.length} SKU, ${freightInvoices.length} factura(s) AD/ADS Cargas y ${customsCostReferences.length} referencia(s) sincronizada(s) de Agencia Rodriguez Palma. ${gmailReferenceSyncNote} Los importes historicos son referencias variables, no tarifas fijas.`;
         }
       }
     } else if (type === "finance") {

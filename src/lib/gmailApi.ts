@@ -70,6 +70,15 @@ export interface GmailTestResult {
   gmailMessageId?: string;
 }
 
+export interface GmailCustomsReferenceSyncResult {
+  success: boolean;
+  checked: number;
+  synced: number;
+  resource: "customs_cost_references";
+  costsAreVariable: true;
+  fixedTariff: false;
+}
+
 // ── Defaults ───────────────────────────────────────────────────────
 
 export const emptyGmailStatus: GmailStatus = {
@@ -171,4 +180,8 @@ export async function sendGmailCampaign(payload: GmailCampaignPayload): Promise<
 
 export async function syncGmailReplies(): Promise<GmailReplySyncResult> {
   return callGmail<GmailReplySyncResult>("sync-replies", { method: "POST", body: {} });
+}
+
+export async function syncGmailCustomsReferences(): Promise<GmailCustomsReferenceSyncResult> {
+  return callGmail<GmailCustomsReferenceSyncResult>("sync-customs-references", { method: "POST", body: {} });
 }
