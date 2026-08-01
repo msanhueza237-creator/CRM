@@ -147,6 +147,22 @@ type ForeignTradeReport = {
     vat_policy?: string;
     sources?: Array<{ file?: string; purpose?: string }>;
   };
+  freight_reference?: {
+    provider?: { name?: string; domain?: string };
+    lane?: string;
+    container_policy?: {
+      type?: string;
+      planning_capacity_cbm?: number;
+      target_fill_percent?: number;
+    };
+    summary?: {
+      latest_invoice_number?: string;
+      latest_verified_usd?: number;
+      historical_min_usd?: number;
+      historical_max_usd?: number;
+      historical_average_usd?: number;
+    };
+  };
   active_imports?: Array<{
     order_number: string;
     reference?: string;
@@ -215,11 +231,45 @@ type ForeignTradeReport = {
     totals: ForeignTradeProduct["costs"];
     container_reference_cbm: number;
     container_utilization_percent: number;
+    container_type?: string;
+    container_remaining_cbm?: number;
+    container_count?: number;
+    total_units?: number;
+    total_skus?: number;
+    freight_reference?: {
+      latest_invoice_number?: string;
+      latest_verified_usd?: number;
+      historical_min_usd?: number;
+      historical_max_usd?: number;
+      historical_average_usd?: number;
+    };
     required_order_date?: string | null;
     projected_arrival_date: string;
     warnings: string[];
   };
   methodology: string;
+};
+
+type ForeignTradeActualOrder = {
+  id: string;
+  supplier: string;
+  suggested_task_id?: string | null;
+  file_name: string;
+  storage_path: string;
+  mime_type?: string | null;
+  file_size?: number | null;
+  status: "uploaded" | "under_review" | "confirmed" | "rejected";
+  notes?: string | null;
+  suggested_snapshot?: {
+    generated_at?: string;
+    totals?: ForeignTradeProduct["costs"];
+    container_type?: string;
+    container_reference_cbm?: number;
+    container_utilization_percent?: number;
+    total_units?: number;
+    total_skus?: number;
+  };
+  created_at: string;
 };
 
 type FinancialMonth = {
@@ -827,7 +877,133 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [catalogSearch, setCatalogSearch] = useState("");
   const [volumeFilter, setVolumeFilter] = useState("all");
   const [activeImportSearch, setActiveImportSearch] = useState("");
+  const [actualOrderFile, setActualOrderFile] = useState<File | null>(null);
+  const [actualOrderNotes, setActualOrderNotes] = useState("");
+  const [actualOrders, setActualOrders] = useState<ForeignTradeActualOrder[]>([]);
+  const [actualOrderLoading, setActualOrderLoading] = useState(false);
+  const [actualOrderMessage, setActualOrderMessage] = useState("");
   const latest = tasks[0];
+
+  const loadActualOrders = useCallback(async () => {
+    const client = supabase;
+    if (!isSupabaseConfigured || !client) return;
+    const { data, error } = await client
+      .from("foreign_trade_actual_orders")
+      .select("id,supplier,suggested_task_id,file_name,storage_path,mime_type,file_size,status,notes,suggested_snapshot,created_at")
+      .order("created_at", { ascending: false })
+      .limit(8);
+    if (error) {
+      if (error.code === "42P01" || error.message.toLowerCase().includes("schema cache")) {
+        setActualOrderMessage("Falta habilitar el repositorio privado de órdenes reales en Supabase.");
+      }
+      return;
+    }
+    setActualOrders((data ?? []) as ForeignTradeActualOrder[]);
+  }, []);
+
+  useEffect(() => {
+    void loadActualOrders();
+  }, [loadActualOrders]);
+
+  const uploadActualOrder = useCallback(async () => {
+    const client = supabase;
+    if (!client || !report || !actualOrderFile) return;
+    const allowedTypes = new Set([
+      "application/pdf",
+      "application/vnd.ms-excel",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ]);
+    const extension = actualOrderFile.name.split(".").pop()?.toLowerCase() ?? "";
+    if (!allowedTypes.has(actualOrderFile.type) && !["pdf", "xls", "xlsx"].includes(extension)) {
+      setActualOrderMessage("Selecciona un PDF o un archivo Excel (.xls o .xlsx).");
+      return;
+    }
+    if (actualOrderFile.size > 25 * 1024 * 1024) {
+      setActualOrderMessage("El archivo supera el máximo permitido de 25 MB.");
+      return;
+    }
+
+    setActualOrderLoading(true);
+    setActualOrderMessage("");
+    let storagePath = "";
+    try {
+      const { data: authData, error: authError } = await client.auth.getUser();
+      if (authError || !authData.user) throw new Error("Tu sesión no está disponible. Vuelve a iniciar sesión.");
+      const now = new Date();
+      const cleanName = actualOrderFile.name
+        .normalize("NFKD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9._-]+/g, "-")
+        .replace(/-+/g, "-");
+      storagePath = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(2, "0")}/${crypto.randomUUID()}-${cleanName}`;
+      const { error: uploadError } = await client.storage
+        .from("foreign-trade-orders")
+        .upload(storagePath, actualOrderFile, { contentType: actualOrderFile.type || undefined, upsert: false });
+      if (uploadError) throw uploadError;
+
+      const proposal = report.purchase_proposal;
+      const snapshot = {
+        generated_at: report.generated_at,
+        totals: proposal.totals,
+        container_type: proposal.container_type ?? "20GP",
+        container_reference_cbm: proposal.container_reference_cbm,
+        container_utilization_percent: proposal.container_utilization_percent,
+        total_units: proposal.total_units ?? proposal.items.reduce((sum, item) => sum + item.recommended_units, 0),
+        total_skus: proposal.total_skus ?? proposal.items.length,
+        items: proposal.items.map((item) => ({
+          sku: item.sku,
+          name: item.name,
+          recommended_units: item.recommended_units,
+          unit_fob_usd: item.unit_fob_usd,
+          unit_cbm: item.unit_cbm,
+          costs: item.costs,
+        })),
+      };
+      const { error: insertError } = await client.from("foreign_trade_actual_orders").insert({
+        supplier: "Chinafore",
+        suggested_task_id: latest?.id ?? null,
+        suggested_generated_at: report.generated_at,
+        suggested_snapshot: snapshot,
+        file_name: actualOrderFile.name,
+        storage_path: storagePath,
+        mime_type: actualOrderFile.type || null,
+        file_size: actualOrderFile.size,
+        status: "uploaded",
+        notes: actualOrderNotes.trim() || null,
+        uploaded_by: authData.user.id,
+      });
+      if (insertError) {
+        await client.storage.from("foreign-trade-orders").remove([storagePath]);
+        throw insertError;
+      }
+      setActualOrderFile(null);
+      setActualOrderNotes("");
+      setActualOrderMessage("Compra real guardada. Quedó pendiente de conciliación con la sugerencia.");
+      await loadActualOrders();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No fue posible guardar el archivo.";
+      setActualOrderMessage(
+        message.toLowerCase().includes("bucket") || message.toLowerCase().includes("schema cache")
+          ? "Falta ejecutar foreign_trade_actual_orders.sql en Supabase antes de subir archivos."
+          : message,
+      );
+    } finally {
+      setActualOrderLoading(false);
+    }
+  }, [actualOrderFile, actualOrderNotes, latest?.id, loadActualOrders, report]);
+
+  const openActualOrder = useCallback(async (order: ForeignTradeActualOrder) => {
+    const client = supabase;
+    if (!client) return;
+    const { data, error } = await client.storage
+      .from("foreign-trade-orders")
+      .createSignedUrl(order.storage_path, 120);
+    if (error || !data?.signedUrl) {
+      setActualOrderMessage("No fue posible abrir el archivo privado.");
+      return;
+    }
+    window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+  }, []);
 
   const catalogItems = useMemo(() => {
     if (!report) return [];
@@ -917,7 +1093,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
           <Boxes size={22} />
           <span>Volumen sugerido</span>
           <strong>{formatNumber.format(totals.total_cbm)} m³</strong>
-          <small>{formatNumber.format(proposal.container_utilization_percent)}% del contenedor histórico</small>
+          <small>{formatNumber.format(proposal.container_utilization_percent)}% de un 20GP · meta útil {formatNumber.format(proposal.container_reference_cbm)} m³</small>
         </article>
         <article className={activeImport ? "active-import" : ""}>
           <PackageCheck size={22} />
@@ -1042,7 +1218,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
           centerValue={formatUsd.format(totals.landed_cost_usd)}
           formatter={(value) => formatUsd.format(value)}
           slices={costSlices}
-          subtitle="Estimación basada en el despacho real 49194. El IVA se informa aparte."
+          subtitle={`Flete ADS 20GP: ${formatUsd.format(proposal.freight_reference?.latest_verified_usd ?? totals.freight_usd)}. Otros costos según despacho 49194; IVA aparte.`}
           title="Composición del costo de importación"
         />
       </section>
@@ -1069,6 +1245,16 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
             {proposal.items.length ? "Pendiente de aprobación" : "Sin compra necesaria"}
           </span>
         </div>
+        <div className="foreign-trade-proposal-summary">
+          <article><span>Referencias</span><strong>{formatNumber.format(proposal.total_skus ?? proposal.items.length)} SKU</strong></article>
+          <article><span>Unidades</span><strong>{formatNumber.format(proposal.total_units ?? proposal.items.reduce((sum, item) => sum + item.recommended_units, 0))}</strong></article>
+          <article><span>Volumen consolidado</span><strong>{formatNumber.format(totals.total_cbm)} m³</strong><small>Meta {formatNumber.format(proposal.container_reference_cbm)} m³</small></article>
+          <article><span>Llenado {proposal.container_type ?? "20GP"}</span><strong>{formatNumber.format(proposal.container_utilization_percent)}%</strong><small>{formatNumber.format(proposal.container_remaining_cbm ?? Math.max(0, proposal.container_reference_cbm - totals.total_cbm))} m³ disponibles</small></article>
+          <article><span>Total FOB</span><strong>{formatUsd.format(totals.fob_usd)}</strong></article>
+          <article><span>Flete ADS</span><strong>{formatUsd.format(totals.freight_usd)}</strong><small>Factura {proposal.freight_reference?.latest_invoice_number ?? "verificada"}</small></article>
+          <article><span>Costo puesto</span><strong>{formatUsd.format(totals.landed_cost_usd)}</strong><small>IVA aparte</small></article>
+          <article><span>IVA recuperable</span><strong>{formatUsd.format(totals.recoverable_import_vat_cash_usd)}</strong><small>Necesidad de caja</small></article>
+        </div>
         {proposal.items.length ? (
           <div className="foreign-trade-table-wrap">
             <table className="foreign-trade-table">
@@ -1094,6 +1280,60 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
           </div>
         ) : <div className="empty-state">La demanda y el stock observados no activan una reposición en este corte.</div>}
         {proposal.warnings.map((warning) => <div className="dashboard-warning" key={warning}><AlertTriangle size={18} /> {warning}</div>)}
+
+        <section className="foreign-trade-actual-order">
+          <div className="foreign-trade-actual-order-heading">
+            <div>
+              <span className="eyebrow">COMPRA REAL ACORDADA</span>
+              <h3>Subir proforma u orden ajustada</h3>
+              <p>
+                Adjunta el PDF o Excel final acordado con el proveedor. La sugerencia actual se guarda como
+                fotografía y el archivo queda pendiente de conciliación; nunca reemplaza los datos automáticamente.
+              </p>
+            </div>
+            <FileSpreadsheet size={28} />
+          </div>
+          <div className="foreign-trade-actual-order-form">
+            <label className="foreign-trade-file-field">
+              <span>Archivo PDF o Excel</span>
+              <input
+                accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                onChange={(event) => setActualOrderFile(event.target.files?.[0] ?? null)}
+                type="file"
+              />
+              <small>{actualOrderFile ? `${actualOrderFile.name} · ${(actualOrderFile.size / 1024 / 1024).toFixed(2)} MB` : "Máximo 25 MB"}</small>
+            </label>
+            <label>
+              <span>Nota del ajuste (opcional)</span>
+              <input
+                onChange={(event) => setActualOrderNotes(event.target.value)}
+                placeholder="Ej.: proveedor ajustó cantidades y modelos"
+                value={actualOrderNotes}
+              />
+            </label>
+            <button className="primary-button" disabled={!actualOrderFile || actualOrderLoading} onClick={() => void uploadActualOrder()} type="button">
+              {actualOrderLoading ? "Guardando..." : "Guardar compra real"}
+            </button>
+          </div>
+          {actualOrderMessage ? <div className="foreign-trade-upload-message">{actualOrderMessage}</div> : null}
+          {actualOrders.length ? (
+            <div className="foreign-trade-actual-order-list">
+              {actualOrders.map((order) => (
+                <article key={order.id}>
+                  <div>
+                    <strong>{order.file_name}</strong>
+                    <span>{new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(order.created_at))} · {order.supplier}</span>
+                    {order.notes ? <small>{order.notes}</small> : null}
+                  </div>
+                  <div>
+                    <span className="status-chip pending">Pendiente de conciliación</span>
+                    <button className="secondary-button" onClick={() => void openActualOrder(order)} type="button"><Download size={16} /> Abrir</button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : null}
+        </section>
       </section>
 
       <section className="data-card foreign-trade-catalog">
