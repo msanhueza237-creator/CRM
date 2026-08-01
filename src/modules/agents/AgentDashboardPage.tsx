@@ -4840,7 +4840,14 @@ export function AgentDashboardPage() {
     }
     setNotice("");
     try {
-      const { data, error } = await supabase.from("business_agent_tasks").select("id,agent_type,status,created_at,completed_at,result,error_code").eq("agent_type", agentType).order("created_at", { ascending: false }).limit(20);
+      const taskQuery = supabase
+        .from("business_agent_tasks")
+        .select("id,agent_type,status,created_at,completed_at,result,error_code")
+        .eq("agent_type", agentType)
+        .order("created_at", { ascending: false });
+      const { data, error } = agentType === "executive"
+        ? await taskQuery.eq("status", "completed").limit(1)
+        : await taskQuery.limit(20);
       if (error) throw error;
       setTasks((data ?? []) as AgentTask[]);
       if (agentType === "logistics") setSnapshots(await loadAllSnapshots());
@@ -4913,9 +4920,10 @@ export function AgentDashboardPage() {
 
   useEffect(() => {
     void load();
-    const timer = window.setInterval(() => void load(), 8000);
+    const refreshInterval = agentType === "executive" ? 30000 : 8000;
+    const timer = window.setInterval(() => void load(), refreshInterval);
     return () => window.clearInterval(timer);
-  }, [load]);
+  }, [agentType, load]);
 
   return (
     <section className="agents-page agent-dashboard-page">
