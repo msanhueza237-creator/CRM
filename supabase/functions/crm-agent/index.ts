@@ -540,9 +540,13 @@ async function collectExecutiveSignals(
     : unseen(documentRows, previous.sales as unknown[], "external_id");
   const sales = selectedSales
     .map((record) => ({
-      ...asObject(record.payload),
       external_id: record.external_id,
       observed_at: record.updated_at,
+      ...pickExecutiveFields(asObject(record.payload), [
+        "document_id", "folio", "number", "document_number", "document_type", "date", "issued_at",
+        "receiver_business_name", "recipient_business_name", "customer_name", "customer", "net_total",
+        "net_amount", "total", "gross_total", "status",
+      ]),
     }))
     .slice(0, 20);
   const stockoutRows = rows(inventoryResult.data).filter((record) => {
@@ -576,20 +580,33 @@ async function collectExecutiveSignals(
   const signals = {
     sales,
     stockouts: selectedStockouts.map((record) => ({
-      ...asObject(record.payload),
       external_id: record.external_id,
       observed_at: record.updated_at,
+      ...pickExecutiveFields(asObject(record.payload), [
+        "sku", "name", "product_name", "available_units", "stock", "quantity", "existence",
+        "reorder_point", "warehouse", "unit_cost", "unit_price",
+      ]),
     })).slice(0, 30),
     opportunities: selectedProposals.slice(0, 20),
     campaign_replies: selectedReplies.slice(0, 20),
-    agent_updates: selectedTasks.slice(0, 20),
+    agent_updates: selectedTasks.map((task) => {
+      const result = asObject(task.result);
+      return {
+        id: task.id,
+        agent_type: task.agent_type,
+        completed_at: task.completed_at,
+        summary: result.summary ?? null,
+        metrics: result.metrics ?? {},
+        warnings: Array.isArray(result.warnings) ? result.warnings.slice(0, 3) : [],
+      };
+    }).slice(0, 20),
     integration_errors: selectedIntegrations.slice(0, 10),
   };
   const relevantCount = Object.values(signals).reduce((total, value) => total + value.length, 0);
   return {
     context: {
-      financial_snapshot: asObject(financeResult.data?.payload),
-      commercial_snapshot: asObject(commercialResult.data?.payload),
+      financial_snapshot: compactExecutiveSnapshot(financeResult.data?.payload, financeResult.data?.updated_at),
+      commercial_snapshot: compactExecutiveSnapshot(commercialResult.data?.payload, commercialResult.data?.updated_at),
     },
     signals,
     relevant_count: slotKind === "morning" ? Math.max(1, relevantCount) : relevantCount,
@@ -601,6 +618,27 @@ async function collectExecutiveSignals(
       agent_updates: keys(taskRows),
       integration_errors: keys(integrationRows, "provider"),
     },
+  };
+}
+
+function pickExecutiveFields(source: Record<string, unknown>, fields: string[]) {
+  const result: Record<string, unknown> = {};
+  for (const field of fields) {
+    const value = source[field];
+    if (value !== undefined && value !== null && value !== "") result[field] = value;
+  }
+  return result;
+}
+
+function compactExecutiveSnapshot(payload: unknown, updatedAt: unknown) {
+  const source = asObject(payload);
+  return {
+    available: Object.keys(source).length > 0,
+    updated_at: updatedAt || null,
+    ...pickExecutiveFields(source, [
+      "period", "period_start", "period_end", "sales_total", "net_sales", "gross_sales",
+      "purchases_total", "inventory_value", "receivables", "cash_balance", "currency", "generated_at",
+    ]),
   };
 }
 

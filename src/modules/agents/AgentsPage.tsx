@@ -98,6 +98,40 @@ interface IntegrationPayloadRecord {
   updated_at?: string | null;
 }
 
+function compactExecutivePayload(
+  payload: Record<string, unknown> | null | undefined,
+  fields: string[],
+) {
+  const source = payload ?? {};
+  return Object.fromEntries(
+    fields
+      .filter((field) => source[field] !== undefined && source[field] !== null && source[field] !== "")
+      .map((field) => [field, source[field]]),
+  );
+}
+
+const executiveDocumentFields = [
+  "document_id", "folio", "number", "document_number", "document_type", "date", "issued_at",
+  "receiver_business_name", "recipient_business_name", "customer_name", "customer", "net_total",
+  "net_amount", "total", "gross_total", "status",
+];
+
+const executiveInventoryFields = [
+  "sku", "name", "product_name", "available_units", "stock", "quantity", "existence",
+  "reorder_point", "warehouse", "unit_cost", "unit_price",
+];
+
+function compactExecutiveSnapshot(payload: Record<string, unknown> | null | undefined, updatedAt?: string | null) {
+  return {
+    available: Boolean(payload && Object.keys(payload).length),
+    updated_at: updatedAt ?? null,
+    ...compactExecutivePayload(payload, [
+      "period", "period_start", "period_end", "sales_total", "net_sales", "gross_sales",
+      "purchases_total", "inventory_value", "receivables", "cash_balance", "currency", "generated_at",
+    ]),
+  };
+}
+
 function normalizeSearchText(value: unknown) {
   return String(value ?? "")
     .normalize("NFD")
@@ -625,9 +659,9 @@ export function AgentsPage() {
           .limit(20),
         supabase
           .from("whatsapp_messages")
-          .select("id,company_id,from_number,body,created_at")
+          .select("id,company_id,phone_number,body,occurred_at,created_at")
           .eq("direction", "incoming")
-          .order("created_at", { ascending: false })
+          .order("occurred_at", { ascending: false, nullsFirst: false })
           .limit(20),
         supabase
           .from("business_agent_tasks")
@@ -678,6 +712,29 @@ export function AgentsPage() {
           .slice(0, 30);
         const emailReplies = (emailRepliesResult.data ?? []).map((item) => ({ ...item, channel: "email" }));
         const whatsappReplies = (whatsappRepliesResult.data ?? []).map((item) => ({ ...item, channel: "whatsapp" }));
+        const sales = ((documentsResult.data ?? []) as IntegrationPayloadRecord[]).map((row) => ({
+          external_id: row.external_id,
+          observed_at: row.updated_at,
+          ...compactExecutivePayload(row.payload, executiveDocumentFields),
+        }));
+        const compactStockouts = stockouts.map((row) => ({
+          external_id: row.external_id,
+          observed_at: row.updated_at,
+          ...compactExecutivePayload(row.payload, executiveInventoryFields),
+        }));
+        const agentUpdates = (agentUpdatesResult.data ?? []).map((item) => {
+          const result = item.result && typeof item.result === "object"
+            ? item.result as Record<string, unknown>
+            : {};
+          return {
+            id: item.id,
+            agent_type: item.agent_type,
+            completed_at: item.completed_at,
+            summary: result.summary ?? null,
+            metrics: result.metrics ?? {},
+            warnings: Array.isArray(result.warnings) ? result.warnings.slice(0, 3) : [],
+          };
+        });
         const { data: insertedTask, error: insertError } = await supabase
           .from("business_agent_tasks")
           .insert({
@@ -696,16 +753,22 @@ export function AgentsPage() {
                 whatsapp_status: "pending_meta_approval",
               },
               signals: {
-                sales: documentsResult.data ?? [],
-                stockouts,
+                sales,
+                stockouts: compactStockouts,
                 opportunities: proposalsResult.data ?? [],
                 campaign_replies: [...emailReplies, ...whatsappReplies],
-                agent_updates: agentUpdatesResult.data ?? [],
+                agent_updates: agentUpdates,
                 integration_errors: integrationsResult.data ?? [],
               },
               context: {
-                financial_snapshot: financeResult.data?.[0]?.payload ?? {},
-                commercial_snapshot: commercialResult.data?.[0]?.payload ?? {},
+                financial_snapshot: compactExecutiveSnapshot(
+                  financeResult.data?.[0]?.payload ?? {},
+                  financeResult.data?.[0]?.updated_at,
+                ),
+                commercial_snapshot: compactExecutiveSnapshot(
+                  commercialResult.data?.[0]?.payload ?? {},
+                  commercialResult.data?.[0]?.updated_at,
+                ),
               },
             },
           })
