@@ -130,7 +130,7 @@ const agents: Array<{
   icon: typeof Bot;
 }> = [
   { type: "commercial", title: "Agente comercial", description: "Cartera unificada, recurrencia y segmentos HVAC.", icon: UserRoundSearch },
-  { type: "marketing", title: "Agente marketing", description: "Borradores de campañas.", icon: Megaphone },
+  { type: "marketing", title: "Agente marketing", description: "Audiencias, productos y campañas trazables para revisión.", icon: Megaphone },
   { type: "finance", title: "Agente finanzas", description: "Márgenes y anomalías.", icon: CircleDollarSign },
   { type: "collections", title: "Agente cobranza", description: "Cartera vencida y recordatorios.", icon: WalletCards },
   { type: "logistics", title: "Agente logistico", description: "Rotacion, margen, sobrestock y bodega.", icon: Truck },
@@ -140,7 +140,7 @@ const agents: Array<{
 
 const defaultAction: Record<AgentType, string> = {
   commercial: "review_pipeline",
-  marketing: "draft_campaign",
+  marketing: "prepare_marketing_plan",
   finance: "review_margin",
   collections: "review_aging",
   logistics: "review_logistics",
@@ -256,6 +256,101 @@ export function AgentsPage() {
         error = insertError;
         dashboardTaskId = insertedTask?.id ?? "";
         successMessage = `Analisis comercial enviado con ${commercialSnapshot?.customers?.length ?? 0} identidades de Facto/Tiendanube y ${crmCompanies.length} empresas revisadas en el CRM.`;
+      }
+    } else if (type === "marketing") {
+      const [commercialResult, financialResult] = await Promise.all([
+        supabase
+          .from("integration_records")
+          .select("payload")
+          .eq("provider", "facto")
+          .eq("resource", "commercial_snapshots")
+          .order("updated_at", { ascending: false })
+          .limit(1),
+        supabase
+          .from("integration_records")
+          .select("payload")
+          .eq("provider", "facto")
+          .eq("resource", "financial_snapshots")
+          .order("updated_at", { ascending: false })
+          .limit(1),
+      ]);
+      if (commercialResult.error || financialResult.error) {
+        error = commercialResult.error || financialResult.error;
+      } else {
+        const commercialSnapshot = commercialResult.data?.[0]?.payload as
+          | { customers?: Array<Record<string, unknown>>; sources?: Record<string, number> }
+          | undefined;
+        const financialSnapshot = financialResult.data?.[0]?.payload as
+          | Record<string, unknown>
+          | undefined;
+        const inventorySnapshot: InventorySnapshotRecord["payload"][] = [];
+        for (let from = 0; ; from += 1000) {
+          const { data, error: snapshotError } = await supabase
+            .from("integration_records")
+            .select("payload")
+            .eq("provider", "facto")
+            .eq("resource", "inventory_snapshots")
+            .range(from, from + 999);
+          if (snapshotError) {
+            error = snapshotError;
+            break;
+          }
+          const page = ((data ?? []) as InventorySnapshotRecord[])
+            .map((row) => row.payload)
+            .filter((item) => item.sku);
+          inventorySnapshot.push(...page);
+          if ((data ?? []).length < 1000) break;
+        }
+        if (!error) {
+          if (!commercialSnapshot?.customers?.length && !companies.length) {
+            setBusy("");
+            setNotice("Aún no existe una cartera sincronizada para preparar campañas.");
+            await load();
+            return;
+          }
+          const crmCompanies = companies.map((company) => ({
+            id: company.id,
+            name: company.name,
+            legal_name: company.legalName,
+            rut: company.rut,
+            email: company.email,
+            phone: company.phone,
+            whatsapp: company.whatsapp,
+            whatsapp_number: company.whatsappNumber,
+            type: company.type,
+            status: company.status,
+            priority: company.priority,
+            region: company.region,
+            city: company.city,
+            source: company.source,
+          }));
+          const { data: insertedTask, error: insertError } = await supabase
+            .from("business_agent_tasks")
+            .insert({
+              agent_type: "marketing",
+              action: defaultAction.marketing,
+              requested_by: user.id,
+              payload: {
+                commercial_snapshot: commercialSnapshot?.customers ?? [],
+                crm_companies: crmCompanies,
+                source_counts: commercialSnapshot?.sources ?? {},
+                financial_snapshot: financialSnapshot ?? {},
+                inventory_snapshot: inventorySnapshot,
+                as_of: new Date().toISOString().slice(0, 10),
+                business_context: {
+                  high_season_months: [11, 12, 1, 2],
+                  automatic_sending: false,
+                  approved_benefits: {},
+                  meta_whatsapp_pending_approval: true,
+                },
+              },
+            })
+            .select("id")
+            .single();
+          error = insertError;
+          dashboardTaskId = insertedTask?.id ?? "";
+          successMessage = `Plan de marketing enviado con ${commercialSnapshot?.customers?.length ?? 0} identidades, ${crmCompanies.length} empresas CRM y ${inventorySnapshot.length} SKU. Todo quedará en borrador para revisión humana.`;
+        }
       }
     } else if (type === "foreign_trade" || type === "logistics") {
       const snapshots: InventorySnapshotRecord["payload"][] = [];

@@ -6040,3 +6040,67 @@ th {
   .accounting-kpis{grid-template-columns:1fr}
   .finance-workspace-tabs button{font-size:.72rem}
 }
+
+/* Dashboard del agente de Marketing */
+.primary-link-button{align-items:center;background:#087f8c;border:1px solid #087f8c;border-radius:10px;color:#fff;display:inline-flex;font-size:.82rem;font-weight:850;gap:.45rem;justify-content:center;min-height:42px;padding:.65rem .85rem;text-decoration:none;white-space:nowrap}
+.primary-link-button:hover{background:#086f7a;color:#fff}
+.marketing-overview-grid,.marketing-bottom-grid{display:grid;gap:1rem;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:1rem}
+.marketing-strategy-card,.marketing-evidence-card,.marketing-campaigns-card{min-width:0}
+.marketing-strategy-card h2,.marketing-evidence-card h2,.marketing-campaigns-card h2,.marketing-bottom-grid h2{margin:.18rem 0 .4rem}
+.marketing-strategy-card>p,.marketing-campaigns-card p,.marketing-bottom-grid p{color:#596f74;line-height:1.5}
+.marketing-control-list,.marketing-guardrails{display:grid;gap:.55rem;margin-top:.85rem}
+.marketing-control-list span,.marketing-guardrails span{align-items:flex-start;background:#eef7f6;border-radius:9px;color:#23665f;display:flex;font-size:.76rem;font-weight:750;gap:.5rem;line-height:1.4;padding:.58rem .65rem}
+.marketing-control-list svg,.marketing-guardrails svg{flex:0 0 auto;margin-top:.05rem}
+.marketing-evidence-metrics{display:grid;gap:.65rem;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:.9rem}
+.marketing-evidence-metrics>div{background:#f3f8f8;border:1px solid #dbe7e9;border-radius:10px;display:grid;gap:.15rem;padding:.75rem}
+.marketing-evidence-metrics span{color:#63797e;font-size:.67rem;font-weight:850;text-transform:uppercase}
+.marketing-evidence-metrics strong{color:#123f47;font-size:1.25rem}
+.marketing-campaigns-card{margin-top:1rem}
+.marketing-section-title{align-items:flex-start;display:flex;gap:1rem;justify-content:space-between}
+.marketing-section-title>div{max-width:800px}
+.marketing-brief-grid{display:grid;gap:.85rem;grid-template-columns:repeat(2,minmax(0,1fr));margin-top:.9rem}
+.marketing-brief{background:#f8fbfb;border:1px solid #d9e6e8;border-left:4px solid #0b8791;border-radius:12px;display:flex;flex-direction:column;min-width:0;padding:.9rem}
+.marketing-brief.priority-urgent{border-left-color:#cc552f}
+.marketing-brief.priority-high{border-left-color:#df8f1e}
+.marketing-brief-heading{align-items:center;display:flex;gap:.5rem;justify-content:space-between}
+.marketing-brief-heading span,.marketing-brief-heading b{border-radius:999px;font-size:.64rem;font-weight:900;padding:.28rem .48rem;text-transform:uppercase}
+.marketing-brief-heading span{background:#ddf4f1;color:#086e72}
+.marketing-brief-heading b{background:#edf2f3;color:#53696e}
+.marketing-brief h3{color:#173f47;font-size:1rem;line-height:1.25;margin:.7rem 0 .2rem}
+.marketing-brief>p{font-size:.75rem;margin:0 0 .65rem}
+.marketing-audience-summary{align-items:center;display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:.65rem}
+.marketing-audience-summary strong{color:#123e46;font-size:.79rem;margin-right:auto}
+.marketing-audience-summary span{align-items:center;color:#5d7378;display:flex;font-size:.68rem;gap:.2rem}
+.marketing-product-chip{align-items:flex-start;background:#eaf6f3;border-radius:9px;color:#176a5d;display:flex;gap:.55rem;padding:.6rem}
+.marketing-product-chip>div{display:grid;gap:.12rem;min-width:0}
+.marketing-product-chip strong{font-size:.76rem;overflow-wrap:anywhere}
+.marketing-product-chip small{color:#5e7773;font-size:.66rem}
+.marketing-copy-preview{background:#fff;border:1px solid #dfe8ea;border-radius:9px;display:grid;gap:.25rem;margin:.65rem 0;padding:.65rem}
+.marketing-copy-preview span{color:#6a7e83;font-size:.62rem;font-weight:850;text-transform:uppercase}
+.marketing-copy-preview strong{color:#173f47;font-size:.75rem}
+.marketing-copy-preview p{display:-webkit-box;font-size:.7rem;line-height:1.4;margin:.2rem 0 0;overflow:hidden;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.marketing-brief>.ghost-button{justify-content:center;margin-top:auto;text-decoration:none}
+.marketing-product-list{display:grid;gap:.42rem;margin-top:.8rem}
+.marketing-product-list>div{align-items:center;border-bottom:1px solid #e0e9ea;display:grid;gap:.45rem;grid-template-columns:minmax(0,1fr) repeat(3,minmax(75px,auto));padding:.52rem 0}
+.marketing-product-list>div>div{display:grid;min-width:0}
+.marketing-product-list strong{color:#173f47;font-size:.75rem;overflow-wrap:anywhere}
+.marketing-product-list small,.marketing-product-list span{color:#61777c;font-size:.67rem}
+.marketing-product-list>div>span{text-align:right;white-space:nowrap}
+.marketing-empty{align-items:flex-start;display:flex;flex-direction:column;min-height:250px;justify-content:center}
+
+@media(max-width:1050px){
+  .marketing-overview-grid,.marketing-bottom-grid,.marketing-brief-grid{grid-template-columns:1fr}
+}
+
+@media(max-width:720px){
+  .marketing-section-title{align-items:stretch;flex-direction:column}
+  .primary-link-button{width:100%;white-space:normal}
+  .marketing-evidence-metrics{grid-template-columns:1fr 1fr}
+  .marketing-product-list>div{align-items:flex-start;grid-template-columns:1fr 1fr}
+  .marketing-product-list>div>div{grid-column:1/-1}
+  .marketing-product-list>div>span{text-align:left;white-space:normal}
+}
+
+@media(max-width:390px){
+  .marketing-evidence-metrics{grid-template-columns:1fr}
+}

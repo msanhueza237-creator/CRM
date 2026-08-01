@@ -106,6 +106,50 @@ interface CommercialSuggestionReport {
   };
 }
 
+interface MarketingSuggestionProduct {
+  sku: string;
+  name: string;
+  available_units: number;
+  coverage_days?: number | null;
+  units_sold_observed?: number;
+}
+
+interface MarketingSuggestionBrief {
+  id: string;
+  name: string;
+  objective: string;
+  reason?: string;
+  priority?: "urgent" | "high" | "medium" | "normal";
+  channel: string;
+  status: "draft";
+  audience: {
+    segment_id: string;
+    segment_name: string;
+    count: number;
+    email_count?: number;
+    whatsapp_count?: number;
+    customer_keys?: string[];
+    company_ids?: string[];
+  };
+  product?: MarketingSuggestionProduct | null;
+  subject: string;
+  email_body: string;
+  whatsapp_body: string;
+  benefit?: string;
+  requires_approval: boolean;
+}
+
+interface MarketingSuggestionReport {
+  generated_at?: string;
+  customers?: CommercialSuggestionCustomer[];
+  campaign_briefs?: MarketingSuggestionBrief[];
+  strategy?: {
+    season_label?: string;
+    automatic_sending?: boolean;
+    human_approval_required?: boolean;
+  };
+}
+
 interface SmartProposal {
   id: string;
   defaultName: string;
@@ -117,12 +161,11 @@ interface SmartProposal {
   subject: string;
   potentialCompanies: Company[];
   defaultMessage: string;
-  source?: "commercial_agent" | "legacy";
+  source?: "marketing_agent" | "commercial_agent" | "legacy";
   calculatedCount?: number;
   pendingImportCount?: number;
   priority?: CommercialSuggestionSegment["priority"];
 }
-const segments: CampaignSegment[] = ["todas", "prioridad alta", "distribuidores y tiendas", "instaladores", "interesados"];
 const campaignTypes: CampaignType[] = ["email", "WhatsApp", "mixta"];
 const companyTypeFilters: CampaignCompanyTypeFilter[] = [
   "todas",
@@ -238,6 +281,25 @@ function commercialReportFromTaskRows(rows: Row[]) {
   }
 
   return bestReport;
+}
+
+function marketingReportFromTaskRows(rows: Row[]) {
+  for (const row of rows) {
+    const result = asRecord(row.result);
+    const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+    for (const item of evidence) {
+      const report = asRecord(item).marketing_report;
+      if (
+        report &&
+        typeof report === "object" &&
+        !Array.isArray(report) &&
+        Array.isArray((report as MarketingSuggestionReport).campaign_briefs)
+      ) {
+        return report as MarketingSuggestionReport;
+      }
+    }
+  }
+  return null;
 }
 
 function getCampaignBenefitForCompany(campaign: CampaignDraft, company: Company) {
@@ -399,6 +461,7 @@ export function CampaignsPage() {
   const { companies } = useCompanyStore();
   const [searchParams] = useSearchParams();
   const requestedCommercialSegment = searchParams.get("segment") ?? "";
+  const requestedMarketingCampaign = searchParams.get("campaign") ?? "";
   const { activeTemplates } = useTemplateStore();
   const templates = activeTemplates.length ? activeTemplates : demoTemplates;
   const firstNonInstallerTemplateId = templates.find((template) => !isInstallerAccountTemplate(template))?.id ?? templates[0].id;
@@ -433,10 +496,15 @@ export function CampaignsPage() {
 
   // Smart suggestions state variables
   const [showSuggestions, setShowSuggestions] = useState(
-    () => searchParams.get("view") === "suggestions" || searchParams.get("source") === "commercial-agent",
+    () =>
+      searchParams.get("view") === "suggestions" ||
+      searchParams.get("source") === "commercial-agent" ||
+      searchParams.get("source") === "marketing-agent",
   );
   const [commercialSuggestionReport, setCommercialSuggestionReport] =
     useState<CommercialSuggestionReport | null>(null);
+  const [marketingSuggestionReport, setMarketingSuggestionReport] =
+    useState<MarketingSuggestionReport | null>(null);
   const [commercialSuggestionsLoading, setCommercialSuggestionsLoading] = useState(false);
   const [selectedProposalIndex, setSelectedProposalIndex] = useState(0);
   const [proposalForm, setProposalForm] = useState({
@@ -460,23 +528,47 @@ export function CampaignsPage() {
 
     let active = true;
     setCommercialSuggestionsLoading(true);
-    void supabase
-      .from("business_agent_tasks")
-      .select("result,created_at")
-      .eq("agent_type", "commercial")
-      .eq("status", "completed")
-      .order("created_at", { ascending: false })
-      .limit(30)
-      .then(({ data, error }) => {
-        if (!active) return;
-        if (error) {
-          console.error("No se pudieron cargar las sugerencias del Agente Comercial:", error.message);
-          setCommercialSuggestionReport(null);
-        } else {
-          setCommercialSuggestionReport(commercialReportFromTaskRows((data ?? []) as Row[]));
-        }
-        setCommercialSuggestionsLoading(false);
-      });
+    void Promise.all([
+      supabase
+        .from("business_agent_tasks")
+        .select("result,created_at")
+        .eq("agent_type", "commercial")
+        .eq("status", "completed")
+        .order("created_at", { ascending: false })
+        .limit(30),
+      supabase
+        .from("business_agent_tasks")
+        .select("result,created_at")
+        .eq("agent_type", "marketing")
+        .eq("status", "completed")
+        .order("created_at", { ascending: false })
+        .limit(30),
+    ]).then(([commercialResult, marketingResult]) => {
+      if (!active) return;
+      if (commercialResult.error) {
+        console.error(
+          "No se pudieron cargar las sugerencias del Agente Comercial:",
+          commercialResult.error.message,
+        );
+        setCommercialSuggestionReport(null);
+      } else {
+        setCommercialSuggestionReport(
+          commercialReportFromTaskRows((commercialResult.data ?? []) as Row[]),
+        );
+      }
+      if (marketingResult.error) {
+        console.error(
+          "No se pudieron cargar los borradores del Agente de Marketing:",
+          marketingResult.error.message,
+        );
+        setMarketingSuggestionReport(null);
+      } else {
+        setMarketingSuggestionReport(
+          marketingReportFromTaskRows((marketingResult.data ?? []) as Row[]),
+        );
+      }
+      setCommercialSuggestionsLoading(false);
+    });
 
     return () => {
       active = false;
@@ -715,6 +807,58 @@ export function CampaignsPage() {
       (commercialSuggestionReport?.customers ?? []).map((customer) => [customer.customer_key, customer]),
     );
     const companyById = new Map(companies.map((company) => [company.id, company]));
+    const marketingCustomerByKey = new Map(
+      (marketingSuggestionReport?.customers ?? []).map((customer) => [customer.customer_key, customer]),
+    );
+    const marketingAgentProposals: SmartProposal[] =
+      (marketingSuggestionReport?.campaign_briefs ?? []).map((brief) => {
+        const matchedCompanies = new Map<string, Company>();
+        for (const companyId of brief.audience.company_ids ?? []) {
+          const company = companyById.get(companyId);
+          if (company) matchedCompanies.set(company.id, company);
+        }
+        for (const customerKey of brief.audience.customer_keys ?? []) {
+          const customer = marketingCustomerByKey.get(customerKey);
+          if (!customer) continue;
+          const company = companies.find((candidate) =>
+            commercialCustomerMatchesCompany(customer, candidate),
+          );
+          if (company) matchedCompanies.set(company.id, company);
+        }
+
+        const audienceSegment: CommercialSuggestionSegment = {
+          id: brief.audience.segment_id,
+          name: brief.audience.segment_name,
+          reason: brief.reason || brief.objective,
+          channel: brief.channel,
+          count: brief.audience.count,
+          priority: brief.priority,
+        };
+        const potentialCompanies = [...matchedCompanies.values()];
+        const calculatedCount = Math.max(
+          Number(brief.audience.count ?? 0),
+          potentialCompanies.length,
+        );
+        const type = proposalTypeForCommercialSuggestion(brief.channel);
+        return {
+          id: brief.id,
+          defaultName: brief.name,
+          type,
+          segment: proposalSegmentForCommercialSuggestion(audienceSegment),
+          description: brief.objective,
+          product:
+            brief.product?.name || "soluciones HVAC con stock sujeto a confirmación",
+          coupon: brief.benefit?.trim() || "",
+          subject: brief.subject,
+          potentialCompanies,
+          defaultMessage:
+            type === "WhatsApp" ? brief.whatsapp_body : brief.email_body,
+          source: "marketing_agent",
+          calculatedCount,
+          pendingImportCount: Math.max(0, calculatedCount - potentialCompanies.length),
+          priority: brief.priority,
+        };
+      });
     const commercialAgentProposals: SmartProposal[] = (commercialSuggestionReport?.segments ?? []).map((segment) => {
       const matchedCompanies = new Map<string, Company>();
 
@@ -751,7 +895,11 @@ export function CampaignsPage() {
       };
     });
 
-    const baseProposals = commercialAgentProposals.length ? commercialAgentProposals : legacyProposals;
+    const baseProposals = marketingAgentProposals.length
+      ? marketingAgentProposals
+      : commercialAgentProposals.length
+        ? commercialAgentProposals
+        : legacyProposals;
 
     return baseProposals
       .filter((prop) => !dismissedProposalIds.includes(prop.id))
@@ -769,7 +917,7 @@ export function CampaignsPage() {
           defaultMessage: override.message ?? prop.defaultMessage,
         };
       });
-  }, [commercialSuggestionReport, companies, proposalOverrides, dismissedProposalIds]);
+  }, [commercialSuggestionReport, marketingSuggestionReport, companies, proposalOverrides, dismissedProposalIds]);
 
   // Synchronize forms only when the user switches to a different proposal card.
   // Deliberately excludes `proposals` from the deps: saving an override edit
@@ -795,8 +943,11 @@ export function CampaignsPage() {
       setProposalEditSavedMessage(null);
       setProposalAttachments([]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedProposalIndex, commercialSuggestionReport?.generated_at]);
+  }, [
+    selectedProposalIndex,
+    commercialSuggestionReport?.generated_at,
+    marketingSuggestionReport?.generated_at,
+  ]);
 
   useEffect(() => {
     if (!requestedCommercialSegment || !proposals.length) return;
@@ -804,6 +955,14 @@ export function CampaignsPage() {
     const requestedIndex = proposals.findIndex((proposal) => proposal.id === requestedId);
     if (requestedIndex >= 0) setSelectedProposalIndex(requestedIndex);
   }, [proposals, requestedCommercialSegment]);
+
+  useEffect(() => {
+    if (!requestedMarketingCampaign || !proposals.length) return;
+    const requestedIndex = proposals.findIndex(
+      (proposal) => proposal.id === requestedMarketingCampaign,
+    );
+    if (requestedIndex >= 0) setSelectedProposalIndex(requestedIndex);
+  }, [proposals, requestedMarketingCampaign]);
 
   function saveProposalEdits() {
     const prop = proposals[selectedProposalIndex];
@@ -2257,7 +2416,9 @@ export function CampaignsPage() {
               <div>
                 <h2 style={{ color: "#103842", margin: 0 }}>💡 Propuestas de Campañas Sugeridas</h2>
                 <p className="muted" style={{ fontSize: "14px", marginTop: "6px" }}>
-                  {commercialSuggestionReport
+                  {marketingSuggestionReport
+                    ? `Estas propuestas vienen del último análisis del Agente de Marketing${marketingSuggestionReport.strategy?.season_label ? ` · ${marketingSuggestionReport.strategy.season_label}` : ""}. La audiencia, el producto y el texto son trazables; tú revisas y guardas el borrador antes de cualquier envío.`
+                    : commercialSuggestionReport
                     ? "Estas propuestas vienen del último análisis del Agente Comercial. Revisa los destinatarios y guarda un borrador; nunca se envían mensajes automáticamente."
                     : "El CRM analiza tu base de Empresas y propone campañas segmentadas. Revisa, edita los mensajes y desmarca a los clientes que prefieras excluir."}
                 </p>
@@ -2315,10 +2476,11 @@ export function CampaignsPage() {
                       </div>
                       <h4 style={{ margin: "0 0 6px 0", color: "#103842", fontSize: "15px", fontWeight: "bold" }}>{prop.defaultName}</h4>
                       <p className="muted" style={{ fontSize: "13px", margin: 0 }}>{prop.description}</p>
-                      {prop.source === "commercial_agent" ? (
+                      {prop.source === "commercial_agent" || prop.source === "marketing_agent" ? (
                         <p style={{ fontSize: "12px", margin: "8px 0 0", color: prop.pendingImportCount ? "#9a6700" : "#23734d" }}>
                           {prop.potentialCompanies.length} listos en Empresas
                           {prop.pendingImportCount ? ` · ${prop.pendingImportCount} pendientes de importar` : " · segmento listo"}
+                          {prop.source === "marketing_agent" ? " · borrador Marketing" : ""}
                         </p>
                       ) : null}
                     </div>
@@ -2344,7 +2506,7 @@ export function CampaignsPage() {
 
                   {(proposals[selectedProposalIndex].pendingImportCount ?? 0) > 0 ? (
                     <div style={{ background: "#fff9db", border: "1px solid #ffe066", color: "#795c00", padding: "14px", borderRadius: "8px", marginBottom: "20px", fontSize: "13px" }}>
-                      El Agente Comercial detectó {proposals[selectedProposalIndex].calculatedCount} clientes, pero sólo {proposals[selectedProposalIndex].potentialCompanies.length} ya están incorporados en Empresas. Para proteger la base y evitar duplicados, revisa e importa los restantes antes de convertirlos en destinatarios.{" "}
+                      La audiencia detectó {proposals[selectedProposalIndex].calculatedCount} clientes, pero sólo {proposals[selectedProposalIndex].potentialCompanies.length} ya están incorporados en Empresas. Para proteger la base y evitar duplicados, revisa e importa los restantes antes de convertirlos en destinatarios.{" "}
                       <Link to="/agentes/commercial/dashboard" style={{ color: "#0b7285", fontWeight: 700 }}>
                         Revisar cartera del agente
                       </Link>

@@ -15,6 +15,9 @@ import {
   Download,
   FileSpreadsheet,
   Landmark,
+  Mail,
+  Megaphone,
+  MessageCircle,
   PackageCheck,
   RefreshCw,
   Search,
@@ -732,6 +735,73 @@ type CommercialReport = {
   facto_ranking?: CommercialRanking[];
   tiendanube_ranking?: CommercialRanking[];
   sales_products?: CommercialSalesProduct[];
+  methodology: string;
+};
+
+type MarketingProduct = {
+  sku: string;
+  name: string;
+  available_units: number;
+  average_daily_demand?: number;
+  coverage_days?: number | null;
+  units_sold_observed?: number;
+  sales_revenue_observed?: number;
+  net_unit_price?: number;
+  has_observed_sales?: boolean;
+  source?: string;
+};
+
+type MarketingAudience = CommercialSegment & {
+  segment_id: string;
+  segment_name: string;
+};
+
+type MarketingCampaignBrief = {
+  id: string;
+  name: string;
+  objective: string;
+  reason?: string;
+  priority: "urgent" | "high" | "medium" | "normal";
+  channel: string;
+  status: "draft";
+  audience: MarketingAudience;
+  product?: MarketingProduct | null;
+  subject: string;
+  email_body: string;
+  whatsapp_body: string;
+  cta: string;
+  benefit?: string;
+  measurement?: string[];
+  requires_approval: boolean;
+  evidence?: string[];
+};
+
+type MarketingReport = {
+  generated_at: string;
+  strategy: {
+    as_of: string;
+    season: string;
+    season_label: string;
+    automatic_sending: boolean;
+    human_approval_required: boolean;
+  };
+  metrics: {
+    customers: number;
+    contactable: number;
+    email_ready: number;
+    whatsapp_ready: number;
+    audiences: number;
+    campaign_briefs: number;
+    products_considered: number;
+    products_eligible: number;
+    excluded_no_stock: number;
+    excluded_low_coverage: number;
+  };
+  customers: CommercialCustomer[];
+  audiences: CommercialSegment[];
+  campaign_briefs: MarketingCampaignBrief[];
+  product_opportunities: MarketingProduct[];
+  guardrails: string[];
   methodology: string;
 };
 
@@ -1482,6 +1552,16 @@ function commercialReportFromTasks(tasks: AgentTask[]): CommercialReport | null 
   return bestReport;
 }
 
+function marketingReportFromTasks(tasks: AgentTask[]): MarketingReport | null {
+  for (const task of tasks) {
+    for (const entry of task.result?.evidence ?? []) {
+      const report = entry.marketing_report;
+      if (report && typeof report === "object") return report as MarketingReport;
+    }
+  }
+  return null;
+}
+
 const commercialSourceLabels: Record<string, string> = {
   facto_only: "Sólo Facto",
   tiendanube_only: "Sólo Climactiva.cl",
@@ -1801,6 +1881,166 @@ function mergeCommercialPortfolio(
     sales_products:
       base.sales_products?.length ? base.sales_products : synchronizedProducts,
   };
+}
+
+function MarketingDashboard({ tasks }: { tasks: AgentTask[] }) {
+  const report = useMemo(() => marketingReportFromTasks(tasks), [tasks]);
+
+  if (!report) {
+    return (
+      <section className="data-card agent-dashboard-summary marketing-empty">
+        <span className="eyebrow">PLAN DE MARKETING</span>
+        <h2>Aún no existe un análisis terminado</h2>
+        <p>
+          Regresa al Centro de agentes y pulsa <strong>Solicitar análisis</strong>. El agente cruzará
+          cartera, stock y ventas para preparar campañas en borrador, sin enviar mensajes.
+        </p>
+        <Link className="ghost-button" to="/agentes"><ArrowLeft size={17} /> Volver al Centro de agentes</Link>
+      </section>
+    );
+  }
+
+  const priorityLabel = (priority: string) => commercialPriorityLabels[priority] ?? priority;
+  const briefs = report.campaign_briefs ?? [];
+  const products = report.product_opportunities ?? [];
+
+  return (
+    <>
+      <section className="agent-dashboard-kpis marketing-kpis">
+        <article>
+          <Megaphone size={22} />
+          <span>Campañas propuestas</span>
+          <strong>{formatNumber.format(report.metrics.campaign_briefs)}</strong>
+          <small>Todas permanecen en borrador</small>
+        </article>
+        <article>
+          <Building2 size={22} />
+          <span>Clientes contactables</span>
+          <strong>{formatNumber.format(report.metrics.contactable)}</strong>
+          <small>De {formatNumber.format(report.metrics.customers)} identidades analizadas</small>
+        </article>
+        <article>
+          <Mail size={22} />
+          <span>Listos para email</span>
+          <strong>{formatNumber.format(report.metrics.email_ready)}</strong>
+          <small>Con correo utilizable</small>
+        </article>
+        <article>
+          <MessageCircle size={22} />
+          <span>Listos para WhatsApp</span>
+          <strong>{formatNumber.format(report.metrics.whatsapp_ready)}</strong>
+          <small>Sujetos a consentimiento</small>
+        </article>
+        <article>
+          <PackageCheck size={22} />
+          <span>Productos elegibles</span>
+          <strong>{formatNumber.format(report.metrics.products_eligible)}</strong>
+          <small>Con stock y cobertura suficiente</small>
+        </article>
+      </section>
+
+      <section className="marketing-overview-grid">
+        <article className="data-card marketing-strategy-card">
+          <span className="eyebrow">ESTRATEGIA VIGENTE</span>
+          <h2>{report.strategy.season_label}</h2>
+          <p>
+            Corte al {new Intl.DateTimeFormat("es-CL", { dateStyle: "long" }).format(new Date(`${report.strategy.as_of}T12:00:00`))}.
+            Las propuestas combinan comportamiento comercial, disponibilidad y venta observada.
+          </p>
+          <div className="marketing-control-list">
+            <span><CheckCircle2 size={17} /> Aprobación humana obligatoria</span>
+            <span><ShieldCheck size={17} /> Sin descuentos inventados</span>
+            <span><PackageCheck size={17} /> Sin recomendar productos agotados</span>
+          </div>
+        </article>
+        <article className="data-card marketing-evidence-card">
+          <span className="eyebrow">COBERTURA DEL ANÁLISIS</span>
+          <h2>Fuentes y exclusiones</h2>
+          <div className="marketing-evidence-metrics">
+            <div><span>Audiencias</span><strong>{formatNumber.format(report.metrics.audiences)}</strong></div>
+            <div><span>SKU revisados</span><strong>{formatNumber.format(report.metrics.products_considered)}</strong></div>
+            <div><span>Sin stock</span><strong>{formatNumber.format(report.metrics.excluded_no_stock)}</strong></div>
+            <div><span>Cobertura corta</span><strong>{formatNumber.format(report.metrics.excluded_low_coverage)}</strong></div>
+          </div>
+        </article>
+      </section>
+
+      <section className="data-card marketing-campaigns-card">
+        <div className="section-title marketing-section-title">
+          <div>
+            <span className="eyebrow">CAMPAÑAS DIRIGIDAS</span>
+            <h2>Borradores listos para revisión</h2>
+            <p>El agente prepara la audiencia, el producto y el texto; tú decides los destinatarios y el envío.</p>
+          </div>
+          <Link className="primary-link-button" to="/campanas?view=suggestions&source=marketing-agent">
+            <Megaphone size={17} /> Abrir Propuestas inteligentes
+          </Link>
+        </div>
+        <div className="marketing-brief-grid">
+          {briefs.map((brief) => (
+            <article className={`marketing-brief priority-${brief.priority}`} key={brief.id}>
+              <div className="marketing-brief-heading">
+                <span>{brief.channel}</span>
+                <b>{priorityLabel(brief.priority)}</b>
+              </div>
+              <h3>{brief.name}</h3>
+              <p>{brief.objective}</p>
+              <div className="marketing-audience-summary">
+                <strong>{formatNumber.format(brief.audience.count)} clientes</strong>
+                <span><Mail size={14} /> {formatNumber.format(brief.audience.email_count ?? 0)}</span>
+                <span><MessageCircle size={14} /> {formatNumber.format(brief.audience.whatsapp_count ?? 0)}</span>
+              </div>
+              {brief.product ? (
+                <div className="marketing-product-chip">
+                  <PackageCheck size={16} />
+                  <div>
+                    <strong>{brief.product.name}</strong>
+                    <small>{brief.product.sku} · {formatNumber.format(brief.product.available_units)} un. disponibles</small>
+                  </div>
+                </div>
+              ) : (
+                <div className="dashboard-warning"><AlertTriangle size={17} /> Sin producto elegible: revisar antes de crear campaña.</div>
+              )}
+              <div className="marketing-copy-preview">
+                <span>Asunto sugerido</span>
+                <strong>{brief.subject}</strong>
+                <p>{brief.channel.toLowerCase().includes("whatsapp") ? brief.whatsapp_body : brief.email_body}</p>
+              </div>
+              <Link className="ghost-button" to={`/campanas?view=suggestions&source=marketing-agent&campaign=${encodeURIComponent(brief.id)}`}>
+                Revisar borrador
+              </Link>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="marketing-bottom-grid">
+        <article className="data-card">
+          <div className="section-title">
+            <div><span className="eyebrow">OPORTUNIDADES DE PRODUCTO</span><h2>Stock que sí puede respaldar campañas</h2></div>
+          </div>
+          <div className="marketing-product-list">
+            {products.slice(0, 10).map((product) => (
+              <div key={product.sku}>
+                <div><strong>{product.name}</strong><small>{product.sku}</small></div>
+                <span>{formatNumber.format(product.available_units)} un.</span>
+                <span>{formatNumber.format(product.units_sold_observed ?? 0)} vendidas</span>
+                <span>{product.coverage_days == null ? "Sin demanda diaria" : `${formatNumber.format(product.coverage_days)} días`}</span>
+              </div>
+            ))}
+          </div>
+        </article>
+        <article className="data-card agent-dashboard-summary">
+          <span className="eyebrow">CONTROL Y TRAZABILIDAD</span>
+          <h2>Reglas que el agente no puede saltarse</h2>
+          <div className="marketing-guardrails">
+            {(report.guardrails ?? []).map((guardrail) => <span key={guardrail}><ShieldCheck size={17} /> {guardrail}</span>)}
+          </div>
+          <p>{report.methodology}</p>
+        </article>
+      </section>
+    </>
+  );
 }
 
 function CommercialDashboard({
@@ -4394,7 +4634,8 @@ export function AgentDashboardPage() {
           tasks={tasks}
         />
       ) : null}
-      {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" && agentType !== "foreign_trade" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
+      {!loading && agentType === "marketing" ? <MarketingDashboard tasks={tasks} /> : null}
+      {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" && agentType !== "foreign_trade" && agentType !== "marketing" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
     </section>
   );
 }
