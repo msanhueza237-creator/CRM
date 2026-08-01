@@ -81,6 +81,8 @@ type FinancialMonth = {
 type FinancialPurchaseMonth = {
   month: string;
   net_purchases: number;
+  tax?: number;
+  gross_purchases?: number;
   documents: number;
 };
 
@@ -240,6 +242,8 @@ type FinancialReport = {
   tax: number;
   gross_sales: number;
   net_purchases?: number;
+  purchase_tax?: number;
+  gross_purchases?: number;
   purchase_document_count?: number;
   average_net_ticket: number;
   reference_gross_margin: number;
@@ -308,8 +312,37 @@ type AccountingSnapshot = {
       pending_fx?: number;
     }>;
     missing_sources?: string[];
+    verified_zero_activity?: string[];
     payroll_periods?: number;
     payroll_estimated_health_periods?: string[];
+    facto?: {
+      source?: string;
+      sales_documents?: number;
+      purchase_documents?: number;
+      net_sales?: number;
+      sales_tax?: number;
+      gross_sales?: number;
+      net_purchases?: number;
+      purchase_tax?: number;
+      gross_purchases?: number;
+      period_start?: string | null;
+      period_end?: string | null;
+    };
+    tax_folder?: {
+      source?: string;
+      generated_at?: string;
+      period_start?: string;
+      period_end?: string;
+      f29_taxable_sales?: number;
+      f29_debit_vat?: number;
+      f29_domestic_credit_vat?: number;
+      f29_import_credit_vat?: number;
+      f29_determined_vat?: number;
+      f29_ppm?: number;
+      import_customs_base_reference?: number;
+      prior_year_taxable_base?: number;
+      prior_year_business_income?: number;
+    };
   };
   bank_summary: AccountingBankSummary[];
   payroll_summary: {
@@ -334,6 +367,17 @@ type AccountingSnapshot = {
     reconciliation_assets?: number;
     movements_total?: number;
     movements_pending_fx?: number;
+    facto_net_sales?: number;
+    facto_net_purchases?: number;
+    facto_sales_tax?: number;
+    facto_purchase_tax?: number;
+    facto_gross_sales?: number;
+    facto_gross_purchases?: number;
+    documentary_result_before_inventory?: number;
+    f29_sales_variance?: number;
+    profit_certifiable?: boolean;
+    current_inventory_cost?: number;
+    current_inventory_net_sale_value?: number;
   };
   findings: Array<{ severity?: string; title?: string; detail?: string }>;
   artifact_metadata?: { workbook_name?: string; generated_at?: string };
@@ -1837,6 +1881,186 @@ function financialDateLabel(value: string | undefined) {
   }).format(parsed);
 }
 
+const SII_F29_2026_CUT = {
+  source: "Carpeta Tributaria SII · generada el 31-07-2026",
+  generated_at: "2026-07-31T20:52:00-04:00",
+  period_start: "2026-01",
+  period_end: "2026-06",
+  f29_taxable_sales: 89_214_222,
+  f29_debit_vat: 16_950_702,
+  f29_domestic_credit_vat: 1_343_921,
+  f29_import_credit_vat: 18_207_512,
+  f29_determined_vat: 3_820_703,
+  f29_ppm: 111_517,
+  import_customs_base_reference: 95_829_011,
+  prior_year_taxable_base: 29_215_370,
+  prior_year_business_income: 162_997_601,
+};
+
+function signedPost(row: AccountingPrebalanceRow, side: "debit" | "credit", rawAmount: number) {
+  const amount = Number(rawAmount ?? 0);
+  if (!amount) return;
+  if (amount > 0) row[side === "debit" ? "sum_debit" : "sum_credit"] += amount;
+  else row[side === "debit" ? "sum_credit" : "sum_debit"] += Math.abs(amount);
+}
+
+function reconcileAccountingSnapshot(
+  sourceSnapshot: AccountingSnapshot,
+  financial: FinancialReport | null,
+  inventory: Snapshot[],
+): AccountingSnapshot {
+  const snapshot = structuredClone(sourceSnapshot);
+  const rows = snapshot.prebalance_rows ?? [];
+  const findOrCreate = (accountCode: string, accountName: string, nature: string) => {
+    let row = rows.find((candidate) => candidate.account_code === accountCode);
+    if (!row) {
+      row = {
+        account_code: accountCode,
+        account_name: accountName,
+        nature,
+        sum_debit: 0,
+        sum_credit: 0,
+        balance_debtor: 0,
+        balance_creditor: 0,
+        inventory_asset: 0,
+        inventory_liability: 0,
+        result_loss: 0,
+        result_gain: 0,
+      };
+      rows.push(row);
+    }
+    return row;
+  };
+
+  const fiscalPrefix = `${snapshot.fiscal_year}-`;
+  const cutoffMonth = snapshot.period_end.slice(0, 7);
+  const salesMonths = (financial?.sales_by_month ?? []).filter(
+    (month) => month.month.startsWith(fiscalPrefix) && month.month <= cutoffMonth,
+  );
+  const purchaseMonths = (financial?.purchases_by_month ?? []).filter(
+    (month) => month.month.startsWith(fiscalPrefix) && month.month <= cutoffMonth,
+  );
+  const netSales = salesMonths.reduce((sum, month) => sum + Number(month.net_sales ?? 0), 0);
+  const salesTax = salesMonths.reduce((sum, month) => sum + Number(month.tax ?? 0), 0);
+  const grossSales = salesMonths.reduce((sum, month) => sum + Number(month.gross_sales ?? 0), 0);
+  const salesDocuments = salesMonths.reduce((sum, month) => sum + Number(month.documents ?? 0), 0);
+  const netPurchases = purchaseMonths.reduce((sum, month) => sum + Number(month.net_purchases ?? 0), 0);
+  const purchaseTax = purchaseMonths.reduce((sum, month) => sum + Number(month.tax ?? 0), 0);
+  const reportedGrossPurchases = purchaseMonths.reduce((sum, month) => sum + Number(month.gross_purchases ?? 0), 0);
+  const grossPurchases = reportedGrossPurchases || netPurchases + purchaseTax;
+  const purchaseDocuments = purchaseMonths.reduce((sum, month) => sum + Number(month.documents ?? 0), 0);
+  const hasFacto = Boolean(financial && (salesMonths.length || purchaseMonths.length));
+
+  if (hasFacto) {
+    signedPost(findOrCreate("110200", "Clientes Facto (pendientes de conciliacion de pagos)", "Activo"), "debit", grossSales);
+    signedPost(findOrCreate("410100", "Ingresos por ventas documentadas", "Ganancia"), "credit", netSales);
+    signedPost(findOrCreate("210110", "IVA debito fiscal documentado", "Pasivo"), "credit", salesTax);
+    signedPost(findOrCreate("510100", "Compras documentadas (pendientes de ajuste por inventario)", "Perdida"), "debit", netPurchases);
+    signedPost(findOrCreate("110510", "IVA credito fiscal documentado", "Activo"), "debit", purchaseTax);
+    signedPost(findOrCreate("210100", "Proveedores Facto (pendientes de conciliacion de pagos)", "Pasivo"), "credit", grossPurchases);
+  }
+
+  rows.forEach((row) => {
+    row.balance_debtor = Math.max(Number(row.sum_debit ?? 0) - Number(row.sum_credit ?? 0), 0);
+    row.balance_creditor = Math.max(Number(row.sum_credit ?? 0) - Number(row.sum_debit ?? 0), 0);
+    row.inventory_asset = row.nature === "Activo" ? row.balance_debtor : 0;
+    row.inventory_liability = row.nature === "Pasivo" ? row.balance_creditor : 0;
+    row.result_loss = row.nature === "Perdida" ? row.balance_debtor : 0;
+    row.result_gain = row.nature === "Ganancia" ? row.balance_creditor : 0;
+  });
+  rows.sort((a, b) => a.account_code.localeCompare(b.account_code));
+
+  const totals = rows.reduce(
+    (result, row) => ({
+      debit: result.debit + row.sum_debit,
+      credit: result.credit + row.sum_credit,
+      asset: result.asset + row.inventory_asset,
+      liability: result.liability + row.inventory_liability,
+      loss: result.loss + row.result_loss,
+      gain: result.gain + row.result_gain,
+    }),
+    { debit: 0, credit: 0, asset: 0, liability: 0, loss: 0, gain: 0 },
+  );
+  const inventoryCost = inventory.reduce(
+    (sum, item) => sum + Math.max(0, Number(item.available_units ?? 0)) * Math.max(0, Number(item.unit_cost_source ?? 0)),
+    0,
+  );
+  const inventoryNetSaleValue = inventory.reduce(
+    (sum, item) => sum + Math.max(0, Number(item.available_units ?? 0)) * Math.max(0, netUnitPrice(item)),
+    0,
+  );
+  const f29FactoSales = salesMonths
+    .filter((month) => month.month <= SII_F29_2026_CUT.period_end)
+    .reduce((sum, month) => sum + Number(month.net_sales ?? 0), 0);
+  const documentaryResult = netSales - netPurchases - Number(snapshot.payroll_summary?.total_employer_cost ?? 0);
+
+  snapshot.prebalance_rows = rows;
+  snapshot.controls = {
+    ...(snapshot.controls ?? {}),
+    journal_debit: totals.debit,
+    journal_credit: totals.credit,
+    journal_balanced: Math.abs(totals.debit - totals.credit) < 1,
+    balance_sheet_balanced: Math.abs(totals.asset + totals.loss - totals.liability - totals.gain) < 1,
+    facto_net_sales: netSales,
+    facto_net_purchases: netPurchases,
+    facto_sales_tax: salesTax,
+    facto_purchase_tax: purchaseTax,
+    facto_gross_sales: grossSales,
+    facto_gross_purchases: grossPurchases,
+    documentary_result_before_inventory: documentaryResult,
+    f29_sales_variance: f29FactoSales - SII_F29_2026_CUT.f29_taxable_sales,
+    profit_certifiable: false,
+    current_inventory_cost: inventoryCost,
+    current_inventory_net_sale_value: inventoryNetSaleValue,
+  };
+  const missing = (snapshot.source_coverage?.missing_sources ?? []).filter(
+    (source) => !source.startsWith("Scotiabank USD: febrero y junio") && !(hasFacto && source.startsWith("Facto:")),
+  );
+  snapshot.source_coverage = {
+    ...(snapshot.source_coverage ?? {}),
+    missing_sources: missing,
+    verified_zero_activity: [
+      "Scotiabank USD · febrero 2026 sin movimientos confirmado",
+      "Scotiabank USD · junio 2026 sin movimientos confirmado",
+    ],
+    facto: hasFacto
+      ? {
+          source: "Facto API · solo lectura",
+          sales_documents: salesDocuments,
+          purchase_documents: purchaseDocuments,
+          net_sales: netSales,
+          sales_tax: salesTax,
+          gross_sales: grossSales,
+          net_purchases: netPurchases,
+          purchase_tax: purchaseTax,
+          gross_purchases: grossPurchases,
+          period_start: salesMonths[0]?.month ?? null,
+          period_end: salesMonths.length ? salesMonths[salesMonths.length - 1].month : null,
+        }
+      : undefined,
+    tax_folder: SII_F29_2026_CUT,
+  };
+  snapshot.basis = `${snapshot.basis} Facto se incorpora en base devengada documental y la Carpeta Tributaria SII controla IVA e importaciones; bancos conservan la lectura de liquidez.`;
+  snapshot.findings = [
+    ...(snapshot.findings ?? []).filter(
+      (finding) => !finding.title?.toLowerCase().includes("scotiabank usd") && !(hasFacto && finding.title?.toLowerCase().includes("facto")),
+    ),
+    {
+      severity: "info",
+      title: "Scotiabank USD febrero y junio verificados",
+      detail: "La ausencia de cartolas corresponde a meses sin movimientos y no a una fuente faltante.",
+    },
+    ...(hasFacto
+      ? [{
+          severity: "info",
+          title: "Facto incorporado en solo lectura",
+          detail: `${salesDocuments} documentos de venta y ${purchaseDocuments} documentos de compra alimentan el prebalance sin modificar Facto.`,
+        }]
+      : []),
+  ];
+  return snapshot;
+}
+
 function downloadPrebalanceCsv(snapshot: AccountingSnapshot) {
   const headers = [
     "Código",
@@ -1897,6 +2121,13 @@ function AccountingDashboard({
   const payroll = snapshot.payroll_summary ?? {};
   const periods = payroll.periods ?? [];
   const missingSources = snapshot.source_coverage?.missing_sources ?? [];
+  const verifiedZeroActivity = snapshot.source_coverage?.verified_zero_activity ?? [];
+  const factoCoverage = snapshot.source_coverage?.facto;
+  const taxFolder = snapshot.source_coverage?.tax_folder;
+  const documentaryResult = Number(controls.documentary_result_before_inventory ?? 0);
+  const f29Variance = Number(controls.f29_sales_variance ?? 0);
+  const inventoryCost = Number(controls.current_inventory_cost ?? 0);
+  const receivablesVerified = Number(FACTO_MANUAL_RECEIVABLES_VERIFICATION.observed_amount ?? 0);
   const totals = snapshot.prebalance_rows.reduce(
     (result, row) => ({
       debit: result.debit + Number(row.sum_debit ?? 0),
@@ -1940,7 +2171,7 @@ function AccountingDashboard({
           <Landmark size={22} />
           <span>Saldo bancario del corte</span>
           <strong>{formatCurrency.format(Number(controls.bank_balance_clp ?? 0))}</strong>
-          <small>No incluye meses de cartola faltantes</small>
+          <small>Saldo reconstruido con las cartolas disponibles</small>
         </article>
         <article>
           <CircleDollarSign size={22} />
@@ -1960,6 +2191,51 @@ function AccountingDashboard({
           <strong>{controls.journal_balanced && controls.balance_sheet_balanced ? "Cuadrado" : "Revisar"}</strong>
           <small>Debe = Haber · Activo + pérdida = Pasivo + ganancia</small>
         </article>
+      </section>
+
+      <section className="accounting-evidence-grid">
+        <article className="data-card accounting-evidence-card">
+          <div className="section-title"><div><span className="eyebrow">FACTO · SOLO LECTURA</span><h2>Ventas, compras e IVA documental</h2><p>Movimientos devengados incorporados al prebalance, sin registrar pagos ni modificar Facto.</p></div></div>
+          <div className="accounting-metric-grid">
+            <div><span>Ventas netas</span><strong>{formatCurrency.format(Number(controls.facto_net_sales ?? 0))}</strong><small>{factoCoverage?.sales_documents ?? 0} documentos</small></div>
+            <div><span>IVA débito</span><strong>{formatCurrency.format(Number(controls.facto_sales_tax ?? 0))}</strong><small>Impuesto de ventas</small></div>
+            <div><span>Compras netas</span><strong>{formatCurrency.format(Number(controls.facto_net_purchases ?? 0))}</strong><small>{factoCoverage?.purchase_documents ?? 0} documentos</small></div>
+            <div><span>IVA crédito</span><strong>{formatCurrency.format(Number(controls.facto_purchase_tax ?? 0))}</strong><small>Informado por los documentos</small></div>
+          </div>
+        </article>
+
+        <article className="data-card accounting-evidence-card tax">
+          <div className="section-title"><div><span className="eyebrow">CARPETA TRIBUTARIA SII</span><h2>Control oficial de IVA e importaciones</h2><p>F29 de enero a junio de 2026; se usa para conciliar, no para duplicar asientos de Facto.</p></div></div>
+          <div className="accounting-metric-grid">
+            <div><span>Ventas afectas F29</span><strong>{formatCurrency.format(Number(taxFolder?.f29_taxable_sales ?? 0))}</strong><small>Base imponible declarada</small></div>
+            <div><span>IVA determinado</span><strong>{formatCurrency.format(Number(taxFolder?.f29_determined_vat ?? 0))}</strong><small>Enero a junio</small></div>
+            <div><span>IVA de importaciones</span><strong>{formatCurrency.format(Number(taxFolder?.f29_import_credit_vat ?? 0))}</strong><small>Crédito fiscal aduanero</small></div>
+            <div><span>Base aduanera referencial</span><strong>{formatCurrency.format(Number(taxFolder?.import_customs_base_reference ?? 0))}</strong><small>No es costo final ni gasto</small></div>
+          </div>
+          <div className={`accounting-reconciliation ${Math.abs(f29Variance) <= 10 ? "ok" : "review"}`}>
+            <strong>Conciliación Facto vs F29 hasta junio</strong>
+            <span>{Math.abs(f29Variance) <= 10 ? "Coincidencia dentro del redondeo." : `Diferencia por revisar: ${formatCurrency.format(f29Variance)}.`}</span>
+          </div>
+        </article>
+      </section>
+
+      <section className="data-card accounting-profit-conclusion">
+        <div>
+          <span className="eyebrow">CONCLUSIÓN DE LA SITUACIÓN ACTUAL</span>
+          <h2>El negocio crece, pero la utilidad real 2026 todavía no puede certificarse</h2>
+          <p>
+            La operación muestra ventas relevantes y activos de trabajo, pero una parte importante del dinero está comprometida en inventario, importaciones y cuentas por cobrar. El resultado documental antes del ajuste de inventario y otros gastos es <strong>{formatCurrency.format(documentaryResult)}</strong>; no corresponde todavía a utilidad contable ni efectivo disponible.
+          </p>
+        </div>
+        <div className="accounting-profit-signals">
+          <article><span>Resultado documental provisional</span><strong>{formatCurrency.format(documentaryResult)}</strong><small>Ventas menos compras documentadas y costo empleador</small></article>
+          <article><span>Inventario actual a costo</span><strong>{formatCurrency.format(inventoryCost)}</strong><small>Capital inmovilizado; no es gasto mientras permanezca en stock</small></article>
+          <article><span>Cuentas por cobrar verificadas</span><strong>{formatCurrency.format(receivablesVerified)}</strong><small>Corte manual Facto; pendiente de ruta API oficial</small></article>
+          <article><span>Resultado tributario 2025</span><strong>{formatCurrency.format(Number(taxFolder?.prior_year_taxable_base ?? 0))}</strong><small>Referencia oficial del año anterior, no utilidad 2026</small></article>
+        </div>
+        <div className="notice-banner warning">
+          Para obtener la utilidad real faltan inventario inicial, costo aduanero completo por importación, consumo/costo de ventas, depreciaciones, gastos devengados y conciliación bancaria final. Compras no equivale a costo de ventas y ventas no equivale a caja.
+        </div>
       </section>
 
       <section className="accounting-bank-grid">
@@ -2060,6 +2336,12 @@ function AccountingDashboard({
         <section className="data-card accounting-missing">
           <div className="section-title"><div><h2>Fuentes pendientes</h2><p>El corte seguirá marcado como provisional hasta completar estos antecedentes.</p></div></div>
           <ul>{missingSources.map((source) => <li key={source}>{source}</li>)}</ul>
+        </section>
+      ) : null}
+      {verifiedZeroActivity.length ? (
+        <section className="data-card accounting-verified-zero">
+          <div className="section-title"><div><h2>Períodos verificados sin movimiento</h2><p>No se consideran fuentes faltantes.</p></div></div>
+          <ul>{verifiedZeroActivity.map((source) => <li key={source}>{source}</li>)}</ul>
         </section>
       ) : null}
     </>
@@ -3221,17 +3503,31 @@ export function AgentDashboardPage() {
       setTasks((data ?? []) as AgentTask[]);
       if (agentType === "logistics") setSnapshots(await loadAllSnapshots());
       if (agentType === "finance") {
-        const accountingResult = await supabase
-          .from("accounting_snapshots")
-          .select("id,fiscal_year,version,period_start,period_end,status,basis,source_coverage,bank_summary,payroll_summary,prebalance_rows,controls,findings,artifact_metadata,updated_at")
-          .order("fiscal_year", { ascending: false })
-          .order("version", { ascending: false })
-          .limit(1);
+        const [accountingResult, financialResult, financeInventory] = await Promise.all([
+          supabase
+            .from("accounting_snapshots")
+            .select("id,fiscal_year,version,period_start,period_end,status,basis,source_coverage,bank_summary,payroll_summary,prebalance_rows,controls,findings,artifact_metadata,updated_at")
+            .order("fiscal_year", { ascending: false })
+            .order("version", { ascending: false })
+            .limit(1),
+          supabase
+            .from("integration_records")
+            .select("payload")
+            .eq("provider", "facto")
+            .eq("resource", "financial_snapshots")
+            .order("updated_at", { ascending: false })
+            .limit(1),
+          loadAllSnapshots(),
+        ]);
         if (accountingResult.error) {
           setAccountingSnapshot(null);
           setAccountingError("Falta instalar o publicar el módulo privado de contabilidad en Supabase.");
         } else {
-          setAccountingSnapshot((accountingResult.data?.[0] as AccountingSnapshot | undefined) ?? null);
+          const rawAccounting = (accountingResult.data?.[0] as AccountingSnapshot | undefined) ?? null;
+          const rawFinancial = (financialResult.data?.[0]?.payload as FinancialReport | undefined) ?? null;
+          setAccountingSnapshot(
+            rawAccounting ? reconcileAccountingSnapshot(rawAccounting, rawFinancial, financeInventory) : null,
+          );
           setAccountingError("");
         }
       } else {
