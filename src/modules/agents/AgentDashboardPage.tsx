@@ -178,8 +178,18 @@ type ForeignTradeReport = {
       total_cbm: number;
     };
     estimated_costs?: ForeignTradeProduct["costs"];
+    reconciliation?: {
+      actual_item_rows: number;
+      numbered_item_rows: number;
+      unnumbered_item_rows: number;
+      matches_document_total: boolean;
+      exact_match?: boolean;
+      warning?: string;
+    };
     items: Array<{
       line_number: number;
+      source_line_number?: number | null;
+      source_line_label?: string;
       name: string;
       sku?: string | null;
       quantity: number;
@@ -838,7 +848,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
     const normalized = activeImportSearch.trim().toLocaleLowerCase("es-CL");
     if (!normalized) return activeImport.items;
     return activeImport.items.filter((item) =>
-      `${item.line_number} ${item.sku ?? ""} ${item.name}`
+      `${item.source_line_label ?? item.source_line_number ?? item.line_number} ${item.sku ?? ""} ${item.name}`
         .toLocaleLowerCase("es-CL")
         .includes(normalized),
     );
@@ -957,6 +967,17 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
             <article><span>Costo puesto estimado</span><strong>{formatUsd.format(activeImport.estimated_costs?.landed_cost_usd ?? 0)}</strong></article>
           </div>
 
+          {activeImport.reconciliation?.warning ? (
+            <div className="active-import-alert">
+              <AlertTriangle size={18} />
+              <span>
+                <strong>{activeImport.reconciliation.actual_item_rows} partidas reales conciliadas:</strong>{" "}
+                {activeImport.reconciliation.numbered_item_rows} numeradas y{" "}
+                {activeImport.reconciliation.unnumbered_item_rows} sin número impreso. {activeImport.reconciliation.warning}
+              </span>
+            </div>
+          ) : null}
+
           <div className="active-import-alert">
             <AlertTriangle size={18} />
             <span>
@@ -978,7 +999,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
               <tbody>
                 {activeImportItems.map((item) => (
                   <tr key={item.line_number}>
-                    <td data-label="Línea"><strong>{item.line_number}</strong></td>
+                    <td data-label="Línea"><strong>{item.source_line_label ?? item.source_line_number ?? item.line_number}</strong></td>
                     <td data-label="Producto"><strong>{item.name}</strong><span>{item.sku || "SKU por homologar"}</span></td>
                     <td data-label="Cantidad"><strong>{formatNumber.format(item.quantity)} {item.unit}</strong><span>{formatNumber.format(item.cartons)} cajas</span></td>
                     <td data-label="FOB unitario"><strong>{formatUsd.format(item.unit_fob_usd)}</strong></td>
