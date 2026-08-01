@@ -45,6 +45,53 @@ type AgentTask = {
   error_code?: string | null;
 };
 
+type ExecutiveBriefItem = Record<string, unknown>;
+
+type ExecutiveBriefSection = {
+  key: string;
+  title: string;
+  count: number;
+  summary?: string;
+  items?: ExecutiveBriefItem[];
+};
+
+type ExecutiveBrief = {
+  generated_at?: string | null;
+  mode?: string;
+  headline?: string;
+  overall_status?: string;
+  sections?: ExecutiveBriefSection[];
+  recommendations?: string[];
+};
+
+type ExecutiveSettings = {
+  email_enabled: boolean;
+  email_to: string;
+  whatsapp_enabled: boolean;
+  timezone: string;
+  morning_time: string;
+  review_interval_hours: number;
+  cutoff_time: string;
+};
+
+type ExecutiveScheduleSlot = {
+  id: string;
+  scheduled_for: string;
+  slot_kind: string;
+  status: string;
+  created_at: string;
+};
+
+type ExecutiveNotification = {
+  id: string;
+  channel: string;
+  recipient: string;
+  status: string;
+  sent_at?: string | null;
+  created_at: string;
+  error?: string | null;
+};
+
 type Snapshot = {
   sku?: string;
   name?: string;
@@ -901,6 +948,263 @@ function GenericAgentDashboard({ agentType, tasks }: { agentType: string; tasks:
             <AlertTriangle size={18} /> {warning}
           </div>
         ))}
+      </section>
+    </>
+  );
+}
+
+const executiveSectionIcons: Record<string, typeof TrendingUp> = {
+  sales: TrendingUp,
+  stockouts: AlertTriangle,
+  opportunities: CircleDollarSign,
+  campaign_replies: MessageCircle,
+  agent_updates: CheckCircle2,
+  integration_errors: Database,
+};
+
+function executiveBriefFromTasks(tasks: AgentTask[]): ExecutiveBrief | null {
+  for (const task of tasks) {
+    const evidence = task.result?.evidence ?? [];
+    for (const row of evidence) {
+      const brief = row.executive_brief;
+      if (brief && typeof brief === "object") return brief as ExecutiveBrief;
+    }
+  }
+  return null;
+}
+
+function executiveItemTitle(item: ExecutiveBriefItem) {
+  const payload = item.payload && typeof item.payload === "object"
+    ? item.payload as ExecutiveBriefItem
+    : {};
+  const row: ExecutiveBriefItem = { ...item, ...payload };
+  return String(
+    row.title ??
+      row.name ??
+      row.company_name ??
+      row.customer_name ??
+      row.customer ??
+      row.receiver_business_name ??
+      row.recipient_business_name ??
+      row.product_name ??
+      row.reply_subject ??
+      row.reply_from_email ??
+      row.subject ??
+      row.provider ??
+      "Registro relevante",
+  );
+}
+
+function executiveItemDetail(item: ExecutiveBriefItem) {
+  const payload = item.payload && typeof item.payload === "object"
+    ? item.payload as ExecutiveBriefItem
+    : {};
+  const row: ExecutiveBriefItem = { ...item, ...payload };
+  const details: string[] = [];
+  const amount = Number(row.total ?? row.amount ?? row.gross_total ?? row.net_total ?? row.net_amount ?? 0);
+  if (amount > 0) details.push(formatCurrency.format(amount));
+  const sku = row.sku ? `SKU ${String(row.sku)}` : "";
+  if (sku) details.push(sku);
+  const available = row.available_units ?? row.stock ?? row.quantity ?? row.existence;
+  if (available !== undefined && available !== null) {
+    details.push(`${formatNumber.format(Number(available))} un. disponibles`);
+  }
+  const message = row.message ?? row.reply_snippet ?? row.summary ?? row.error_message ?? row.status;
+  if (message) details.push(String(message));
+  return details.join(" · ") || "Revisar evidencia en el módulo correspondiente.";
+}
+
+function executiveStatusLabel(status: string) {
+  return (
+    {
+      pending: "Pendiente",
+      queued: "Programado",
+      processing: "Procesando",
+      sending: "Enviando",
+      sent: "Enviado",
+      skipped: "Sin novedades",
+      not_relevant: "Sin novedades",
+      failed: "Error",
+      completed: "Completado",
+      notified: "Notificado",
+    }[status] ?? status
+  );
+}
+
+function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
+  const brief = useMemo(() => executiveBriefFromTasks(tasks), [tasks]);
+  const latest = tasks[0];
+  const metrics = latest?.result?.metrics ?? {};
+  const [settings, setSettings] = useState<ExecutiveSettings | null>(null);
+  const [slots, setSlots] = useState<ExecutiveScheduleSlot[]>([]);
+  const [notifications, setNotifications] = useState<ExecutiveNotification[]>([]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    let active = true;
+    void Promise.all([
+      supabase
+        .from("executive_agent_settings")
+        .select("email_enabled,email_to,whatsapp_enabled,timezone,morning_time,review_interval_hours,cutoff_time")
+        .eq("id", "default")
+        .maybeSingle(),
+      supabase
+        .from("executive_schedule_slots")
+        .select("id,scheduled_for,slot_kind,status,created_at")
+        .order("scheduled_for", { ascending: false })
+        .limit(12),
+      supabase
+        .from("executive_notifications")
+        .select("id,channel,recipient,status,sent_at,created_at,error")
+        .order("created_at", { ascending: false })
+        .limit(12),
+    ]).then(([settingsResult, slotsResult, notificationsResult]) => {
+      if (!active) return;
+      if (!settingsResult.error && settingsResult.data) {
+        setSettings(settingsResult.data as ExecutiveSettings);
+      }
+      if (!slotsResult.error) setSlots((slotsResult.data ?? []) as ExecutiveScheduleSlot[]);
+      if (!notificationsResult.error) {
+        setNotifications((notificationsResult.data ?? []) as ExecutiveNotification[]);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [tasks]);
+
+  const kpis = [
+    { key: "new_sales", label: "Ventas nuevas", icon: TrendingUp },
+    { key: "stockouts", label: "Quiebres de stock", icon: AlertTriangle },
+    { key: "opportunities", label: "Oportunidades", icon: CircleDollarSign },
+    { key: "campaign_replies", label: "Respuestas de clientes", icon: MessageCircle },
+    { key: "agent_updates", label: "Informes de agentes", icon: CheckCircle2 },
+    { key: "integration_errors", label: "Integraciones con error", icon: Database },
+  ];
+  const sections = brief?.sections ?? [];
+
+  return (
+    <>
+      <section className="data-card executive-hero">
+        <div>
+          <span className="eyebrow">COORDINADOR DE LA EMPRESA</span>
+          <h2>{brief?.headline ?? "Agente Gerente listo para coordinar los demás agentes"}</h2>
+          <p>
+            Reúne ventas, inventario, oportunidades, respuestas de campañas e integraciones. El análisis
+            solicitado desde el CRM no envía mensajes; los avisos automáticos respetan la agenda gerencial.
+          </p>
+        </div>
+        <span className={`executive-health ${brief?.overall_status === "attention" ? "attention" : "stable"}`}>
+          {brief?.overall_status === "attention" ? "Requiere atención" : "Operación estable"}
+        </span>
+      </section>
+
+      <section className="agent-dashboard-kpis executive-kpis">
+        {kpis.map(({ key, label, icon: Icon }) => (
+          <article key={key}>
+            <Icon size={22} />
+            <span>{label}</span>
+            <strong>{formatNumber.format(Number(metrics[key] ?? 0))}</strong>
+          </article>
+        ))}
+      </section>
+
+      <section className="executive-layout">
+        <article className="data-card executive-brief-card">
+          <div className="section-title">
+            <div>
+              <span className="eyebrow">ÚLTIMO CORTE GERENCIAL</span>
+              <h2>Información que requiere conocimiento</h2>
+            </div>
+            <small>
+              {brief?.generated_at
+                ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(brief.generated_at))
+                : latest?.created_at
+                  ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(latest.created_at))
+                  : "Sin análisis todavía"}
+            </small>
+          </div>
+          <div className="executive-section-grid">
+            {sections.map((section) => {
+              const Icon = executiveSectionIcons[section.key] ?? BarChart3;
+              return (
+                <article className={section.count ? "has-items" : "is-empty"} key={section.key}>
+                  <div className="executive-section-heading">
+                    <Icon size={19} />
+                    <div><strong>{section.title}</strong><span>{section.count} novedades</span></div>
+                  </div>
+                  {section.items?.length ? (
+                    <div className="executive-item-list">
+                      {section.items.slice(0, 5).map((item, index) => (
+                        <div key={`${section.key}-${index}`}>
+                          <strong>{executiveItemTitle(item)}</strong>
+                          <span>{executiveItemDetail(item)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <p>{section.summary ?? "Sin novedades en este corte."}</p>}
+                </article>
+              );
+            })}
+            {!sections.length ? (
+              <div className="dashboard-warning">
+                <AlertTriangle size={18} /> Solicita el primer análisis desde el Centro de agentes para crear el corte gerencial.
+              </div>
+            ) : null}
+          </div>
+        </article>
+
+        <aside className="data-card executive-recommendations">
+          <span className="eyebrow">PRÓXIMAS DECISIONES</span>
+          <h2>Recomendaciones coordinadas</h2>
+          <div>
+            {(brief?.recommendations ?? ["Solicita un análisis para preparar recomendaciones con datos actuales."]).map((recommendation) => (
+              <p key={recommendation}><CheckCircle2 size={18} /> {recommendation}</p>
+            ))}
+          </div>
+          <Link className="ghost-button" to="/agentes"><ArrowLeft size={17} /> Solicitar nuevo análisis</Link>
+        </aside>
+      </section>
+
+      <section className="executive-operations-grid">
+        <article className="data-card executive-schedule-card">
+          <div className="section-title"><div><span className="eyebrow">AGENDA AUTOMÁTICA</span><h2>Horario de comunicación</h2></div></div>
+          <div className="executive-channel-summary">
+            <div><Mail size={20} /><span>Email activo</span><strong>{settings?.email_to ?? "msanhueza237@gmail.com"}</strong></div>
+            <div><MessageCircle size={20} /><span>WhatsApp</span><strong>{settings?.whatsapp_enabled ? "Activo" : "Pendiente de Meta"}</strong></div>
+          </div>
+          <p>
+            Resumen obligatorio a las {String(settings?.morning_time ?? "08:30").slice(0, 5)}. Revisiones a las 11:30,
+            14:30 y 17:30; sólo se informa si hay novedades. Corte diario a las {String(settings?.cutoff_time ?? "20:00").slice(0, 5)}.
+          </p>
+          <div className="executive-slot-list">
+            {slots.slice(0, 8).map((slot) => (
+              <div key={slot.id}>
+                <span>{new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "short", timeZone: settings?.timezone ?? "America/Santiago" }).format(new Date(slot.scheduled_for))}</span>
+                <strong>{slot.slot_kind === "morning" ? "Resumen diario" : "Revisión relevante"}</strong>
+                <em className={`status-${slot.status}`}>{executiveStatusLabel(slot.status)}</em>
+              </div>
+            ))}
+            {!slots.length ? <p>La agenda comenzará a registrar cortes después de publicar el coordinador.</p> : null}
+          </div>
+        </article>
+
+        <article className="data-card executive-delivery-card">
+          <div className="section-title"><div><span className="eyebrow">TRAZABILIDAD</span><h2>Últimas comunicaciones</h2></div></div>
+          <div className="executive-notification-list">
+            {notifications.map((notification) => (
+              <div key={notification.id}>
+                {notification.channel === "email" ? <Mail size={18} /> : <MessageCircle size={18} />}
+                <div>
+                  <strong>{notification.channel === "email" ? "Resumen gerencial por correo" : "Aviso gerencial por WhatsApp"}</strong>
+                  <span>{notification.error ? `${notification.recipient} · ${notification.error}` : notification.recipient}</span>
+                </div>
+                <em className={`status-${notification.status}`}>{executiveStatusLabel(notification.status)}</em>
+              </div>
+            ))}
+            {!notifications.length ? <p>Aún no hay comunicaciones automáticas registradas.</p> : null}
+          </div>
+        </article>
       </section>
     </>
   );
@@ -4635,7 +4939,8 @@ export function AgentDashboardPage() {
         />
       ) : null}
       {!loading && agentType === "marketing" ? <MarketingDashboard tasks={tasks} /> : null}
-      {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" && agentType !== "foreign_trade" && agentType !== "marketing" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
+      {!loading && agentType === "executive" ? <ExecutiveDashboard tasks={tasks} /> : null}
+      {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" && agentType !== "foreign_trade" && agentType !== "marketing" && agentType !== "executive" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
     </section>
   );
 }

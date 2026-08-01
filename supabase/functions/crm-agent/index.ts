@@ -285,6 +285,122 @@ async function handleAgentHubRoute(
     );
   }
 
+  if (operation === "executive/schedule") {
+    return withProspectingIdempotency(
+      context,
+      validation,
+      "hub/executive/schedule",
+      payload,
+      async () => {
+        const slotKey = requiredString(payload.slot_key, "slot_key", 120);
+        const slotKind = requiredString(payload.slot_kind, "slot_kind", 20);
+        const scheduledFor = requiredString(payload.scheduled_for, "scheduled_for", 60);
+        if (!["morning", "review"].includes(slotKind) || Number.isNaN(Date.parse(scheduledFor))) {
+          throw new RequestValidationError("Invalid executive schedule slot");
+        }
+        const existingSlot = await context.supabase
+          .from("executive_schedule_slots")
+          .select("task_id")
+          .eq("slot_key", slotKey)
+          .maybeSingle();
+        if (existingSlot.error) return rpcErrorResult(existingSlot.error);
+        if (existingSlot.data?.task_id) {
+          return { body: { ok: true, task_id: existingSlot.data.task_id, existing: true } };
+        }
+        const [brief, settingsResult] = await Promise.all([
+          collectExecutiveSignals(context.supabase, slotKind),
+          context.supabase
+            .from("executive_agent_settings")
+            .select("email_enabled,email_to,whatsapp_enabled,whatsapp_to")
+            .eq("id", "default")
+            .maybeSingle(),
+        ]);
+        if (settingsResult.error) return rpcErrorResult(settingsResult.error);
+        const settings = asObject(settingsResult.data);
+        const taskPayload = {
+          mode: slotKind,
+          generated_at: new Date().toISOString(),
+          slot_key: slotKey,
+          delivery: {
+            auto_send: true,
+            email_enabled: settings.email_enabled !== false,
+            email_to: String(settings.email_to || "msanhueza237@gmail.com"),
+            whatsapp_enabled: settings.whatsapp_enabled === true,
+            whatsapp_to: settings.whatsapp_to || null,
+          },
+          context: brief.context,
+          signals: brief.signals,
+        };
+        const { data, error } = await context.supabase.rpc("schedule_executive_agent_task", {
+          p_slot_key: slotKey,
+          p_scheduled_for: scheduledFor,
+          p_slot_kind: slotKind,
+          p_payload: taskPayload,
+          p_snapshot_keys: brief.snapshot_keys,
+        });
+        if (error) return rpcErrorResult(error);
+        return { body: { ok: true, task_id: data, relevant: brief.relevant_count } };
+      },
+    );
+  }
+
+  if (operation === "executive/dispatch") {
+    return withProspectingIdempotency(
+      context,
+      validation,
+      "hub/executive/dispatch",
+      payload,
+      async () => {
+        const { data, error } = await context.supabase.rpc("claim_executive_notification");
+        if (error) return rpcErrorResult(error);
+        const row = Array.isArray(data) ? data[0] : data;
+        if (!row?.notification || !row?.task) return { body: { ok: true, dispatched: false } };
+
+        const notification = asObject(row.notification);
+        const task = asObject(row.task);
+        const notificationId = requiredString(notification.id, "notification.id", 36);
+        try {
+          if (notification.channel !== "email") {
+            throw new Error("WhatsApp permanece deshabilitado hasta la aprobacion de Meta");
+          }
+          const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
+          const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+          const response = await fetch(`${supabaseUrl}/functions/v1/gmail-integration/executive-brief`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${serviceRoleKey}`,
+              apikey: serviceRoleKey,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              notification_id: notificationId,
+              task_id: task.id,
+              recipient: notification.recipient,
+              task,
+              result: task.result,
+              payload: task.payload,
+            }),
+          });
+          if (!response.ok) throw new Error((await response.text()).slice(0, 400));
+          await context.supabase.rpc("finish_executive_notification", {
+            p_notification_id: notificationId,
+            p_success: true,
+            p_error: null,
+          });
+          return { body: { ok: true, dispatched: true, notification_id: notificationId } };
+        } catch (dispatchError) {
+          const message = dispatchError instanceof Error ? dispatchError.message : "delivery_failed";
+          await context.supabase.rpc("finish_executive_notification", {
+            p_notification_id: notificationId,
+            p_success: false,
+            p_error: message,
+          });
+          return { body: { ok: false, dispatched: false, error: message }, status: 502 };
+        }
+      },
+    );
+  }
+
   if (operation === "tasks/claim") {
     return withProspectingIdempotency(
       context,
@@ -372,6 +488,111 @@ async function handleAgentHubRoute(
       return { body: { ok: true } };
     },
   );
+}
+
+async function collectExecutiveSignals(
+  supabase: ReturnType<typeof createClient>,
+  slotKind: string,
+) {
+  const previousResult = await supabase
+    .from("executive_schedule_slots")
+    .select("snapshot_keys")
+    .order("scheduled_for", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const previous = asObject(previousResult.data?.snapshot_keys);
+
+  const [documentsResult, inventoryResult, proposalsResult, emailRepliesResult,
+    whatsappRepliesResult, tasksResult, integrationsResult, financeResult, commercialResult] = await Promise.all([
+    supabase.from("integration_records").select("external_id,payload,updated_at")
+      .eq("provider", "facto").eq("resource", "documents").order("updated_at", { ascending: false }).limit(80),
+    supabase.from("integration_records").select("external_id,payload,updated_at")
+      .eq("provider", "facto").eq("resource", "inventory_snapshots").order("updated_at", { ascending: false }).limit(500),
+    supabase.from("action_proposals").select("id,kind,title,summary,risk_level,created_at")
+      .eq("status", "pending").order("created_at", { ascending: false }).limit(50),
+    supabase.from("email_campaign_recipients")
+      .select("id,campaign_id,company_id,reply_from_email,reply_subject,reply_snippet,replied_at")
+      .not("replied_at", "is", null).order("replied_at", { ascending: false }).limit(50),
+    supabase.from("whatsapp_messages").select("id,company_id,from_number,body,created_at")
+      .eq("direction", "incoming").order("created_at", { ascending: false }).limit(50),
+    supabase.from("business_agent_tasks").select("id,agent_type,result,completed_at")
+      .eq("status", "completed").neq("agent_type", "executive")
+      .order("completed_at", { ascending: false }).limit(30),
+    supabase.from("integration_connections").select("provider,status,message,last_checked_at")
+      .in("status", ["error", "degraded"]),
+    supabase.from("integration_records").select("payload,updated_at").eq("provider", "facto")
+      .eq("resource", "financial_snapshots").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+    supabase.from("integration_records").select("payload,updated_at").eq("provider", "facto")
+      .eq("resource", "commercial_snapshots").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+  ]);
+
+  const rows = (value: unknown) => Array.isArray(value) ? value as Record<string, unknown>[] : [];
+  const keys = (value: Record<string, unknown>[], field = "id") => value.map((item) => String(item[field] || "")).filter(Boolean);
+  const unseen = (value: Record<string, unknown>[], prior: unknown[], field = "id") => {
+    const seen = new Set((Array.isArray(prior) ? prior : []).map(String));
+    return value.filter((item) => !seen.has(String(item[field] || "")));
+  };
+
+  const documentRows = rows(documentsResult.data);
+  const currentSalesKeys = keys(documentRows, "external_id");
+  const sales = unseen(documentRows, previous.sales as unknown[], "external_id")
+    .map((record) => ({
+      ...asObject(record.payload),
+      external_id: record.external_id,
+      observed_at: record.updated_at,
+    }))
+    .slice(0, 20);
+  const stockoutRows = rows(inventoryResult.data).filter((record) => {
+    const data = asObject(record.payload);
+    const raw = data.available_units ?? data.stock ?? data.quantity ?? data.existence;
+    return raw !== null && raw !== undefined && Number(raw) <= 0;
+  });
+  const proposalRows = rows(proposalsResult.data);
+  const emailRows = rows(emailRepliesResult.data);
+  const whatsappRows = rows(whatsappRepliesResult.data);
+  const replyRows = [...emailRows.map((item) => ({ ...item, channel: "email" })),
+    ...whatsappRows.map((item) => ({ ...item, channel: "whatsapp" }))];
+  const taskRows = rows(tasksResult.data);
+  const integrationRows = rows(integrationsResult.data);
+  const selectedStockouts = slotKind === "morning"
+    ? stockoutRows
+    : unseen(stockoutRows, previous.stockouts as unknown[], "external_id");
+  const selectedProposals = slotKind === "morning"
+    ? proposalRows
+    : unseen(proposalRows, previous.opportunities as unknown[]);
+  const selectedIntegrations = slotKind === "morning"
+    ? integrationRows
+    : unseen(integrationRows, previous.integration_errors as unknown[], "provider");
+
+  const signals = {
+    sales,
+    stockouts: selectedStockouts.map((record) => ({
+      ...asObject(record.payload),
+      external_id: record.external_id,
+      observed_at: record.updated_at,
+    })).slice(0, 30),
+    opportunities: selectedProposals.slice(0, 20),
+    campaign_replies: unseen(replyRows, previous.campaign_replies as unknown[]).slice(0, 20),
+    agent_updates: unseen(taskRows, previous.agent_updates as unknown[]).slice(0, 20),
+    integration_errors: selectedIntegrations.slice(0, 10),
+  };
+  const relevantCount = Object.values(signals).reduce((total, value) => total + value.length, 0);
+  return {
+    context: {
+      financial_snapshot: asObject(financeResult.data?.payload),
+      commercial_snapshot: asObject(commercialResult.data?.payload),
+    },
+    signals,
+    relevant_count: slotKind === "morning" ? Math.max(1, relevantCount) : relevantCount,
+    snapshot_keys: {
+      sales: currentSalesKeys,
+      stockouts: keys(stockoutRows, "external_id"),
+      opportunities: keys(proposalRows),
+      campaign_replies: keys(replyRows),
+      agent_updates: keys(taskRows),
+      integration_errors: keys(integrationRows, "provider"),
+    },
+  };
 }
 
 async function handleReadTable(table: string, context: RouteContext) {

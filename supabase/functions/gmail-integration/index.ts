@@ -227,6 +227,9 @@ Deno.serve(async (req) => {
 
     if (route === "health") return json({ ok: true, service: "gmail-integration" }, 200, req);
     if (route === "callback" && req.method === "GET") return handleCallback(url, supabase);
+    if (route === "executive-brief" && req.method === "POST") {
+      return handleExecutiveBrief(req, supabase, serviceRoleKey);
+    }
 
     const user = await requireAdmin(req, supabase);
 
@@ -247,6 +250,117 @@ Deno.serve(async (req) => {
     return json({ error: message }, status, req);
   }
 });
+
+async function handleExecutiveBrief(req: Request, supabase: SupabaseClient, serviceRoleKey: string) {
+  const authorization = req.headers.get("authorization") || "";
+  if (authorization !== `Bearer ${serviceRoleKey}`) {
+    throw new HttpError("Credencial interna invalida.", 401);
+  }
+
+  const input = asObject(await req.json().catch(() => ({})));
+  const recipient = String(input.recipient || "").trim().toLowerCase();
+  const task = asObject(input.task);
+  const result = Object.keys(task).length ? asObject(task.result) : asObject(input.result);
+  const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+  const firstEvidence = asObject(evidence[0]);
+  const brief = asObject(firstEvidence.executive_brief);
+  if (!recipient || !recipient.includes("@")) throw new HttpError("Destinatario gerencial invalido.", 400);
+  if (!Object.keys(brief).length) throw new HttpError("El analisis gerencial no contiene un informe.", 400);
+
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("id,role")
+    .eq("role", "administrador")
+    .limit(1)
+    .maybeSingle();
+  if (profileError || !profile?.id) throw new HttpError("No existe un administrador para auditar el envio.", 500);
+  const user: AuthenticatedUser = {
+    id: String(profile.id),
+    email: requiredEnv("GOOGLE_GMAIL_SENDER"),
+    role: "administrador",
+  };
+
+  const mode = String(brief.mode || "review");
+  const headline = String(brief.headline || result.summary || "Informe gerencial Clima Activa");
+  const sections = Array.isArray(brief.sections) ? brief.sections.map(asObject) : [];
+  const recommendations = Array.isArray(brief.recommendations)
+    ? brief.recommendations.map((item) => String(item)).filter(Boolean)
+    : [];
+  const subject = mode === "morning"
+    ? "Clima Activa · Resumen gerencial 08:30"
+    : "Clima Activa · Alerta gerencial";
+
+  const textSections = sections.map((section) => {
+    const title = String(section.title || "Novedades");
+    const items = Array.isArray(section.items) ? section.items.map(asObject) : [];
+    const lines = items.slice(0, 10).map((item) => `- ${formatExecutiveItem(item)}`);
+    return `${title} (${Number(section.count || items.length)})${lines.length ? `\n${lines.join("\n")}` : "\n- Sin novedades"}`;
+  });
+  const bodyText = [
+    "AGENTE GERENTE · CLIMA ACTIVA",
+    headline,
+    `Generado: ${String(brief.generated_at || new Date().toISOString())}`,
+    "",
+    ...textSections.flatMap((section) => [section, ""]),
+    "Recomendaciones",
+    ...(recommendations.length ? recommendations.map((item) => `- ${item}`) : ["- Mantener monitoreo."]),
+    "",
+    "Este informe fue coordinado automáticamente desde los sistemas conectados al CRM.",
+  ].join("\n");
+  const bodyHtml = `
+    <div style="font-family:Arial,sans-serif;color:#123b43;line-height:1.45;max-width:720px;margin:auto">
+      <div style="background:#0b6570;color:white;padding:22px;border-radius:14px 14px 0 0">
+        <div style="font-size:12px;font-weight:700;letter-spacing:.08em">AGENTE GERENTE · CLIMA ACTIVA</div>
+        <h1 style="font-size:24px;margin:8px 0 0">${escapeExecutiveHtml(headline)}</h1>
+      </div>
+      <div style="border:1px solid #d9e5e7;border-top:0;padding:20px;border-radius:0 0 14px 14px">
+        ${sections.map((section) => {
+          const items = Array.isArray(section.items) ? section.items.map(asObject) : [];
+          return `<section style="margin:0 0 20px">
+            <h2 style="font-size:17px;margin:0 0 8px">${escapeExecutiveHtml(String(section.title || "Novedades"))} (${Number(section.count || items.length)})</h2>
+            ${items.length
+              ? `<ul style="margin:0;padding-left:20px">${items.slice(0, 10).map((item) => `<li style="margin:5px 0">${escapeExecutiveHtml(formatExecutiveItem(item))}</li>`).join("")}</ul>`
+              : `<p style="margin:0;color:#63777b">Sin novedades.</p>`}
+          </section>`;
+        }).join("")}
+        <section style="background:#eef8f5;padding:14px;border-radius:10px">
+          <h2 style="font-size:17px;margin:0 0 8px">Recomendaciones</h2>
+          <ul style="margin:0;padding-left:20px">${(recommendations.length ? recommendations : ["Mantener monitoreo."]).map((item) => `<li style="margin:5px 0">${escapeExecutiveHtml(item)}</li>`).join("")}</ul>
+        </section>
+        <p style="font-size:12px;color:#63777b;margin:18px 0 0">Generado ${escapeExecutiveHtml(String(brief.generated_at || new Date().toISOString()))}. Ninguna propuesta se ejecuta sin aprobación humana.</p>
+      </div>
+    </div>`;
+
+  const sent = await sendTrackedEmail(supabase, {
+    user,
+    toEmail: recipient,
+    subject,
+    bodyText,
+    bodyHtml,
+    bodyPreview: headline.slice(0, 240),
+  });
+  return json({ success: true, recipient, subject, gmailMessageId: sent.gmailMessageId }, 200, req);
+}
+
+function formatExecutiveItem(item: Record<string, unknown>) {
+  const row = { ...item, ...asObject(item.payload) };
+  const preferred = [
+    "title", "name", "company_name", "customer_name", "customer",
+    "receiver_business_name", "recipient_business_name", "reply_subject",
+    "reply_from_email", "summary", "message", "reply_snippet", "description",
+    "product_name", "sku", "provider",
+  ];
+  const label = preferred.map((key) => String(row[key] || "").trim()).find(Boolean);
+  const amount = row.total ?? row.amount ?? row.gross_total ?? row.net_total ?? row.net_amount;
+  const suffix = amount === undefined || amount === null || amount === "" ? "" : ` · ${Number(amount).toLocaleString("es-CL")}`;
+  return `${label || "Novedad registrada"}${suffix}`;
+}
+
+function escapeExecutiveHtml(value: string) {
+  return value.replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;",
+  })[character] || character);
+}
 
 async function handleAuth(url: URL, supabase: SupabaseClient, user: AuthenticatedUser, req: Request) {
   const clientId = requiredEnv("GOOGLE_CLIENT_ID");

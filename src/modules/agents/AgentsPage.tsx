@@ -585,6 +585,136 @@ export function AgentsPage() {
           ? `Cobranza verificada enviada con ${documents.length} documentos y saldo exacto informado por Facto.`
           : "Facto aun no entrega la ruta oficial Cobranza -> Documentos impagos ni saldos exactos en sus PDF. No se calculo deuda desde totales de facturas ni pagos.";
       }
+    } else if (type === "executive") {
+      const [
+        documentsResult,
+        inventoryResult,
+        proposalsResult,
+        emailRepliesResult,
+        whatsappRepliesResult,
+        agentUpdatesResult,
+        integrationsResult,
+        financeResult,
+        commercialResult,
+      ] = await Promise.all([
+        supabase
+          .from("integration_records")
+          .select("external_id,payload,updated_at")
+          .eq("provider", "facto")
+          .eq("resource", "documents")
+          .order("updated_at", { ascending: false })
+          .limit(20),
+        supabase
+          .from("integration_records")
+          .select("external_id,payload,updated_at")
+          .eq("provider", "facto")
+          .eq("resource", "inventory_snapshots")
+          .order("updated_at", { ascending: false })
+          .limit(500),
+        supabase
+          .from("action_proposals")
+          .select("id,kind,title,summary,risk_level,created_at")
+          .eq("status", "pending")
+          .order("created_at", { ascending: false })
+          .limit(30),
+        supabase
+          .from("email_campaign_recipients")
+          .select("id,campaign_id,company_id,reply_from_email,reply_subject,reply_snippet,replied_at")
+          .not("replied_at", "is", null)
+          .order("replied_at", { ascending: false })
+          .limit(20),
+        supabase
+          .from("whatsapp_messages")
+          .select("id,company_id,from_number,body,created_at")
+          .eq("direction", "incoming")
+          .order("created_at", { ascending: false })
+          .limit(20),
+        supabase
+          .from("business_agent_tasks")
+          .select("id,agent_type,result,completed_at")
+          .eq("status", "completed")
+          .neq("agent_type", "executive")
+          .order("completed_at", { ascending: false })
+          .limit(20),
+        supabase
+          .from("integration_connections")
+          .select("provider,status,message,last_checked_at")
+          .in("status", ["error", "degraded"]),
+        supabase
+          .from("integration_records")
+          .select("payload,updated_at")
+          .eq("provider", "facto")
+          .eq("resource", "financial_snapshots")
+          .order("updated_at", { ascending: false })
+          .limit(1),
+        supabase
+          .from("integration_records")
+          .select("payload,updated_at")
+          .eq("provider", "facto")
+          .eq("resource", "commercial_snapshots")
+          .order("updated_at", { ascending: false })
+          .limit(1),
+      ]);
+      const queryError = [
+        documentsResult.error,
+        inventoryResult.error,
+        proposalsResult.error,
+        emailRepliesResult.error,
+        whatsappRepliesResult.error,
+        agentUpdatesResult.error,
+        integrationsResult.error,
+        financeResult.error,
+        commercialResult.error,
+      ].find(Boolean) ?? null;
+      if (queryError) {
+        error = queryError;
+      } else {
+        const stockouts = ((inventoryResult.data ?? []) as IntegrationPayloadRecord[])
+          .filter((row) => {
+            const payload = row.payload ?? {};
+            const raw = payload.available_units ?? payload.stock ?? payload.quantity ?? payload.existence;
+            return raw !== null && raw !== undefined && Number(raw) <= 0;
+          })
+          .slice(0, 30);
+        const emailReplies = (emailRepliesResult.data ?? []).map((item) => ({ ...item, channel: "email" }));
+        const whatsappReplies = (whatsappRepliesResult.data ?? []).map((item) => ({ ...item, channel: "whatsapp" }));
+        const { data: insertedTask, error: insertError } = await supabase
+          .from("business_agent_tasks")
+          .insert({
+            agent_type: "executive",
+            action: "analyze_company",
+            requested_by: user.id,
+            priority: 100,
+            payload: {
+              mode: "manual",
+              generated_at: new Date().toISOString(),
+              delivery: {
+                auto_send: false,
+                email: true,
+                email_to: "msanhueza237@gmail.com",
+                whatsapp: false,
+                whatsapp_status: "pending_meta_approval",
+              },
+              signals: {
+                sales: documentsResult.data ?? [],
+                stockouts,
+                opportunities: proposalsResult.data ?? [],
+                campaign_replies: [...emailReplies, ...whatsappReplies],
+                agent_updates: agentUpdatesResult.data ?? [],
+                integration_errors: integrationsResult.data ?? [],
+              },
+              context: {
+                financial_snapshot: financeResult.data?.[0]?.payload ?? {},
+                commercial_snapshot: commercialResult.data?.[0]?.payload ?? {},
+              },
+            },
+          })
+          .select("id")
+          .single();
+        error = insertError;
+        dashboardTaskId = insertedTask?.id ?? "";
+        successMessage = `Análisis gerencial solicitado con ${documentsResult.data?.length ?? 0} ventas recientes, ${stockouts.length} quiebres observados, ${proposalsResult.data?.length ?? 0} propuestas y ${emailReplies.length + whatsappReplies.length} respuestas de clientes. Esta consulta manual no envía correo.`;
+      }
     } else {
       const response = await supabase.from("business_agent_tasks").insert({
         agent_type: type,
