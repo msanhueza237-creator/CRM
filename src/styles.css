@@ -18,6 +18,16 @@ body {
   min-width: 320px;
 }
 
+.sr-only {
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
 /* Agente Gerente: centro coordinador, agenda y trazabilidad de avisos. */
 .executive-hero {
   align-items: flex-start;
@@ -4875,20 +4885,34 @@ th {
 }
 
 .commercial-product-opportunity-tools {
+  align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(0, 1fr) minmax(190px, 230px);
+  grid-template-columns: minmax(280px, 1fr) minmax(190px, 230px) auto;
   margin-bottom: 14px;
 }
 
-.commercial-product-opportunity-tools label {
+.commercial-product-opportunity-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.commercial-product-opportunity-field > label {
+  color: #415e64;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.commercial-product-opportunity-input {
   align-items: center;
   display: flex;
   min-width: 0;
   position: relative;
 }
 
-.commercial-product-opportunity-tools label svg {
+.commercial-product-opportunity-input svg {
   color: #607077;
   left: 12px;
   pointer-events: none;
@@ -4909,6 +4933,16 @@ th {
 
 .commercial-product-opportunity-tools input {
   padding-left: 40px;
+}
+
+.commercial-product-opportunity-clear {
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+.commercial-product-opportunity-clear:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .commercial-product-opportunity-list {
@@ -5694,11 +5728,20 @@ th {
 
   .commercial-product-opportunities .section-title,
   .commercial-opportunity-radar,
-  .commercial-product-opportunity-tools,
   .commercial-product-opportunity-footer {
     align-items: stretch;
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .commercial-product-opportunity-tools {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .commercial-product-opportunity-clear {
+    grid-column: auto;
+    justify-self: stretch;
+    width: 100%;
   }
 
   .commercial-opportunity-radar small {

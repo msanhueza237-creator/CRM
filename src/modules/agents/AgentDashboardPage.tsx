@@ -2872,15 +2872,9 @@ function CommercialDashboard({
         return Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0);
       });
   }, [factoRanking, rankingChannel, rankingQuery, rankingSort, tiendanubeRanking]);
-  const filteredProductOpportunities = useMemo(() => {
+  const queryMatchedProductOpportunities = useMemo(() => {
     const normalizedQuery = normalizeCustomerSearch(productOpportunityQuery);
     return (report?.customer_product_opportunities ?? []).filter((opportunity) => {
-      if (
-        productOpportunityPriority !== "all" &&
-        opportunity.priority !== productOpportunityPriority
-      ) {
-        return false;
-      }
       if (!normalizedQuery) return true;
       return [
         opportunity.customer_name,
@@ -2889,7 +2883,20 @@ function CommercialDashboard({
         opportunity.sku,
       ].some((value) => normalizeCustomerSearch(value).includes(normalizedQuery));
     });
-  }, [productOpportunityPriority, productOpportunityQuery, report]);
+  }, [productOpportunityQuery, report]);
+  const filteredProductOpportunities = useMemo(
+    () =>
+      queryMatchedProductOpportunities.filter(
+        (opportunity) =>
+          productOpportunityPriority === "all" ||
+          opportunity.priority === productOpportunityPriority,
+      ),
+    [productOpportunityPriority, queryMatchedProductOpportunities],
+  );
+  const productOpportunitiesInOtherPriorities = Math.max(
+    0,
+    queryMatchedProductOpportunities.length - filteredProductOpportunities.length,
+  );
   const productOpportunityFeatureAvailable = Array.isArray(
     report?.customer_product_opportunities,
   );
@@ -3141,19 +3148,25 @@ function CommercialDashboard({
         </div>
 
         <div className="commercial-product-opportunity-tools">
-          <label>
-            <Search aria-hidden="true" size={18} />
-            <span className="sr-only">Buscar cliente o producto</span>
-            <input
-              onChange={(event) => setProductOpportunityQuery(event.target.value)}
-              placeholder="Cliente, RUT, producto o SKU"
-              type="search"
-              value={productOpportunityQuery}
-            />
-          </label>
-          <label>
-            <span className="sr-only">Filtrar prioridad</span>
+          <div className="commercial-product-opportunity-field">
+            <label htmlFor="commercial-product-opportunity-search">
+              Buscar cliente o producto
+            </label>
+            <div className="commercial-product-opportunity-input">
+              <Search aria-hidden="true" size={18} />
+              <input
+                id="commercial-product-opportunity-search"
+                onChange={(event) => setProductOpportunityQuery(event.target.value)}
+                placeholder="Cliente, RUT, producto o SKU"
+                type="search"
+                value={productOpportunityQuery}
+              />
+            </div>
+          </div>
+          <div className="commercial-product-opportunity-field">
+            <label htmlFor="commercial-product-opportunity-priority">Prioridad</label>
             <select
+              id="commercial-product-opportunity-priority"
               onChange={(event) => setProductOpportunityPriority(event.target.value)}
               value={productOpportunityPriority}
             >
@@ -3163,11 +3176,22 @@ function CommercialDashboard({
               <option value="medium">Medias</option>
               <option value="normal">Normales</option>
             </select>
-          </label>
+          </div>
+          <button
+            className="secondary-button commercial-product-opportunity-clear"
+            disabled={!productOpportunityQuery && productOpportunityPriority === "all"}
+            onClick={() => {
+              setProductOpportunityQuery("");
+              setProductOpportunityPriority("all");
+            }}
+            type="button"
+          >
+            Limpiar filtros
+          </button>
         </div>
 
         <div className="commercial-product-opportunity-list">
-          {filteredProductOpportunities.map((opportunity) => {
+          {filteredProductOpportunities.map((opportunity, opportunityIndex) => {
             const stockValue = Number(opportunity.stock_value ?? 0);
             const formattedStockValue =
               opportunity.cost_currency_code === "USD"
@@ -3182,7 +3206,7 @@ function CommercialDashboard({
             return (
               <article
                 className={`priority-${opportunity.priority}`}
-                key={`${opportunity.customer_key}-${opportunity.sku}`}
+                key={`${opportunity.customer_key}-${opportunity.sku}-${opportunity.product_name}-${opportunityIndex}`}
               >
                 <div className="commercial-product-opportunity-heading">
                   <div>
@@ -3275,7 +3299,21 @@ function CommercialDashboard({
                   ? "No hay coincidencias para este filtro"
                   : "Este informe fue generado por una versión anterior del agente"}
               </strong>
-              {productOpportunityFeatureAvailable ? (
+              {productOpportunityFeatureAvailable && productOpportunitiesInOtherPriorities > 0 ? (
+                <>
+                  <span>
+                    Hay {formatNumber.format(productOpportunitiesInOtherPriorities)} coincidencias
+                    para esta búsqueda, pero están clasificadas en otra prioridad.
+                  </span>
+                  <button
+                    className="secondary-button"
+                    onClick={() => setProductOpportunityPriority("all")}
+                    type="button"
+                  >
+                    Mostrar todas las prioridades
+                  </button>
+                </>
+              ) : productOpportunityFeatureAvailable ? (
                 <span>
                   Se revisaron {formatNumber.format(
                     productOpportunityDiagnostics?.purchase_products_reviewed ?? 0,
