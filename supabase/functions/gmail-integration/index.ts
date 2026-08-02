@@ -351,6 +351,12 @@ function formatExecutiveItem(item: Record<string, unknown>) {
     "product_name", "sku", "provider",
   ];
   const label = preferred.map((key) => String(row[key] || "").trim()).find(Boolean);
+  const detail = String(row.detail || "").trim();
+  if (detail) {
+    return label && !detail.toLocaleLowerCase("es").startsWith(label.toLocaleLowerCase("es"))
+      ? `${label} · ${detail}`
+      : detail;
+  }
   const amount = row.total ?? row.amount ?? row.gross_total ?? row.net_total ?? row.net_amount;
   const suffix = amount === undefined || amount === null || amount === "" ? "" : ` · ${Number(amount).toLocaleString("es-CL")}`;
   return `${label || "Novedad registrada"}${suffix}`;

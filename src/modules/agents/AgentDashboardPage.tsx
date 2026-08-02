@@ -1101,6 +1101,8 @@ function executiveItemDetail(item: ExecutiveBriefItem) {
     ? item.payload as ExecutiveBriefItem
     : {};
   const row: ExecutiveBriefItem = { ...item, ...payload };
+  const explicitDetail = executiveText(row.detail);
+  if (explicitDetail) return explicitDetail;
   const details: string[] = [];
   const folio = executiveText(row.document_number ?? row.folio ?? row.number);
   const documentType = executiveDocumentType(row.document_type ?? row.document_type_name ?? row.type_name);

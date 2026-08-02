@@ -151,7 +151,7 @@ function executiveNestedObject(source: Record<string, unknown>, ...keys: string[
   return {};
 }
 
-function executiveScalar(value: unknown, objectKeys = ["name", "description", "label", "code", "id"]) {
+function executiveScalar(value: unknown, objectKeys = ["name", "description", "label", "code", "id", "value", "amount", "total"]) {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "object") return value;
   const source = executiveObject(value);
@@ -229,6 +229,171 @@ function compactExecutiveDocument(payload: Record<string, unknown> | null | unde
     ...(issueDate !== undefined ? { issue_date: issueDate } : {}),
     ...(netTotal !== undefined ? { net_total: netTotal } : {}),
     ...(grossTotal !== undefined ? { total: grossTotal } : {}),
+  };
+}
+
+function executiveArray(containers: Record<string, unknown>[], keys: string[]) {
+  for (const container of containers) {
+    for (const key of keys) {
+      if (Array.isArray(container[key])) return container[key] as unknown[];
+    }
+  }
+  return [];
+}
+
+function executiveNumber(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const raw = String(value ?? "").trim().replace(/\s/g, "").replace(/\$/g, "");
+  if (!raw) return 0;
+  const normalized = raw.includes(",")
+    ? raw.replace(/\./g, "").replace(",", ".")
+    : raw.replace(/(?<=\d)\.(?=\d{3}(?:\D|$))/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function executiveProductSummary(payload: Record<string, unknown>) {
+  const document = executiveNestedObject(payload, "document", "data");
+  const source = Object.keys(document).length ? document : payload;
+  const lines = executiveArray([source, payload], [
+    "details", "items", "lines", "line_items", "products", "detalle", "detalles",
+  ]);
+  const products = lines.map((raw) => {
+    const line = executiveObject(raw);
+    const product = executiveNestedObject(line, "product", "item", "article", "articulo");
+    const containers = [product, line];
+    const name = String(executiveFirst(containers, [
+      "product_name", "product_description", "line_description", "item_name", "name",
+      "description", "descripcion", "label", "detail",
+    ]) ?? "").trim();
+    const sku = String(executiveFirst(containers, ["sku", "code", "product_code", "item_code", "codigo"]) ?? "").trim();
+    const quantity = executiveNumber(executiveFirst(containers, ["quantity", "qty", "units", "cantidad"]));
+    return { name: name || sku, sku, quantity };
+  }).filter((item) => item.name);
+  const unique = [...new Map(products.map((item) => [`${item.name.toLowerCase()}|${item.sku.toLowerCase()}`, item])).values()];
+  if (!unique.length) return "Producto no informado por Facto";
+  const visible = unique.slice(0, 3).map((item) => `${item.name}${item.quantity ? ` (${item.quantity.toLocaleString("es-CL")} un.)` : ""}`);
+  return `Productos: ${visible.join(", ")}${unique.length > 3 ? ` y ${unique.length - 3} más` : ""}`;
+}
+
+function executiveDocumentDate(payload: Record<string, unknown>) {
+  const compact = compactExecutiveDocument(payload);
+  const raw = compact.issue_date;
+  if (!raw) return null;
+  const text = String(raw).trim();
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T12:00:00-04:00`) : new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function executiveChileParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Santiago", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(date);
+  const read = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
+  return { year: read("year"), month: read("month"), day: read("day") };
+}
+
+function executiveIsRecentDocument(payload: Record<string, unknown>) {
+  const date = executiveDocumentDate(payload);
+  if (!date) return false;
+  const current = executiveChileParts(new Date());
+  const observed = executiveChileParts(date);
+  const days = Math.round((Date.UTC(current.year, current.month - 1, current.day) - Date.UTC(observed.year, observed.month - 1, observed.day)) / 86_400_000);
+  return days >= 0 && days <= 1;
+}
+
+function executiveFormatCurrency(value: number) {
+  return new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(value);
+}
+
+function executiveDocumentNet(payload: Record<string, unknown>) {
+  const compact = compactExecutiveDocument(payload);
+  const amount = executiveNumber(compact.net_total ?? compact.total);
+  const type = String(compact.document_type ?? "").toLowerCase();
+  return type === "61" || type.includes("nota de credito") || type.includes("nota de crédito")
+    ? -Math.abs(amount)
+    : amount;
+}
+
+function executiveSaleItem(row: IntegrationPayloadRecord) {
+  const compact = compactExecutiveDocument(row.payload);
+  const customer = String(compact.customer_name ?? "Cliente sin identificar").trim();
+  const folio = compact.document_number ? `Documento N° ${String(compact.document_number)}` : "Documento Facto";
+  const net = executiveDocumentNet(row.payload);
+  return {
+    external_id: row.external_id,
+    observed_at: row.updated_at,
+    ...compact,
+    title: customer,
+    detail: `${executiveProductSummary(row.payload)} · ${folio}${net ? ` · Neto ${executiveFormatCurrency(net)}` : ""}`,
+  };
+}
+
+function executiveStockItem(row: IntegrationPayloadRecord) {
+  const rawStock = row.payload.available_units ?? row.payload.stock ?? row.payload.quantity ?? row.payload.existence;
+  const title = String(row.payload.name ?? row.payload.product_name ?? row.payload.sku ?? "Producto sin identificar").trim();
+  return {
+    external_id: row.external_id,
+    observed_at: row.updated_at,
+    ...compactExecutivePayload(row.payload, executiveInventoryFields),
+    title,
+    detail: `Stock actual: ${executiveNumber(rawStock).toLocaleString("es-CL")} un.${row.payload.sku ? ` · SKU ${String(row.payload.sku)}` : ""}`,
+  };
+}
+
+function executiveAgentUpdates(rows: Array<Record<string, unknown>>) {
+  const seenActions = new Set<string>();
+  const seenSummaries = new Set<string>();
+  return rows.flatMap((item) => {
+    const completed = new Date(String(item.completed_at ?? ""));
+    if (Number.isNaN(completed.getTime()) || Date.now() - completed.getTime() > 30 * 60 * 60 * 1000) return [];
+    const agentType = String(item.agent_type ?? "").trim();
+    if (!agentType || agentType === "finance") return [];
+    const action = String(item.action ?? "analysis").trim();
+    const result = executiveObject(item.result);
+    const summary = String(result.summary ?? "").trim();
+    const actionKey = `${agentType}:${action}`.toLowerCase();
+    const summaryKey = normalizeSearchText(summary).replace(/\s+/g, " ");
+    if (!summary || seenActions.has(actionKey) || seenSummaries.has(summaryKey)) return [];
+    seenActions.add(actionKey);
+    seenSummaries.add(summaryKey);
+    const labels: Record<string, string> = {
+      commercial: "comercial", marketing: "de marketing", logistics: "logístico",
+      foreign_trade: "de comercio exterior", collections: "de cobranza", accounting: "contable",
+    };
+    return [{
+      id: item.id,
+      agent_type: agentType,
+      action,
+      completed_at: item.completed_at,
+      title: `Agente ${labels[agentType] ?? agentType.replace(/_/g, " ")}`,
+      detail: summary,
+      summary,
+      metrics: result.metrics ?? {},
+      warnings: Array.isArray(result.warnings) ? result.warnings.slice(0, 3) : [],
+    }];
+  });
+}
+
+function executiveMonthFinance(sales: IntegrationPayloadRecord[], purchases: IntegrationPayloadRecord[]) {
+  const current = executiveChileParts(new Date());
+  const currentMonth = (row: IntegrationPayloadRecord) => {
+    const date = executiveDocumentDate(row.payload);
+    if (!date) return false;
+    const parts = executiveChileParts(date);
+    return parts.year === current.year && parts.month === current.month;
+  };
+  const monthSales = sales.filter(currentMonth);
+  const monthPurchases = purchases.filter(currentMonth);
+  const salesNet = monthSales.reduce((total, row) => total + executiveDocumentNet(row.payload), 0);
+  const purchasesNet = monthPurchases.reduce((total, row) => total + executiveDocumentNet(row.payload), 0);
+  const month = new Intl.DateTimeFormat("es-CL", { timeZone: "America/Santiago", month: "long", year: "numeric" }).format(new Date());
+  return {
+    id: `finance-current-month-${current.year}-${current.month}`,
+    agent_type: "finance",
+    title: `Finanzas de ${month}`,
+    detail: `Ventas netas del mes: ${executiveFormatCurrency(salesNet)} (${monthSales.length} documentos) · Compras netas del mes: ${executiveFormatCurrency(purchasesNet)} (${monthPurchases.length} documentos)`,
+    summary: `Ventas y compras netas correspondientes exclusivamente al mes en curso (${month}).`,
   };
 }
 
@@ -794,6 +959,7 @@ export function AgentsPage() {
     } else if (type === "executive") {
       const [
         documentsResult,
+        purchasesResult,
         inventoryResult,
         proposalsResult,
         emailRepliesResult,
@@ -807,9 +973,16 @@ export function AgentsPage() {
           .from("integration_records")
           .select("external_id,payload,updated_at")
           .eq("provider", "facto")
-          .eq("resource", "documents")
+          .eq("resource", "document_details")
           .order("updated_at", { ascending: false })
-          .limit(20),
+          .limit(500),
+        supabase
+          .from("integration_records")
+          .select("external_id,payload,updated_at")
+          .eq("provider", "facto")
+          .eq("resource", "purchase_document_details")
+          .order("updated_at", { ascending: false })
+          .limit(500),
         supabase
           .from("integration_records")
           .select("external_id,payload,updated_at")
@@ -837,11 +1010,11 @@ export function AgentsPage() {
           .limit(20),
         supabase
           .from("business_agent_tasks")
-          .select("id,agent_type,result,completed_at")
+          .select("id,agent_type,action,result,completed_at")
           .eq("status", "completed")
           .neq("agent_type", "executive")
           .order("completed_at", { ascending: false })
-          .limit(20),
+          .limit(80),
         supabase
           .from("integration_connections")
           .select("provider,status,message,last_checked_at")
@@ -863,6 +1036,7 @@ export function AgentsPage() {
       ]);
       const queryError = [
         documentsResult.error,
+        purchasesResult.error,
         inventoryResult.error,
         proposalsResult.error,
         emailRepliesResult.error,
@@ -884,29 +1058,17 @@ export function AgentsPage() {
           .slice(0, 30);
         const emailReplies = (emailRepliesResult.data ?? []).map((item) => ({ ...item, channel: "email" }));
         const whatsappReplies = (whatsappRepliesResult.data ?? []).map((item) => ({ ...item, channel: "whatsapp" }));
-        const sales = ((documentsResult.data ?? []) as IntegrationPayloadRecord[]).map((row) => ({
-          external_id: row.external_id,
-          observed_at: row.updated_at,
-          ...compactExecutiveDocument(row.payload),
-        }));
-        const compactStockouts = stockouts.map((row) => ({
-          external_id: row.external_id,
-          observed_at: row.updated_at,
-          ...compactExecutivePayload(row.payload, executiveInventoryFields),
-        }));
-        const agentUpdates = (agentUpdatesResult.data ?? []).map((item) => {
-          const result = item.result && typeof item.result === "object"
-            ? item.result as Record<string, unknown>
-            : {};
-          return {
-            id: item.id,
-            agent_type: item.agent_type,
-            completed_at: item.completed_at,
-            summary: result.summary ?? null,
-            metrics: result.metrics ?? {},
-            warnings: Array.isArray(result.warnings) ? result.warnings.slice(0, 3) : [],
-          };
-        });
+        const documentRows = (documentsResult.data ?? []) as IntegrationPayloadRecord[];
+        const purchaseRows = (purchasesResult.data ?? []) as IntegrationPayloadRecord[];
+        const sales = documentRows
+          .filter((row) => executiveIsRecentDocument(row.payload))
+          .map(executiveSaleItem)
+          .slice(0, 20);
+        const compactStockouts = stockouts.map(executiveStockItem);
+        const agentUpdates = [
+          executiveMonthFinance(documentRows, purchaseRows),
+          ...executiveAgentUpdates((agentUpdatesResult.data ?? []) as Array<Record<string, unknown>>),
+        ].slice(0, 20);
         const { data: insertedTask, error: insertError } = await supabase
           .from("business_agent_tasks")
           .insert({
@@ -948,7 +1110,7 @@ export function AgentsPage() {
           .single();
         error = insertError;
         dashboardTaskId = insertedTask?.id ?? "";
-        successMessage = `Análisis gerencial solicitado con ${documentsResult.data?.length ?? 0} ventas recientes, ${stockouts.length} quiebres observados, ${proposalsResult.data?.length ?? 0} propuestas y ${emailReplies.length + whatsappReplies.length} respuestas de clientes. Esta consulta manual no envía correo.`;
+        successMessage = `Análisis gerencial solicitado con ${sales.length} ventas de ayer/hoy, ${stockouts.length} quiebres observados, ${proposalsResult.data?.length ?? 0} propuestas y ${emailReplies.length + whatsappReplies.length} respuestas de clientes. Esta consulta manual no envía correo.`;
       }
     } else {
       const response = await supabase.from("business_agent_tasks").insert({

@@ -502,10 +502,12 @@ async function collectExecutiveSignals(
     .maybeSingle();
   const previous = asObject(previousResult.data?.snapshot_keys);
 
-  const [documentsResult, inventoryResult, proposalsResult, emailRepliesResult,
+  const [documentsResult, purchasesResult, inventoryResult, proposalsResult, emailRepliesResult,
     whatsappRepliesResult, tasksResult, integrationsResult, financeResult, commercialResult] = await Promise.all([
     supabase.from("integration_records").select("external_id,payload,updated_at")
-      .eq("provider", "facto").eq("resource", "documents").order("updated_at", { ascending: false }).limit(80),
+      .eq("provider", "facto").eq("resource", "document_details").order("updated_at", { ascending: false }).limit(500),
+    supabase.from("integration_records").select("external_id,payload,updated_at")
+      .eq("provider", "facto").eq("resource", "purchase_document_details").order("updated_at", { ascending: false }).limit(500),
     supabase.from("integration_records").select("external_id,payload,updated_at")
       .eq("provider", "facto").eq("resource", "inventory_snapshots").order("updated_at", { ascending: false }).limit(500),
     supabase.from("action_proposals").select("id,kind,title,summary,risk_level,created_at")
@@ -515,9 +517,9 @@ async function collectExecutiveSignals(
       .not("replied_at", "is", null).order("replied_at", { ascending: false }).limit(50),
     supabase.from("whatsapp_messages").select("id,company_id,from_number,body,created_at")
       .eq("direction", "incoming").order("created_at", { ascending: false }).limit(50),
-    supabase.from("business_agent_tasks").select("id,agent_type,result,completed_at")
+    supabase.from("business_agent_tasks").select("id,agent_type,action,result,completed_at")
       .eq("status", "completed").neq("agent_type", "executive")
-      .order("completed_at", { ascending: false }).limit(30),
+      .order("completed_at", { ascending: false }).limit(80),
     supabase.from("integration_connections").select("provider,status,message,last_checked_at")
       .in("status", ["error", "degraded"]),
     supabase.from("integration_records").select("payload,updated_at").eq("provider", "facto")
@@ -534,16 +536,14 @@ async function collectExecutiveSignals(
   };
 
   const documentRows = rows(documentsResult.data);
+  const purchaseRows = rows(purchasesResult.data);
   const currentSalesKeys = keys(documentRows, "external_id");
+  const recentDocumentRows = documentRows.filter((record) => executiveIsRecentDocument(asObject(record.payload)));
   const selectedSales = slotKind === "morning"
-    ? documentRows
-    : unseen(documentRows, previous.sales as unknown[], "external_id");
+    ? recentDocumentRows
+    : unseen(recentDocumentRows, previous.sales as unknown[], "external_id");
   const sales = selectedSales
-    .map((record) => ({
-      external_id: record.external_id,
-      observed_at: record.updated_at,
-      ...compactExecutiveDocument(asObject(record.payload)),
-    }))
+    .map(executiveSaleItem)
     .slice(0, 20);
   const stockoutRows = rows(inventoryResult.data).filter((record) => {
     const data = asObject(record.payload);
@@ -569,33 +569,25 @@ async function collectExecutiveSignals(
   const selectedReplies = slotKind === "morning"
     ? replyRows
     : unseen(replyRows, previous.campaign_replies as unknown[]);
+  const recentTasks = taskRows.filter((task) => executiveIsRecentTask(task.completed_at));
   const selectedTasks = slotKind === "morning"
-    ? taskRows
-    : unseen(taskRows, previous.agent_updates as unknown[]);
+    ? recentTasks
+    : unseen(recentTasks, previous.agent_updates as unknown[]);
+  const agentUpdates = compactExecutiveAgentUpdates(selectedTasks);
+  const monthFinance = executiveCurrentMonthFinanceUpdate(documentRows, purchaseRows);
+  const shouldIncludeMonthFinance = slotKind === "morning"
+    || selectedSales.length > 0
+    || unseen(purchaseRows, previous.purchases as unknown[], "external_id").length > 0;
 
   const signals = {
     sales,
-    stockouts: selectedStockouts.map((record) => ({
-      external_id: record.external_id,
-      observed_at: record.updated_at,
-      ...pickExecutiveFields(asObject(record.payload), [
-        "sku", "name", "product_name", "available_units", "stock", "quantity", "existence",
-        "reorder_point", "warehouse", "unit_cost", "unit_price",
-      ]),
-    })).slice(0, 30),
+    stockouts: selectedStockouts.map(executiveStockItem).slice(0, 30),
     opportunities: selectedProposals.slice(0, 20),
     campaign_replies: selectedReplies.slice(0, 20),
-    agent_updates: selectedTasks.map((task) => {
-      const result = asObject(task.result);
-      return {
-        id: task.id,
-        agent_type: task.agent_type,
-        completed_at: task.completed_at,
-        summary: result.summary ?? null,
-        metrics: result.metrics ?? {},
-        warnings: Array.isArray(result.warnings) ? result.warnings.slice(0, 3) : [],
-      };
-    }).slice(0, 20),
+    agent_updates: [
+      ...(shouldIncludeMonthFinance ? [monthFinance] : []),
+      ...agentUpdates,
+    ].slice(0, 20),
     integration_errors: selectedIntegrations.slice(0, 10),
   };
   const relevantCount = Object.values(signals).reduce((total, value) => total + value.length, 0);
@@ -608,10 +600,11 @@ async function collectExecutiveSignals(
     relevant_count: slotKind === "morning" ? Math.max(1, relevantCount) : relevantCount,
     snapshot_keys: {
       sales: currentSalesKeys,
+      purchases: keys(purchaseRows, "external_id"),
       stockouts: keys(stockoutRows, "external_id"),
       opportunities: keys(proposalRows),
       campaign_replies: keys(replyRows),
-      agent_updates: keys(taskRows),
+      agent_updates: keys(recentTasks),
       integration_errors: keys(integrationRows, "provider"),
     },
   };
@@ -634,7 +627,7 @@ function executiveNestedObject(source: Record<string, unknown>, ...keys: string[
   return {};
 }
 
-function executiveScalar(value: unknown, objectKeys = ["name", "description", "label", "code", "id"]) {
+function executiveScalar(value: unknown, objectKeys = ["name", "description", "label", "code", "id", "value", "amount", "total"]) {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "object") return value;
   const source = asObject(value);
@@ -709,6 +702,229 @@ function compactExecutiveDocument(source: Record<string, unknown>) {
     ...(issueDate !== undefined ? { issue_date: issueDate } : {}),
     ...(netTotal !== undefined ? { net_total: netTotal } : {}),
     ...(grossTotal !== undefined ? { total: grossTotal } : {}),
+  };
+}
+
+function executiveArray(containers: Record<string, unknown>[], keys: string[]) {
+  for (const container of containers) {
+    for (const key of keys) {
+      const value = container[key];
+      if (Array.isArray(value)) return value;
+    }
+  }
+  return [];
+}
+
+function executiveProductLines(source: Record<string, unknown>) {
+  const nestedDocument = executiveNestedObject(source, "document", "data");
+  const document = Object.keys(nestedDocument).length ? nestedDocument : source;
+  const header = executiveNestedObject(document, "header", "encabezado");
+  const rawLines = executiveArray([document, header, source], [
+    "details", "items", "lines", "line_items", "products", "detalle", "detalles",
+  ]);
+  const unique = new Map<string, { name: string; sku: string; quantity?: number }>();
+  for (const rawLine of rawLines) {
+    const line = asObject(rawLine);
+    const product = executiveNestedObject(line, "product", "item", "article", "articulo");
+    const containers = [product, line];
+    const name = String(executiveFirst(containers, [
+      "product_name", "product_description", "line_description", "item_name", "name",
+      "description", "descripcion", "label", "detail",
+    ]) ?? "").trim();
+    const sku = String(executiveFirst(containers, [
+      "sku", "code", "product_code", "item_code", "codigo", "codigo_producto",
+    ]) ?? "").trim();
+    if (!name && !sku) continue;
+    const quantityValue = executiveFirst(containers, ["quantity", "qty", "units", "cantidad"]);
+    const quantity = executiveNumber(quantityValue);
+    const key = `${name.toLowerCase()}|${sku.toLowerCase()}`;
+    if (!unique.has(key)) unique.set(key, { name: name || sku, sku, ...(quantity ? { quantity } : {}) });
+  }
+  return [...unique.values()];
+}
+
+function executiveProductsDetail(source: Record<string, unknown>) {
+  const products = executiveProductLines(source);
+  if (!products.length) return "Producto no informado por Facto";
+  const visible = products.slice(0, 3).map((product) => {
+    const quantity = product.quantity !== undefined
+      ? ` (${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 2 }).format(product.quantity)} un.)`
+      : "";
+    return `${product.name}${quantity}`;
+  });
+  const remainder = products.length > visible.length ? ` y ${products.length - visible.length} más` : "";
+  return `Productos: ${visible.join(", ")}${remainder}`;
+}
+
+function executiveNumber(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const raw = String(value ?? "").trim().replace(/\s/g, "").replace(/\$/g, "");
+  if (!raw) return 0;
+  const normalized = raw.includes(",")
+    ? raw.replace(/\./g, "").replace(",", ".")
+    : raw.replace(/(?<=\d)\.(?=\d{3}(?:\D|$))/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function executiveDocumentDate(source: Record<string, unknown>) {
+  const compact = compactExecutiveDocument(source);
+  const raw = compact.issue_date ?? source.updated_at;
+  if (!raw) return null;
+  const text = String(raw).trim();
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(text)
+    ? new Date(`${text}T12:00:00-04:00`)
+    : new Date(text);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function executiveChileDateParts(value: Date) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Santiago",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const read = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
+  return { year: read("year"), month: read("month"), day: read("day") };
+}
+
+function executiveIsRecentDocument(source: Record<string, unknown>) {
+  const date = executiveDocumentDate(source);
+  if (!date) return false;
+  const current = executiveChileDateParts(new Date());
+  const observed = executiveChileDateParts(date);
+  const currentDay = Date.UTC(current.year, current.month - 1, current.day);
+  const observedDay = Date.UTC(observed.year, observed.month - 1, observed.day);
+  const days = Math.round((currentDay - observedDay) / 86_400_000);
+  return days >= 0 && days <= 1;
+}
+
+function executiveIsRecentTask(value: unknown) {
+  const parsed = new Date(String(value ?? ""));
+  return !Number.isNaN(parsed.getTime()) && Date.now() - parsed.getTime() <= 30 * 60 * 60 * 1000;
+}
+
+function executiveFormatCurrency(value: number) {
+  return new Intl.NumberFormat("es-CL", {
+    style: "currency",
+    currency: "CLP",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
+function executiveDocumentNet(source: Record<string, unknown>) {
+  const compact = compactExecutiveDocument(source);
+  const amount = executiveNumber(compact.net_total ?? compact.total);
+  const type = String(compact.document_type ?? "").toLowerCase();
+  const isCreditNote = type === "61" || type.includes("nota de credito") || type.includes("nota de crédito");
+  return isCreditNote ? -Math.abs(amount) : amount;
+}
+
+function executiveSaleItem(record: Record<string, unknown>) {
+  const source = asObject(record.payload);
+  const compact = compactExecutiveDocument(source);
+  const customer = String(compact.customer_name ?? "Cliente sin identificar").trim();
+  const productDetail = executiveProductsDetail(source);
+  const folio = compact.document_number ? `Documento N° ${String(compact.document_number)}` : "Documento Facto";
+  const net = executiveDocumentNet(source);
+  return {
+    external_id: record.external_id,
+    observed_at: record.updated_at,
+    ...compact,
+    title: customer,
+    detail: `${productDetail} · ${folio}${net ? ` · Neto ${executiveFormatCurrency(net)}` : ""}`,
+  };
+}
+
+function executiveStockItem(record: Record<string, unknown>) {
+  const source = asObject(record.payload);
+  const compact = pickExecutiveFields(source, [
+    "sku", "name", "product_name", "available_units", "stock", "quantity", "existence",
+    "reorder_point", "warehouse", "unit_cost", "unit_price",
+  ]);
+  const title = String(source.name ?? source.product_name ?? source.sku ?? "Producto sin identificar").trim();
+  const rawStock = source.available_units ?? source.stock ?? source.quantity ?? source.existence;
+  const stock = executiveNumber(rawStock);
+  const sku = source.sku ? ` · SKU ${String(source.sku)}` : "";
+  return {
+    external_id: record.external_id,
+    observed_at: record.updated_at,
+    ...compact,
+    title,
+    detail: `Stock actual: ${new Intl.NumberFormat("es-CL", { maximumFractionDigits: 2 }).format(stock)} un.${sku}`,
+  };
+}
+
+function compactExecutiveAgentUpdates(tasks: Record<string, unknown>[]) {
+  const seenActions = new Set<string>();
+  const seenSummaries = new Set<string>();
+  const updates: Record<string, unknown>[] = [];
+  for (const task of tasks) {
+    const agentType = String(task.agent_type ?? "").trim();
+    if (!agentType || agentType === "finance") continue;
+    const action = String(task.action ?? "analysis").trim();
+    const result = asObject(task.result);
+    const summary = String(result.summary ?? "").trim();
+    if (!summary) continue;
+    const actionKey = `${agentType}:${action}`.toLowerCase();
+    const summaryKey = summary.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ");
+    if (seenActions.has(actionKey) || seenSummaries.has(summaryKey)) continue;
+    seenActions.add(actionKey);
+    seenSummaries.add(summaryKey);
+    updates.push({
+      id: task.id,
+      agent_type: agentType,
+      action,
+      completed_at: task.completed_at,
+      title: `Agente ${executiveAgentLabel(agentType)}`,
+      detail: summary,
+      summary,
+      metrics: result.metrics ?? {},
+      warnings: Array.isArray(result.warnings) ? result.warnings.slice(0, 3) : [],
+    });
+  }
+  return updates;
+}
+
+function executiveAgentLabel(value: string) {
+  const labels: Record<string, string> = {
+    commercial: "comercial",
+    marketing: "de marketing",
+    logistics: "logístico",
+    foreign_trade: "de comercio exterior",
+    collections: "de cobranza",
+    accounting: "contable",
+  };
+  return labels[value] ?? value.replace(/_/g, " ");
+}
+
+function executiveCurrentMonthFinanceUpdate(
+  sales: Record<string, unknown>[],
+  purchases: Record<string, unknown>[],
+) {
+  const current = executiveChileDateParts(new Date());
+  const inCurrentMonth = (record: Record<string, unknown>) => {
+    const date = executiveDocumentDate(asObject(record.payload));
+    if (!date) return false;
+    const parts = executiveChileDateParts(date);
+    return parts.year === current.year && parts.month === current.month;
+  };
+  const monthSales = sales.filter(inCurrentMonth);
+  const monthPurchases = purchases.filter(inCurrentMonth);
+  const salesNet = monthSales.reduce((total, record) => total + executiveDocumentNet(asObject(record.payload)), 0);
+  const purchasesNet = monthPurchases.reduce((total, record) => total + executiveDocumentNet(asObject(record.payload)), 0);
+  const monthLabel = new Intl.DateTimeFormat("es-CL", {
+    timeZone: "America/Santiago",
+    month: "long",
+    year: "numeric",
+  }).format(new Date());
+  return {
+    id: `finance-current-month-${current.year}-${current.month}`,
+    agent_type: "finance",
+    title: `Finanzas de ${monthLabel}`,
+    detail: `Ventas netas del mes: ${executiveFormatCurrency(salesNet)} (${monthSales.length} documentos) · Compras netas del mes: ${executiveFormatCurrency(purchasesNet)} (${monthPurchases.length} documentos)`,
+    summary: `Ventas y compras netas correspondientes exclusivamente al mes en curso (${monthLabel}).`,
   };
 }
 
