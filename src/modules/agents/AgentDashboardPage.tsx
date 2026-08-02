@@ -892,6 +892,11 @@ const formatUsd = new Intl.NumberFormat("es-CL", {
   currency: "USD",
   maximumFractionDigits: 0,
 });
+const formatExecutiveDate = new Intl.DateTimeFormat("es-CL", {
+  day: "2-digit",
+  month: "short",
+  year: "numeric",
+});
 const CHILE_VAT_FACTOR = 1.19;
 
 function netUnitPrice(item: Snapshot) {
@@ -1029,21 +1034,66 @@ function executiveItemTitle(item: ExecutiveBriefItem) {
     ? item.payload as ExecutiveBriefItem
     : {};
   const row: ExecutiveBriefItem = { ...item, ...payload };
-  return String(
-    row.title ??
-      row.name ??
-      row.company_name ??
-      row.customer_name ??
-      row.customer ??
-      row.receiver_business_name ??
-      row.recipient_business_name ??
-      row.product_name ??
-      row.reply_subject ??
-      row.reply_from_email ??
-      row.subject ??
-      row.provider ??
-      "Registro relevante",
-  );
+  const candidates = [
+    row.title,
+    row.company_name,
+    row.customer_name,
+    row.receiver_legal_name,
+    row.receiver_business_name,
+    row.receiver_name,
+    row.recipient_business_name,
+    row.customer,
+    row.name,
+    row.product_name,
+    row.reply_subject,
+    row.reply_from_email,
+    row.subject,
+    row.provider,
+  ];
+  for (const candidate of candidates) {
+    const value = executiveText(candidate);
+    if (value) return value;
+  }
+  const folio = executiveText(row.document_number ?? row.folio ?? row.number);
+  if (folio) return `Venta Facto · Folio ${folio}`;
+  return "Registro relevante";
+}
+
+function executiveText(value: unknown) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "object") return String(value).trim();
+  const source = value as ExecutiveBriefItem;
+  for (const key of ["legal_name", "business_name", "name", "razon_social", "description", "label", "code", "id"]) {
+    const nested = source[key];
+    if (nested !== undefined && nested !== null && nested !== "" && typeof nested !== "object") {
+      return String(nested).trim();
+    }
+  }
+  return "";
+}
+
+function executiveAmount(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const raw = String(value ?? "").trim().replace(/\s/g, "").replace(/\$/g, "");
+  if (!raw) return 0;
+  const normalized = raw.includes(",")
+    ? raw.replace(/\./g, "").replace(",", ".")
+    : raw.replace(/(?<=\d)\.(?=\d{3}(?:\D|$))/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function executiveDocumentType(value: unknown) {
+  const raw = executiveText(value);
+  const labels: Record<string, string> = {
+    "33": "Factura electrónica",
+    "34": "Factura exenta",
+    "39": "Boleta electrónica",
+    "41": "Boleta exenta",
+    "56": "Nota de débito",
+    "61": "Nota de crédito",
+  };
+  return labels[raw] ?? raw;
 }
 
 function executiveItemDetail(item: ExecutiveBriefItem) {
@@ -1052,8 +1102,21 @@ function executiveItemDetail(item: ExecutiveBriefItem) {
     : {};
   const row: ExecutiveBriefItem = { ...item, ...payload };
   const details: string[] = [];
-  const amount = Number(row.total ?? row.amount ?? row.gross_total ?? row.net_total ?? row.net_amount ?? 0);
-  if (amount > 0) details.push(formatCurrency.format(amount));
+  const folio = executiveText(row.document_number ?? row.folio ?? row.number);
+  const documentType = executiveDocumentType(row.document_type ?? row.document_type_name ?? row.type_name);
+  if (folio) details.push(`${documentType || "Documento"} N° ${folio}`);
+  else if (documentType) details.push(documentType);
+  const rawDate = executiveText(row.issue_date ?? row.issued_at ?? row.date ?? row.observed_at);
+  if (rawDate) {
+    const parsedDate = new Date(rawDate);
+    if (!Number.isNaN(parsedDate.getTime())) details.push(formatExecutiveDate.format(parsedDate));
+  }
+  const taxId = executiveText(row.customer_tax_id ?? row.receiver_tax_id ?? row.receiver_rut ?? row.rut);
+  if (taxId) details.push(`RUT ${taxId}`);
+  const netAmount = executiveAmount(row.net_total ?? row.net_amount ?? row.net);
+  const grossAmount = executiveAmount(row.total ?? row.total_amount ?? row.gross_total ?? row.amount);
+  if (netAmount > 0) details.push(`Neto ${formatCurrency.format(netAmount)}`);
+  else if (grossAmount > 0) details.push(formatCurrency.format(grossAmount));
   const sku = row.sku ? `SKU ${String(row.sku)}` : "";
   if (sku) details.push(sku);
   const available = row.available_units ?? row.stock ?? row.quantity ?? row.existence;

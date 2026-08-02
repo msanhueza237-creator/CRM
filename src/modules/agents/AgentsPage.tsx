@@ -137,6 +137,101 @@ const executiveDocumentFields = [
   "status", "document_status",
 ];
 
+function executiveObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function executiveNestedObject(source: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) {
+    const value = executiveObject(source[key]);
+    if (Object.keys(value).length) return value;
+  }
+  return {};
+}
+
+function executiveScalar(value: unknown, objectKeys = ["name", "description", "label", "code", "id"]) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "object") return value;
+  const source = executiveObject(value);
+  for (const key of objectKeys) {
+    const nested = source[key];
+    if (nested !== undefined && nested !== null && nested !== "" && typeof nested !== "object") return nested;
+  }
+  return undefined;
+}
+
+function executiveFirst(containers: Record<string, unknown>[], keys: string[], objectKeys?: string[]) {
+  for (const container of containers) {
+    for (const key of keys) {
+      const value = executiveScalar(container[key], objectKeys);
+      if (value !== undefined) return value;
+    }
+  }
+  return undefined;
+}
+
+function compactExecutiveDocument(payload: Record<string, unknown> | null | undefined) {
+  const source = payload ?? {};
+  const document = executiveNestedObject(source, "document", "data") || source;
+  const effectiveDocument = Object.keys(document).length ? document : source;
+  const header = executiveNestedObject(effectiveDocument, "header", "encabezado");
+  const party = executiveNestedObject(
+    effectiveDocument,
+    "customer",
+    "client",
+    "receiver",
+    "recipient",
+    "receptor",
+  );
+  const headerParty = executiveNestedObject(header, "customer", "client", "receiver", "recipient", "receptor");
+  const totals = executiveNestedObject(effectiveDocument, "totals", "amounts", "montos");
+  const customerContainers = [party, headerParty, header, effectiveDocument, source];
+  const documentContainers = [effectiveDocument, header, source];
+  const totalContainers = [totals, header, effectiveDocument, source];
+  const customerName = executiveFirst(customerContainers, [
+    "receiver_legal_name", "receiver_business_name", "receiver_name", "receiverLegalName",
+    "receiverBusinessName", "receiverName", "recipient_legal_name", "recipient_business_name",
+    "recipient_name", "customer_legal_name", "customer_business_name", "customer_name",
+    "client_legal_name", "client_business_name", "client_name", "receptor_razon_social",
+    "receptor_nombre", "razon_social_receptor", "business_name", "legal_name", "name",
+    "razon_social", "trade_name", "customer",
+  ]);
+  const customerTaxId = executiveFirst(customerContainers, [
+    "receiver_tax_id_code", "receiver_tax_id", "receiver_rut", "receiverTaxIdCode", "receiverTaxId",
+    "recipient_tax_id_code", "recipient_tax_id", "recipient_rut", "customer_tax_id_code",
+    "customer_tax_id", "customer_rut", "client_tax_id_code", "client_tax_id", "client_rut",
+    "receptor_rut", "rut_receptor", "tax_id_code", "tax_id", "rut", "identifier",
+  ]);
+  const documentNumber = executiveFirst(documentContainers, [
+    "document_number", "number", "folio", "reference_number",
+  ]);
+  const documentType = executiveFirst(documentContainers, [
+    "document_type", "document_type_name", "type_name", "dte_type", "tipo_documento",
+  ], ["name", "description", "label", "code", "id"]);
+  const issueDate = executiveFirst(documentContainers, [
+    "issue_date", "issued_at", "date", "emission_date", "document_date", "fecha_emision", "fecha",
+  ]);
+  const netTotal = executiveFirst(totalContainers, [
+    "net_total", "net_amount", "net", "amount_net", "total_net", "subtotal", "monto_neto",
+  ]);
+  const grossTotal = executiveFirst(totalContainers, [
+    "total", "total_amount", "gross_total", "gross_amount", "grand_total", "monto_total",
+  ]);
+
+  return {
+    ...compactExecutivePayload(source, executiveDocumentFields),
+    ...(customerName !== undefined ? { customer_name: customerName } : {}),
+    ...(customerTaxId !== undefined ? { customer_tax_id: customerTaxId } : {}),
+    ...(documentNumber !== undefined ? { document_number: documentNumber } : {}),
+    ...(documentType !== undefined ? { document_type: documentType } : {}),
+    ...(issueDate !== undefined ? { issue_date: issueDate } : {}),
+    ...(netTotal !== undefined ? { net_total: netTotal } : {}),
+    ...(grossTotal !== undefined ? { total: grossTotal } : {}),
+  };
+}
+
 const executiveInventoryFields = [
   "sku", "name", "product_name", "available_units", "stock", "quantity", "existence",
   "reorder_point", "warehouse", "unit_cost", "unit_price",
@@ -792,7 +887,7 @@ export function AgentsPage() {
         const sales = ((documentsResult.data ?? []) as IntegrationPayloadRecord[]).map((row) => ({
           external_id: row.external_id,
           observed_at: row.updated_at,
-          ...compactExecutivePayload(row.payload, executiveDocumentFields),
+          ...compactExecutiveDocument(row.payload),
         }));
         const compactStockouts = stockouts.map((row) => ({
           external_id: row.external_id,
