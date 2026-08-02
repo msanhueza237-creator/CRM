@@ -4014,6 +4014,64 @@ th {
   gap: 8px;
 }
 
+.proposal-destination {
+  background: #eef8f6;
+  border-left: 3px solid #0a8190;
+  border-radius: 6px;
+  display: block;
+  margin-top: 10px;
+  padding: 9px 10px;
+}
+
+.proposal-destination strong {
+  color: #075f69;
+}
+
+.approved-actions-card {
+  display: grid;
+  gap: 4px;
+}
+
+.approved-actions-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.approved-actions-list > article {
+  align-items: center;
+  border: 1px solid #dce7e8;
+  border-radius: 10px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 14px;
+}
+
+.approved-actions-list article > div {
+  display: grid;
+  gap: 6px;
+}
+
+.approved-actions-list strong,
+.approved-actions-list p {
+  margin: 0;
+}
+
+.approved-actions-list small {
+  color: #607077;
+}
+
+.approved-actions-list .status-chip {
+  justify-self: start;
+}
+
+.approved-action-link {
+  justify-content: center;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
 .connection-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -5173,6 +5231,15 @@ th {
   .agent-columns {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .approved-actions-list,
+  .approved-actions-list > article {
+    grid-template-columns: 1fr;
+  }
+
+  .approved-action-link {
+    width: 100%;
   }
 
   .agent-policy-grid,

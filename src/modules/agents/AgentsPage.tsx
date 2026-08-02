@@ -52,6 +52,26 @@ interface Proposal {
   created_at: string;
 }
 
+interface AgentActionItem {
+  id: string;
+  proposal_id: string;
+  kind: string;
+  destination_module: string;
+  destination_path: string;
+  destination_record_id: string | null;
+  title: string;
+  summary: string | null;
+  status: string;
+  created_at: string;
+}
+
+interface ProposalDecisionResult {
+  decision?: string;
+  message?: string;
+  destination_module?: string;
+  destination_path?: string;
+}
+
 interface RiskAlert {
   id: string;
   sku: string;
@@ -183,6 +203,42 @@ const defaultAction: Record<AgentType, string> = {
   executive: "prepare_brief",
 };
 
+const proposalDestinations: Record<string, { label: string; detail: string; path: string }> = {
+  campaign_draft: {
+    label: "Borrador en Campañas",
+    detail: "crea la campaña y agrega las empresas CRM disponibles; no la envía",
+    path: "/campanas",
+  },
+  purchase_order: {
+    label: "Compra en Comercio Exterior",
+    detail: "formaliza un borrador para revisión; no emite la orden al proveedor",
+    path: "/agentes/foreign_trade/dashboard",
+  },
+  collection_reminder: {
+    label: "Tarea de Cobranza",
+    detail: "crea un seguimiento interno; no contacta al cliente",
+    path: "/agentes/collections/dashboard",
+  },
+  commercial_follow_up: {
+    label: "Tarea Comercial",
+    detail: "deja el seguimiento pendiente en el agente comercial",
+    path: "/agentes/commercial/dashboard",
+  },
+  executive_alert: {
+    label: "Tarea Gerencial",
+    detail: "registra la decisión prioritaria para seguimiento",
+    path: "/agentes/executive/dashboard",
+  },
+};
+
+function proposalDestination(kind: string) {
+  return proposalDestinations[kind] ?? {
+    label: "Acción trazable",
+    detail: "queda registrada para revisión humana",
+    path: "/agentes",
+  };
+}
+
 export function AgentsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -190,6 +246,7 @@ export function AgentsPage() {
   const canManage = user?.role === "administrador";
   const [tasks, setTasks] = useState<AgentTask[]>([]);
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [actionItems, setActionItems] = useState<AgentActionItem[]>([]);
   const [alerts, setAlerts] = useState<RiskAlert[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [busy, setBusy] = useState("");
@@ -197,11 +254,12 @@ export function AgentsPage() {
 
   const load = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase || !user) return;
-    const [taskResult, proposalResult, alertResult, connectionResult] = await Promise.all([
+    const [taskResult, proposalResult, alertResult, connectionResult, actionItemResult] = await Promise.all([
       supabase.from("business_agent_tasks").select("id,agent_type,action,status,created_at,result,error_code").order("created_at", { ascending: false }).limit(30),
       supabase.from("action_proposals").select("id,kind,title,summary,risk_level,status,created_at").order("created_at", { ascending: false }).limit(30),
       supabase.from("inventory_risk_alerts").select("id,sku,severity,title,detail,status").eq("status", "open").order("created_at", { ascending: false }).limit(30),
       supabase.from("integration_connections").select("provider,status,read_only,message,last_success_at").order("provider"),
+      supabase.from("agent_action_items").select("id,proposal_id,kind,destination_module,destination_path,destination_record_id,title,summary,status,created_at").order("created_at", { ascending: false }).limit(20),
     ]);
     const firstError = taskResult.error || proposalResult.error || alertResult.error || connectionResult.error;
     if (firstError) {
@@ -212,6 +270,12 @@ export function AgentsPage() {
     setProposals((proposalResult.data ?? []) as Proposal[]);
     setAlerts((alertResult.data ?? []) as RiskAlert[]);
     setConnections((connectionResult.data ?? []) as Connection[]);
+    if (actionItemResult.error) {
+      setActionItems([]);
+      setNotice("Falta ejecutar supabase/agent_action_dispatch.sql en Supabase para activar los destinos de aprobación.");
+    } else {
+      setActionItems((actionItemResult.data ?? []) as AgentActionItem[]);
+    }
   }, [user]);
 
   useEffect(() => {
@@ -800,13 +864,18 @@ export function AgentsPage() {
   async function decideProposal(id: string, decision: "approved" | "rejected") {
     if (!supabase) return;
     setBusy(id);
-    const { error } = await supabase.rpc("decide_action_proposal", {
+    const { data, error } = await supabase.rpc("decide_action_proposal", {
       p_proposal_id: id,
       p_decision: decision,
       p_note: decision === "approved" ? "Aprobado desde el centro de agentes" : "Rechazado desde el centro de agentes",
     });
+    const result = data as ProposalDecisionResult | null;
     setBusy("");
-    setNotice(error ? error.message : decision === "approved" ? "Propuesta aprobada." : "Propuesta rechazada.");
+    setNotice(
+      error
+        ? error.message
+        : result?.message ?? (decision === "approved" ? "Propuesta aprobada y materializada." : "Propuesta rechazada."),
+    );
     await load();
   }
 
@@ -890,7 +959,14 @@ export function AgentsPage() {
           <div className="agent-list">
             {proposals.filter((item) => item.status === "pending").map((proposal) => (
               <article key={proposal.id}>
-                <div><strong>{proposal.title}</strong><p>{proposal.summary}</p><small>Riesgo: {proposal.risk_level}</small></div>
+                <div>
+                  <strong>{proposal.title}</strong>
+                  <p>{proposal.summary}</p>
+                  <small>Riesgo: {proposal.risk_level}</small>
+                  <small className="proposal-destination">
+                    Al aprobar: <strong>{proposalDestination(proposal.kind).label}</strong>. {proposalDestination(proposal.kind).detail}.
+                  </small>
+                </div>
                 {canManage ? <div className="proposal-actions">
                   <button className="ghost-button" type="button" disabled={busy === proposal.id} onClick={() => void decideProposal(proposal.id, "rejected")}><XCircle size={16} /> Rechazar</button>
                   <button className="primary-button" type="button" disabled={busy === proposal.id} onClick={() => void decideProposal(proposal.id, "approved")}><CheckCircle2 size={16} /> Aprobar</button>
@@ -909,6 +985,34 @@ export function AgentsPage() {
           </div>
         </section>
       </div>
+
+      <section className="data-card approved-actions-card">
+        <div className="section-title">
+          <div>
+            <h2>Acciones aprobadas</h2>
+            <p>Cada aprobación muestra qué creó y dónde debes continuar.</p>
+          </div>
+          <span className="count-pill">{actionItems.length}</span>
+        </div>
+        <div className="approved-actions-list">
+          {actionItems.map((item) => (
+            <article key={item.id}>
+              <div>
+                <span className={`status-chip ${item.status === "draft" ? "pending" : "success"}`}>
+                  {item.status === "draft" ? "Borrador" : "Pendiente de revisión"}
+                </span>
+                <strong>{item.title}</strong>
+                <p>{item.summary || proposalDestination(item.kind).detail}</p>
+                <small>{new Date(item.created_at).toLocaleString("es-CL")}</small>
+              </div>
+              <Link className="ghost-button approved-action-link" to={item.destination_path || proposalDestination(item.kind).path}>
+                Abrir {proposalDestination(item.kind).label}
+              </Link>
+            </article>
+          ))}
+          {!actionItems.length ? <p>Aún no hay propuestas aprobadas con destino materializado.</p> : null}
+        </div>
+      </section>
 
       <section className="data-card">
         <div className="section-title"><div><h2>Conexiones del centro</h2><p>Los secretos permanecen en Dokploy.</p></div></div>
