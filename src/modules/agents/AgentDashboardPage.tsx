@@ -787,6 +787,11 @@ type CommercialProductOpportunityDiagnostics = {
   inventory_products_reviewed?: number;
   matched_customer_products?: number;
   family_matches?: number;
+  purchase_products_without_inventory_match?: number;
+  matched_products_without_stock?: number;
+  matched_products_out_of_stock?: number;
+  matched_products_without_purchase_date?: number;
+  matched_products_recent_purchase?: number;
   eligible_opportunities?: number;
 };
 
@@ -3250,6 +3255,8 @@ function CommercialDashboard({
                     Puntaje {formatNumber.format(opportunity.score)} · coincidencia{" "}
                     {opportunity.inventory_match_method === "exact_sku"
                       ? "exacta por SKU"
+                      : opportunity.inventory_match_method === "exact_product_id"
+                        ? "exacta por producto Facto"
                       : opportunity.inventory_match_method === "unique_name_containment"
                         ? "segura por nombre"
                         : opportunity.inventory_match_method === "product_family"
@@ -3280,8 +3287,14 @@ function CommercialDashboard({
                     productOpportunityDiagnostics?.matched_customer_products ?? 0,
                   )} coincidencias seguras y {formatNumber.format(
                     productOpportunityDiagnostics?.eligible_opportunities ?? 0,
-                  )} oportunidades elegibles. No necesitas buscar manualmente: el radar volverá
-                  a revisar los datos y dejará los hallazgos en Propuestas pendientes.
+                  )} oportunidades elegibles. Quedaron fuera {formatNumber.format(
+                    productOpportunityDiagnostics?.purchase_products_without_inventory_match ?? 0,
+                  )} productos sin coincidencia de inventario, {formatNumber.format(
+                    productOpportunityDiagnostics?.matched_products_out_of_stock ?? 0,
+                  )} sin stock y {formatNumber.format(
+                    productOpportunityDiagnostics?.matched_products_recent_purchase ?? 0,
+                  )} con compra reciente. No necesitas buscar manualmente: el radar volverá a
+                  revisar los datos y dejará los hallazgos en Propuestas pendientes.
                 </span>
               ) : (
                 <span>
@@ -3300,7 +3313,13 @@ function CommercialDashboard({
               productOpportunityDiagnostics.matched_customer_products ?? 0,
             )} coincidencias con inventario · {formatNumber.format(
               productOpportunityDiagnostics.eligible_opportunities ?? 0,
-            )} oportunidades. {formatNumber.format(
+            )} oportunidades · {formatNumber.format(
+              productOpportunityDiagnostics.purchase_products_without_inventory_match ?? 0,
+            )} sin coincidencia de inventario · {formatNumber.format(
+              productOpportunityDiagnostics.matched_products_out_of_stock ?? 0,
+            )} sin stock · {formatNumber.format(
+              productOpportunityDiagnostics.matched_products_recent_purchase ?? 0,
+            )} con compra reciente. {formatNumber.format(
               productOpportunityDiagnostics.customers_using_legacy_top_products ?? 0,
             )} clientes se recuperaron desde informes históricos.
           </p>
