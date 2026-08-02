@@ -34,6 +34,7 @@ import { useCompanyStore } from "../companies/CompanyStore";
 type AgentTask = {
   id: string;
   agent_type: string;
+  action: string;
   status: string;
   created_at: string;
   completed_at?: string | null;
@@ -757,6 +758,8 @@ type CommercialProductOpportunity = {
   phone?: string;
   whatsapp?: string;
   product_name: string;
+  historical_product_name?: string;
+  product_family?: string;
   sku: string;
   historical_units: number;
   purchase_events: number;
@@ -783,6 +786,7 @@ type CommercialProductOpportunityDiagnostics = {
   purchase_products_reviewed?: number;
   inventory_products_reviewed?: number;
   matched_customer_products?: number;
+  family_matches?: number;
   eligible_opportunities?: number;
 };
 
@@ -3119,6 +3123,18 @@ function CommercialDashboard({
           </strong>
         </div>
 
+        <div className="commercial-opportunity-radar">
+          <RefreshCw aria-hidden="true" size={22} />
+          <div>
+            <strong>Radar automático activo</strong>
+            <span>
+              El agente cruza compras históricas y stock vigente cada 6 horas. Cada hallazgo
+              queda en Propuestas pendientes para tu revisión.
+            </span>
+          </div>
+          <small>Sin envíos automáticos</small>
+        </div>
+
         <div className="commercial-product-opportunity-tools">
           <label>
             <Search aria-hidden="true" size={18} />
@@ -3236,7 +3252,9 @@ function CommercialDashboard({
                       ? "exacta por SKU"
                       : opportunity.inventory_match_method === "unique_name_containment"
                         ? "segura por nombre"
-                        : "exacta por nombre"}
+                        : opportunity.inventory_match_method === "product_family"
+                          ? "por familia de producto"
+                          : "exacta por nombre"}
                   </small>
                 </div>
               </article>
@@ -3262,7 +3280,8 @@ function CommercialDashboard({
                     productOpportunityDiagnostics?.matched_customer_products ?? 0,
                   )} coincidencias seguras y {formatNumber.format(
                     productOpportunityDiagnostics?.eligible_opportunities ?? 0,
-                  )} oportunidades elegibles. Prueba también con “Todas las prioridades”.
+                  )} oportunidades elegibles. No necesitas buscar manualmente: el radar volverá
+                  a revisar los datos y dejará los hallazgos en Propuestas pendientes.
                 </span>
               ) : (
                 <span>
@@ -5400,7 +5419,7 @@ export function AgentDashboardPage() {
     try {
       const taskQuery = supabase
         .from("business_agent_tasks")
-        .select("id,agent_type,status,created_at,completed_at,result,error_code")
+        .select("id,agent_type,action,status,created_at,completed_at,result,error_code")
         .eq("agent_type", agentType)
         .order("created_at", { ascending: false });
       const { data, error } = agentType === "executive"

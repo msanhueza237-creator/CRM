@@ -4831,6 +4831,49 @@ th {
   text-align: right;
 }
 
+.commercial-opportunity-radar {
+  align-items: center;
+  background: #edf9f6;
+  border: 1px solid #bfe4dc;
+  border-radius: 12px;
+  color: #17474e;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  margin-bottom: 14px;
+  padding: 13px 15px;
+}
+
+.commercial-opportunity-radar > svg {
+  color: #07818e;
+}
+
+.commercial-opportunity-radar > div {
+  display: grid;
+  gap: 3px;
+}
+
+.commercial-opportunity-radar strong {
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.commercial-opportunity-radar span,
+.commercial-opportunity-radar small {
+  color: #526d72;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.commercial-opportunity-radar small {
+  background: #fff;
+  border-radius: 999px;
+  color: #087785;
+  font-weight: 800;
+  padding: 6px 9px;
+  text-align: center;
+}
+
 .commercial-product-opportunity-tools {
   display: grid;
   gap: 10px;
@@ -5650,11 +5693,16 @@ th {
   }
 
   .commercial-product-opportunities .section-title,
+  .commercial-opportunity-radar,
   .commercial-product-opportunity-tools,
   .commercial-product-opportunity-footer {
     align-items: stretch;
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .commercial-opportunity-radar small {
+    justify-self: start;
   }
 
   .commercial-product-opportunity-count,

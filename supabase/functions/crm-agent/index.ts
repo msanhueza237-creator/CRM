@@ -285,6 +285,137 @@ async function handleAgentHubRoute(
     );
   }
 
+  if (operation === "commercial/schedule") {
+    return withProspectingIdempotency(
+      context,
+      validation,
+      "hub/commercial/schedule",
+      payload,
+      async () => {
+        const slotKey = requiredString(payload.slot_key, "slot_key", 120);
+        const scheduledFor = requiredString(payload.scheduled_for, "scheduled_for", 60);
+        const intervalMinutes = Number(payload.interval_minutes || 360);
+        if (
+          Number.isNaN(Date.parse(scheduledFor)) ||
+          !Number.isFinite(intervalMinutes) ||
+          intervalMinutes < 60 ||
+          intervalMinutes > 1440
+        ) {
+          throw new RequestValidationError("Invalid commercial analysis schedule");
+        }
+
+        const existingTask = await context.supabase
+          .from("business_agent_tasks")
+          .select("id,status")
+          .eq("agent_type", "commercial")
+          .eq("action", "automatic_customer_product_opportunity_scan")
+          .contains("payload", { slot_key: slotKey })
+          .limit(1)
+          .maybeSingle();
+        if (existingTask.error) return rpcErrorResult(existingTask.error);
+        if (existingTask.data?.id) {
+          return {
+            body: {
+              ok: true,
+              task_id: existingTask.data.id,
+              status: existingTask.data.status,
+              existing: true,
+            },
+          };
+        }
+
+        const [commercialResult, financialResult, inventoryResult, companiesResult, proposalResult] =
+          await Promise.all([
+            context.supabase
+              .from("integration_records")
+              .select("payload,updated_at")
+              .eq("provider", "facto")
+              .eq("resource", "commercial_snapshots")
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+            context.supabase
+              .from("integration_records")
+              .select("payload,updated_at")
+              .eq("provider", "facto")
+              .eq("resource", "financial_snapshots")
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .maybeSingle(),
+            context.supabase
+              .from("integration_records")
+              .select("payload,updated_at")
+              .eq("provider", "facto")
+              .eq("resource", "inventory_snapshots")
+              .order("updated_at", { ascending: false })
+              .limit(5000),
+            context.supabase.from("companies").select("*").limit(5000),
+            context.supabase
+              .from("action_proposals")
+              .select("payload,created_at,status")
+              .eq("kind", "commercial_follow_up")
+              .in("status", ["pending", "approved", "executed", "rejected"])
+              .gte(
+                "created_at",
+                new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+              )
+              .order("created_at", { ascending: false })
+              .limit(500),
+          ]);
+        for (const result of [
+          commercialResult,
+          financialResult,
+          inventoryResult,
+          companiesResult,
+          proposalResult,
+        ]) {
+          if (result.error) return rpcErrorResult(result.error);
+        }
+
+        const commercialPayload = asObject(commercialResult.data?.payload);
+        const suppressedOpportunityKeys = (proposalResult.data || [])
+          .map((row) => String(asObject(row.payload).opportunity_key || ""))
+          .filter(Boolean);
+        const taskPayload = {
+          automation: "customer_product_repurchase",
+          slot_key: slotKey,
+          scheduled_for: scheduledFor,
+          interval_minutes: intervalMinutes,
+          generated_at: new Date().toISOString(),
+          as_of: scheduledFor.slice(0, 10),
+          commercial_snapshot: Array.isArray(commercialPayload.customers)
+            ? commercialPayload.customers
+            : [],
+          source_counts: asObject(commercialPayload.sources),
+          financial_snapshot: asObject(financialResult.data?.payload),
+          inventory_snapshot: (inventoryResult.data || []).map((row) => asObject(row.payload)),
+          crm_companies: companiesResult.data || [],
+          suppressed_opportunity_keys: [...new Set(suppressedOpportunityKeys)],
+        };
+        const insertedTask = await context.supabase
+          .from("business_agent_tasks")
+          .insert({
+            agent_type: "commercial",
+            action: "automatic_customer_product_opportunity_scan",
+            payload: taskPayload,
+            priority: 60,
+            status: "pending",
+          })
+          .select("id,status")
+          .single();
+        if (insertedTask.error) return rpcErrorResult(insertedTask.error);
+        return {
+          body: {
+            ok: true,
+            task_id: insertedTask.data.id,
+            status: insertedTask.data.status,
+            existing: false,
+          },
+        };
+      },
+    );
+  }
+
   if (operation === "executive/schedule") {
     return withProspectingIdempotency(
       context,
