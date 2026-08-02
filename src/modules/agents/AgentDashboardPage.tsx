@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -927,31 +928,65 @@ async function loadAllSnapshots(): Promise<Snapshot[]> {
   return result;
 }
 
+function focusDashboardSection(targetId: string) {
+  window.requestAnimationFrame(() => {
+    document.getElementById(targetId)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
+function DashboardKpiButton({
+  children,
+  className = "",
+  label,
+  onActivate,
+  targetId,
+}: {
+  children: ReactNode;
+  className?: string;
+  label: string;
+  onActivate?: () => void;
+  targetId: string;
+}) {
+  return (
+    <button
+      aria-label={`${label}. Ver detalle`}
+      className={`dashboard-kpi-action${className ? ` ${className}` : ""}`}
+      onClick={() => {
+        onActivate?.();
+        focusDashboardSection(targetId);
+      }}
+      type="button"
+    >
+      {children}
+    </button>
+  );
+}
+
 function GenericAgentDashboard({ agentType, tasks }: { agentType: string; tasks: AgentTask[] }) {
   const latest = tasks[0];
   const metrics = Object.entries(latest?.result?.metrics ?? {});
   return (
     <>
       <section className="agent-dashboard-kpis">
-        <article>
+        <DashboardKpiButton label="Estado del último análisis" targetId="generic-agent-report">
           <Database size={22} />
           <span>Estado del último análisis</span>
           <strong>{latest?.status ?? "Sin ejecutar"}</strong>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Análisis registrados" targetId="generic-agent-report">
           <CheckCircle2 size={22} />
           <span>Análisis registrados</span>
           <strong>{tasks.length}</strong>
-        </article>
+        </DashboardKpiButton>
         {metrics.slice(0, 4).map(([key, value]) => (
-          <article key={key}>
+          <DashboardKpiButton key={key} label={key.replace(/_/g, " ")} targetId="generic-agent-report">
             <BarChart3 size={22} />
             <span>{key.replace(/_/g, " ")}</span>
             <strong>{String(value ?? "Sin dato")}</strong>
-          </article>
+          </DashboardKpiButton>
         ))}
       </section>
-      <section className="data-card agent-dashboard-summary">
+      <section className="data-card agent-dashboard-summary dashboard-focus-target" id="generic-agent-report">
         <span className="eyebrow">ÚLTIMO INFORME</span>
         <h2>{agentNames[agentType] ?? agentType}</h2>
         <p>{latest?.result?.summary ?? "Este agente todavía no tiene un análisis terminado."}</p>
@@ -1174,6 +1209,7 @@ function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [slots, setSlots] = useState<ExecutiveScheduleSlot[]>([]);
   const [notifications, setNotifications] = useState<ExecutiveNotification[]>([]);
   const [activeSectionKey, setActiveSectionKey] = useState<string | null>(null);
+  const [showFullCut, setShowFullCut] = useState(false);
   const briefCardRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -1225,7 +1261,16 @@ function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
 
   const openExecutiveSection = (metricKey: string) => {
     const sectionKey = metricKey === "new_sales" ? "sales" : metricKey;
+    setShowFullCut(false);
     setActiveSectionKey(sectionKey);
+    window.requestAnimationFrame(() => {
+      briefCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  };
+
+  const toggleFullExecutiveCut = () => {
+    setActiveSectionKey(null);
+    setShowFullCut((current) => !current);
     window.requestAnimationFrame(() => {
       briefCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -1285,14 +1330,19 @@ function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
                     ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(latest.created_at))
                     : "Sin análisis todavía"}
               </small>
-              {activeSectionKey ? (
-                <button className="executive-clear-filter" onClick={() => setActiveSectionKey(null)} type="button">
-                  Ver todo el corte
+              {activeSectionKey || sections.length ? (
+                <button
+                  aria-expanded={showFullCut}
+                  className="executive-clear-filter"
+                  onClick={toggleFullExecutiveCut}
+                  type="button"
+                >
+                  {showFullCut ? "Volver al resumen" : "Ver todo el corte"}
                 </button>
               ) : null}
             </div>
           </div>
-          <div className={`executive-section-grid${activeSectionKey ? " is-filtered" : ""}`}>
+          <div className={`executive-section-grid${activeSectionKey ? " is-filtered" : ""}${showFullCut ? " is-expanded" : ""}`}>
             {visibleSections.map((section) => {
               const Icon = executiveSectionIcons[section.key] ?? BarChart3;
               return (
@@ -1302,8 +1352,8 @@ function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
                     <div><strong>{section.title}</strong><span>{section.count} novedades</span></div>
                   </div>
                   {section.items?.length ? (
-                    <div className="executive-item-list">
-                      {section.items.slice(0, 5).map((item, index) => (
+                    <div className={`executive-item-list${showFullCut ? " is-expanded" : ""}`}>
+                      {(showFullCut ? section.items : section.items.slice(0, 5)).map((item, index) => (
                         <div key={`${section.key}-${index}`}>
                           <strong>{executiveItemTitle(item)}</strong>
                           <span>{executiveItemDetail(item)}</span>
@@ -1645,52 +1695,52 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
   return (
     <>
       <section className="agent-dashboard-kpis foreign-trade-kpis">
-        <article>
+        <DashboardKpiButton label="Catálogo Chinafore" targetId="foreign-trade-catalog">
           <Database size={22} />
           <span>Catálogo Chinafore</span>
           <strong>{formatNumber.format(report.catalog.products)}</strong>
           <small>{report.catalog.with_cbm} con m³ respaldado</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Cruce con Facto" targetId="foreign-trade-catalog">
           <PackageCheck size={22} />
           <span>Cruce con Facto</span>
           <strong>{formatNumber.format(report.catalog.matched_inventory_products)}</strong>
           <small>SKU o nombre coincidente</small>
-        </article>
-        <article className={highRisk ? "risk" : ""}>
+        </DashboardKpiButton>
+        <DashboardKpiButton className={highRisk ? "risk" : ""} label="Riesgo de quiebre" targetId="foreign-trade-proposal">
           <AlertTriangle size={22} />
           <span>Riesgo de quiebre</span>
           <strong>{formatNumber.format(highRisk)}</strong>
           <small>Crítico o alto</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Productos propuestos" targetId="foreign-trade-proposal">
           <FileSpreadsheet size={22} />
           <span>Productos propuestos</span>
           <strong>{formatNumber.format(proposal.items.length)}</strong>
           <small>Siempre con revisión humana</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Orden FOB sugerida" targetId="foreign-trade-proposal">
           <CircleDollarSign size={22} />
           <span>Orden FOB sugerida</span>
           <strong>{formatUsd.format(totals.fob_usd)}</strong>
           <small>Rango objetivo USD 50–70 mil</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Volumen sugerido" targetId="foreign-trade-proposal">
           <Boxes size={22} />
           <span>Volumen sugerido</span>
           <strong>{formatNumber.format(totals.total_cbm)} m³</strong>
           <small>{formatNumber.format(proposal.container_utilization_percent)}% de un 20GP · meta útil {formatNumber.format(proposal.container_reference_cbm)} m³</small>
-        </article>
-        <article className={activeImport ? "active-import" : ""}>
+        </DashboardKpiButton>
+        <DashboardKpiButton className={activeImport ? "active-import" : ""} label="Mercadería en producción" targetId="foreign-trade-active-import">
           <PackageCheck size={22} />
           <span>Mercadería en producción</span>
           <strong>{formatNumber.format(activeImport?.items.length ?? 0)}</strong>
           <small>{activeImport ? `Orden ${activeImport.order_number} · entrada confirmada` : "Sin órdenes activas"}</small>
-        </article>
+        </DashboardKpiButton>
       </section>
 
       {activeImport ? (
-        <section className="data-card active-import-card">
+        <section className="data-card active-import-card dashboard-focus-target" id="foreign-trade-active-import">
           <div className="section-title active-import-heading">
             <div>
               <span className="eyebrow">IMPORTACIÓN EN CURSO</span>
@@ -1834,7 +1884,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
         <strong>{formatUsd.format(totals.recoverable_import_vat_cash_usd)}</strong>
       </section>
 
-      <section className="data-card foreign-trade-proposal">
+      <section className="data-card foreign-trade-proposal dashboard-focus-target" id="foreign-trade-proposal">
         <div className="section-title">
           <div>
             <span className="eyebrow">PROPUESTA CONSOLIDADA</span>
@@ -1938,7 +1988,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
         </section>
       </section>
 
-      <section className="data-card foreign-trade-catalog">
+      <section className="data-card foreign-trade-catalog dashboard-focus-target" id="foreign-trade-catalog">
         <div className="section-title">
           <div>
             <span className="eyebrow">CATÁLOGO DE IMPORTACIÓN</span>
@@ -2379,36 +2429,36 @@ function MarketingDashboard({ tasks }: { tasks: AgentTask[] }) {
   return (
     <>
       <section className="agent-dashboard-kpis marketing-kpis">
-        <article>
+        <DashboardKpiButton label="Campañas propuestas" targetId="marketing-campaigns">
           <Megaphone size={22} />
           <span>Campañas propuestas</span>
           <strong>{formatNumber.format(report.metrics.campaign_briefs)}</strong>
           <small>Todas permanecen en borrador</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Clientes contactables" targetId="marketing-campaigns">
           <Building2 size={22} />
           <span>Clientes contactables</span>
           <strong>{formatNumber.format(report.metrics.contactable)}</strong>
           <small>De {formatNumber.format(report.metrics.customers)} identidades analizadas</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Listos para email" targetId="marketing-campaigns">
           <Mail size={22} />
           <span>Listos para email</span>
           <strong>{formatNumber.format(report.metrics.email_ready)}</strong>
           <small>Con correo utilizable</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Listos para WhatsApp" targetId="marketing-campaigns">
           <MessageCircle size={22} />
           <span>Listos para WhatsApp</span>
           <strong>{formatNumber.format(report.metrics.whatsapp_ready)}</strong>
           <small>Sujetos a consentimiento</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Productos elegibles" targetId="marketing-products">
           <PackageCheck size={22} />
           <span>Productos elegibles</span>
           <strong>{formatNumber.format(report.metrics.products_eligible)}</strong>
           <small>Con stock y cobertura suficiente</small>
-        </article>
+        </DashboardKpiButton>
       </section>
 
       <section className="marketing-overview-grid">
@@ -2437,7 +2487,7 @@ function MarketingDashboard({ tasks }: { tasks: AgentTask[] }) {
         </article>
       </section>
 
-      <section className="data-card marketing-campaigns-card">
+      <section className="data-card marketing-campaigns-card dashboard-focus-target" id="marketing-campaigns">
         <div className="section-title marketing-section-title">
           <div>
             <span className="eyebrow">CAMPAÑAS DIRIGIDAS</span>
@@ -2486,7 +2536,7 @@ function MarketingDashboard({ tasks }: { tasks: AgentTask[] }) {
         </div>
       </section>
 
-      <section className="marketing-bottom-grid">
+      <section className="marketing-bottom-grid dashboard-focus-target" id="marketing-products">
         <article className="data-card">
           <div className="section-title">
             <div><span className="eyebrow">OPORTUNIDADES DE PRODUCTO</span><h2>Stock que sí puede respaldar campañas</h2></div>
@@ -2800,31 +2850,31 @@ function CommercialDashboard({
   return (
     <>
       <section className="agent-dashboard-kpis commercial-kpis">
-        <article>
+        <DashboardKpiButton label="Clientes unificados" targetId="commercial-portfolio">
           <Database size={22} />
           <span>Clientes unificados</span>
           <strong>{formatNumber.format(report.metrics.customers)}</strong>
           <small>Facto + Climactiva.cl + CRM</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Clientes activos" targetId="commercial-portfolio">
           <CheckCircle2 size={22} />
           <span>Clientes activos</span>
           <strong>{formatNumber.format(report.metrics.active_customers ?? 0)}</strong>
           <small>Compraron recientemente</small>
-        </article>
-        <article className="commercial-kpi-alert">
+        </DashboardKpiButton>
+        <DashboardKpiButton className="commercial-kpi-alert risk" label="Clientes que requieren recuperación" targetId="commercial-portfolio">
           <AlertTriangle size={22} />
           <span>Requieren recuperación</span>
           <strong>{formatNumber.format(report.metrics.customers_at_risk ?? 0)}</strong>
           <small>Clientes en riesgo o inactivos</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Clientes omnicanal" targetId="commercial-portfolio">
           <TrendingUp size={22} />
           <span>Clientes omnicanal</span>
           <strong>{formatNumber.format(report.metrics.omnichannel_customers ?? 0)}</strong>
           <small>Compran en Facto y Climactiva.cl</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Clientes listos para campañas" targetId="commercial-portfolio">
           <CheckCircle2 size={22} />
           <span>Listos para campañas</span>
           <strong>{formatNumber.format(report.metrics.campaign_ready ?? 0)}</strong>
@@ -2832,13 +2882,13 @@ function CommercialDashboard({
             {formatNumber.format(report.metrics.email_ready ?? 0)} email ·{" "}
             {formatNumber.format(report.metrics.whatsapp_ready ?? 0)} WhatsApp
           </small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Venta neta Facto" targetId="commercial-ranking">
           <CircleDollarSign size={22} />
           <span>Venta neta Facto</span>
           <strong>{formatCurrency.format(report.metrics.facto_net_sales)}</strong>
           <small>Fuente financiera única; sin duplicar Tiendanube</small>
-        </article>
+        </DashboardKpiButton>
       </section>
 
       <section className="logistics-donut-grid commercial-donut-grid">
@@ -2979,7 +3029,7 @@ function CommercialDashboard({
         </div>
       </section>
 
-      <section className="commercial-channel-grid">
+      <section className="commercial-channel-grid dashboard-focus-target" id="commercial-ranking">
         <article className="data-card commercial-channel-ranking">
           <div className="section-title">
             <div>
@@ -3126,7 +3176,7 @@ function CommercialDashboard({
           </p>
         </article>
 
-        <article className="data-card commercial-sales-products">
+        <article className="data-card commercial-sales-products" id="commercial-sales-products">
           <div className="section-title">
             <div>
               <span className="eyebrow">DEMANDA COMERCIAL</span>
@@ -3220,7 +3270,7 @@ function CommercialDashboard({
         </div>
       </section>
 
-      <section className="data-card commercial-portfolio">
+      <section className="data-card commercial-portfolio dashboard-focus-target" id="commercial-portfolio">
         <div className="section-title">
           <div>
             <span className="eyebrow">CARTERA UNIFICADA</span>
@@ -3663,39 +3713,39 @@ function AccountingDashboard({
       </section>
 
       <section className="agent-dashboard-kpis accounting-kpis">
-        <article>
+        <DashboardKpiButton label="Movimientos bancarios" targetId="accounting-evidence">
           <FileSpreadsheet size={22} />
           <span>Movimientos bancarios</span>
           <strong>{formatNumber.format(Number(controls.movements_total ?? 0))}</strong>
           <small>{Number(controls.movements_pending_fx ?? 0)} pendientes de conversión</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Saldo bancario del corte" targetId="accounting-evidence">
           <Landmark size={22} />
           <span>Saldo bancario del corte</span>
           <strong>{formatCurrency.format(Number(controls.bank_balance_clp ?? 0))}</strong>
           <small>Saldo reconstruido con las cartolas disponibles</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Costo empleador acumulado" targetId="accounting-evidence">
           <CircleDollarSign size={22} />
           <span>Costo empleador acumulado</span>
           <strong>{formatCurrency.format(Number(payroll.total_employer_cost ?? 0))}</strong>
           <small>{periods.length} períodos incorporados</small>
-        </article>
-        <article className="risk">
+        </DashboardKpiButton>
+        <DashboardKpiButton className="risk" label="Movimientos por identificar" targetId="accounting-evidence">
           <AlertTriangle size={22} />
           <span>Movimientos por identificar</span>
           <strong>{formatCurrency.format(Number(controls.unclassified_debits ?? 0) + Number(controls.unidentified_credits ?? 0))}</strong>
           <small>Requieren conciliación, no son gastos ni ventas automáticos</small>
-        </article>
-        <article className={controls.journal_balanced && controls.balance_sheet_balanced ? "" : "risk"}>
+        </DashboardKpiButton>
+        <DashboardKpiButton className={controls.journal_balanced && controls.balance_sheet_balanced ? "" : "risk"} label="Control contable" targetId="accounting-prebalance">
           <ShieldCheck size={22} />
           <span>Control contable</span>
           <strong>{controls.journal_balanced && controls.balance_sheet_balanced ? "Cuadrado" : "Revisar"}</strong>
           <small>Debe = Haber · Activo + pérdida = Pasivo + ganancia</small>
-        </article>
+        </DashboardKpiButton>
       </section>
 
-      <section className="accounting-evidence-grid">
+      <section className="accounting-evidence-grid dashboard-focus-target" id="accounting-evidence">
         <article className="data-card accounting-evidence-card">
           <div className="section-title"><div><span className="eyebrow">FACTO · SOLO LECTURA</span><h2>Ventas, compras e IVA documental</h2><p>Movimientos devengados incorporados al prebalance, sin registrar pagos ni modificar Facto.</p></div></div>
           <div className="accounting-metric-grid">
@@ -3770,7 +3820,7 @@ function AccountingDashboard({
         </article>
       </section>
 
-      <section className="data-card accounting-prebalance-card">
+      <section className="data-card accounting-prebalance-card dashboard-focus-target" id="accounting-prebalance">
         <div className="section-title accounting-prebalance-heading">
           <div>
             <span className="eyebrow">BALANCE TRIBUTARIO</span>
@@ -4040,24 +4090,24 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
       </section>
 
       <section className="agent-dashboard-kpis finance-kpis">
-        <article><CircleDollarSign size={22} /><span>Ventas netas sin IVA</span><strong>{formatCurrency.format(netSales)}</strong><small>Ingreso comercial antes de IVA</small></article>
-        <article className={!report.purchases_available ? "risk" : ""}>
+        <DashboardKpiButton label="Ventas netas sin IVA" targetId="finance-growth"><CircleDollarSign size={22} /><span>Ventas netas sin IVA</span><strong>{formatCurrency.format(netSales)}</strong><small>Ingreso comercial antes de IVA</small></DashboardKpiButton>
+        <DashboardKpiButton className={!report.purchases_available ? "risk" : ""} label="Compras netas" targetId="finance-suppliers">
           <PackageCheck size={22} /><span>Compras netas</span>
           <strong>{report.purchases_available ? formatCurrency.format(netPurchases) : "Pendiente"}</strong>
           <small>{report.purchases_available ? `${selectedPurchases?.documents ?? report.purchase_document_count ?? 0} documentos recibidos` : "Facto aún no entrega compras"}</small>
-        </article>
-        <article><Database size={22} /><span>IVA de documentos</span><strong>{formatCurrency.format(tax)}</strong><small>No se considera ingreso</small></article>
-        <article><BarChart3 size={22} /><span>Documentos emitidos</span><strong>{formatNumber.format(documents)}</strong><small>Facturas, exentas y boletas válidas</small></article>
-        <article><TrendingUp size={22} /><span>Ticket neto promedio</span><strong>{formatCurrency.format(averageTicket)}</strong><small>Venta neta ÷ documentos</small></article>
-        <article><CircleDollarSign size={22} /><span>Venta total con IVA</span><strong>{formatCurrency.format(grossSales)}</strong><small>Total documentado a clientes</small></article>
-        <article className={!report.reference_margin_available ? "risk" : ""}>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="IVA de documentos" targetId="finance-growth"><Database size={22} /><span>IVA de documentos</span><strong>{formatCurrency.format(tax)}</strong><small>No se considera ingreso</small></DashboardKpiButton>
+        <DashboardKpiButton label="Documentos emitidos" targetId="finance-growth"><BarChart3 size={22} /><span>Documentos emitidos</span><strong>{formatNumber.format(documents)}</strong><small>Facturas, exentas y boletas válidas</small></DashboardKpiButton>
+        <DashboardKpiButton label="Ticket neto promedio" targetId="finance-growth"><TrendingUp size={22} /><span>Ticket neto promedio</span><strong>{formatCurrency.format(averageTicket)}</strong><small>Venta neta ÷ documentos</small></DashboardKpiButton>
+        <DashboardKpiButton label="Venta total con IVA" targetId="finance-growth"><CircleDollarSign size={22} /><span>Venta total con IVA</span><strong>{formatCurrency.format(grossSales)}</strong><small>Total documentado a clientes</small></DashboardKpiButton>
+        <DashboardKpiButton className={!report.reference_margin_available ? "risk" : ""} label="Margen bruto referencial" targetId="finance-growth">
           <TrendingUp size={22} /><span>Margen bruto referencial</span>
           <strong>{report.reference_margin_available ? formatCurrency.format(report.reference_gross_margin) : "Pendiente"}</strong>
           <small>Costo actual relacionado; no reemplaza contabilidad</small>
-        </article>
+        </DashboardKpiButton>
       </section>
 
-      <section className="finance-main-grid">
+      <section className="finance-main-grid dashboard-focus-target" id="finance-growth">
         <article className="data-card finance-monthly-card">
           {comparison ? (
             <>
@@ -4204,7 +4254,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
         />
       </section>
 
-      <section className="data-card finance-supplier-card">
+      <section className="data-card finance-supplier-card dashboard-focus-target" id="finance-suppliers">
         <div className="section-title">
           <div>
             <h2>Proveedores con mayores compras</h2>
@@ -4296,7 +4346,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
       {collectionsAuthoritative ? (
         <>
           <section className="agent-dashboard-kpis finance-collection-kpis">
-            <article>
+            <DashboardKpiButton label="Cuentas por cobrar" targetId="finance-collections">
               <CircleDollarSign size={22} />
               <span>
                 {collectionsFromManualVerification
@@ -4307,8 +4357,8 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
               </span>
               <strong>{formatCurrency.format(Number(collections?.observed_amount ?? 0))}</strong>
               <small>{collections?.documents ?? 0} documentos impagos</small>
-            </article>
-            <article className={Number(collections?.overdue_amount ?? 0) > 0 ? "risk" : ""}>
+            </DashboardKpiButton>
+            <DashboardKpiButton className={Number(collections?.overdue_amount ?? 0) > 0 ? "risk" : ""} label="Cartera vencida" targetId="finance-collections">
               <AlertTriangle size={22} />
               <span>Cartera vencida</span>
               <strong>
@@ -4321,8 +4371,8 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
                   ? "Facto debe entregar fechas de vencimiento"
                   : `${collections?.overdue_documents ?? 0} documentos fuera de plazo`}
               </small>
-            </article>
-            <article>
+            </DashboardKpiButton>
+            <DashboardKpiButton label="Vencimientos próximos" targetId="finance-collections">
               <TrendingUp size={22} />
               <span>Vence en próximos 30 días</span>
               <strong>
@@ -4335,8 +4385,8 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
                   ? "No se estiman vencimientos"
                   : "Saldo pendiente con vencimiento próximo"}
               </small>
-            </article>
-            <article>
+            </DashboardKpiButton>
+            <DashboardKpiButton label="Fuente de cobranza" targetId="finance-collections">
               <Database size={22} />
               <span>Fuente de cobranza</span>
               <strong>Facto</strong>
@@ -4347,7 +4397,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
                     ? "Facto web · corte 31-07-2026"
                     : "Cobranza → Documentos impagos"}
               </small>
-            </article>
+            </DashboardKpiButton>
           </section>
 
           {collectionsFromPdf ? (
@@ -4376,7 +4426,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
             </div>
           ) : null}
 
-          <section className="finance-collections-grid">
+          <section className="finance-collections-grid dashboard-focus-target" id="finance-collections">
             {collectionsFromManualVerification ? (
               <article className="data-card finance-collection-card">
                 <div className="section-title">
@@ -4602,6 +4652,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
       if (normalized && !`${item.sku ?? ""} ${item.name ?? ""}`.toLocaleLowerCase("es-CL").includes(normalized)) return false;
       if (filter === "in_stock") return Number(item.available_units ?? 0) > 0;
       if (filter === "out_of_stock") return item.stock_known && Number(item.available_units ?? 0) <= 0;
+      if (filter === "without_stock_evidence") return !item.stock_known;
       if (filter === "with_sales") return Number(item.units_sold_observed ?? 0) > 0;
       if (filter === "without_movement") {
         return Boolean(item.sales_history_available) && Number(item.units_sold_observed ?? 0) === 0;
@@ -4706,57 +4757,57 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </div>
       ) : null}
       <section className="agent-dashboard-kpis">
-        <article>
+        <DashboardKpiButton label="Catálogo Facto sincronizado" onActivate={() => { setFilter("all"); setShowInventory(true); }} targetId="logistics-catalog">
           <Boxes size={22} />
           <span>Catálogo Facto sincronizado</span>
           <strong>{formatNumber.format(snapshots.length)}</strong>
           <small>No está limitado a 25</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Productos con existencia" onActivate={() => { setFilter("in_stock"); setShowInventory(true); }} targetId="logistics-catalog">
           <PackageCheck size={22} />
           <span>Productos con existencia</span>
           <strong>{formatNumber.format(metrics.inStock.length)}</strong>
           <small>{formatNumber.format(metrics.totalUnits)} unidades disponibles</small>
-        </article>
-        <article className={metrics.outOfStock.length ? "risk" : ""}>
+        </DashboardKpiButton>
+        <DashboardKpiButton className={metrics.outOfStock.length ? "risk" : ""} label="Productos sin stock confirmado" onActivate={() => { setFilter("out_of_stock"); setShowInventory(true); }} targetId="logistics-catalog">
           <AlertTriangle size={22} />
           <span>Sin stock confirmado</span>
           <strong>{formatNumber.format(metrics.outOfStock.length)}</strong>
           <small>Existencia comprobada en cero</small>
-        </article>
-        <article className={metrics.withoutStockEvidence.length ? "risk" : ""}>
+        </DashboardKpiButton>
+        <DashboardKpiButton className={metrics.withoutStockEvidence.length ? "risk" : ""} label="Productos sin dato de bodega" onActivate={() => { setFilter("without_stock_evidence"); setShowInventory(true); }} targetId="logistics-catalog">
           <Database size={22} />
           <span>Sin dato de bodega</span>
           <strong>{formatNumber.format(metrics.withoutStockEvidence.length)}</strong>
           <small>No se clasifica como stock cero</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Valor del inventario a costo" onActivate={() => setRankingMode("cost_value")} targetId="logistics-primary-ranking">
           <CircleDollarSign size={22} />
           <span>Valor del inventario a costo</span>
           <strong>{formatCurrency.format(metrics.costValue)}</strong>
           <small>Stock × costo informado por Facto</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Valor potencial de venta" onActivate={() => setRankingMode("sale_value")} targetId="logistics-primary-ranking">
           <CircleDollarSign size={22} />
           <span>Valor potencial de venta</span>
           <strong>{formatCurrency.format(metrics.saleValue)}</strong>
           <small>Stock × precio neto sin IVA</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Margen bruto potencial" targetId="logistics-value-composition">
           <TrendingUp size={22} />
           <span>Margen bruto potencial</span>
           <strong>{formatCurrency.format(metrics.potentialGrossMargin)}</strong>
           <small>Antes de impuestos y otros gastos</small>
-        </article>
-        <article>
+        </DashboardKpiButton>
+        <DashboardKpiButton label="Productos con ventas" onActivate={() => setSalesRankingMode("units")} targetId="logistics-sales-insights">
           <TrendingUp size={22} />
           <span>Productos con ventas</span>
           <strong>{formatNumber.format(metrics.withSales.length)}</strong>
           <small>Ventas reales relacionadas con el catálogo</small>
-        </article>
+        </DashboardKpiButton>
       </section>
 
-      <section className="data-card logistics-chart logistics-primary-ranking">
+      <section className="data-card logistics-chart logistics-primary-ranking dashboard-focus-target" id="logistics-primary-ranking">
         <div className="section-title logistics-chart-title">
           <div><h2>Mayor existencia y valorización</h2><p>Compara unidades, capital a costo o valor potencial de venta neto.</p></div>
           <select
@@ -4783,7 +4834,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </div>
       </section>
 
-      <section className="logistics-donut-grid">
+      <section className="logistics-donut-grid dashboard-focus-target" id="logistics-value-composition">
         <DonutChart
           centerLabel="productos"
           centerValue={formatNumber.format(snapshots.length)}
@@ -4823,7 +4874,7 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         />
       </section>
 
-      <section className="logistics-insights-grid">
+      <section className="logistics-insights-grid dashboard-focus-target" id="logistics-sales-insights">
         <article className="data-card">
           <div className="section-title logistics-chart-title">
             <div><h2>Productos más vendidos</h2><p>Unidades observadas en documentos emitidos de Facto.</p></div>
@@ -4890,14 +4941,14 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
         </article>
       </section>
 
-      <section className="data-card logistics-catalog">
+      <section className="data-card logistics-catalog dashboard-focus-target" id="logistics-catalog">
         <div className="section-title">
           <div><h2>Inventario completo</h2><p>Filtra y resume el catálogo sin desplegar cientos de filas.</p></div>
         </div>
         <div className="logistics-controls">
           <label><Search size={18} /><input aria-label="Buscar producto" onChange={(event) => setQuery(event.target.value)} placeholder="Buscar por SKU o nombre" value={query} /></label>
           <select aria-label="Filtrar inventario" onChange={(event) => setFilter(event.target.value)} value={filter}>
-            <option value="all">Todos</option><option value="in_stock">Con stock</option><option value="out_of_stock">Sin stock confirmado</option><option value="with_sales">Con ventas observadas</option><option value="without_movement">Sin movimiento</option><option value="without_history">Sin historial disponible</option>
+            <option value="all">Todos</option><option value="in_stock">Con stock</option><option value="out_of_stock">Sin stock confirmado</option><option value="without_stock_evidence">Sin dato de bodega</option><option value="with_sales">Con ventas observadas</option><option value="without_movement">Sin movimiento</option><option value="without_history">Sin historial disponible</option>
           </select>
           <select aria-label="Ordenar inventario" onChange={(event) => setSort(event.target.value)} value={sort}>
             <option value="stock">Mayor stock</option><option value="value">Mayor valor a costo</option><option value="sale_value">Mayor valor potencial de venta</option><option value="name">Nombre A-Z</option>

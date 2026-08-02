@@ -157,6 +157,10 @@ body {
   grid-template-columns: 1fr;
 }
 
+.executive-section-grid.is-expanded {
+  grid-template-columns: 1fr;
+}
+
 .executive-section-grid > article.is-focused {
   background: #f1fbfa;
   border-color: #74c5c6;
@@ -213,6 +217,11 @@ body {
   max-height: 190px;
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.executive-item-list.is-expanded {
+  max-height: none;
+  overflow: visible;
 }
 
 .executive-item-list div {
@@ -4196,7 +4205,8 @@ th {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.agent-dashboard-kpis article {
+.agent-dashboard-kpis article,
+.agent-dashboard-kpis .dashboard-kpi-action {
   background: #fff;
   border: 1px solid #dce5e7;
   border-radius: 14px;
@@ -4206,16 +4216,54 @@ th {
   padding: 18px;
 }
 
-.agent-dashboard-kpis article > svg {
+.agent-dashboard-kpis .dashboard-kpi-action {
+  appearance: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  touch-action: manipulation;
+  transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  width: 100%;
+}
+
+.agent-dashboard-kpis .dashboard-kpi-action::after {
+  color: #08717d;
+  content: "Ver detalle";
+  font-size: 0.75rem;
+  font-weight: 900;
+  margin-top: auto;
+}
+
+.agent-dashboard-kpis .dashboard-kpi-action:hover {
+  border-color: #63bfc2;
+  box-shadow: 0 10px 24px rgba(8, 92, 100, 0.11);
+  transform: translateY(-2px);
+}
+
+.agent-dashboard-kpis .dashboard-kpi-action:focus-visible {
+  border-color: #087f8d;
+  box-shadow: 0 0 0 3px rgba(8, 127, 141, 0.2);
+  outline: none;
+}
+
+.dashboard-focus-target {
+  scroll-margin-top: 92px;
+}
+
+.agent-dashboard-kpis article > svg,
+.agent-dashboard-kpis .dashboard-kpi-action > svg {
   color: #087f8d;
 }
 
-.agent-dashboard-kpis article.risk {
+.agent-dashboard-kpis article.risk,
+.agent-dashboard-kpis .dashboard-kpi-action.risk {
   background: #fff8f5;
   border-color: #f2c9bc;
 }
 
-.agent-dashboard-kpis article.risk > svg {
+.agent-dashboard-kpis article.risk > svg,
+.agent-dashboard-kpis .dashboard-kpi-action.risk > svg {
   color: #c55332;
 }
 
@@ -5358,7 +5406,8 @@ th {
     display: grid;
   }
 
-  .agent-dashboard-kpis article {
+  .agent-dashboard-kpis article,
+  .agent-dashboard-kpis .dashboard-kpi-action {
     min-height: 0;
   }
 
@@ -5571,7 +5620,8 @@ th {
     gap: 10px;
   }
 
-  .agent-dashboard-kpis article {
+  .agent-dashboard-kpis article,
+  .agent-dashboard-kpis .dashboard-kpi-action {
     align-content: start;
     padding: 14px;
   }
