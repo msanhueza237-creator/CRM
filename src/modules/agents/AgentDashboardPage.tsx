@@ -771,8 +771,19 @@ type CommercialProductOpportunity = {
   score: number;
   priority: "urgent" | "high" | "medium" | "normal";
   reason: string;
+  purchase_recency_scope?: "product" | "customer_proxy";
   inventory_match_method: string;
-  evidence?: string[];
+  evidence?: Record<string, unknown>;
+};
+
+type CommercialProductOpportunityDiagnostics = {
+  customers_reviewed?: number;
+  customers_with_product_history?: number;
+  customers_using_legacy_top_products?: number;
+  purchase_products_reviewed?: number;
+  inventory_products_reviewed?: number;
+  matched_customer_products?: number;
+  eligible_opportunities?: number;
 };
 
 type CommercialSegment = {
@@ -824,6 +835,7 @@ type CommercialReport = {
   tiendanube_ranking?: CommercialRanking[];
   sales_products?: CommercialSalesProduct[];
   customer_product_opportunities?: CommercialProductOpportunity[];
+  product_opportunity_diagnostics?: CommercialProductOpportunityDiagnostics;
   product_opportunity_methodology?: string;
   methodology: string;
 };
@@ -2869,6 +2881,10 @@ function CommercialDashboard({
       ].some((value) => normalizeCustomerSearch(value).includes(normalizedQuery));
     });
   }, [productOpportunityPriority, productOpportunityQuery, report]);
+  const productOpportunityFeatureAvailable = Array.isArray(
+    report?.customer_product_opportunities,
+  );
+  const productOpportunityDiagnostics = report?.product_opportunity_diagnostics;
   const importableRanking = useMemo(
     () =>
       filteredRanking.filter(
@@ -2984,9 +3000,15 @@ function CommercialDashboard({
           <Boxes size={22} />
           <span>Cliente × producto</span>
           <strong>
-            {formatNumber.format(report.metrics.customer_product_opportunities ?? 0)}
+            {productOpportunityFeatureAvailable
+              ? formatNumber.format(report.metrics.customer_product_opportunities ?? 0)
+              : "Actualizar"}
           </strong>
-          <small>Recompras respaldadas por stock actual</small>
+          <small>
+            {productOpportunityFeatureAvailable
+              ? "Recompras respaldadas por stock actual"
+              : "El informe activo es de una versión anterior"}
+          </small>
         </DashboardKpiButton>
         <DashboardKpiButton className="commercial-kpi-alert risk" label="Clientes que requieren recuperación" targetId="commercial-portfolio">
           <AlertTriangle size={22} />
@@ -3089,8 +3111,11 @@ function CommercialDashboard({
             </p>
           </div>
           <strong className="commercial-product-opportunity-count">
-            {formatNumber.format(filteredProductOpportunities.length)} de{" "}
-            {formatNumber.format(report.customer_product_opportunities?.length ?? 0)}
+            {productOpportunityFeatureAvailable
+              ? `${formatNumber.format(filteredProductOpportunities.length)} de ${formatNumber.format(
+                  report.customer_product_opportunities?.length ?? 0,
+                )}`
+              : "Análisis anterior"}
           </strong>
         </div>
 
@@ -3169,11 +3194,20 @@ function CommercialDashboard({
                     <small>{formatNumber.format(opportunity.purchase_events)} compras</small>
                   </div>
                   <div>
-                    <span>Sin comprar este producto</span>
+                    <span>
+                      {opportunity.purchase_recency_scope === "customer_proxy"
+                        ? "Sin compra del cliente"
+                        : "Sin comprar este producto"}
+                    </span>
                     <strong>
                       {formatNumber.format(opportunity.days_since_customer_product_purchase)} días
                     </strong>
-                    <small>{opportunity.customer_last_purchase_at || "Fecha no disponible"}</small>
+                    <small>
+                      {opportunity.customer_last_purchase_at || "Fecha no disponible"}
+                      {opportunity.purchase_recency_scope === "customer_proxy"
+                        ? " · referencia general"
+                        : ""}
+                    </small>
                   </div>
                   <div>
                     <span>Stock disponible</span>
@@ -3198,9 +3232,11 @@ function CommercialDashboard({
                   <span>{contact}</span>
                   <small>
                     Puntaje {formatNumber.format(opportunity.score)} · coincidencia{" "}
-                    {opportunity.inventory_match_method === "sku_exact"
+                    {opportunity.inventory_match_method === "exact_sku"
                       ? "exacta por SKU"
-                      : "exacta por nombre"}
+                      : opportunity.inventory_match_method === "unique_name_containment"
+                        ? "segura por nombre"
+                        : "exacta por nombre"}
                   </small>
                 </div>
               </article>
@@ -3209,14 +3245,47 @@ function CommercialDashboard({
           {!filteredProductOpportunities.length ? (
             <div className="finance-customer-empty">
               <Boxes size={24} />
-              <strong>No hay coincidencias para este filtro</strong>
-              <span>
-                Solicita un nuevo análisis comercial para cruzar compras históricas con
-                el inventario sincronizado más reciente.
-              </span>
+              <strong>
+                {productOpportunityFeatureAvailable
+                  ? "No hay coincidencias para este filtro"
+                  : "Este informe fue generado por una versión anterior del agente"}
+              </strong>
+              {productOpportunityFeatureAvailable ? (
+                <span>
+                  Se revisaron {formatNumber.format(
+                    productOpportunityDiagnostics?.purchase_products_reviewed ?? 0,
+                  )} productos comprados por {formatNumber.format(
+                    productOpportunityDiagnostics?.customers_reviewed ?? 0,
+                  )} clientes contra {formatNumber.format(
+                    productOpportunityDiagnostics?.inventory_products_reviewed ?? 0,
+                  )} productos de inventario; hubo {formatNumber.format(
+                    productOpportunityDiagnostics?.matched_customer_products ?? 0,
+                  )} coincidencias seguras y {formatNumber.format(
+                    productOpportunityDiagnostics?.eligible_opportunities ?? 0,
+                  )} oportunidades elegibles. Prueba también con “Todas las prioridades”.
+                </span>
+              ) : (
+                <span>
+                  Solicita un nuevo análisis comercial después de actualizar el worker para
+                  recuperar el historial cliente–producto y cruzarlo con el stock vigente.
+                </span>
+              )}
             </div>
           ) : null}
         </div>
+        {productOpportunityFeatureAvailable && productOpportunityDiagnostics ? (
+          <p className="commercial-product-opportunity-methodology">
+            Diagnóstico: {formatNumber.format(
+              productOpportunityDiagnostics.purchase_products_reviewed ?? 0,
+            )} productos comprados · {formatNumber.format(
+              productOpportunityDiagnostics.matched_customer_products ?? 0,
+            )} coincidencias con inventario · {formatNumber.format(
+              productOpportunityDiagnostics.eligible_opportunities ?? 0,
+            )} oportunidades. {formatNumber.format(
+              productOpportunityDiagnostics.customers_using_legacy_top_products ?? 0,
+            )} clientes se recuperaron desde informes históricos.
+          </p>
+        ) : null}
         <p className="commercial-product-opportunity-methodology">
           {report.product_opportunity_methodology ||
             "El tiempo en bodega se representa de forma conservadora por días sin venta observada. La fecha real de ingreso se incorporará cuando Facto exponga movimientos de bodega por API."}
