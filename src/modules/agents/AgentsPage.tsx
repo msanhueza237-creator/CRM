@@ -239,6 +239,18 @@ function proposalDestination(kind: string) {
   };
 }
 
+function approvedActionPath(item: AgentActionItem) {
+  const destination = item.destination_path || proposalDestination(item.kind).path;
+  const taskDestinations = new Set(["collections", "commercial", "executive"]);
+
+  if (!item.destination_record_id || !taskDestinations.has(item.destination_module)) {
+    return destination;
+  }
+
+  const separator = destination.includes("?") ? "&" : "?";
+  return `${destination}${separator}task=${encodeURIComponent(item.destination_record_id)}#approved-task`;
+}
+
 export function AgentsPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -1005,7 +1017,7 @@ export function AgentsPage() {
                 <p>{item.summary || proposalDestination(item.kind).detail}</p>
                 <small>{new Date(item.created_at).toLocaleString("es-CL")}</small>
               </div>
-              <Link className="ghost-button approved-action-link" to={item.destination_path || proposalDestination(item.kind).path}>
+              <Link className="ghost-button approved-action-link" to={approvedActionPath(item)}>
                 Abrir {proposalDestination(item.kind).label}
               </Link>
             </article>

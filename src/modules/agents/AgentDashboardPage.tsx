@@ -25,7 +25,7 @@ import {
   TrendingUp,
   UserPlus,
 } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import type { Company } from "../../types/crm";
 import { useCompanyStore } from "../companies/CompanyStore";
@@ -43,6 +43,18 @@ type AgentTask = {
     evidence?: Array<Record<string, unknown>>;
   } | null;
   error_code?: string | null;
+};
+
+type OperationalTask = {
+  id: string;
+  company_id?: string | null;
+  owner_id?: string | null;
+  title: string;
+  description?: string | null;
+  due_date?: string | null;
+  completed_at?: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type ExecutiveBriefItem = Record<string, unknown>;
@@ -1032,6 +1044,121 @@ function executiveStatusLabel(status: string) {
       completed: "Completado",
       notified: "Notificado",
     }[status] ?? status
+  );
+}
+
+function operationalTaskContent(description?: string | null) {
+  const raw = description?.trim() ?? "";
+  const marker = "\n\nEvidencia:";
+  const markerIndex = raw.indexOf(marker);
+
+  if (markerIndex < 0) return { summary: raw, evidence: "" };
+
+  const evidence = raw.slice(markerIndex + marker.length).trim();
+  let formattedEvidence = evidence;
+  try {
+    formattedEvidence = JSON.stringify(JSON.parse(evidence), null, 2);
+  } catch {
+    // La evidencia historica tambien puede ser texto libre.
+  }
+
+  return {
+    summary: raw.slice(0, markerIndex).trim(),
+    evidence: formattedEvidence,
+  };
+}
+
+function ApprovedTaskDetail({
+  agentType,
+  onUpdated,
+  task,
+}: {
+  agentType: string;
+  onUpdated: () => Promise<void>;
+  task: OperationalTask;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const content = operationalTaskContent(task.description);
+  const taskArea = {
+    collections: "COBRANZA",
+    commercial: "SEGUIMIENTO COMERCIAL",
+    executive: "DECISION GERENCIAL",
+  }[agentType] ?? "TAREA OPERATIVA";
+
+  const completeTask = async () => {
+    if (!supabase || task.completed_at) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const completedAt = new Date().toISOString();
+      const { error: taskError } = await supabase
+        .from("tasks")
+        .update({ completed_at: completedAt, updated_at: completedAt })
+        .eq("id", task.id);
+      if (taskError) throw taskError;
+
+      const { error: actionError } = await supabase
+        .from("agent_action_items")
+        .update({ status: "completed", updated_at: completedAt })
+        .eq("destination_record_id", task.id);
+      if (actionError) throw actionError;
+
+      setMessage("Tarea completada y registrada en el Centro de agentes.");
+      await onUpdated();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "No fue posible completar la tarea.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="data-card approved-task-detail" id="approved-task">
+      <div className="approved-task-heading">
+        <div>
+          <span className="eyebrow">{taskArea}</span>
+          <h2>{task.title}</h2>
+        </div>
+        <span className={`status-chip ${task.completed_at ? "success" : "pending"}`}>
+          {task.completed_at ? "Completada" : "Pendiente de revision"}
+        </span>
+      </div>
+
+      {content.summary ? <p className="approved-task-summary">{content.summary}</p> : null}
+
+      <div className="approved-task-metadata">
+        <div>
+          <span>Creada</span>
+          <strong>{new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(task.created_at))}</strong>
+        </div>
+        <div>
+          <span>Vencimiento</span>
+          <strong>{task.due_date ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium" }).format(new Date(`${task.due_date}T12:00:00`)) : "Sin fecha limite"}</strong>
+        </div>
+        <div>
+          <span>Estado</span>
+          <strong>{task.completed_at ? "Gestion finalizada" : "Requiere revision humana"}</strong>
+        </div>
+      </div>
+
+      {content.evidence ? (
+        <details className="approved-task-evidence">
+          <summary>Ver evidencia que origino la tarea</summary>
+          <pre>{content.evidence}</pre>
+        </details>
+      ) : null}
+
+      <div className="approved-task-actions">
+        {!task.completed_at ? (
+          <button className="primary-button" disabled={busy} onClick={() => void completeTask()} type="button">
+            <CheckCircle2 size={18} /> {busy ? "Guardando..." : "Marcar como completada"}
+          </button>
+        ) : null}
+        <Link className="ghost-button" to="/agentes"><ArrowLeft size={17} /> Volver a acciones aprobadas</Link>
+      </div>
+      {message ? <div className={`notice-banner ${message.startsWith("Tarea completada") ? "success" : "error"}`}>{message}</div> : null}
+    </section>
   );
 }
 
@@ -4850,7 +4977,10 @@ function LogisticsDashboard({ tasks, snapshots }: { tasks: AgentTask[]; snapshot
 
 export function AgentDashboardPage() {
   const { agentType = "logistics" } = useParams();
+  const [searchParams] = useSearchParams();
+  const selectedTaskId = searchParams.get("task")?.trim() ?? "";
   const [tasks, setTasks] = useState<AgentTask[]>([]);
+  const [selectedTask, setSelectedTask] = useState<OperationalTask | null>(null);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [commercialSnapshot, setCommercialSnapshot] = useState<CommercialSnapshot>({
     customers: [],
@@ -4866,6 +4996,7 @@ export function AgentDashboardPage() {
   const load = useCallback(async () => {
     if (!isSupabaseConfigured || !supabase) {
       setTasks([]);
+      setSelectedTask(null);
       setSnapshots([]);
       setAccountingSnapshot(null);
       setLoading(false);
@@ -4883,6 +5014,17 @@ export function AgentDashboardPage() {
         : await taskQuery.limit(20);
       if (error) throw error;
       setTasks((data ?? []) as AgentTask[]);
+      if (selectedTaskId) {
+        const { data: taskData, error: selectedTaskError } = await supabase
+          .from("tasks")
+          .select("id,company_id,owner_id,title,description,due_date,completed_at,created_at,updated_at")
+          .eq("id", selectedTaskId)
+          .maybeSingle();
+        if (selectedTaskError) throw selectedTaskError;
+        setSelectedTask((taskData as OperationalTask | null) ?? null);
+      } else {
+        setSelectedTask(null);
+      }
       if (agentType === "logistics") setSnapshots(await loadAllSnapshots());
       if (agentType === "finance") {
         const [accountingResult, financialResult, financeInventory] = await Promise.all([
@@ -4949,7 +5091,7 @@ export function AgentDashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [agentType]);
+  }, [agentType, selectedTaskId]);
 
   useEffect(() => {
     void load();
@@ -4957,6 +5099,15 @@ export function AgentDashboardPage() {
     const timer = window.setInterval(() => void load(), refreshInterval);
     return () => window.clearInterval(timer);
   }, [agentType, load]);
+
+  const selectedTaskRecordId = selectedTask?.id;
+
+  useEffect(() => {
+    if (!selectedTaskRecordId) return;
+    window.requestAnimationFrame(() => {
+      document.getElementById("approved-task")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }, [selectedTaskRecordId]);
 
   return (
     <section className="agents-page agent-dashboard-page">
@@ -4971,6 +5122,12 @@ export function AgentDashboardPage() {
       </div>
       {notice ? <div className="notice-banner error">{notice}</div> : null}
       {loading ? <div className="data-card">Cargando información real de la empresa…</div> : null}
+      {!loading && selectedTask ? (
+        <ApprovedTaskDetail agentType={agentType} onUpdated={load} task={selectedTask} />
+      ) : null}
+      {!loading && selectedTaskId && !selectedTask && !notice ? (
+        <div className="notice-banner warning">La tarea indicada no existe o ya no esta disponible.</div>
+      ) : null}
       {!loading && agentType === "logistics" ? <LogisticsDashboard snapshots={snapshots} tasks={tasks} /> : null}
       {!loading && agentType === "foreign_trade" ? <ForeignTradeDashboard tasks={tasks} /> : null}
       {!loading && agentType === "finance" ? (
