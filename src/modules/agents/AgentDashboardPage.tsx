@@ -748,6 +748,33 @@ type CommercialSalesProduct = {
   net_sales?: number;
 };
 
+type CommercialProductOpportunity = {
+  customer_key: string;
+  crm_company_id?: string;
+  customer_name: string;
+  tax_id?: string;
+  email?: string;
+  phone?: string;
+  whatsapp?: string;
+  product_name: string;
+  sku: string;
+  historical_units: number;
+  purchase_events: number;
+  customer_last_purchase_at?: string | null;
+  days_since_customer_product_purchase: number;
+  available_units: number;
+  product_last_sale_at?: string | null;
+  days_without_product_sale?: number | null;
+  inactivity_is_minimum?: boolean;
+  stock_value?: number;
+  cost_currency_code?: string;
+  score: number;
+  priority: "urgent" | "high" | "medium" | "normal";
+  reason: string;
+  inventory_match_method: string;
+  evidence?: string[];
+};
+
 type CommercialSegment = {
   id: string;
   name: string;
@@ -779,6 +806,7 @@ type CommercialReport = {
     omnichannel_customers?: number;
     high_value_customers?: number;
     campaign_ready?: number;
+    customer_product_opportunities?: number;
   };
   source_counts: Record<string, number>;
   lifecycle_counts: Record<string, number>;
@@ -795,6 +823,8 @@ type CommercialReport = {
   facto_ranking?: CommercialRanking[];
   tiendanube_ranking?: CommercialRanking[];
   sales_products?: CommercialSalesProduct[];
+  customer_product_opportunities?: CommercialProductOpportunity[];
+  product_opportunity_methodology?: string;
   methodology: string;
 };
 
@@ -2661,6 +2691,8 @@ function CommercialDashboard({
   const [rankingChannel, setRankingChannel] = useState<"facto" | "tiendanube">("facto");
   const [rankingQuery, setRankingQuery] = useState("");
   const [rankingSort, setRankingSort] = useState("amount_desc");
+  const [productOpportunityQuery, setProductOpportunityQuery] = useState("");
+  const [productOpportunityPriority, setProductOpportunityPriority] = useState("all");
   const [importNotice, setImportNotice] = useState("");
   const [importBusy, setImportBusy] = useState(false);
 
@@ -2819,6 +2851,24 @@ function CommercialDashboard({
         return Number(right.net_sales ?? 0) - Number(left.net_sales ?? 0);
       });
   }, [factoRanking, rankingChannel, rankingQuery, rankingSort, tiendanubeRanking]);
+  const filteredProductOpportunities = useMemo(() => {
+    const normalizedQuery = normalizeCustomerSearch(productOpportunityQuery);
+    return (report?.customer_product_opportunities ?? []).filter((opportunity) => {
+      if (
+        productOpportunityPriority !== "all" &&
+        opportunity.priority !== productOpportunityPriority
+      ) {
+        return false;
+      }
+      if (!normalizedQuery) return true;
+      return [
+        opportunity.customer_name,
+        opportunity.tax_id,
+        opportunity.product_name,
+        opportunity.sku,
+      ].some((value) => normalizeCustomerSearch(value).includes(normalizedQuery));
+    });
+  }, [productOpportunityPriority, productOpportunityQuery, report]);
   const importableRanking = useMemo(
     () =>
       filteredRanking.filter(
@@ -2927,6 +2977,17 @@ function CommercialDashboard({
           <strong>{formatNumber.format(report.metrics.active_customers ?? 0)}</strong>
           <small>Compraron recientemente</small>
         </DashboardKpiButton>
+        <DashboardKpiButton
+          label="Oportunidades entre clientes y productos"
+          targetId="commercial-customer-product"
+        >
+          <Boxes size={22} />
+          <span>Cliente × producto</span>
+          <strong>
+            {formatNumber.format(report.metrics.customer_product_opportunities ?? 0)}
+          </strong>
+          <small>Recompras respaldadas por stock actual</small>
+        </DashboardKpiButton>
         <DashboardKpiButton className="commercial-kpi-alert risk" label="Clientes que requieren recuperación" targetId="commercial-portfolio">
           <AlertTriangle size={22} />
           <span>Requieren recuperación</span>
@@ -3012,6 +3073,154 @@ function CommercialDashboard({
             <span><i className="returning" /> Recurrentes</span>
           </div>
         </article>
+      </section>
+
+      <section
+        className="data-card commercial-product-opportunities dashboard-focus-target"
+        id="commercial-customer-product"
+      >
+        <div className="section-title">
+          <div>
+            <span className="eyebrow">CLIENTE × PRODUCTO</span>
+            <h2>Oportunidades de recompra con stock disponible</h2>
+            <p>
+              Cruza lo que compró cada cliente, cuánto tiempo lleva sin comprarlo y el
+              inventario que hoy puede respaldar una propuesta comercial.
+            </p>
+          </div>
+          <strong className="commercial-product-opportunity-count">
+            {formatNumber.format(filteredProductOpportunities.length)} de{" "}
+            {formatNumber.format(report.customer_product_opportunities?.length ?? 0)}
+          </strong>
+        </div>
+
+        <div className="commercial-product-opportunity-tools">
+          <label>
+            <Search aria-hidden="true" size={18} />
+            <span className="sr-only">Buscar cliente o producto</span>
+            <input
+              onChange={(event) => setProductOpportunityQuery(event.target.value)}
+              placeholder="Cliente, RUT, producto o SKU"
+              type="search"
+              value={productOpportunityQuery}
+            />
+          </label>
+          <label>
+            <span className="sr-only">Filtrar prioridad</span>
+            <select
+              onChange={(event) => setProductOpportunityPriority(event.target.value)}
+              value={productOpportunityPriority}
+            >
+              <option value="all">Todas las prioridades</option>
+              <option value="urgent">Urgentes</option>
+              <option value="high">Altas</option>
+              <option value="medium">Medias</option>
+              <option value="normal">Normales</option>
+            </select>
+          </label>
+        </div>
+
+        <div className="commercial-product-opportunity-list">
+          {filteredProductOpportunities.map((opportunity) => {
+            const stockValue = Number(opportunity.stock_value ?? 0);
+            const formattedStockValue =
+              opportunity.cost_currency_code === "USD"
+                ? new Intl.NumberFormat("es-CL", {
+                    style: "currency",
+                    currency: "USD",
+                    maximumFractionDigits: 0,
+                  }).format(stockValue)
+                : formatCurrency.format(stockValue);
+            const contact =
+              opportunity.email || opportunity.whatsapp || opportunity.phone || "Contacto pendiente";
+            return (
+              <article
+                className={`priority-${opportunity.priority}`}
+                key={`${opportunity.customer_key}-${opportunity.sku}`}
+              >
+                <div className="commercial-product-opportunity-heading">
+                  <div>
+                    {opportunity.crm_company_id ? (
+                      <Link to={`/empresas/${opportunity.crm_company_id}`}>
+                        {opportunity.customer_name}
+                      </Link>
+                    ) : (
+                      <strong>{opportunity.customer_name}</strong>
+                    )}
+                    <span>{opportunity.tax_id || "RUT pendiente"}</span>
+                  </div>
+                  <span className={`status-chip ${opportunity.priority}`}>
+                    {commercialPriorityLabels[opportunity.priority] ?? "Normal"}
+                  </span>
+                </div>
+
+                <div className="commercial-product-opportunity-product">
+                  <Boxes size={20} />
+                  <div>
+                    <strong>{opportunity.product_name}</strong>
+                    <span>SKU {opportunity.sku}</span>
+                  </div>
+                </div>
+
+                <div className="commercial-product-opportunity-metrics">
+                  <div>
+                    <span>Historial del cliente</span>
+                    <strong>{formatNumber.format(opportunity.historical_units)} un.</strong>
+                    <small>{formatNumber.format(opportunity.purchase_events)} compras</small>
+                  </div>
+                  <div>
+                    <span>Sin comprar este producto</span>
+                    <strong>
+                      {formatNumber.format(opportunity.days_since_customer_product_purchase)} días
+                    </strong>
+                    <small>{opportunity.customer_last_purchase_at || "Fecha no disponible"}</small>
+                  </div>
+                  <div>
+                    <span>Stock disponible</span>
+                    <strong>{formatNumber.format(opportunity.available_units)} un.</strong>
+                    <small>{formattedStockValue} a costo</small>
+                  </div>
+                  <div>
+                    <span>Sin venta observada</span>
+                    <strong>
+                      {opportunity.days_without_product_sale == null
+                        ? "Sin dato"
+                        : `${opportunity.inactivity_is_minimum ? "> " : ""}${formatNumber.format(
+                            opportunity.days_without_product_sale,
+                          )} días`}
+                    </strong>
+                    <small>Según historial Facto disponible</small>
+                  </div>
+                </div>
+
+                <p className="commercial-product-opportunity-reason">{opportunity.reason}</p>
+                <div className="commercial-product-opportunity-footer">
+                  <span>{contact}</span>
+                  <small>
+                    Puntaje {formatNumber.format(opportunity.score)} · coincidencia{" "}
+                    {opportunity.inventory_match_method === "sku_exact"
+                      ? "exacta por SKU"
+                      : "exacta por nombre"}
+                  </small>
+                </div>
+              </article>
+            );
+          })}
+          {!filteredProductOpportunities.length ? (
+            <div className="finance-customer-empty">
+              <Boxes size={24} />
+              <strong>No hay coincidencias para este filtro</strong>
+              <span>
+                Solicita un nuevo análisis comercial para cruzar compras históricas con
+                el inventario sincronizado más reciente.
+              </span>
+            </div>
+          ) : null}
+        </div>
+        <p className="commercial-product-opportunity-methodology">
+          {report.product_opportunity_methodology ||
+            "El tiempo en bodega se representa de forma conservadora por días sin venta observada. La fecha real de ingreso se incorporará cuando Facto exponga movimientos de bodega por API."}
+        </p>
       </section>
 
       <section className="data-card commercial-opportunities">

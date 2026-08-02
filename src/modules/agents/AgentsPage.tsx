@@ -578,9 +578,28 @@ export function AgentsPage() {
           .order("updated_at", { ascending: false })
           .limit(1),
       ]);
-      if (commercialResult.error || financialResult.error) {
-        error = commercialResult.error || financialResult.error;
-      } else {
+      const inventorySnapshot: InventorySnapshotRecord["payload"][] = [];
+      error = commercialResult.error || financialResult.error;
+      if (!error) {
+        for (let from = 0; ; from += 1000) {
+          const { data, error: snapshotError } = await supabase
+            .from("integration_records")
+            .select("payload")
+            .eq("provider", "facto")
+            .eq("resource", "inventory_snapshots")
+            .range(from, from + 999);
+          if (snapshotError) {
+            error = snapshotError;
+            break;
+          }
+          const page = ((data ?? []) as InventorySnapshotRecord[])
+            .map((row) => row.payload)
+            .filter((item) => item.sku);
+          inventorySnapshot.push(...page);
+          if ((data ?? []).length < 1000) break;
+        }
+      }
+      if (!error) {
         const commercialSnapshot = commercialResult.data?.[0]?.payload as
           | { customers?: Array<Record<string, unknown>>; sources?: Record<string, number> }
           | undefined;
@@ -620,13 +639,18 @@ export function AgentsPage() {
               crm_companies: crmCompanies,
               source_counts: commercialSnapshot?.sources ?? {},
               financial_snapshot: financialSnapshot ?? {},
+              inventory_snapshot: inventorySnapshot,
+              as_of: new Date().toISOString().slice(0, 10),
             },
           })
           .select("id")
           .single();
         error = insertError;
         dashboardTaskId = insertedTask?.id ?? "";
-        successMessage = `Analisis comercial enviado con ${commercialSnapshot?.customers?.length ?? 0} identidades de Facto/Tiendanube y ${crmCompanies.length} empresas revisadas en el CRM.`;
+        successMessage =
+          `Analisis comercial enviado con ${commercialSnapshot?.customers?.length ?? 0} ` +
+          `identidades de Facto/Tiendanube, ${crmCompanies.length} empresas CRM y ` +
+          `${inventorySnapshot.length} SKU para detectar oportunidades cliente-producto.`;
       }
     } else if (type === "marketing") {
       const [commercialResult, financialResult] = await Promise.all([
