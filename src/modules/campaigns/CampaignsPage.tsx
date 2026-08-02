@@ -522,6 +522,8 @@ export function CampaignsPage() {
   const [proposalOverrides, setProposalOverrides] = useState<Record<string, ProposalOverride>>(loadProposalOverrides);
   const [dismissedProposalIds, setDismissedProposalIds] = useState<string[]>(loadDismissedProposals);
   const [proposalEditSavedMessage, setProposalEditSavedMessage] = useState<string | null>(null);
+  const proposalListRef = useRef<HTMLDivElement | null>(null);
+  const proposalEditorRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !user) return;
@@ -983,6 +985,19 @@ export function CampaignsPage() {
     setProposalOverrides(nextOverrides);
     saveProposalOverrides(nextOverrides);
     setProposalEditSavedMessage("Cambios guardados en la propuesta.");
+  }
+
+  function selectSuggestedProposal(index: number) {
+    setSelectedProposalIndex(index);
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 760px)").matches) {
+      window.requestAnimationFrame(() => {
+        proposalEditorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }
+
+  function showSuggestedProposalList() {
+    proposalListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function dismissProposal(proposalId: string) {
@@ -2410,9 +2425,9 @@ export function CampaignsPage() {
         </>
       ) : (
         /* UI de Propuestas Inteligentes */
-        <div className="suggestions-planner page-stack" style={{ gap: "20px" }}>
-          <div className="panel" style={{ padding: "24px" }}>
-            <div style={{ marginBottom: "20px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div className="suggestions-planner page-stack">
+          <div className="panel suggestions-panel">
+            <div className="suggestions-header">
               <div>
                 <h2 style={{ color: "#103842", margin: 0 }}>💡 Propuestas de Campañas Sugeridas</h2>
                 <p className="muted" style={{ fontSize: "14px", marginTop: "6px" }}>
@@ -2433,30 +2448,31 @@ export function CampaignsPage() {
               )}
             </div>
 
-            <div className="two-column" style={{ display: "grid", gridTemplateColumns: "1fr 1.5fr", gap: "24px" }}>
+            <div className="suggestions-layout">
               {/* Columna Izquierda: Listado de propuestas */}
-              <div className="proposal-list" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div className="proposal-list" ref={proposalListRef}>
                 {proposals.map((prop, index) => {
                   const isSelected = selectedProposalIndex === index;
                   return (
-                    <div 
+                    <div
                       key={prop.id}
-                      onClick={() => setSelectedProposalIndex(index)}
-                      style={{
-                        border: isSelected ? "2px solid #0b7285" : "1px solid #dfe7ea",
-                        borderRadius: "8px",
-                        padding: "16px",
-                        cursor: "pointer",
-                        background: isSelected ? "#f4f8f9" : "#ffffff",
-                        boxShadow: isSelected ? "0 4px 12px rgba(11,114,133,0.12)" : "none",
-                        transition: "all 0.2s ease"
+                      className={`proposal-card${isSelected ? " selected" : ""}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isSelected}
+                      onClick={() => selectSuggestedProposal(index)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          selectSuggestedProposal(index);
+                        }
                       }}
                     >
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                      <div className="proposal-card-top">
                         <span className={`status-badge ${prop.type === "WhatsApp" ? "programada" : prop.type === "email" ? "pausada" : "enviada"}`} style={{ fontSize: "11px", textTransform: "uppercase" }}>
                           {prop.type}
                         </span>
-                        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                        <div className="proposal-card-meta">
                           <span style={{ fontSize: "12px", fontWeight: "bold", color: "#62717a" }}>
                             👥 {prop.calculatedCount ?? prop.potentialCompanies.length} detectados
                           </span>
@@ -2490,7 +2506,10 @@ export function CampaignsPage() {
 
               {/* Columna Derecha: Formulario de edición */}
               {proposals[selectedProposalIndex] ? (
-                <div className="panel" style={{ padding: "24px", background: "#ffffff", border: "1px solid #dfe7ea", borderRadius: "8px" }}>
+                <div className="panel proposal-editor" ref={proposalEditorRef}>
+                  <button type="button" className="ghost-button proposal-mobile-navigation" onClick={showSuggestedProposalList}>
+                    ← Ver otras propuestas
+                  </button>
                   {proposalSuccessMessage && (
                     <div style={{ background: "#d3f9d8", border: "1px solid #b2f2bb", color: "#2b8a3e", padding: "14px", borderRadius: "8px", marginBottom: "20px", fontSize: "14px", fontWeight: 500 }}>
                       {proposalSuccessMessage}
@@ -2534,7 +2553,7 @@ export function CampaignsPage() {
                       />
                     </label>
 
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                    <div className="proposal-form-pair">
                       <label style={{ display: "flex", flexDirection: "column", gap: "6px", fontWeight: "bold", fontSize: "14px", color: "#40515b" }}>
                         Canal de Envío
                         <select 
@@ -2595,11 +2614,11 @@ export function CampaignsPage() {
                   </div>
 
                   {/* Vista Previa en Vivo */}
-                  <div style={{ marginTop: "24px", padding: "16px", background: "#f8f9fa", border: "1px solid #e9ecef", borderRadius: "8px" }}>
+                  <div className="proposal-preview">
                     <strong style={{ fontSize: "13px", color: "#495057", display: "block", marginBottom: "8px" }}>
                       👁️ Vista Previa del Mensaje Renderizado:
                     </strong>
-                    <div style={{ fontSize: "13px", color: "#343a40", whiteSpace: "pre-wrap", background: "#ffffff", padding: "14px", border: "1px solid #dee2e6", borderRadius: "6px", lineHeight: "1.5" }}>
+                    <div className="proposal-preview-body">
                       {proposals[selectedProposalIndex].potentialCompanies.filter(c => !excludedCompanyIds.includes(c.id))[0] ? (
                         renderProposalPreview(
                           proposalForm.message,
@@ -2616,27 +2635,14 @@ export function CampaignsPage() {
                     <h4 style={{ margin: "0 0 12px 0", color: "#103842", fontSize: "14px", fontWeight: "bold" }}>
                       Seleccionar Destinatarios Potenciales ({proposals[selectedProposalIndex].potentialCompanies.filter(c => !excludedCompanyIds.includes(c.id)).length} seleccionados)
                     </h4>
-                    <div style={{ maxHeight: "200px", overflowY: "auto", border: "1px solid #cfdade", borderRadius: "8px", padding: "8px", background: "#fcfdfe" }}>
+                    <div className="proposal-recipient-list">
                       {proposals[selectedProposalIndex].potentialCompanies.length === 0 ? (
                         <p style={{ margin: "8px", fontSize: "13px", color: "#868e96", textAlign: "center" }}>No se encontraron empresas con el segmento comercial sugerido.</p>
                       ) : (
                         proposals[selectedProposalIndex].potentialCompanies.map((c) => {
                           const isChecked = !excludedCompanyIds.includes(c.id);
                           return (
-                            <label 
-                              key={c.id} 
-                              style={{ 
-                                display: "flex", 
-                                alignItems: "center", 
-                                gap: "10px", 
-                                padding: "8px", 
-                                fontSize: "13px", 
-                                borderBottom: "1px solid #f1f3f5",
-                                cursor: "pointer",
-                                transition: "background 0.2s"
-                              }}
-                              className="checkbox-label"
-                            >
+                            <label key={c.id} className="checkbox-label proposal-recipient">
                               <input 
                                 type="checkbox" 
                                 checked={isChecked}
@@ -2649,7 +2655,7 @@ export function CampaignsPage() {
                                 }}
                                 style={{ width: "16px", height: "16px", cursor: "pointer" }}
                               />
-                              <div style={{ display: "flex", flexDirection: "column" }}>
+                              <div className="proposal-recipient-info">
                                 <strong style={{ color: "#172026" }}>{c.name}</strong>
                                 <span style={{ color: "#62717a", fontSize: "11px" }}>
                                   Contacto: {c.contactName || "Sin contacto"} | Ciudad: {c.city || "Sin ciudad"} | Tipo: {c.type}
@@ -2662,7 +2668,7 @@ export function CampaignsPage() {
                     </div>
                   </div>
 
-                  <div style={{ marginTop: "24px", display: "flex", gap: "12px", justifyContent: "flex-end" }}>
+                  <div className="proposal-editor-actions">
                     <button
                       className="ghost-button"
                       type="button"
