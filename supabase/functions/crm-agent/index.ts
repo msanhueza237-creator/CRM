@@ -2270,13 +2270,19 @@ async function handleMetaWhatsAppStatus(context: RouteContext) {
   let graphError = "";
 
   if (accessToken && phoneNumberId && businessAccountId && !idMismatch) {
+    // Meta or the container DNS can occasionally leave a fetch open for a long
+    // time. Keep the administration diagnostic bounded so the CRM always
+    // reports a useful result instead of leaving the button loading forever.
+    const graphSignal = AbortSignal.timeout(10_000);
     try {
       const [phoneResponse, businessResponse] = await Promise.all([
         fetch(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(phoneNumberId)}?fields=id,display_phone_number,verified_name,quality_rating`, {
           headers: { Authorization: `Bearer ${accessToken}` },
+          signal: graphSignal,
         }),
         fetch(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(businessAccountId)}?fields=id,name,currency,timezone_id`, {
           headers: { Authorization: `Bearer ${accessToken}` },
+          signal: graphSignal,
         }),
       ]);
       const phonePayload = await phoneResponse.json().catch(() => ({}));
@@ -2287,8 +2293,10 @@ async function handleMetaWhatsAppStatus(context: RouteContext) {
         phoneData = phonePayload as Record<string, unknown>;
         businessData = businessPayload as Record<string, unknown>;
       }
-    } catch {
-      graphError = "No se pudo alcanzar la API de Meta.";
+    } catch (error) {
+      graphError = error instanceof DOMException && error.name === "TimeoutError"
+        ? "La API de Meta no respondio dentro de 10 segundos. Revisa la salida a Internet y el DNS de Edge Functions."
+        : "No se pudo alcanzar la API de Meta.";
     }
   }
 
