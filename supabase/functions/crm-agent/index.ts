@@ -72,6 +72,10 @@ Deno.serve(async (req) => {
       return await handleWhatsAppWebhook({ req, url, supabase }, validation);
     }
 
+    if (route === "meta-whatsapp-status" && req.method === "POST") {
+      return await handleMetaWhatsAppStatus({ req, url, supabase });
+    }
+
     if (route === "gmail-webhook" && req.method === "POST") {
       const validation = await validateWebhookApiKey(req, url, supabase);
       if (!validation.valid) return unauthorized();
@@ -2221,6 +2225,172 @@ async function updateWhatsAppMessageStatus(
   await supabase.from("whatsapp_webhook_events").update({ processed: true }).eq("meta_message_id", metaMessageId);
 }
 
+async function handleMetaWhatsAppStatus(context: RouteContext) {
+  const admin = await requireCrmAdmin(context.req, context.supabase);
+  if (!admin.authorized) return json({ error: admin.error }, admin.status);
+
+  const checkedAt = new Date().toISOString();
+  const graphVersion = firstEnvValue(["META_GRAPH_API_VERSION"]) || "v25.0";
+  const accessToken = firstEnvValue(["META_WHATSAPP_ACCESS_TOKEN", "WHATSAPP_ACCESS_TOKEN"]);
+  const envPhoneNumberId = firstEnvValue(["META_WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_PHONE_NUMBER_ID"]);
+  const envBusinessAccountId = firstEnvValue([
+    "META_WHATSAPP_BUSINESS_ACCOUNT_ID",
+    "WHATSAPP_BUSINESS_ACCOUNT_ID",
+    "META_WHATSAPP_WABA_ID",
+  ]);
+  const productionConfirmed = firstEnvValue(["META_WHATSAPP_PRODUCTION_APPROVED"]).toLowerCase() === "true";
+
+  const { data: savedSettings } = await context.supabase
+    .from("whatsapp_settings")
+    .select("id, phone_number_id, business_account_id")
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  const savedPhoneNumberId = String(savedSettings?.phone_number_id || "").trim();
+  const savedBusinessAccountId = String(savedSettings?.business_account_id || "").trim();
+  const phoneNumberId = envPhoneNumberId || savedPhoneNumberId;
+  const businessAccountId = envBusinessAccountId || savedBusinessAccountId;
+  const idMismatch = Boolean(
+    (envPhoneNumberId && savedPhoneNumberId && envPhoneNumberId !== savedPhoneNumberId) ||
+    (envBusinessAccountId && savedBusinessAccountId && envBusinessAccountId !== savedBusinessAccountId)
+  );
+
+  const { data: lastInbound } = await context.supabase
+    .from("whatsapp_messages")
+    .select("occurred_at")
+    .eq("direction", "inbound")
+    .order("occurred_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const lastReceivedAt = lastInbound?.occurred_at ? String(lastInbound.occurred_at) : null;
+
+  let phoneData: Record<string, unknown> | null = null;
+  let businessData: Record<string, unknown> | null = null;
+  let graphError = "";
+
+  if (accessToken && phoneNumberId && businessAccountId && !idMismatch) {
+    try {
+      const [phoneResponse, businessResponse] = await Promise.all([
+        fetch(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(phoneNumberId)}?fields=id,display_phone_number,verified_name,quality_rating`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+        fetch(`https://graph.facebook.com/${graphVersion}/${encodeURIComponent(businessAccountId)}?fields=id,name,currency,timezone_id`, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+        }),
+      ]);
+      const phonePayload = await phoneResponse.json().catch(() => ({}));
+      const businessPayload = await businessResponse.json().catch(() => ({}));
+      if (!phoneResponse.ok || !businessResponse.ok) {
+        graphError = extractMetaError(!phoneResponse.ok ? phonePayload : businessPayload);
+      } else {
+        phoneData = phonePayload as Record<string, unknown>;
+        businessData = businessPayload as Record<string, unknown>;
+      }
+    } catch {
+      graphError = "No se pudo alcanzar la API de Meta.";
+    }
+  }
+
+  const configured = Boolean(accessToken && phoneNumberId && businessAccountId && !idMismatch);
+  const cloudConnected = Boolean(phoneData && businessData);
+  const status = !configured ? "pending_configuration" : cloudConnected ? "connected" : "error";
+  const message = idMismatch
+    ? "Los identificadores visibles del CRM no coinciden con los configurados en Dokploy."
+    : !accessToken
+      ? "Falta META_WHATSAPP_ACCESS_TOKEN en la Edge Function."
+      : !phoneNumberId || !businessAccountId
+        ? "Faltan Phone Number ID o WhatsApp Business Account ID."
+        : cloudConnected
+          ? productionConfirmed
+            ? "Meta Cloud API conectada y produccion marcada como aprobada."
+            : "Meta Cloud API conectada. La autorizacion de produccion sigue pendiente de confirmacion."
+          : graphError || "Meta rechazo la comprobacion de la cuenta.";
+
+  if (savedSettings?.id) {
+    await context.supabase
+      .from("whatsapp_settings")
+      .update({
+        last_connection_status: status,
+        last_connection_checked_at: checkedAt,
+        last_error: status === "error" ? message : null,
+      })
+      .eq("id", savedSettings.id);
+  }
+
+  await context.supabase.from("integration_connections").upsert({
+    provider: "meta_whatsapp",
+    enabled: configured,
+    read_only: false,
+    status,
+    message,
+    last_checked_at: checkedAt,
+    last_success_at: cloudConnected ? checkedAt : null,
+    updated_at: checkedAt,
+    metadata: {
+      webhook_receiving: Boolean(lastReceivedAt),
+      last_received_at: lastReceivedAt,
+      production_confirmed: productionConfirmed,
+      graph_version: graphVersion,
+    },
+  }, { onConflict: "provider" });
+
+  return json({
+    ok: cloudConnected,
+    configured,
+    checked_at: checkedAt,
+    status,
+    webhook: {
+      receiving: Boolean(lastReceivedAt),
+      last_received_at: lastReceivedAt,
+    },
+    cloud_api: {
+      connected: cloudConnected,
+      phone_number_id: phoneData ? String(phoneData.id || phoneNumberId) : phoneNumberId || null,
+      display_phone_number: phoneData?.display_phone_number ? String(phoneData.display_phone_number) : null,
+      verified_name: phoneData?.verified_name ? String(phoneData.verified_name) : null,
+      quality_rating: phoneData?.quality_rating ? String(phoneData.quality_rating) : null,
+      business_account_id: businessData ? String(businessData.id || businessAccountId) : businessAccountId || null,
+      business_name: businessData?.name ? String(businessData.name) : null,
+    },
+    production: {
+      confirmed: productionConfirmed,
+      message: productionConfirmed
+        ? "La integracion esta habilitada para produccion."
+        : "Pendiente: aprueba la app en Meta y luego configura META_WHATSAPP_PRODUCTION_APPROVED=true.",
+    },
+    message,
+  });
+}
+
+async function requireCrmAdmin(req: Request, supabase: ReturnType<typeof createClient>) {
+  const authHeader = req.headers.get("authorization") || "";
+  const token = authHeader.replace(/^Bearer\s+/i, "").trim();
+  if (!token) return { authorized: false, status: 401, error: "Sesion requerida." };
+
+  const { data: authData, error: authError } = await supabase.auth.getUser(token);
+  if (authError || !authData.user) return { authorized: false, status: 401, error: "Sesion invalida." };
+
+  const { data: profile, error: profileError } = await supabase
+    .from("profiles")
+    .select("role")
+    .eq("id", authData.user.id)
+    .maybeSingle();
+  const role = String(profile?.role || authData.user.user_metadata?.role || "");
+  if (profileError || role !== "administrador") {
+    return { authorized: false, status: 403, error: "Solo administradores pueden comprobar Meta." };
+  }
+  return { authorized: true, status: 200, error: "" };
+}
+
+function extractMetaError(payload: unknown) {
+  if (!payload || typeof payload !== "object") return "Meta rechazo la comprobacion.";
+  const error = (payload as Record<string, unknown>).error;
+  if (!error || typeof error !== "object") return "Meta rechazo la comprobacion.";
+  const message = String((error as Record<string, unknown>).message || "").trim();
+  return message ? `Meta: ${message}` : "Meta rechazo la comprobacion.";
+}
+
 function handleWhatsAppWebhookVerification(url: URL) {
   const mode = url.searchParams.get("hub.mode");
   const token = url.searchParams.get("hub.verify_token");
@@ -2230,7 +2400,7 @@ function handleWhatsAppWebhookVerification(url: URL) {
     "WHATSAPP_WEBHOOK_VERIFY_TOKEN",
     "META_WHATSAPP_VERIFY_TOKEN",
     "WEBHOOK_VERIFY_TOKEN",
-  ]) || "climactiva_meta_whatsapp_2026_seguro";
+  ]);
 
   if (mode === "subscribe" && challenge && expectedToken && token === expectedToken) {
     return new Response(challenge, {
@@ -2362,6 +2532,7 @@ async function handleSendCampaign(context: RouteContext, validation: ApiKeyValid
 
   const metaAccessToken = String(Deno.env.get("META_WHATSAPP_ACCESS_TOKEN") || "").trim();
   const metaPhoneNumberId = String(Deno.env.get("META_WHATSAPP_PHONE_NUMBER_ID") || "").trim();
+  const metaGraphApiVersion = firstEnvValue(["META_GRAPH_API_VERSION"]) || "v25.0";
 
   if (!metaAccessToken || !metaPhoneNumberId) {
     return json({ error: "Missing META_WHATSAPP_ACCESS_TOKEN or META_WHATSAPP_PHONE_NUMBER_ID" }, 400);
@@ -2441,7 +2612,7 @@ async function handleSendCampaign(context: RouteContext, validation: ApiKeyValid
     };
 
     try {
-      const response = await fetch(`https://graph.facebook.com/v18.0/${metaPhoneNumberId}/messages`, {
+      const response = await fetch(`https://graph.facebook.com/${metaGraphApiVersion}/${metaPhoneNumberId}/messages`, {
         method: "POST",
         headers: {
           "Authorization": `Bearer ${metaAccessToken}`,

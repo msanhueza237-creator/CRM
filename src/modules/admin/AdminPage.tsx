@@ -11,6 +11,7 @@ import {
   saveGmailSettings as apiSaveGmailSettings,
   sendGmailTest as apiSendGmailTest,
 } from "../../lib/gmailApi";
+import { getWhatsAppConnectionStatus, type WhatsAppConnectionStatus } from "../../lib/whatsappApi";
 
 interface WhatsAppSettingsForm {
   id?: string;
@@ -74,6 +75,8 @@ export function AdminPage() {
   const [whatsappNoticeType, setWhatsappNoticeType] = useState<"info" | "success" | "error">("info");
   const [refreshingWhatsAppReplies, setRefreshingWhatsAppReplies] = useState(false);
   const [whatsappInboundMessages, setWhatsappInboundMessages] = useState<WhatsAppInboundMessage[]>([]);
+  const [checkingWhatsApp, setCheckingWhatsApp] = useState(false);
+  const [whatsappStatus, setWhatsappStatus] = useState<WhatsAppConnectionStatus | null>(null);
   const [gmailStatus, setGmailStatus] = useState<GmailStatus>(emptyGmailStatus);
   const [gmailNotice, setGmailNotice] = useState("");
   const [gmailNoticeType, setGmailNoticeType] = useState<"info" | "success" | "error">("info");
@@ -370,20 +373,28 @@ export function AdminPage() {
     await loadWhatsAppInboundMessages();
   }
 
-  function markConnectionCheck() {
-    const hasMetaIds = Boolean(whatsappSettings.phoneNumberId && whatsappSettings.businessAccountId);
-    setWhatsappSettings((current) => ({
-      ...current,
-      lastConnectionStatus: hasMetaIds ? "webhook_validado_envio_pendiente_token" : "incompleta",
-      lastConnectionCheckedAt: new Date().toISOString(),
-      lastError: hasMetaIds ? "" : "Faltan Phone Number ID o WABA ID.",
-    }));
-    setWhatsappNoticeType(hasMetaIds ? "success" : "error");
-    setWhatsappNotice(
-      hasMetaIds
-        ? "Webhook de recepcion configurado. Las respuestas entrantes deberian llegar al CRM. Para enviar mensajes desde el CRM falta configurar META_WHATSAPP_ACCESS_TOKEN en Dokploy."
-        : "Completa Phone Number ID y WhatsApp Business Account ID antes de probar.",
-    );
+  async function markConnectionCheck() {
+    setCheckingWhatsApp(true);
+    setWhatsappNotice("");
+    try {
+      const result = await getWhatsAppConnectionStatus();
+      setWhatsappStatus(result);
+      setWhatsappSettings((current) => ({
+        ...current,
+        lastConnectionStatus: result.status,
+        lastConnectionCheckedAt: result.checked_at,
+        lastError: result.status === "error" ? result.message : "",
+      }));
+      setWhatsappNoticeType(result.ok ? "success" : result.status === "pending_configuration" ? "info" : "error");
+      setWhatsappNotice(result.message);
+      await loadWhatsAppInboundMessages();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "No se pudo comprobar Meta.";
+      setWhatsappNoticeType("error");
+      setWhatsappNotice(message);
+    } finally {
+      setCheckingWhatsApp(false);
+    }
   }
 
   return (
@@ -615,6 +626,32 @@ export function AdminPage() {
           </div>
         </div>
 
+        <div className="gmail-status-grid whatsapp-status-grid" aria-live="polite">
+          <div>
+            <span>Recepcion webhook</span>
+            <strong>{whatsappStatus ? (whatsappStatus.webhook.receiving ? "Recibiendo" : "Sin recepcion comprobada") : "Sin comprobar"}</strong>
+            <small>
+              {whatsappStatus?.webhook.last_received_at
+                ? `Ultimo mensaje: ${new Date(whatsappStatus.webhook.last_received_at).toLocaleString()}`
+                : "Se confirma al recibir un mensaje real."}
+            </small>
+          </div>
+          <div>
+            <span>Meta Cloud API</span>
+            <strong>{whatsappStatus ? (whatsappStatus.cloud_api.connected ? "Conectada" : "No conectada") : "Sin comprobar"}</strong>
+            <small>
+              {whatsappStatus?.cloud_api.connected
+                ? `${whatsappStatus.cloud_api.verified_name || "Cuenta verificada"} · ${whatsappStatus.cloud_api.display_phone_number || "numero reconocido"}`
+                : "Comprueba credenciales e identificadores del backend."}
+            </small>
+          </div>
+          <div>
+            <span>Produccion Meta</span>
+            <strong>{whatsappStatus ? (whatsappStatus.production.confirmed ? "Aprobada" : "Pendiente") : "Sin comprobar"}</strong>
+            <small>{whatsappStatus?.production.message || "No se presume aprobacion por una prueba tecnica."}</small>
+          </div>
+        </div>
+
         <div className="admin-integration-summary">
           <ShieldCheck size={24} />
           <div>
@@ -675,8 +712,9 @@ export function AdminPage() {
         {whatsappNotice ? <p className={`gmail-notice ${whatsappNoticeType}`}>{whatsappNotice}</p> : null}
 
         <div className="form-actions">
-          <button className="ghost-button" type="button" onClick={markConnectionCheck}>
-            Probar conexion
+          <button className="ghost-button" type="button" onClick={markConnectionCheck} disabled={checkingWhatsApp}>
+            <RefreshCw size={18} />
+            {checkingWhatsApp ? "Comprobando Meta..." : "Probar conexion real"}
           </button>
           <button className="ghost-button" type="button" onClick={loadWhatsAppInboundMessages} disabled={refreshingWhatsAppReplies}>
             <RefreshCw size={18} />

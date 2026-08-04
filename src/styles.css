@@ -4599,6 +4599,15 @@ th {
   overflow-wrap: anywhere;
 }
 
+.whatsapp-status-grid small {
+  display: block;
+  margin-top: 6px;
+  color: #60737c;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .inventory-product-identity span,
 .inventory-product-metric span {
   color: #607077;

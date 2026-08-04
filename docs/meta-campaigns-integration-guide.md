@@ -24,11 +24,26 @@ Configura estos valores solo como variables de entorno o secretos del backend/Ed
 ```bash
 META_WHATSAPP_ACCESS_TOKEN=...
 META_WHATSAPP_PHONE_NUMBER_ID=...
+META_WHATSAPP_BUSINESS_ACCOUNT_ID=...
 META_WHATSAPP_WEBHOOK_VERIFY_TOKEN=...
 META_WHATSAPP_APP_SECRET=...
+META_GRAPH_API_VERSION=v25.0
+META_WHATSAPP_PRODUCTION_APPROVED=false
 ```
 
 No guardes estos valores en `localStorage`, en el frontend, ni en archivos versionados.
+
+`META_WHATSAPP_PRODUCTION_APPROVED` debe permanecer en `false` durante la demo interna. Cambialo a `true` solo cuando Meta confirme la aprobacion para produccion.
+
+## Comprobacion desde el CRM
+
+En `Administracion > WhatsApp Meta` usa **Probar conexion real**. La comprobacion es de solo lectura y no envia mensajes. El CRM informa por separado:
+
+- si el webhook ya recibio eventos;
+- si el token, Phone Number ID y WhatsApp Business Account ID responden correctamente en Meta Cloud API;
+- si la autorizacion de produccion fue confirmada expresamente.
+
+La respuesta nunca incluye el access token ni el App Secret.
 
 ## Uso desde campañas
 
