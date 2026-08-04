@@ -77,6 +77,8 @@ export function AdminPage() {
   const [whatsappInboundMessages, setWhatsappInboundMessages] = useState<WhatsAppInboundMessage[]>([]);
   const [checkingWhatsApp, setCheckingWhatsApp] = useState(false);
   const [whatsappStatus, setWhatsappStatus] = useState<WhatsAppConnectionStatus | null>(null);
+  const [whatsappStatusNotice, setWhatsappStatusNotice] = useState("");
+  const [whatsappStatusNoticeType, setWhatsappStatusNoticeType] = useState<"info" | "success" | "error">("info");
   const [gmailStatus, setGmailStatus] = useState<GmailStatus>(emptyGmailStatus);
   const [gmailNotice, setGmailNotice] = useState("");
   const [gmailNoticeType, setGmailNoticeType] = useState<"info" | "success" | "error">("info");
@@ -154,7 +156,7 @@ export function AdminPage() {
         ? "No hay respuestas WhatsApp registradas todavia."
         : hasNewLatest
           ? `Nueva respuesta WhatsApp recibida. Ultima: ${latestTime}.`
-          : `Sin respuestas nuevas. Ultima registrada: ${latestTime}.`,
+          : `No hay mensajes nuevos almacenados. Ultimo recibido: ${latestTime}. Los mensajes reales llegan automaticamente por webhook; este boton solo actualiza la bandeja del CRM.`,
     );
   }
 
@@ -375,7 +377,8 @@ export function AdminPage() {
 
   async function markConnectionCheck() {
     setCheckingWhatsApp(true);
-    setWhatsappNotice("");
+    setWhatsappStatusNoticeType("info");
+    setWhatsappStatusNotice("Consultando directamente la API de Meta...");
     try {
       const result = await getWhatsAppConnectionStatus();
       setWhatsappStatus(result);
@@ -385,13 +388,13 @@ export function AdminPage() {
         lastConnectionCheckedAt: result.checked_at,
         lastError: result.status === "error" ? result.message : "",
       }));
-      setWhatsappNoticeType(result.ok ? "success" : result.status === "pending_configuration" ? "info" : "error");
-      setWhatsappNotice(result.message);
+      setWhatsappStatusNoticeType(result.ok ? "success" : result.status === "pending_configuration" ? "info" : "error");
+      setWhatsappStatusNotice(result.message);
       await loadWhatsAppInboundMessages();
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo comprobar Meta.";
-      setWhatsappNoticeType("error");
-      setWhatsappNotice(message);
+      setWhatsappStatusNoticeType("error");
+      setWhatsappStatusNotice(message);
     } finally {
       setCheckingWhatsApp(false);
     }
@@ -709,6 +712,7 @@ export function AdminPage() {
           <p className="muted">Ultima revision: {new Date(whatsappSettings.lastConnectionCheckedAt).toLocaleString()}</p>
         ) : null}
         {whatsappSettings.lastError ? <p className="form-error">{whatsappSettings.lastError}</p> : null}
+        {whatsappStatusNotice ? <p className={`gmail-notice ${whatsappStatusNoticeType}`}>{whatsappStatusNotice}</p> : null}
         {whatsappNotice ? <p className={`gmail-notice ${whatsappNoticeType}`}>{whatsappNotice}</p> : null}
 
         <div className="form-actions">
