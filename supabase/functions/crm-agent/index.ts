@@ -637,14 +637,12 @@ async function collectExecutiveSignals(
     .maybeSingle();
   const previous = asObject(previousResult.data?.snapshot_keys);
 
-  const [documentsResult, purchasesResult, inventoryResult, proposalsResult, emailRepliesResult,
+  const [documentsResult, inventoryResult, proposalsResult, emailRepliesResult,
     whatsappRepliesResult, tasksResult, integrationsResult, financeResult, commercialResult] = await Promise.all([
     supabase.from("integration_records").select("external_id,payload,updated_at")
-      .eq("provider", "facto").eq("resource", "document_details").order("updated_at", { ascending: false }).limit(500),
+      .eq("provider", "facto").eq("resource", "document_details").order("updated_at", { ascending: false }).limit(120),
     supabase.from("integration_records").select("external_id,payload,updated_at")
-      .eq("provider", "facto").eq("resource", "purchase_document_details").order("updated_at", { ascending: false }).limit(500),
-    supabase.from("integration_records").select("external_id,payload,updated_at")
-      .eq("provider", "facto").eq("resource", "inventory_snapshots").order("updated_at", { ascending: false }).limit(500),
+      .eq("provider", "facto").eq("resource", "inventory_snapshots").order("updated_at", { ascending: false }).limit(400),
     supabase.from("action_proposals").select("id,kind,title,summary,risk_level,created_at")
       .eq("status", "pending").order("created_at", { ascending: false }).limit(50),
     supabase.from("email_campaign_recipients")
@@ -654,12 +652,12 @@ async function collectExecutiveSignals(
       .eq("direction", "incoming").order("created_at", { ascending: false }).limit(50),
     supabase.from("business_agent_tasks").select("id,agent_type,action,result,completed_at")
       .eq("status", "completed").neq("agent_type", "executive")
-      .order("completed_at", { ascending: false }).limit(80),
+      .order("completed_at", { ascending: false }).limit(30),
     supabase.from("integration_connections").select("provider,status,message,last_checked_at")
       .in("status", ["error", "degraded"]),
     supabase.from("integration_records").select("payload,updated_at").eq("provider", "facto")
       .eq("resource", "financial_snapshots").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
-    supabase.from("integration_records").select("payload,updated_at").eq("provider", "facto")
+    supabase.from("integration_records").select("updated_at").eq("provider", "facto")
       .eq("resource", "commercial_snapshots").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
 
@@ -671,7 +669,6 @@ async function collectExecutiveSignals(
   };
 
   const documentRows = rows(documentsResult.data);
-  const purchaseRows = rows(purchasesResult.data);
   const currentSalesKeys = keys(documentRows, "external_id");
   const recentDocumentRows = documentRows.filter((record) => executiveIsRecentDocument(asObject(record.payload)));
   const selectedSales = slotKind === "morning"
@@ -709,10 +706,13 @@ async function collectExecutiveSignals(
     ? recentTasks
     : unseen(recentTasks, previous.agent_updates as unknown[]);
   const agentUpdates = compactExecutiveAgentUpdates(selectedTasks);
-  const monthFinance = executiveCurrentMonthFinanceUpdate(documentRows, purchaseRows);
+  const financeMarker = String(financeResult.data?.updated_at || "");
+  const monthFinance = executiveCurrentMonthFinanceUpdateFromSnapshot(financeResult.data?.payload);
+  const previousFinanceMarkers = Array.isArray(previous.purchases) ? previous.purchases.map(String) : [];
+  const financeChanged = Boolean(financeMarker) && !previousFinanceMarkers.includes(financeMarker);
   const shouldIncludeMonthFinance = slotKind === "morning"
     || selectedSales.length > 0
-    || unseen(purchaseRows, previous.purchases as unknown[], "external_id").length > 0;
+    || financeChanged;
 
   const signals = {
     sales,
@@ -720,7 +720,7 @@ async function collectExecutiveSignals(
     opportunities: selectedProposals.slice(0, 20),
     campaign_replies: selectedReplies.slice(0, 20),
     agent_updates: [
-      ...(shouldIncludeMonthFinance ? [monthFinance] : []),
+      ...(shouldIncludeMonthFinance && monthFinance ? [monthFinance] : []),
       ...agentUpdates,
     ].slice(0, 20),
     integration_errors: selectedIntegrations.slice(0, 10),
@@ -729,13 +729,16 @@ async function collectExecutiveSignals(
   return {
     context: {
       financial_snapshot: compactExecutiveSnapshot(financeResult.data?.payload, financeResult.data?.updated_at),
-      commercial_snapshot: compactExecutiveSnapshot(commercialResult.data?.payload, commercialResult.data?.updated_at),
+      commercial_snapshot: {
+        available: Boolean(commercialResult.data?.updated_at),
+        updated_at: commercialResult.data?.updated_at || null,
+      },
     },
     signals,
     relevant_count: slotKind === "morning" ? Math.max(1, relevantCount) : relevantCount,
     snapshot_keys: {
       sales: currentSalesKeys,
-      purchases: keys(purchaseRows, "external_id"),
+      purchases: financeMarker ? [financeMarker] : [],
       stockouts: keys(stockoutRows, "external_id"),
       opportunities: keys(proposalRows),
       campaign_replies: keys(replyRows),
@@ -1034,21 +1037,29 @@ function executiveAgentLabel(value: string) {
   return labels[value] ?? value.replace(/_/g, " ");
 }
 
-function executiveCurrentMonthFinanceUpdate(
-  sales: Record<string, unknown>[],
-  purchases: Record<string, unknown>[],
-) {
+function executiveCurrentMonthFinanceUpdateFromSnapshot(payload: unknown) {
+  const source = asObject(payload);
   const current = executiveChileDateParts(new Date());
-  const inCurrentMonth = (record: Record<string, unknown>) => {
-    const date = executiveDocumentDate(asObject(record.payload));
-    if (!date) return false;
-    const parts = executiveChileDateParts(date);
-    return parts.year === current.year && parts.month === current.month;
+  const monthKey = `${current.year}-${String(current.month).padStart(2, "0")}`;
+  const findMonth = (value: unknown) => {
+    const entries = Array.isArray(value) ? value : [];
+    return asObject(entries.find((item) => {
+      const row = asObject(item);
+      const candidate = String(row.month ?? row.period ?? row.period_month ?? "").slice(0, 7);
+      return candidate === monthKey;
+    }));
   };
-  const monthSales = sales.filter(inCurrentMonth);
-  const monthPurchases = purchases.filter(inCurrentMonth);
-  const salesNet = monthSales.reduce((total, record) => total + executiveDocumentNet(asObject(record.payload)), 0);
-  const purchasesNet = monthPurchases.reduce((total, record) => total + executiveDocumentNet(asObject(record.payload)), 0);
+  const salesRow = findMonth(source.sales_by_month ?? source.monthly_sales);
+  const purchasesRow = findMonth(source.purchases_by_month ?? source.monthly_purchases);
+  if (!Object.keys(salesRow).length && !Object.keys(purchasesRow).length) return null;
+  const salesNet = executiveNumber(salesRow.net_sales ?? salesRow.net_total ?? salesRow.total);
+  const purchasesNet = executiveNumber(
+    purchasesRow.net_purchases ?? purchasesRow.net_total ?? purchasesRow.total,
+  );
+  const salesDocuments = executiveNumber(salesRow.documents ?? salesRow.document_count ?? salesRow.count);
+  const purchaseDocuments = executiveNumber(
+    purchasesRow.documents ?? purchasesRow.document_count ?? purchasesRow.count,
+  );
   const monthLabel = new Intl.DateTimeFormat("es-CL", {
     timeZone: "America/Santiago",
     month: "long",
@@ -1058,7 +1069,7 @@ function executiveCurrentMonthFinanceUpdate(
     id: `finance-current-month-${current.year}-${current.month}`,
     agent_type: "finance",
     title: `Finanzas de ${monthLabel}`,
-    detail: `Ventas netas del mes: ${executiveFormatCurrency(salesNet)} (${monthSales.length} documentos) · Compras netas del mes: ${executiveFormatCurrency(purchasesNet)} (${monthPurchases.length} documentos)`,
+    detail: `Ventas netas del mes: ${executiveFormatCurrency(salesNet)} (${salesDocuments} documentos) · Compras netas del mes: ${executiveFormatCurrency(purchasesNet)} (${purchaseDocuments} documentos)`,
     summary: `Ventas y compras netas correspondientes exclusivamente al mes en curso (${monthLabel}).`,
   };
 }
