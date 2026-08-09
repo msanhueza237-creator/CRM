@@ -13,11 +13,12 @@ function withoutPgCrypto(sql) {
 }
 
 async function loadSql() {
-  const [schema, agentApiKeys, preflight, prospecting, enrichment, verify] = await Promise.all([
+  const [schema, agentApiKeys, preflight, prospecting, highPrecision, enrichment, verify] = await Promise.all([
     fs.readFile(new URL("../supabase/schema.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/agent_api_keys.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/prospecting_preflight.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/prospecting.sql", import.meta.url), "utf8"),
+    fs.readFile(new URL("../supabase/prospecting_high_precision_admission.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/prospecting_enrichment.sql", import.meta.url), "utf8"),
     fs.readFile(new URL("../supabase/prospecting_verify.sql", import.meta.url), "utf8"),
   ]);
@@ -26,6 +27,7 @@ async function loadSql() {
     agentApiKeys: withoutPgCrypto(agentApiKeys),
     preflight,
     prospecting: withoutPgCrypto(prospecting),
+    highPrecision,
     enrichment: withoutPgCrypto(enrichment),
     verify,
   };
@@ -165,6 +167,7 @@ async function testMigrationAndNormalization(sql) {
     await db.exec(sql.agentApiKeys);
     await db.exec(sql.prospecting);
     await db.exec(sql.prospecting);
+    await db.exec(sql.highPrecision);
     await db.exec(sql.enrichment);
     await db.exec(sql.enrichment);
     await db.exec(sql.verify);
@@ -250,6 +253,7 @@ async function testMigrationAndNormalization(sql) {
       alter table company_locations drop column source_prospect_location_id cascade;
     `);
     await db.exec(sql.prospecting);
+    await db.exec(sql.highPrecision);
     const restored = (await db.query(`
       select count(*)::integer restored
       from information_schema.columns
@@ -282,6 +286,7 @@ async function testRunContract(sql) {
   const db = await createDatabase(sql);
   try {
     await db.exec(sql.prospecting);
+    await db.exec(sql.highPrecision);
     await configureAdmin(db);
 
     await assert.rejects(
@@ -299,10 +304,34 @@ async function testRunContract(sql) {
           name, keywords, sources, region_codes, comuna_codes, target_types, created_by
         ) values (
           'Brave sin respaldo', array['hvac'], array['brave_search'],
-          array['13'], array['13101'], array['otro'], $1
+          array['13'], array['13101'], array['tecnico'], $1
         )
       `, [USER_ID]),
       /brave_requires_official/i,
+    );
+
+    await assert.rejects(
+      db.query(`
+        insert into prospecting_campaigns(
+          name, keywords, sources, region_codes, comuna_codes, target_types, created_by
+        ) values (
+          'Otro no permitido', array['hvac'], array['google_places'],
+          array['13'], array['13101'], array['otro'], $1
+        )
+      `, [USER_ID]),
+      /target_type_other_not_allowed/i,
+    );
+
+    await assert.rejects(
+      db.query(`
+        insert into prospecting_campaigns(
+          name, keywords, sources, region_codes, comuna_codes, target_types, created_by
+        ) values (
+          'Competencia fuera de radar', array['hvac'], array['google_places'],
+          array['13'], array['13101'], array['competencia', 'tecnico'], $1
+        )
+      `, [USER_ID]),
+      /competition_requires_market_radar/i,
     );
 
     const campaignId = await insertCampaign(db, "Historial", "brave_search");
@@ -611,6 +640,7 @@ async function testSafetyRegressions(sql) {
   const db = await createDatabase(sql);
   try {
     await db.exec(sql.prospecting);
+    await db.exec(sql.highPrecision);
     await configureAdmin(db);
 
     const cappedCampaign = await insertCampaign(db, "Cap y replay", "brave_search", 1);

@@ -261,7 +261,7 @@ create table if not exists public.prospecting_campaigns (
   sources text[] not null default array['google_places','brave_search','official_website'],
   region_codes text[] not null default '{}',
   comuna_codes text[] not null default '{}',
-  target_types text[] not null default array['distribuidor','tienda comercial','tecnico','instalador grande','competencia','otro'],
+  target_types text[] not null default array['distribuidor','tienda comercial','tecnico','instalador grande'],
   version integer not null default 1,
   result_limit_per_query integer not null default 20,
   candidate_limit integer not null default 1000,
@@ -493,7 +493,7 @@ create table if not exists public.prospecting_retention_audits (
 -- Convergencia para bases que probaron revisiones tempranas del modulo. Los
 -- CREATE TABLE IF NOT EXISTS no agregan columnas nuevas a una tabla existente.
 alter table public.prospecting_campaigns add column if not exists target_types text[] not null
-  default array['distribuidor','tienda comercial','tecnico','instalador grande','competencia','otro'];
+  default array['distribuidor','tienda comercial','tecnico','instalador grande'];
 alter table public.prospecting_campaigns add column if not exists version integer not null default 1;
 alter table public.prospecting_campaigns add column if not exists result_limit_per_query integer not null default 20;
 alter table public.prospecting_campaigns add column if not exists candidate_limit integer not null default 1000;
@@ -570,7 +570,7 @@ from normalized
 where campaign.id = normalized.id;
 
 update public.prospecting_campaigns
-set target_types = array['distribuidor','tienda comercial','tecnico','instalador grande','competencia','otro']
+set target_types = array['distribuidor','tienda comercial','tecnico','instalador grande']
 where cardinality(target_types) = 0;
 
 -- Brave permite descubrir sitios, pero no acredita por si solo el domicilio.

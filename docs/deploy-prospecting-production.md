@@ -17,9 +17,13 @@ orden:
 1. `supabase/prospecting_preflight.sql`
 2. `supabase/agent_api_keys.sql`
 3. `supabase/prospecting.sql`
-4. `supabase/prospecting_verify.sql`
+4. `supabase/prospecting_high_precision_admission.sql`
+5. `supabase/prospecting_verify.sql`
 
-Los dos scripts de instalacion son aditivos e idempotentes. El verificador debe
+Los tres scripts de instalacion son aditivos e idempotentes. La migracion de
+admision elimina `otro` de campanas existentes, deja los cuatro tipos HVAC-R
+operativos como valor predeterminado y reserva `competencia` para el modo radar
+de mercado. El verificador debe
 mostrar `installed = true`, 16 regiones activas y 346 comunas activas.
 
 No ejecutar todavia `create_agent_api_key`. La interfaz puede operar y crear

@@ -52,6 +52,17 @@ export const PROSPECTING_TARGET_TYPES: readonly CompanyType[] = [
   "competencia",
   "otro",
 ];
+export const DEFAULT_PROSPECTING_TARGET_TYPES: readonly CompanyType[] = [
+  "distribuidor",
+  "tienda comercial",
+  "tecnico",
+  "instalador grande",
+];
+export const MARKET_RADAR_TARGET_TYPES: readonly CompanyType[] = [
+  "distribuidor",
+  "tienda comercial",
+  "competencia",
+];
 
 function arrayOfStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
@@ -135,8 +146,8 @@ function filterCompanyTypes(value: unknown): CompanyType[] {
 }
 
 function normalizeCompanyTypes(value: unknown): CompanyType[] {
-  const companyTypes = filterCompanyTypes(value);
-  return companyTypes.length ? companyTypes : ["otro"];
+  const companyTypes = filterCompanyTypes(value).filter((companyType) => companyType !== "otro");
+  return companyTypes.length ? companyTypes : [...DEFAULT_PROSPECTING_TARGET_TYPES];
 }
 
 function validateCampaignDefinition(campaign: ProspectingCampaign) {
@@ -151,6 +162,15 @@ function validateCampaignDefinition(campaign: ProspectingCampaign) {
     campaign.targetTypes.some((targetType) => !PROSPECTING_TARGET_TYPES.includes(targetType))
   ) {
     throw new Error("Selecciona al menos un tipo de empresa válido.");
+  }
+  if (campaign.targetTypes.includes("otro")) {
+    throw new Error("'Otro' no es un tipo objetivo admisible para una campaña de prospección.");
+  }
+  if (
+    campaign.targetTypes.includes("competencia") &&
+    campaign.targetTypes.some((targetType) => !MARKET_RADAR_TARGET_TYPES.includes(targetType))
+  ) {
+    throw new Error("Competencia sólo puede utilizarse en el Radar de mercado.");
   }
   if (campaign.sources.includes("brave_search") && !campaign.sources.includes("official_website")) {
     throw new Error(
@@ -778,7 +798,7 @@ function mapSnapshot(value: unknown, campaign: ProspectingCampaign | undefined, 
       ? validSnapshotTargetTypes
       : campaign?.targetTypes.length
         ? campaign.targetTypes
-        : ["otro"],
+        : [...DEFAULT_PROSPECTING_TARGET_TYPES],
     limits: {
       resultsPerTask: asNumber(
         rawCampaign.max_results_per_task ??

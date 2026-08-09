@@ -11,11 +11,16 @@ Ejecutar, en este orden, sobre una base que ya tenga el esquema del CRM:
 
 1. `supabase/agent_api_keys.sql`
 2. `supabase/prospecting.sql`
+3. `supabase/prospecting_high_precision_admission.sql`
 
 `prospecting.sql` es aditivo e idempotente. Incluye las 16 regiones y 346
 comunas con CUT, agrega `region_code`/`comuna_code` sin eliminar los textos
 historicos y solo hace backfill cuando la comuna se puede resolver sin
 ambiguedad.
+
+`prospecting_high_precision_admission.sql` tambien es aditivo e idempotente.
+Retira `otro` de los objetivos ejecutables y limita `competencia` al modo radar
+de mercado (`distribuidor`, `tienda comercial`, `competencia`).
 
 La futura llave del worker debe tener exclusivamente el scope
 `prospecting:execute`. No usar `crm:write` ni una service-role fuera de la Edge

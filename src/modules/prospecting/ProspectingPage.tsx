@@ -45,6 +45,8 @@ import { useAuth } from "../auth/AuthContext";
 import { useCompanyStore } from "../companies/CompanyStore";
 import { DEFAULT_PROSPECTING_KEYWORDS, SOURCE_DEFINITIONS } from "./prospectingData";
 import {
+  DEFAULT_PROSPECTING_TARGET_TYPES,
+  MARKET_RADAR_TARGET_TYPES,
   PROSPECTING_CAMPAIGN_NAME_MAX_LENGTH,
   PROSPECTING_KEYWORD_MAX_LENGTH,
   PROSPECTING_KEYWORDS_MAX_COUNT,
@@ -92,13 +94,17 @@ function hasIdentityConflict(candidate: ProspectCandidate) {
   return candidate.reviewFlags.some((flag) => IDENTITY_CONFLICT_FLAGS.has(flag));
 }
 
-const targetTypeLabels: Array<{ id: CompanyType; label: string }> = [
+const territorialTargetTypeLabels: Array<{ id: CompanyType; label: string }> = [
   { id: "distribuidor", label: "Distribuidores" },
   { id: "tienda comercial", label: "Tiendas comerciales" },
   { id: "tecnico", label: "Técnicos" },
   { id: "instalador grande", label: "Instaladores grandes" },
+];
+
+const marketRadarTargetTypeLabels: Array<{ id: CompanyType; label: string }> = [
+  { id: "distribuidor", label: "Distribuidores" },
+  { id: "tienda comercial", label: "Tiendas comerciales" },
   { id: "competencia", label: "Competencia" },
-  { id: "otro", label: "Otro" },
 ];
 
 export function ProspectingPage() {
@@ -755,9 +761,7 @@ function CampaignForm({
   const [targetTypes, setTargetTypes] = useState<CompanyType[]>(
     initialCampaign?.targetTypes ?? ["tecnico", "instalador grande"],
   );
-  const initialRadar = Boolean(initialCampaign)
-    && initialCampaign!.targetTypes.some((type) => ["distribuidor", "tienda comercial", "competencia"].includes(type))
-    && !initialCampaign!.targetTypes.some((type) => ["tecnico", "instalador grande"].includes(type));
+  const initialRadar = Boolean(initialCampaign?.targetTypes.includes("competencia"));
   const [searchMode, setSearchMode] = useState<"territorial" | "market_radar">(initialRadar ? "market_radar" : "territorial");
   const [activeRegionCode, setActiveRegionCode] = useState(initialCampaign?.territories[0]?.regionCode ?? defaultRegion);
   const [selection, setSelection] = useState<Record<string, string[]>>(() =>
@@ -797,6 +801,9 @@ function CampaignForm({
   const braveNeedsOfficialWebsite = requiresOfficialWebsite(sources);
   const googleOnlyDiscovery =
     sources.includes("google_places") && !sources.includes("brave_search") && !sources.includes("official_website");
+  const visibleTargetTypeLabels = searchMode === "market_radar"
+    ? marketRadarTargetTypeLabels
+    : territorialTargetTypeLabels;
 
   function toggleComuna(code: string) {
     setSelection((current) => {
@@ -863,6 +870,21 @@ function CampaignForm({
     if (targetTypes.some((targetType) => !PROSPECTING_TARGET_TYPES.includes(targetType))) {
       return setFormError("La campaña contiene un tipo de empresa no permitido.");
     }
+    if (targetTypes.includes("otro")) {
+      return setFormError('El tipo "otro" no puede generar prospectos automáticos.');
+    }
+    if (searchMode === "territorial" && targetTypes.includes("competencia")) {
+      return setFormError('"Competencia" solo está disponible en Radar de mercado.');
+    }
+    if (
+      searchMode === "market_radar"
+      && (
+        !targetTypes.includes("competencia")
+        || targetTypes.some((targetType) => !MARKET_RADAR_TARGET_TYPES.includes(targetType))
+      )
+    ) {
+      return setFormError("El Radar de mercado solo admite distribuidores, tiendas comerciales y competencia.");
+    }
     const now = new Date().toISOString();
     void onSave({
       id: initialCampaign?.id ?? crypto.randomUUID(),
@@ -925,13 +947,19 @@ function CampaignForm({
         <div className="prospecting-section-heading"><div><strong>Modalidad de búsqueda</strong><span>El Radar prioriza cobertura e importancia comercial; la búsqueda territorial prioriza empresas por comuna.</span></div></div>
         <div className="target-type-grid">
           <label className="checkbox-card">
-            <input type="radio" name="search-mode" checked={searchMode === "territorial"} onChange={() => setSearchMode("territorial")} />
+            <input type="radio" name="search-mode" checked={searchMode === "territorial"} onChange={() => {
+              setSearchMode("territorial");
+              setTargetTypes((current) => {
+                const allowed = current.filter((type) => DEFAULT_PROSPECTING_TARGET_TYPES.includes(type));
+                return allowed.length ? allowed : ["tecnico", "instalador grande"];
+              });
+            }} />
             Búsqueda territorial
           </label>
           <label className="checkbox-card">
             <input type="radio" name="search-mode" checked={searchMode === "market_radar"} onChange={() => {
               setSearchMode("market_radar");
-              setTargetTypes(["distribuidor", "tienda comercial", "competencia"]);
+              setTargetTypes([...MARKET_RADAR_TARGET_TYPES]);
               setSources(["google_places", "brave_search", "official_website"]);
             }} />
             Radar de mercado
@@ -1069,7 +1097,7 @@ function CampaignForm({
         <div className="prospecting-form-section compact-section">
           <div className="prospecting-section-heading"><strong>4. Tipos de empresa</strong></div>
           <div className="target-type-grid">
-            {targetTypeLabels.map((type) => (
+            {visibleTargetTypeLabels.map((type) => (
               <label key={type.id} className="checkbox-card">
                 <input
                   type="checkbox"
