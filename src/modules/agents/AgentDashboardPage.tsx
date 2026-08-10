@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  Trash2,
   TrendingUp,
   UserPlus,
 } from "lucide-react";
@@ -30,6 +31,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import type { Company } from "../../types/crm";
 import { useCompanyStore } from "../companies/CompanyStore";
+import { queueForeignTradeAnalysis } from "./foreignTradeAnalysis";
 
 type AgentTask = {
   id: string;
@@ -146,6 +148,9 @@ type ForeignTradeProduct = {
   coverage_days?: number | null;
   recommended_units: number;
   order_multiple: number;
+  units_per_carton?: number;
+  recommended_cartons?: number;
+  packing_box_source?: string;
   unit_fob_usd: number;
   unit_cbm: number;
   severity: string;
@@ -335,8 +340,14 @@ type ForeignTradeReport = {
     container_type?: string;
     container_remaining_cbm?: number;
     container_count?: number;
+    container_equivalent?: number;
     total_units?: number;
+    total_cartons?: number;
     total_skus?: number;
+    freight_full_container_usd?: number;
+    freight_proration_factor?: number;
+    freight_usd_per_cbm?: number;
+    freight_allocation_policy?: string;
     freight_reference?: {
       latest_invoice_number?: string;
       latest_invoice_date?: string;
@@ -358,6 +369,15 @@ type ForeignTradeReport = {
   methodology: string;
 };
 
+type ForeignTradeActionProposal = {
+  id: string;
+  task_id?: string | null;
+  status: "pending" | "approved" | "rejected" | "executed" | "cancelled";
+  payload?: {
+    purchase_proposal?: ForeignTradeReport["purchase_proposal"];
+  } | null;
+};
+
 type ForeignTradeActualOrder = {
   id: string;
   supplier: string;
@@ -375,6 +395,7 @@ type ForeignTradeActualOrder = {
     container_reference_cbm?: number;
     container_utilization_percent?: number;
     total_units?: number;
+    total_cartons?: number;
     total_skus?: number;
   };
   created_at: string;
@@ -1605,11 +1626,15 @@ function DonutChart({
   );
 }
 
-function foreignTradeReportFromTasks(tasks: AgentTask[]): ForeignTradeReport | null {
+function foreignTradeReportFromTasks(
+  tasks: AgentTask[],
+): { report: ForeignTradeReport; task: AgentTask } | null {
   for (const task of tasks) {
     for (const entry of task.result?.evidence ?? []) {
       const report = entry.foreign_trade_report;
-      if (report && typeof report === "object") return report as ForeignTradeReport;
+      if (report && typeof report === "object") {
+        return { report: report as ForeignTradeReport, task };
+      }
     }
   }
   return null;
@@ -1624,8 +1649,16 @@ function shortDate(value?: string | null) {
   }).format(new Date(`${value}T12:00:00`));
 }
 
-function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
-  const report = useMemo(() => foreignTradeReportFromTasks(tasks), [tasks]);
+function ForeignTradeDashboard({
+  tasks,
+  onReload,
+}: {
+  tasks: AgentTask[];
+  onReload: () => Promise<void>;
+}) {
+  const reportMatch = useMemo(() => foreignTradeReportFromTasks(tasks), [tasks]);
+  const report = reportMatch?.report ?? null;
+  const reportTask = reportMatch?.task ?? null;
   const [catalogSearch, setCatalogSearch] = useState("");
   const [volumeFilter, setVolumeFilter] = useState("all");
   const [activeImportSearch, setActiveImportSearch] = useState("");
@@ -1634,7 +1667,96 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
   const [actualOrders, setActualOrders] = useState<ForeignTradeActualOrder[]>([]);
   const [actualOrderLoading, setActualOrderLoading] = useState(false);
   const [actualOrderMessage, setActualOrderMessage] = useState("");
-  const latest = tasks[0];
+  const [proposalRecord, setProposalRecord] = useState<ForeignTradeActionProposal | null>(null);
+  const [proposalBusy, setProposalBusy] = useState(false);
+  const [proposalMessage, setProposalMessage] = useState("");
+  const latest = reportTask ?? tasks[0];
+
+  const loadProposalRecord = useCallback(async () => {
+    const client = supabase;
+    if (!client || !reportTask?.id) {
+      setProposalRecord(null);
+      return;
+    }
+    const { data, error } = await client
+      .from("action_proposals")
+      .select("id,task_id,status,payload")
+      .eq("task_id", reportTask.id)
+      .eq("kind", "purchase_order")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!error) setProposalRecord((data as ForeignTradeActionProposal | null) ?? null);
+  }, [reportTask?.id]);
+
+  useEffect(() => {
+    void loadProposalRecord();
+  }, [loadProposalRecord]);
+
+  const deleteProposal = useCallback(async () => {
+    const client = supabase;
+    if (!client || !proposalRecord || proposalRecord.status !== "pending") return;
+    if (!window.confirm("¿Eliminar esta propuesta de compra? El análisis quedará en el historial para trazabilidad.")) return;
+    setProposalBusy(true);
+    setProposalMessage("");
+    const { error } = await client.rpc("decide_action_proposal", {
+      p_proposal_id: proposalRecord.id,
+      p_decision: "rejected",
+      p_note: "Propuesta de compra eliminada desde Comercio Exterior",
+    });
+    setProposalBusy(false);
+    if (error) {
+      setProposalMessage(error.message);
+      return;
+    }
+    setProposalRecord({ ...proposalRecord, status: "rejected" });
+    setProposalMessage("La propuesta fue eliminada. Puedes generar una nueva cuando cambie el catálogo o el inventario.");
+  }, [proposalRecord]);
+
+  const updateProposal = useCallback(async () => {
+    const client = supabase;
+    if (!client) return;
+    setProposalBusy(true);
+    setProposalMessage("Actualizando inventario, productos y referencias de costos...");
+    try {
+      const queued = await queueForeignTradeAnalysis();
+      let replacementNote = "";
+      if (proposalRecord?.status === "pending") {
+        const { error: replacementError } = await client.rpc("decide_action_proposal", {
+          p_proposal_id: proposalRecord.id,
+          p_decision: "rejected",
+          p_note: `Reemplazada por actualización ${queued.taskId}`,
+        });
+        if (replacementError) {
+          replacementNote = ` La propuesta anterior no pudo marcarse como reemplazada: ${replacementError.message}`;
+        }
+      }
+      setProposalMessage(
+        `Actualización enviada con ${queued.productCount} productos.${queued.gmailSyncNote} La vista se renovará al finalizar.${replacementNote}`,
+      );
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 2000));
+        const { data } = await client
+          .from("business_agent_tasks")
+          .select("status")
+          .eq("id", queued.taskId)
+          .maybeSingle();
+        if (data?.status === "completed" || data?.status === "failed") {
+          await onReload();
+          setProposalMessage(
+            data.status === "completed"
+              ? "Propuesta actualizada con los productos y datos disponibles más recientes."
+              : "La actualización no pudo completarse. Revisa el estado del agente.",
+          );
+          break;
+        }
+      }
+    } catch (error) {
+      setProposalMessage(error instanceof Error ? error.message : "No fue posible actualizar la propuesta.");
+    } finally {
+      setProposalBusy(false);
+    }
+  }, [onReload, proposalRecord]);
 
   const loadActualOrders = useCallback(async () => {
     const client = supabase;
@@ -1701,11 +1823,14 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
         container_reference_cbm: proposal.container_reference_cbm,
         container_utilization_percent: proposal.container_utilization_percent,
         total_units: proposal.total_units ?? proposal.items.reduce((sum, item) => sum + item.recommended_units, 0),
+        total_cartons: proposal.total_cartons ?? proposal.items.reduce((sum, item) => sum + Number(item.recommended_cartons ?? 0), 0),
         total_skus: proposal.total_skus ?? proposal.items.length,
         items: proposal.items.map((item) => ({
           sku: item.sku,
           name: item.name,
           recommended_units: item.recommended_units,
+          recommended_cartons: item.recommended_cartons,
+          units_per_carton: item.units_per_carton ?? item.order_multiple,
           unit_fob_usd: item.unit_fob_usd,
           unit_cbm: item.unit_cbm,
           costs: item.costs,
@@ -1796,7 +1921,32 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
     );
   }
 
-  const proposal = report.purchase_proposal;
+  const storedProposal = proposalRecord?.payload?.purchase_proposal;
+  const proposalCancelled = proposalRecord?.status === "cancelled" || proposalRecord?.status === "rejected";
+  const proposalSource = storedProposal ?? report.purchase_proposal;
+  const proposal: ForeignTradeReport["purchase_proposal"] = proposalCancelled
+    ? {
+        ...proposalSource,
+        status: "cancelled",
+        items: [],
+        totals: {
+          fob_usd: 0,
+          freight_usd: 0,
+          insurance_usd: 0,
+          customs_duty_usd: 0,
+          local_and_agency_usd: 0,
+          landed_cost_usd: 0,
+          recoverable_import_vat_cash_usd: 0,
+          total_cbm: 0,
+        },
+        container_utilization_percent: 0,
+        container_remaining_cbm: proposalSource.container_reference_cbm,
+        total_units: 0,
+        total_cartons: 0,
+        total_skus: 0,
+        warnings: [],
+      }
+    : proposalSource;
   const activeImport = report.active_imports?.[0];
   const totals = proposal.totals;
   const highRisk = report.products.filter((item) => item.severity === "critical" || item.severity === "high").length;
@@ -1970,7 +2120,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
           centerValue={formatUsd.format(totals.landed_cost_usd)}
           formatter={(value) => formatUsd.format(value)}
           slices={costSlices}
-          subtitle={`Flete ${proposal.freight_reference?.latest_provider ?? "AD/ADS Cargas"} 20GP: ${formatUsd.format(proposal.freight_reference?.latest_verified_usd ?? totals.freight_usd)} (${proposal.freight_reference?.latest_source === "crm_facto_purchase_invoice" ? "factura Facto" : "respaldo histórico"}). Los demás costos usan referencias históricas variables de Agencia Rodríguez Palma; IVA aparte.`}
+          subtitle={`Tarifa de referencia ${proposal.freight_reference?.latest_provider ?? "AD/ADS Cargas"} 20GP completo: ${formatUsd.format(proposal.freight_full_container_usd ?? proposal.freight_reference?.latest_verified_usd ?? 0)} por ${formatNumber.format(proposal.container_reference_cbm)} m³. La propuesta reconoce solo ${formatUsd.format(totals.freight_usd)} (${formatNumber.format((proposal.freight_proration_factor ?? 0) * 100)}% proporcional). Los demás costos usan referencias históricas variables; IVA aparte.`}
           title="Composición del costo de importación"
         />
       </section>
@@ -2009,17 +2159,32 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
               Ordenar antes de {shortDate(proposal.required_order_date)} para una llegada estimada el {shortDate(proposal.projected_arrival_date)}.
             </p>
           </div>
-          <span className={`status-chip ${proposal.items.length ? "partial" : "pending"}`}>
-            {proposal.items.length ? "Pendiente de aprobación" : "Sin compra necesaria"}
-          </span>
+          <div className="foreign-trade-proposal-actions">
+            <span className={`status-chip ${proposal.items.length ? "partial" : "pending"}`}>
+              {proposalCancelled ? "Propuesta eliminada" : proposal.items.length ? "Pendiente de aprobación" : "Sin compra necesaria"}
+            </span>
+            <button className="secondary-button" disabled={proposalBusy} onClick={() => void updateProposal()} type="button">
+              <RefreshCw size={16} /> {proposalBusy ? "Actualizando..." : "Actualizar propuesta"}
+            </button>
+            <button
+              className="secondary-button danger-button"
+              disabled={proposalBusy || proposalRecord?.status !== "pending"}
+              onClick={() => void deleteProposal()}
+              type="button"
+            >
+              <Trash2 size={16} /> Eliminar
+            </button>
+          </div>
         </div>
+        {proposalMessage ? <div className="foreign-trade-proposal-message">{proposalMessage}</div> : null}
         <div className="foreign-trade-proposal-summary">
           <article><span>Referencias</span><strong>{formatNumber.format(proposal.total_skus ?? proposal.items.length)} SKU</strong></article>
           <article><span>Unidades</span><strong>{formatNumber.format(proposal.total_units ?? proposal.items.reduce((sum, item) => sum + item.recommended_units, 0))}</strong></article>
+          <article><span>Cajas completas</span><strong>{formatNumber.format(proposal.total_cartons ?? proposal.items.reduce((sum, item) => sum + Number(item.recommended_cartons ?? 0), 0))}</strong><small>Según Packing Box Chinafore</small></article>
           <article><span>Volumen consolidado</span><strong>{formatNumber.format(totals.total_cbm)} m³</strong><small>Meta {formatNumber.format(proposal.container_reference_cbm)} m³</small></article>
           <article><span>Llenado {proposal.container_type ?? "20GP"}</span><strong>{formatNumber.format(proposal.container_utilization_percent)}%</strong><small>{formatNumber.format(proposal.container_remaining_cbm ?? Math.max(0, proposal.container_reference_cbm - totals.total_cbm))} m³ disponibles</small></article>
           <article><span>Total FOB</span><strong>{formatUsd.format(totals.fob_usd)}</strong></article>
-          <article><span>Flete internacional</span><strong>{formatUsd.format(totals.freight_usd)}</strong><small>{proposal.freight_reference?.latest_source === "crm_facto_purchase_invoice" ? "Factura Facto" : "Referencia histórica"} {proposal.freight_reference?.latest_invoice_number ?? "verificada"}</small></article>
+          <article><span>Flete internacional</span><strong>{formatUsd.format(totals.freight_usd)}</strong><small>Proporcional: {formatNumber.format((proposal.freight_proration_factor ?? 0) * 100)}% de {formatUsd.format(proposal.freight_full_container_usd ?? proposal.freight_reference?.latest_verified_usd ?? 0)}</small></article>
           <article><span>Costo puesto</span><strong>{formatUsd.format(totals.landed_cost_usd)}</strong><small>IVA aparte</small></article>
           <article><span>IVA recuperable</span><strong>{formatUsd.format(totals.recoverable_import_vat_cash_usd)}</strong><small>Necesidad de caja</small></article>
         </div>
@@ -2037,7 +2202,7 @@ function ForeignTradeDashboard({ tasks }: { tasks: AgentTask[] }) {
                     <td data-label="Producto"><strong>{item.name || item.sku}</strong><span>{item.sku}</span></td>
                     <td data-label="Stock / demanda"><strong>{formatNumber.format(item.available_units)} un.</strong><span>{formatNumber.format(item.average_daily_demand)} por día · {formatNumber.format(item.confirmed_inbound_units ?? 0)} en tránsito</span></td>
                     <td data-label="Cobertura"><strong>{item.coverage_days == null ? "Sin demanda" : `${formatNumber.format(item.coverage_days)} días`}</strong><span>{item.severity}</span></td>
-                    <td data-label="Compra sugerida"><strong>{formatNumber.format(item.recommended_units)} un.</strong><span>Múltiplo {formatNumber.format(item.order_multiple)}</span></td>
+                    <td data-label="Compra sugerida"><strong>{formatNumber.format(item.recommended_cartons ?? 0)} cajas</strong><span>{formatNumber.format(item.recommended_units)} un. · {formatNumber.format(item.units_per_carton ?? item.order_multiple)} por caja</span></td>
                     <td data-label="m³"><strong>{formatNumber.format(item.costs.total_cbm)}</strong><span>{item.unit_cbm ? `${item.unit_cbm.toFixed(5)} por unidad` : "Sin volumen"}</span></td>
                     <td data-label="FOB"><strong>{formatUsd.format(item.costs.fob_usd)}</strong><span>{formatUsd.format(item.unit_fob_usd)} / un.</span></td>
                     <td data-label="Costo puesto"><strong>{formatUsd.format(item.costs.landed_cost_usd)}</strong><span>IVA aparte</span></td>
@@ -5599,7 +5764,7 @@ export function AgentDashboardPage() {
         <div className="notice-banner warning">La tarea indicada no existe o ya no esta disponible.</div>
       ) : null}
       {!loading && agentType === "logistics" ? <LogisticsDashboard snapshots={snapshots} tasks={tasks} /> : null}
-      {!loading && agentType === "foreign_trade" ? <ForeignTradeDashboard tasks={tasks} /> : null}
+      {!loading && agentType === "foreign_trade" ? <ForeignTradeDashboard onReload={load} tasks={tasks} /> : null}
       {!loading && agentType === "finance" ? (
         <FinanceWorkspace
           accountingError={accountingError}

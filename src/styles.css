@@ -6326,6 +6326,28 @@ th {
   justify-content: space-between;
 }
 
+.foreign-trade-proposal-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.foreign-trade-proposal-actions .danger-button {
+  border-color: #d9aaa4;
+  color: #a33c32;
+}
+
+.foreign-trade-proposal-message {
+  background: #edf7f8;
+  border: 1px solid #c8e2e5;
+  border-radius: 10px;
+  color: #175a63;
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+}
+
 .foreign-trade-proposal-summary {
   display: grid;
   gap: 10px;
@@ -6649,6 +6671,12 @@ th {
   .active-import-products-title {
     align-items: stretch;
     display: grid;
+  }
+
+  .foreign-trade-proposal-actions {
+    align-items: stretch;
+    display: grid;
+    justify-content: stretch;
   }
 
   .foreign-trade-actual-order-form {
