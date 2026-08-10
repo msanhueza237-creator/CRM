@@ -409,12 +409,40 @@ type FinancialMonth = {
   documents: number;
 };
 
+type FinancialDay = Omit<FinancialMonth, "month"> & {
+  date: string;
+};
+
 type FinancialPurchaseMonth = {
   month: string;
   net_purchases: number;
   tax?: number;
   gross_purchases?: number;
   documents: number;
+};
+
+type FinancialPurchaseDay = Omit<FinancialPurchaseMonth, "month"> & {
+  date: string;
+};
+
+type InternetFinancialSales = {
+  available: boolean;
+  source: "tiendanube_read_only";
+  channel: "climactiva.cl";
+  currency: string;
+  amount_basis: string;
+  net_tax_method: string;
+  net_sales_is_estimated: boolean;
+  period_start?: string | null;
+  period_end?: string | null;
+  orders_reviewed: number;
+  document_count: number;
+  net_sales: number;
+  tax: number;
+  gross_sales: number;
+  sales_by_day: FinancialDay[];
+  excluded?: Record<string, number>;
+  disclaimer: string;
 };
 
 type FinancialRanking = {
@@ -433,6 +461,7 @@ type SupplierRanking = {
   net_purchases?: number;
   documents?: number;
   years?: Record<string, { net_purchases: number; documents: number }>;
+  days?: Record<string, { net_purchases: number; documents: number }>;
 };
 
 type FinancialYearMonthComparison = {
@@ -580,7 +609,10 @@ type FinancialReport = {
   reference_gross_margin: number;
   reference_margin_available: boolean;
   sales_by_month: FinancialMonth[];
+  sales_by_day?: FinancialDay[];
   purchases_by_month?: FinancialPurchaseMonth[];
+  purchases_by_day?: FinancialPurchaseDay[];
+  internet_sales?: InternetFinancialSales;
   year_comparison?: FinancialYearComparison;
   top_customers: FinancialRanking[];
   customer_count?: number;
@@ -4486,10 +4518,12 @@ function AccountingDashboard({
 
 function FinanceWorkspace({
   tasks,
+  financialSnapshot,
   accountingSnapshot,
   accountingError,
 }: {
   tasks: AgentTask[];
+  financialSnapshot: FinancialReport | null;
   accountingSnapshot: AccountingSnapshot | null;
   accountingError: string;
 }) {
@@ -4505,19 +4539,43 @@ function FinanceWorkspace({
           {accountingSnapshot?.status === "provisional" ? <span>Provisional</span> : null}
         </button>
       </nav>
-      {view === "management" ? <FinanceDashboard tasks={tasks} /> : <AccountingDashboard snapshot={accountingSnapshot} error={accountingError} />}
+      {view === "management" ? <FinanceDashboard financialSnapshot={financialSnapshot} tasks={tasks} /> : <AccountingDashboard snapshot={accountingSnapshot} error={accountingError} />}
     </>
   );
 }
 
-function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
+function FinanceDashboard({
+  tasks,
+  financialSnapshot,
+}: {
+  tasks: AgentTask[];
+  financialSnapshot: FinancialReport | null;
+}) {
   const latest = tasks[0];
-  const report = financialReportFromTask(latest);
-  const [selectedMonth, setSelectedMonth] = useState("all");
+  const report = financialSnapshot ?? financialReportFromTask(latest);
+  const [dateFrom, setDateFrom] = useState(report?.period_start ?? "");
+  const [dateTo, setDateTo] = useState(report?.period_end ?? "");
+  const [salesChannel, setSalesChannel] = useState<"all" | "internet">("all");
   const [supplierQuery, setSupplierQuery] = useState("");
-  const [supplierYear, setSupplierYear] = useState("all");
   const [collectionQuery, setCollectionQuery] = useState("");
   const [collectionSort, setCollectionSort] = useState("amount_desc");
+  const reportBoundsRef = useRef({ start: report?.period_start ?? "", end: report?.period_end ?? "" });
+  useEffect(() => {
+    if (!report) return;
+    const nextStart = report.period_start ?? "";
+    const nextEnd = report.period_end ?? "";
+    const previous = reportBoundsRef.current;
+    setDateFrom((current) => (!current || current === previous.start ? nextStart : current));
+    setDateTo((current) => (!current || current === previous.end ? nextEnd : current));
+    reportBoundsRef.current = { start: nextStart, end: nextEnd };
+  }, [report]);
+  const isFullRange = Boolean(
+    report
+    && dateFrom === (report.period_start ?? "")
+    && dateTo === (report.period_end ?? ""),
+  );
+  const hasExactDailyData = Boolean(report?.sales_by_day?.length);
+  const internetAvailable = Boolean(report?.internet_sales?.available);
   const effectiveCollections = useMemo(() => {
     const synced = report?.collections;
     if (synced?.mode === "facto_receivables" && synced.authoritative) return synced;
@@ -4527,14 +4585,17 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
     const query = normalizeCustomerSearch(supplierQuery);
     return (report?.top_suppliers ?? [])
       .map((item) => {
-        const selectedYear = supplierYear === "all" ? null : item.years?.[supplierYear];
+        const dayRows = Object.entries(item.days ?? {}).filter(([day]) => (
+          (!dateFrom || day >= dateFrom) && (!dateTo || day <= dateTo)
+        ));
+        const exactRangeAvailable = Boolean(item.days);
         return {
           ...item,
-          displayed_purchases: selectedYear
-            ? Number(selectedYear.net_purchases ?? 0)
+          displayed_purchases: exactRangeAvailable
+            ? dayRows.reduce((total, [, values]) => total + Number(values.net_purchases ?? 0), 0)
             : Number(item.net_purchases ?? 0),
-          displayed_documents: selectedYear
-            ? Number(selectedYear.documents ?? 0)
+          displayed_documents: exactRangeAvailable
+            ? dayRows.reduce((total, [, values]) => total + Number(values.documents ?? 0), 0)
             : Number(item.documents ?? 0),
         };
       })
@@ -4547,7 +4608,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
         );
       })
       .sort((left, right) => right.displayed_purchases - left.displayed_purchases);
-  }, [report?.top_suppliers, supplierQuery, supplierYear]);
+  }, [dateFrom, dateTo, report?.top_suppliers, supplierQuery]);
   const filteredCollectionCustomers = useMemo(() => {
     const query = normalizeCustomerSearch(collectionQuery);
     const rows = (effectiveCollections.customers ?? []).filter((item) => {
@@ -4582,19 +4643,90 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
     );
   }
 
-  const months = report.sales_by_month ?? [];
-  const selected = selectedMonth === "all" ? null : months.find((item) => item.month === selectedMonth) ?? null;
-  const purchaseMonths = report.purchases_by_month ?? [];
-  const selectedPurchases = selectedMonth === "all"
-    ? null
-    : purchaseMonths.find((item) => item.month === selectedMonth) ?? null;
-  const netSales = selected?.net_sales ?? report.net_sales;
-  const netPurchases = selectedPurchases?.net_purchases ?? Number(report.net_purchases ?? 0);
-  const tax = selected?.tax ?? report.tax;
-  const grossSales = selected?.gross_sales ?? report.gross_sales;
-  const documents = selected?.documents ?? report.document_count;
+  const activeSalesDays = salesChannel === "internet"
+    ? report.internet_sales?.sales_by_day ?? []
+    : report.sales_by_day ?? [];
+  const filteredSalesDays = activeSalesDays.filter((item) => (
+    (!dateFrom || item.date >= dateFrom) && (!dateTo || item.date <= dateTo)
+  ));
+  const filteredPurchaseDays = (report.purchases_by_day ?? []).filter((item) => (
+    (!dateFrom || item.date >= dateFrom) && (!dateTo || item.date <= dateTo)
+  ));
+  const filteredSalesTotals = filteredSalesDays.reduce(
+    (totals, item) => ({
+      net: totals.net + Number(item.net_sales ?? 0),
+      tax: totals.tax + Number(item.tax ?? 0),
+      gross: totals.gross + Number(item.gross_sales ?? 0),
+      documents: totals.documents + Number(item.documents ?? 0),
+    }),
+    { net: 0, tax: 0, gross: 0, documents: 0 },
+  );
+  const filteredPurchaseTotals = filteredPurchaseDays.reduce(
+    (totals, item) => ({
+      net: totals.net + Number(item.net_purchases ?? 0),
+      documents: totals.documents + Number(item.documents ?? 0),
+    }),
+    { net: 0, documents: 0 },
+  );
+  const internet = report.internet_sales;
+  const useFactoFullTotals = salesChannel === "all" && isFullRange;
+  const useInternetFullTotals = salesChannel === "internet" && isFullRange;
+  const netSales = useFactoFullTotals
+    ? report.net_sales
+    : useInternetFullTotals
+      ? Number(internet?.net_sales ?? 0)
+      : filteredSalesTotals.net;
+  const tax = useFactoFullTotals
+    ? report.tax
+    : useInternetFullTotals
+      ? Number(internet?.tax ?? 0)
+      : filteredSalesTotals.tax;
+  const grossSales = useFactoFullTotals
+    ? report.gross_sales
+    : useInternetFullTotals
+      ? Number(internet?.gross_sales ?? 0)
+      : filteredSalesTotals.gross;
+  const documents = useFactoFullTotals
+    ? report.document_count
+    : useInternetFullTotals
+      ? Number(internet?.document_count ?? 0)
+      : filteredSalesTotals.documents;
+  const netPurchases = isFullRange
+    ? Number(report.net_purchases ?? 0)
+    : filteredPurchaseTotals.net;
+  const purchaseDocuments = isFullRange
+    ? Number(report.purchase_document_count ?? 0)
+    : filteredPurchaseTotals.documents;
   const averageTicket = documents ? netSales / documents : 0;
+  const monthlyRangeMap = new Map<string, FinancialMonth>();
+  for (const item of filteredSalesDays) {
+    const month = item.date.slice(0, 7);
+    const current = monthlyRangeMap.get(month) ?? {
+      month,
+      net_sales: 0,
+      tax: 0,
+      gross_sales: 0,
+      documents: 0,
+    };
+    current.net_sales += Number(item.net_sales ?? 0);
+    current.tax += Number(item.tax ?? 0);
+    current.gross_sales += Number(item.gross_sales ?? 0);
+    current.documents += Number(item.documents ?? 0);
+    monthlyRangeMap.set(month, current);
+  }
+  const fallbackMonths = salesChannel === "all"
+    ? (report.sales_by_month ?? []).filter((item) => (
+        (!dateFrom || item.month >= dateFrom.slice(0, 7))
+        && (!dateTo || item.month <= dateTo.slice(0, 7))
+      ))
+    : [];
+  const months = monthlyRangeMap.size
+    ? [...monthlyRangeMap.values()].sort((left, right) => left.month.localeCompare(right.month))
+    : fallbackMonths;
   const maximumMonth = Math.max(...months.map((item) => Number(item.net_sales ?? 0)), 1);
+  const filteredView = salesChannel !== "all" || !isFullRange;
+  const marginAvailableForView = Boolean(report.reference_margin_available && !filteredView);
+  const invalidDateRange = Boolean(dateFrom && dateTo && dateFrom > dateTo);
   const comparison = report.year_comparison;
   const comparisonMonths = comparison?.months ?? [];
   const comparisonMaximum = Math.max(
@@ -4660,40 +4792,93 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
       ) : null}
 
       <section className="finance-toolbar data-card">
-        <div>
-          <span className="eyebrow">PERÍODO OBSERVADO EN FACTO</span>
+        <div className="finance-period-summary">
+          <span className="eyebrow">PERÍODO OBSERVADO EN FACTO Y CLIMACTIVA.CL</span>
           <strong>{report.period_start ?? "Sin fecha"} al {report.period_end ?? "Sin fecha"}</strong>
+          <small>{salesChannel === "internet" ? "Canal web identificado por Tiendanube" : "Ventas tributarias emitidas en Facto"}</small>
         </div>
-        <label>
-          Ver período
-          <select value={selectedMonth} onChange={(event) => setSelectedMonth(event.target.value)}>
-            <option value="all">Todo el período</option>
-            {[...months].reverse().map((item) => <option key={item.month} value={item.month}>{monthLabel(item.month)}</option>)}
-          </select>
-        </label>
+        <div className="finance-filter-grid">
+          <label>
+            Desde
+            <input
+              max={dateTo || report.period_end || undefined}
+              min={report.period_start || undefined}
+              onChange={(event) => setDateFrom(event.target.value)}
+              type="date"
+              value={dateFrom}
+            />
+          </label>
+          <label>
+            Hasta
+            <input
+              max={report.period_end || undefined}
+              min={dateFrom || report.period_start || undefined}
+              onChange={(event) => setDateTo(event.target.value)}
+              type="date"
+              value={dateTo}
+            />
+          </label>
+          <label>
+            Canal de venta
+            <select value={salesChannel} onChange={(event) => setSalesChannel(event.target.value as "all" | "internet")}>
+              <option value="all">Todas las ventas · Facto</option>
+              <option disabled={!internetAvailable} value="internet">
+                {internetAvailable ? "Solo climactiva.cl" : "Climactiva.cl · sincronizando"}
+              </option>
+            </select>
+          </label>
+          <button
+            className="ghost-button finance-filter-reset"
+            disabled={isFullRange && salesChannel === "all"}
+            onClick={() => {
+              setDateFrom(report.period_start ?? "");
+              setDateTo(report.period_end ?? "");
+              setSalesChannel("all");
+            }}
+            type="button"
+          >
+            Restablecer
+          </button>
+        </div>
       </section>
 
+      {invalidDateRange ? (
+        <div className="notice-banner warning">La fecha Desde no puede ser posterior a la fecha Hasta.</div>
+      ) : null}
+      {!hasExactDailyData ? (
+        <div className="notice-banner info">El rango exacto se activará al terminar la siguiente sincronización financiera. Mientras tanto, los totales históricos siguen disponibles.</div>
+      ) : null}
+      {salesChannel === "internet" ? (
+        <div className="notice-banner info finance-internet-source">
+          <strong>Solo ventas de climactiva.cl: {documents} pedidos pagados.</strong>
+          <span>
+            Se revisaron {internet?.orders_reviewed ?? 0} pedidos; se excluyeron {internet?.excluded?.unpaid ?? 0} pendientes
+            y {internet?.excluded?.cancelled_or_refunded ?? 0} cancelados o reembolsados. {internet?.disclaimer}
+          </span>
+        </div>
+      ) : null}
+
       <section className="agent-dashboard-kpis finance-kpis">
-        <DashboardKpiButton label="Ventas netas sin IVA" targetId="finance-growth"><CircleDollarSign size={22} /><span>Ventas netas sin IVA</span><strong>{formatCurrency.format(netSales)}</strong><small>Ingreso comercial antes de IVA</small></DashboardKpiButton>
+        <DashboardKpiButton label="Ventas netas sin IVA" targetId="finance-growth"><CircleDollarSign size={22} /><span>{salesChannel === "internet" ? "Ventas web netas referenciales" : "Ventas netas sin IVA"}</span><strong>{formatCurrency.format(netSales)}</strong><small>{salesChannel === "internet" ? "Derivado del total pagado en Tiendanube" : "Ingreso comercial antes de IVA"}</small></DashboardKpiButton>
         <DashboardKpiButton className={!report.purchases_available ? "risk" : ""} label="Compras netas" targetId="finance-suppliers">
           <PackageCheck size={22} /><span>Compras netas</span>
           <strong>{report.purchases_available ? formatCurrency.format(netPurchases) : "Pendiente"}</strong>
-          <small>{report.purchases_available ? `${selectedPurchases?.documents ?? report.purchase_document_count ?? 0} documentos recibidos` : "Facto aún no entrega compras"}</small>
+          <small>{report.purchases_available ? `${purchaseDocuments} documentos recibidos en el rango` : "Facto aún no entrega compras"}</small>
         </DashboardKpiButton>
-        <DashboardKpiButton label="IVA de documentos" targetId="finance-growth"><Database size={22} /><span>IVA de documentos</span><strong>{formatCurrency.format(tax)}</strong><small>No se considera ingreso</small></DashboardKpiButton>
-        <DashboardKpiButton label="Documentos emitidos" targetId="finance-growth"><BarChart3 size={22} /><span>Documentos emitidos</span><strong>{formatNumber.format(documents)}</strong><small>Facturas, exentas y boletas válidas</small></DashboardKpiButton>
+        <DashboardKpiButton label="IVA de documentos" targetId="finance-growth"><Database size={22} /><span>{salesChannel === "internet" ? "IVA web referencial" : "IVA de documentos"}</span><strong>{formatCurrency.format(tax)}</strong><small>{salesChannel === "internet" ? "Estimado con factor 1,19" : "No se considera ingreso"}</small></DashboardKpiButton>
+        <DashboardKpiButton label="Documentos emitidos" targetId="finance-growth"><BarChart3 size={22} /><span>{salesChannel === "internet" ? "Pedidos web pagados" : "Documentos emitidos"}</span><strong>{formatNumber.format(documents)}</strong><small>{salesChannel === "internet" ? "Pedidos válidos de climactiva.cl" : "Facturas, exentas y boletas válidas"}</small></DashboardKpiButton>
         <DashboardKpiButton label="Ticket neto promedio" targetId="finance-growth"><TrendingUp size={22} /><span>Ticket neto promedio</span><strong>{formatCurrency.format(averageTicket)}</strong><small>Venta neta ÷ documentos</small></DashboardKpiButton>
-        <DashboardKpiButton label="Venta total con IVA" targetId="finance-growth"><CircleDollarSign size={22} /><span>Venta total con IVA</span><strong>{formatCurrency.format(grossSales)}</strong><small>Total documentado a clientes</small></DashboardKpiButton>
-        <DashboardKpiButton className={!report.reference_margin_available ? "risk" : ""} label="Margen bruto referencial" targetId="finance-growth">
+        <DashboardKpiButton label="Venta total con IVA" targetId="finance-growth"><CircleDollarSign size={22} /><span>Venta total con IVA</span><strong>{formatCurrency.format(grossSales)}</strong><small>{salesChannel === "internet" ? "Total pagado en climactiva.cl" : "Total documentado a clientes"}</small></DashboardKpiButton>
+        <DashboardKpiButton className={!marginAvailableForView ? "risk" : ""} label="Margen bruto referencial" targetId="finance-growth">
           <TrendingUp size={22} /><span>Margen bruto referencial</span>
-          <strong>{report.reference_margin_available ? formatCurrency.format(report.reference_gross_margin) : "Pendiente"}</strong>
-          <small>Costo actual relacionado; no reemplaza contabilidad</small>
+          <strong>{marginAvailableForView ? formatCurrency.format(report.reference_gross_margin) : "Pendiente"}</strong>
+          <small>{filteredView ? "El costo no está desglosado por fecha o canal" : "Costo actual relacionado; no reemplaza contabilidad"}</small>
         </DashboardKpiButton>
       </section>
 
       <section className="finance-main-grid dashboard-focus-target" id="finance-growth">
         <article className="data-card finance-monthly-card">
-          {comparison ? (
+          {comparison && !filteredView ? (
             <>
               <div className="section-title">
                 <div>
@@ -4830,11 +5015,11 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
         </article>
         <DonutChart
           centerLabel="total con IVA"
-          centerValue={formatCurrency.format(report.gross_sales)}
+          centerValue={formatCurrency.format(grossSales)}
           formatter={(value) => formatCurrency.format(value)}
-          slices={[{ label: "Venta neta", value: report.net_sales, color: "#07869a" }, { label: "IVA", value: report.tax, color: "#e39a27" }]}
-          subtitle="Separa el ingreso neto del impuesto incluido en los documentos."
-          title="Composición de la venta"
+          slices={[{ label: "Venta neta", value: netSales, color: "#07869a" }, { label: "IVA", value: tax, color: "#e39a27" }]}
+          subtitle={salesChannel === "internet" ? "Referencia de pedidos pagados en Tiendanube, sin sumarlos nuevamente a Facto." : "Separa el ingreso neto del impuesto incluido en los documentos."}
+          title={salesChannel === "internet" ? "Composición de ventas web" : "Composición de la venta"}
         />
       </section>
 
@@ -4859,18 +5044,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
               value={supplierQuery}
             />
           </label>
-          <label>
-            <span className="sr-only">Filtrar año de compras</span>
-            <select onChange={(event) => setSupplierYear(event.target.value)} value={supplierYear}>
-              <option value="all">Todo 2025–2026</option>
-              {comparison ? (
-                <>
-                  <option value={String(comparison.current_year)}>{comparison.current_year}</option>
-                  <option value={String(comparison.previous_year)}>{comparison.previous_year}</option>
-                </>
-              ) : null}
-            </select>
-          </label>
+          <span className="finance-supplier-period">{dateFrom || "Inicio"} → {dateTo || "Hoy"}</span>
         </div>
         <div className="stock-bars product-ranking-list finance-ranking-scroll finance-supplier-ranking">
           {filteredSuppliers.map((item, index) => {
@@ -5129,18 +5303,18 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
         </div>
         <div className="finance-cash-grid">
           <article>
-            <span>Ventas netas documentadas</span>
-            <strong>{formatCurrency.format(Number(cashFlow?.net_sales ?? report.net_sales))}</strong>
-            <small>Antes de IVA</small>
+            <span>{salesChannel === "internet" ? "Ventas web netas referenciales" : "Ventas netas documentadas"}</span>
+            <strong>{formatCurrency.format(netSales)}</strong>
+            <small>{salesChannel === "internet" ? "Pedidos pagados · Tiendanube" : "Antes de IVA"}</small>
           </article>
           <article>
             <span>Compras netas documentadas</span>
-            <strong>{formatCurrency.format(Number(cashFlow?.net_purchases ?? report.net_purchases ?? 0))}</strong>
-            <small>Documentos recibidos</small>
+            <strong>{formatCurrency.format(netPurchases)}</strong>
+            <small>Documentos recibidos en el rango</small>
           </article>
           <article>
             <span>Diferencia documental</span>
-            <strong>{formatCurrency.format(Number(cashFlow?.documentary_difference ?? 0))}</strong>
+            <strong>{formatCurrency.format(netSales - netPurchases)}</strong>
             <small>No equivale a efectivo disponible</small>
           </article>
           <article className="pending">
@@ -5154,7 +5328,7 @@ function FinanceDashboard({ tasks }: { tasks: AgentTask[] }) {
             <small>Requiere integración bancaria o conciliación</small>
           </article>
         </div>
-        <p className="finance-cash-note">{cashFlow?.disclaimer ?? collections?.disclaimer}</p>
+        <p className="finance-cash-note">{salesChannel === "internet" ? internet?.disclaimer : cashFlow?.disclaimer ?? collections?.disclaimer}</p>
       </section>
 
       <section className="data-card finance-next-data finance-next-data-hidden">
@@ -5623,6 +5797,7 @@ export function AgentDashboardPage() {
   const [commercialProducts, setCommercialProducts] = useState<
     CommercialSalesProduct[]
   >([]);
+  const [financialSnapshot, setFinancialSnapshot] = useState<FinancialReport | null>(null);
   const [accountingSnapshot, setAccountingSnapshot] = useState<AccountingSnapshot | null>(null);
   const [accountingError, setAccountingError] = useState("");
   const [notice, setNotice] = useState("");
@@ -5633,6 +5808,7 @@ export function AgentDashboardPage() {
       setTasks([]);
       setSelectedTask(null);
       setSnapshots([]);
+      setFinancialSnapshot(null);
       setAccountingSnapshot(null);
       setLoading(false);
       return;
@@ -5678,18 +5854,21 @@ export function AgentDashboardPage() {
             .limit(1),
           loadAllSnapshots(),
         ]);
+        if (financialResult.error) throw financialResult.error;
+        const rawFinancial = (financialResult.data?.[0]?.payload as FinancialReport | undefined) ?? null;
+        setFinancialSnapshot(rawFinancial);
         if (accountingResult.error) {
           setAccountingSnapshot(null);
           setAccountingError("Falta instalar o publicar el módulo privado de contabilidad en Supabase.");
         } else {
           const rawAccounting = (accountingResult.data?.[0] as AccountingSnapshot | undefined) ?? null;
-          const rawFinancial = (financialResult.data?.[0]?.payload as FinancialReport | undefined) ?? null;
           setAccountingSnapshot(
             rawAccounting ? reconcileAccountingSnapshot(rawAccounting, rawFinancial, financeInventory) : null,
           );
           setAccountingError("");
         }
       } else {
+        setFinancialSnapshot(null);
         setAccountingSnapshot(null);
         setAccountingError("");
       }
@@ -5769,6 +5948,7 @@ export function AgentDashboardPage() {
         <FinanceWorkspace
           accountingError={accountingError}
           accountingSnapshot={accountingSnapshot}
+          financialSnapshot={financialSnapshot}
           tasks={tasks}
         />
       ) : null}
