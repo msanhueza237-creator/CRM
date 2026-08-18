@@ -11,7 +11,7 @@ type ChatMessage = {
 };
 
 const starterPrompts = [
-  "Resume el estado comercial actual y menciona riesgos visibles.",
+  "Ayudame a crear una campana para clientes de climactiva.cl e invitarlos a RedTecnicos.cl.",
   "Busca clientes interesados y dime a cuales deberia llamar primero.",
   "Previsualiza un segmento para una campana a clientes con correo.",
 ];
@@ -23,7 +23,7 @@ export function CopilotPage() {
       id: "welcome",
       role: "assistant",
       content:
-        "Estoy listo para ayudarte con busquedas, metricas y previsualizaciones de segmentos. En esta primera version no ejecuto envios ni cambios permanentes.",
+        "Escribeme libremente lo que necesitas. Puedo ayudarte a buscar clientes, analizar segmentos y redactar campanas completas como borrador seguro; no envio ni guardo cambios sin una accion confirmada.",
     },
   ]);
   const [draft, setDraft] = useState("");
@@ -91,7 +91,7 @@ export function CopilotPage() {
           <div className="panel-heading">
             <div>
               <h2>Conversacion</h2>
-              <span>OpenAI se ejecuta solo en backend; la clave nunca llega al navegador.</span>
+              <span>Escribe una solicitud abierta; los botones de abajo son solo ejemplos rapidos.</span>
             </div>
             <Sparkles size={22} />
           </div>
@@ -123,6 +123,7 @@ export function CopilotPage() {
           {error ? <p className="form-error">{error}</p> : null}
 
           <div className="copilot-prompts">
+            <span className="copilot-prompts-label">Ejemplos</span>
             {starterPrompts.map((prompt) => (
               <button key={prompt} className="ghost-button" type="button" onClick={() => void submitMessage(undefined, prompt)} disabled={loading}>
                 {prompt}
@@ -134,8 +135,13 @@ export function CopilotPage() {
             <textarea
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder="Preguntale al copiloto por clientes, metricas o segmentos..."
-              rows={3}
+              onKeyDown={(event) => {
+                if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+                  void submitMessage();
+                }
+              }}
+              placeholder="Ej: Ayudame a crear una campana para clientes de climactiva.cl e invitarlos a redtecnicos.cl..."
+              rows={5}
             />
             <div>
               <button className="ghost-button" type="button" disabled title="La voz se habilitara en una fase posterior">
@@ -143,7 +149,7 @@ export function CopilotPage() {
               </button>
               <button className="primary-button" type="submit" disabled={!canSend}>
                 {loading ? <Loader2 size={18} className="spin-icon" /> : <Send size={18} />}
-                Enviar
+                {loading ? "Pensando..." : "Enviar"}
               </button>
             </div>
           </form>

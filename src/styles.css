@@ -1819,6 +1819,14 @@ th {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+
+.copilot-prompts-label {
+  color: #62717a;
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
 }
 
 .copilot-prompts .ghost-button {
@@ -1836,7 +1844,7 @@ th {
 
 .copilot-composer textarea {
   width: 100%;
-  min-height: 72px;
+  min-height: 116px;
   border: 1px solid #cfdade;
   border-radius: 8px;
   padding: 10px 12px;

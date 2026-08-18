@@ -207,6 +207,10 @@ async function runReadOnlyTools(rest: RestClient, context: ToolContext, message:
     results.push(await previewCustomerSegment(rest, message));
   }
 
+  if (mentionsCampaignDraft(message)) {
+    results.push(generateCampaignTemplate(message));
+  }
+
   return results;
 }
 
@@ -329,6 +333,79 @@ async function previewCustomerSegment(rest: RestClient, message: string): Promis
     humanSummary: `Previsualizacion: ${filtered.length} empresas, ${filtered.length - excluded.length} elegibles y ${excluded.length} excluidas por datos/canal.`,
     evidence: filtered.slice(0, 10).map((item) => ({ entityType: "company", entityId: String(item.id), label: String(item.name ?? "Empresa") })),
     warnings: ["Previsualizacion informativa; enviar o programar campanas esta bloqueado en este MVP."],
+    riskLevel: "read",
+    requiresConfirmation: false,
+  };
+}
+
+function generateCampaignTemplate(message: string): ToolResult {
+  const normalized = normalize(message);
+  const promotesRedTecnicos = normalized.includes("redtecnicos") || normalized.includes("red tecnicos");
+  const promotesClimaActiva = normalized.includes("climactiva") || normalized.includes("clima activa");
+  const audience = promotesClimaActiva
+    ? "Clientes y contactos de Clima Activa con correo o WhatsApp disponible"
+    : "Clientes autorizados segun el segmento que confirme el usuario";
+  const destination = promotesRedTecnicos ? "RedTecnicos.cl" : "la propuesta indicada";
+  const subject = promotesRedTecnicos
+    ? "Unete a RedTecnicos.cl y recibe nuevas oportunidades"
+    : "Tenemos una invitacion especial para ti";
+  const cta = promotesRedTecnicos
+    ? "Registrate o conoce mas en RedTecnicos.cl"
+    : "Responder este mensaje para recibir mas informacion";
+  const emailBody = promotesRedTecnicos
+    ? [
+      "Hola {{nombre}},",
+      "",
+      "Desde Clima Activa queremos invitarte a participar en RedTecnicos.cl, una red pensada para conectar tecnicos, instaladores y clientes que buscan servicios confiables.",
+      "",
+      "La idea es que puedas aumentar tu visibilidad, recibir nuevas oportunidades comerciales y formar parte de una comunidad vinculada al mundo de la climatizacion.",
+      "",
+      "Si te interesa participar, revisa la invitacion en RedTecnicos.cl o responde este correo y te ayudamos con los siguientes pasos.",
+      "",
+      "Saludos,",
+      "Equipo Clima Activa",
+    ].join("\n")
+    : [
+      "Hola {{nombre}},",
+      "",
+      "Queremos compartir contigo una nueva invitacion preparada por Clima Activa.",
+      "",
+      "Responde este mensaje y te enviaremos mas informacion.",
+      "",
+      "Saludos,",
+      "Equipo Clima Activa",
+    ].join("\n");
+  const whatsappBody = promotesRedTecnicos
+    ? "Hola {{nombre}}, soy de Clima Activa. Queremos invitarte a participar en RedTecnicos.cl para conectar con nuevas oportunidades de servicio. Si te interesa, responde este mensaje y te contamos como sumarte."
+    : "Hola {{nombre}}, soy de Clima Activa. Tenemos una invitacion especial para ti. Si te interesa, responde este mensaje y te enviamos mas informacion.";
+
+  return {
+    ok: true,
+    data: {
+      toolName: "generate_campaign_template",
+      campaignDraft: {
+        objective: `Invitar a ${audience} a participar en ${destination}.`,
+        audience,
+        channelRecommendation: "email + WhatsApp solo para contactos con consentimiento y datos validos",
+        subject,
+        emailBody,
+        whatsappBody,
+        cta,
+        variables: ["{{nombre}}"],
+        nextSteps: [
+          "Previsualizar segmento de destinatarios.",
+          "Revisar excluidos, duplicados y contactos sin canal.",
+          "Guardar como borrador solo si el usuario lo confirma.",
+          "Enviar o programar solo con confirmacion detallada.",
+        ],
+      },
+    },
+    humanSummary: `Se preparo un borrador efimero de campana para ${destination}. No fue guardado ni enviado.`,
+    evidence: [{ entityType: "campaign_draft", label: `Borrador para ${destination}` }],
+    warnings: [
+      "Borrador no persistido.",
+      "Antes de enviar se debe validar consentimiento, duplicados, exclusiones y confirmacion.",
+    ],
     riskLevel: "read",
     requiresConfirmation: false,
   };
@@ -581,6 +658,21 @@ function countBy(rows: JsonRecord[], field: string) {
 function mentionsSegment(message: string) {
   const text = normalize(message);
   return ["segmento", "campana", "clientes", "contactos", "destinatarios", "mayoristas"].some((word) => text.includes(word));
+}
+
+function mentionsCampaignDraft(message: string) {
+  const text = normalize(message);
+  return [
+    "campana",
+    "campaña",
+    "correo",
+    "email",
+    "whatsapp",
+    "invitar",
+    "invitacion",
+    "redtecnicos",
+    "red tecnicos",
+  ].some((word) => text.includes(word));
 }
 
 function normalize(value: string) {
