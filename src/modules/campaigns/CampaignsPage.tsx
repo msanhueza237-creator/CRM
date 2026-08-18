@@ -71,7 +71,6 @@ interface ProposalOverride {
   subject?: string;
   message?: string;
 }
-
 interface CommercialSuggestionCustomer {
   customer_key: string;
   name?: string;
@@ -166,6 +165,7 @@ interface SmartProposal {
   pendingImportCount?: number;
   priority?: CommercialSuggestionSegment["priority"];
 }
+
 const campaignTypes: CampaignType[] = ["email", "WhatsApp", "mixta"];
 const companyTypeFilters: CampaignCompanyTypeFilter[] = [
   "todas",

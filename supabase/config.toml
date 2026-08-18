@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.gmail-integration]
 verify_jwt = false
+
+[functions.crm-copilot]
+verify_jwt = false

@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
   Building2,
+  Bot,
   FileText,
   LayoutDashboard,
   LogOut,
@@ -9,7 +10,6 @@ import {
   Radar,
   Settings,
   Snowflake,
-  Bot,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 
@@ -19,6 +19,7 @@ const navItems = [
   { to: "/prospeccion", label: "Prospeccion", icon: Radar },
   { to: "/agentes", label: "Agentes", icon: Bot },
   { to: "/campanas", label: "Campanas", icon: Megaphone },
+  { to: "/copiloto", label: "Copiloto", icon: Bot },
   { to: "/plantillas", label: "Plantillas", icon: FileText },
   { to: "/administracion", label: "Administracion", icon: Settings },
 ];

@@ -7,6 +7,7 @@ import { CampaignsPage } from "./modules/campaigns/CampaignsPage";
 import { CompaniesPage } from "./modules/companies/CompaniesPage";
 import { CompanyDetailPage } from "./modules/companies/CompanyDetailPage";
 import { CompanyFormPage } from "./modules/companies/CompanyFormPage";
+import { CopilotPage } from "./modules/copilot/CopilotPage";
 import { DashboardPage } from "./modules/dashboard/DashboardPage";
 import { TemplatesPage } from "./modules/templates/TemplatesPage";
 import { ProspectingPage } from "./modules/prospecting/ProspectingPage";
@@ -31,6 +32,7 @@ export function App() {
         <Route path="/empresas/:companyId" element={<CompanyDetailPage />} />
         <Route path="/empresas/:companyId/editar" element={<CompanyFormPage />} />
         <Route path="/campanas" element={<CampaignsPage />} />
+        <Route path="/copiloto" element={<CopilotPage />} />
         <Route path="/prospeccion" element={<ProspectingPage />} />
         <Route path="/plantillas" element={<TemplatesPage />} />
         <Route path="/administracion" element={<AdminPage />} />

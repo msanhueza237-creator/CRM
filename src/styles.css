@@ -1735,10 +1735,177 @@ th {
   margin-top: 1px;
 }
 
+.copilot-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 18px;
+  align-items: start;
+}
+
+.copilot-chat-panel {
+  display: grid;
+  min-height: calc(100vh - 178px);
+  grid-template-rows: auto minmax(280px, 1fr) auto auto;
+  gap: 14px;
+}
+
+.copilot-messages {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow-y: auto;
+  border: 1px solid #dfe7ea;
+  border-radius: 8px;
+  padding: 14px;
+  background: #f7fafb;
+}
+
+.copilot-message {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.copilot-message > div:last-child {
+  max-width: 780px;
+  border: 1px solid #dfe7ea;
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: #ffffff;
+}
+
+.copilot-message.user > div:last-child {
+  color: #ffffff;
+  border-color: #0b7285;
+  background: #0b7285;
+}
+
+.copilot-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.copilot-message span {
+  display: block;
+  margin-top: 8px;
+  color: #718089;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.copilot-message.user span {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.copilot-avatar {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  color: #0b7285;
+  background: #e8f6f8;
+}
+
+.copilot-message.user .copilot-avatar {
+  color: #ffffff;
+  background: #103842;
+}
+
+.copilot-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.copilot-prompts .ghost-button {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.copilot-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.copilot-composer textarea {
+  width: 100%;
+  min-height: 72px;
+  border: 1px solid #cfdade;
+  border-radius: 8px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.copilot-composer > div {
+  display: flex;
+  gap: 8px;
+}
+
+.copilot-composer .ghost-button {
+  width: 42px;
+  padding: 0;
+}
+
+.copilot-side-panel {
+  position: sticky;
+  top: 94px;
+  display: grid;
+  gap: 16px;
+}
+
+.copilot-safety-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #314b54;
+  line-height: 1.5;
+}
+
+.copilot-tool-log {
+  display: grid;
+  gap: 10px;
+}
+
+.copilot-tool-log h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.copilot-tool-log article {
+  border: 1px solid #dfe7ea;
+  border-radius: 8px;
+  padding: 10px;
+  background: #f7fafb;
+}
+
+.copilot-tool-log p,
+.copilot-tool-log span {
+  margin: 4px 0 0;
+  color: #62717a;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.spin-icon {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 1080px) {
   .app-shell {
     grid-template-columns: 1fr;
-    padding-bottom: calc(78px + env(safe-area-inset-bottom));
+    padding-bottom: calc(92px + env(safe-area-inset-bottom));
   }
 
   .sidebar {
@@ -1762,7 +1929,21 @@ th {
   }
 
   .sidebar nav {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .sidebar nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .sidebar a {
+    flex: 0 0 94px;
+  }
+
+  .sidebar nav {
     gap: 4px;
   }
 
@@ -1803,8 +1984,13 @@ th {
   .interaction-form,
   .recipient-editor,
   .filters-panel,
-  .gmail-status-grid {
+  .gmail-status-grid,
+  .copilot-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .copilot-side-panel {
+    position: static;
   }
 }
 
@@ -1825,7 +2011,9 @@ th {
   .form-grid,
   .interaction-form,
   .recipient-editor,
-  .definition-grid {
+  .definition-grid,
+  .copilot-grid,
+  .copilot-composer {
     grid-template-columns: 1fr;
   }
 
@@ -1915,6 +2103,7 @@ th {
   }
 
   .sidebar a {
+    flex-basis: 82px;
     min-height: 50px;
   }
 
@@ -1971,8 +2160,23 @@ th {
   .form-actions,
   .campaign-actions,
   .recipient-actions,
-  .template-card-actions {
+  .template-card-actions,
+  .copilot-composer > div {
     flex-direction: column;
+  }
+
+  .copilot-chat-panel {
+    min-height: auto;
+  }
+
+  .copilot-messages {
+    max-height: 58vh;
+  }
+
+  .copilot-composer .ghost-button,
+  .copilot-composer .primary-button,
+  .copilot-prompts .ghost-button {
+    width: 100%;
   }
 
   .campaign-actions .primary-button,
