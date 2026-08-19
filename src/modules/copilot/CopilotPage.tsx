@@ -5,6 +5,8 @@ import {
   Bot,
   CheckCircle2,
   Database,
+  FileSpreadsheet,
+  FileText,
   Loader2,
   Mic,
   Save,
@@ -25,6 +27,7 @@ import {
   type CopilotToolSummary,
   type SavedCopilotCampaign,
 } from "../../lib/copilotApi";
+import { exportReportExcel, exportReportPdf } from "../../lib/reportExport";
 
 type ChatMessage = {
   id: string;
@@ -41,6 +44,7 @@ type ChatMessage = {
 };
 
 const baseStarterPrompts = [
+  "Analiza todos los agentes del CRM y muestrame estadisticas, tendencias, riesgos y oportunidades.",
   "Prepara un informe ejecutivo profesional de los ultimos 90 dias.",
   "Ayudame a crear una campana para clientes de climactiva.cl e invitarlos a RedTecnicos.cl.",
   "Prepara una campana para clientes de Facto que no compran hace 1 mes.",
@@ -69,14 +73,29 @@ export function CopilotPage() {
       content:
         campaignId
           ? `Estoy listo para analizar la campana ${campaignName || "seleccionada"} con datos verificados de CRM y Gmail.`
-          : "Escribeme libremente lo que necesitas. Puedo consultar por nombre los resultados de cualquier campana, preparar informes profesionales y crear campanas con sus clientes; nunca programo ni envio automaticamente.",
+          : "Escribeme libremente lo que necesitas. Puedo combinar la informacion de todos los agentes, mostrar estadisticas y tendencias, consultar cualquier campana y preparar borradores; nunca ejecuto acciones ni envios automaticamente.",
     },
   ]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(false);
   const [savingDraftId, setSavingDraftId] = useState<string>();
+  const [exportingReport, setExportingReport] = useState<string>();
   const [error, setError] = useState("");
   const canSend = draft.trim().length > 0 && !loading;
+
+  async function downloadReport(messageId: string, report: CopilotReportSnapshot, format: "pdf" | "excel") {
+    const exportKey = `${messageId}:${format}`;
+    setExportingReport(exportKey);
+    setError("");
+    try {
+      if (format === "pdf") await exportReportPdf(report);
+      else await exportReportExcel(report);
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "No se pudo generar el archivo solicitado.");
+    } finally {
+      setExportingReport(undefined);
+    }
+  }
 
   const lastToolSummary = useMemo(
     () => [...messages].reverse().find((message) => message.tools?.length)?.tools ?? [],
@@ -332,9 +351,29 @@ export function CopilotPage() {
                           ))}
                         </div>
                       )}
-                      <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : ""}`}>
-                        <BarChart3 size={17} /> Abrir informe interactivo <ArrowUpRight size={16} />
-                      </Link>
+                      {!message.reportSnapshot.campaignAnalysis ? (
+                        <div className="copilot-agent-overview">
+                          <div><Bot size={17} /><strong>Todos los agentes</strong><span>{message.reportSnapshot.agentIntelligence.agentsWithData}/{message.reportSnapshot.agentIntelligence.totalAgents} con datos</span></div>
+                          {message.reportSnapshot.agentIntelligence.agents.map((agent) => (
+                            <div className="copilot-agent-row" key={agent.type}>
+                              <span>{agent.label}</span>
+                              <div><i className={agent.status} style={{ width: `${agent.successRate}%` }} /></div>
+                              <strong>{agent.completed}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="copilot-report-actions">
+                        <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : ""}`}>
+                          <BarChart3 size={17} /> Abrir informe <ArrowUpRight size={16} />
+                        </Link>
+                        <button className="ghost-button" type="button" disabled={Boolean(exportingReport)} onClick={() => void downloadReport(message.id, message.reportSnapshot!, "pdf")}>
+                          {exportingReport === `${message.id}:pdf` ? <Loader2 size={16} className="spin-icon" /> : <FileText size={16} />} PDF
+                        </button>
+                        <button className="ghost-button" type="button" disabled={Boolean(exportingReport)} onClick={() => void downloadReport(message.id, message.reportSnapshot!, "excel")}>
+                          {exportingReport === `${message.id}:excel` ? <Loader2 size={16} className="spin-icon" /> : <FileSpreadsheet size={16} />} Excel
+                        </button>
+                      </div>
                     </section>
                   ) : null}
                 </div>

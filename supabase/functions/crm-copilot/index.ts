@@ -84,6 +84,44 @@ type ReportBreakdown = {
   percentage: number;
 };
 
+type AgentMetric = {
+  key: string;
+  label: string;
+  value: number | string;
+};
+
+type AgentIntelligence = {
+  totalAgents: number;
+  agentsWithData: number;
+  completedTasks: number;
+  failedTasks: number;
+  pendingTasks: number;
+  runningTasks: number;
+  pendingProposals: number;
+  criticalAlerts: number;
+  healthyIntegrations: number;
+  totalIntegrations: number;
+  agents: Array<{
+    type: string;
+    label: string;
+    status: "healthy" | "attention" | "running" | "idle";
+    completed: number;
+    failed: number;
+    pending: number;
+    running: number;
+    successRate: number;
+    lastRunAt: string | null;
+    summary: string;
+    warnings: string[];
+    metrics: AgentMetric[];
+  }>;
+  taskStatus: ReportBreakdown[];
+  taskTrend: Array<{ key: string; label: string; completed: number; failed: number; pending: number }>;
+  proposalRisk: ReportBreakdown[];
+  alertSeverity: ReportBreakdown[];
+  integrationStatus: ReportBreakdown[];
+};
+
 type ProfessionalReport = {
   toolName: "generate_professional_report";
   title: string;
@@ -149,6 +187,7 @@ type ProfessionalReport = {
     diagnosis: string;
     topErrors: Array<{ message: string; count: number }>;
   } | null;
+  agentIntelligence: AgentIntelligence;
   insights: Array<{ tone: "positive" | "attention" | "neutral"; title: string; detail: string }>;
   dataQuality: {
     contactable: number;
@@ -172,6 +211,15 @@ const jsonHeaders = {
 const promptVersion = "copilot-campaign-analysis-2026-08-19";
 const defaultTenantId = "default";
 const allowedRoles = new Set(["administrador", "vendedor", "visualizador"]);
+const agentDefinitions = [
+  { type: "commercial", label: "Comercial" },
+  { type: "marketing", label: "Marketing" },
+  { type: "finance", label: "Finanzas" },
+  { type: "collections", label: "Cobranza" },
+  { type: "logistics", label: "Logistica" },
+  { type: "foreign_trade", label: "Comercio exterior" },
+  { type: "executive", label: "Gerencia" },
+] as const;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -868,7 +916,19 @@ async function generateProfessionalReport(
   filters: ReportFilters,
   title: string,
 ): Promise<ProfessionalReport> {
-  const [companies, interactions, campaigns, recipients, tasks, emailCampaigns, emailRecipients] = await Promise.all([
+  const [
+    companies,
+    interactions,
+    campaigns,
+    recipients,
+    tasks,
+    emailCampaigns,
+    emailRecipients,
+    agentTasks,
+    actionProposals,
+    inventoryAlerts,
+    integrationConnections,
+  ] = await Promise.all([
     selectRows(rest, "companies?select=id,status,type,region,source,email,phone,whatsapp,created_at&limit=5000"),
     selectRows(rest, "interactions?select=id,company_id,type,occurred_at&limit=5000&order=occurred_at.asc"),
     selectRows(rest, "campaigns?select=id,name,status,type,created_at,send_at&limit=2000&order=created_at.desc"),
@@ -876,6 +936,10 @@ async function generateProfessionalReport(
     selectRows(rest, "tasks?select=id,company_id,due_date,completed_at,created_at&limit=5000"),
     selectRows(rest, "email_campaigns?select=id,name,status,segment_filters,created_at,updated_at&limit=2000&order=created_at.desc"),
     selectRows(rest, "email_campaign_recipients?select=id,campaign_id,company_id,contact_email,status,sent_at,replied_at,error_message,created_at,updated_at&limit=10000"),
+    selectRowsOptional(rest, "business_agent_tasks?select=id,agent_type,action,status,result,error_code,created_at,started_at,completed_at,updated_at&limit=5000&order=created_at.desc"),
+    selectRowsOptional(rest, "action_proposals?select=id,kind,risk_level,status,created_at&limit=5000&order=created_at.desc"),
+    selectRowsOptional(rest, "inventory_risk_alerts?select=id,severity,status,created_at,resolved_at&limit=5000&order=created_at.desc"),
+    selectRowsOptional(rest, "integration_connections?select=provider,status,enabled,read_only,last_checked_at,last_success_at,updated_at&limit=100"),
   ]);
 
   const selectedCampaign = filters.campaignId
@@ -936,11 +1000,20 @@ async function generateProfessionalReport(
   ).length;
   const missingLocation = filteredCompanies.filter((company) => !String(company.region ?? "").trim()).length;
   const generatedAt = new Date().toISOString();
+  const agentIntelligence = buildAgentIntelligence(
+    agentTasks,
+    actionProposals,
+    inventoryAlerts,
+    integrationConnections,
+    filters.periodDays,
+  );
   const warnings: string[] = [];
   if (filters.campaignId && !selectedCampaign) warnings.push("No se encontro la campana seleccionada.");
   if (!filteredCompanies.length) warnings.push("No hay empresas que coincidan con los filtros seleccionados.");
   if (!periodInteractions.length) warnings.push("No hay interacciones registradas en el periodo seleccionado.");
   if (!periodCampaigns.length) warnings.push("No hay campanas registradas en el periodo seleccionado.");
+  if (!agentIntelligence.agentsWithData) warnings.push("Los agentes aun no registran analisis completados en el periodo seleccionado.");
+  if (!integrationConnections.length) warnings.push("No fue posible incluir el estado de las integraciones del Agent Hub.");
   if ([companies, interactions, tasks].some((rows) => rows.length >= 5000) || recipients.length >= 10000 || emailRecipients.length >= 10000) {
     warnings.push("La consulta alcanzo el limite de lectura; el informe puede representar una muestra parcial.");
   }
@@ -1010,6 +1083,18 @@ async function generateProfessionalReport(
         detail: `Aporta ${sourceBreakdown[0].value} empresas (${sourceBreakdown[0].percentage}% del conjunto filtrado).`,
       });
     }
+    insights.push({
+      tone: agentIntelligence.agentsWithData === agentIntelligence.totalAgents ? "positive" : "attention",
+      title: `${agentIntelligence.agentsWithData} de ${agentIntelligence.totalAgents} agentes aportan datos`,
+      detail: agentIntelligence.agentsWithData
+        ? `${agentIntelligence.completedTasks} analisis completados, ${agentIntelligence.runningTasks} en ejecucion y ${agentIntelligence.failedTasks} fallidos en el periodo.`
+        : "Ejecuta o revisa los agentes operativos para completar la lectura transversal del CRM.",
+    });
+    insights.push({
+      tone: agentIntelligence.criticalAlerts || agentIntelligence.failedTasks ? "attention" : "neutral",
+      title: `${agentIntelligence.pendingProposals} propuestas esperan decision`,
+      detail: `${agentIntelligence.criticalAlerts} alertas criticas activas y ${agentIntelligence.healthyIntegrations} de ${agentIntelligence.totalIntegrations} integraciones conectadas.`,
+    });
   }
 
   return {
@@ -1017,7 +1102,7 @@ async function generateProfessionalReport(
     title: campaignAnalysis ? `Analisis de campana: ${campaignAnalysis.name}` : title,
     subtitle: campaignAnalysis
       ? "Entregas, pendientes, errores y respuestas reconciliados entre el CRM y Gmail."
-      : "Cartera, actividad comercial y rendimiento de campanas con datos verificados del CRM.",
+      : "Cartera, campanas y resultados consolidados de todos los agentes con datos verificados del CRM.",
     generatedAt,
     periodLabel: campaignAnalysis ? "Campana seleccionada" : reportPeriodLabel(filters.periodDays),
     filters,
@@ -1053,6 +1138,7 @@ async function generateProfessionalReport(
     trend: buildReportTrend(periodInteractions, periodCampaigns, periodRecipients, filters.periodDays),
     campaignPerformance,
     campaignAnalysis,
+    agentIntelligence,
     insights,
     dataQuality: {
       contactable,
@@ -1061,6 +1147,135 @@ async function generateProfessionalReport(
     },
     warnings,
   };
+}
+
+function buildAgentIntelligence(
+  tasks: JsonRecord[],
+  proposals: JsonRecord[],
+  alerts: JsonRecord[],
+  integrations: JsonRecord[],
+  periodDays: number,
+): AgentIntelligence {
+  const periodTasks = tasks.filter((task) => isWithinReportPeriod(
+    task.completed_at || task.updated_at || task.started_at || task.created_at,
+    periodDays,
+  ));
+  const activeProposals = proposals.filter((proposal) => String(proposal.status) === "pending");
+  const activeAlerts = alerts.filter((alert) => String(alert.status) !== "resolved");
+  const completedTasks = periodTasks.filter((task) => String(task.status) === "completed").length;
+  const failedTasks = periodTasks.filter((task) => String(task.status) === "failed").length;
+  const pendingTasks = periodTasks.filter((task) => String(task.status) === "pending").length;
+  const runningTasks = periodTasks.filter((task) => String(task.status) === "in_progress").length;
+
+  const agents = agentDefinitions.map((definition) => {
+    const agentTasks = periodTasks.filter((task) => String(task.agent_type) === definition.type);
+    const latestTask = agentTasks[0];
+    const latestCompleted = agentTasks.find((task) => String(task.status) === "completed" && asRecord(task.result).summary);
+    const completed = agentTasks.filter((task) => String(task.status) === "completed").length;
+    const failed = agentTasks.filter((task) => String(task.status) === "failed").length;
+    const pending = agentTasks.filter((task) => String(task.status) === "pending").length;
+    const running = agentTasks.filter((task) => String(task.status) === "in_progress").length;
+    const latestResult = asRecord(latestCompleted?.result);
+    const warnings = agentResultWarnings(latestResult, latestTask);
+    const status: AgentIntelligence["agents"][number]["status"] = running
+      ? "running"
+      : String(latestTask?.status) === "failed" || warnings.length
+        ? "attention"
+        : latestCompleted
+          ? "healthy"
+          : "idle";
+
+    return {
+      type: definition.type,
+      label: definition.label,
+      status,
+      completed,
+      failed,
+      pending,
+      running,
+      successRate: percentage(completed, completed + failed),
+      lastRunAt: latestCompleted
+        ? String(latestCompleted.completed_at ?? latestCompleted.updated_at ?? latestCompleted.created_at ?? "") || null
+        : null,
+      summary: String(latestResult.summary ?? "").trim() || "Sin analisis completados en el periodo seleccionado.",
+      warnings,
+      metrics: extractAgentMetrics(latestResult.metrics),
+    };
+  });
+
+  return {
+    totalAgents: agentDefinitions.length,
+    agentsWithData: agents.filter((agent) => agent.lastRunAt).length,
+    completedTasks,
+    failedTasks,
+    pendingTasks,
+    runningTasks,
+    pendingProposals: activeProposals.length,
+    criticalAlerts: activeAlerts.filter((alert) => String(alert.severity) === "critical").length,
+    healthyIntegrations: integrations.filter((integration) => String(integration.status) === "connected").length,
+    totalIntegrations: integrations.length,
+    agents,
+    taskStatus: buildReportBreakdown(periodTasks, "status", periodTasks.length, 8, [
+      "completed", "in_progress", "pending", "failed", "cancelled",
+    ]),
+    taskTrend: buildAgentTaskTrend(periodTasks, periodDays),
+    proposalRisk: buildReportBreakdown(activeProposals, "risk_level", activeProposals.length, 8, [
+      "critical", "high", "medium", "low",
+    ]),
+    alertSeverity: buildReportBreakdown(activeAlerts, "severity", activeAlerts.length, 8, [
+      "critical", "high", "medium", "low",
+    ]),
+    integrationStatus: buildReportBreakdown(integrations, "status", integrations.length, 8, [
+      "connected", "checking", "degraded", "error", "pending_configuration", "disabled",
+    ]),
+  };
+}
+
+function agentResultWarnings(result: JsonRecord, latestTask: JsonRecord | undefined) {
+  const warnings = Array.isArray(result.warnings)
+    ? result.warnings.map((warning) => String(warning).trim()).filter(Boolean).slice(0, 3)
+    : [];
+  if (String(latestTask?.status) === "failed" && latestTask?.error_code) {
+    warnings.unshift(`Ultima ejecucion fallida: ${String(latestTask.error_code)}`);
+  }
+  return [...new Set(warnings)].slice(0, 3);
+}
+
+function extractAgentMetrics(value: unknown): AgentMetric[] {
+  const metrics = asRecord(value);
+  return Object.entries(metrics)
+    .filter(([, metricValue]) => typeof metricValue === "number" || typeof metricValue === "string" || typeof metricValue === "boolean")
+    .slice(0, 6)
+    .map(([key, metricValue]) => ({
+      key,
+      label: humanizeReportLabel(key),
+      value: typeof metricValue === "boolean" ? (metricValue ? "Si" : "No") : metricValue as number | string,
+    }));
+}
+
+function buildAgentTaskTrend(tasks: JsonRecord[], periodDays: number) {
+  const bucketCount = periodDays === 30 ? 2 : periodDays <= 90 && periodDays > 0 ? 4 : periodDays <= 180 && periodDays > 0 ? 6 : 12;
+  const now = new Date();
+  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (bucketCount - index - 1), 1));
+    return {
+      key: `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`,
+      label: new Intl.DateTimeFormat("es-CL", { month: "short", year: bucketCount > 6 ? "2-digit" : undefined, timeZone: "UTC" }).format(date),
+      completed: 0,
+      failed: 0,
+      pending: 0,
+    };
+  });
+  const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+  for (const task of tasks) {
+    const bucket = byKey.get(reportMonthKey(task.completed_at || task.updated_at || task.created_at));
+    if (!bucket) continue;
+    const status = String(task.status);
+    if (status === "completed") bucket.completed += 1;
+    else if (status === "failed") bucket.failed += 1;
+    else if (status === "pending" || status === "in_progress") bucket.pending += 1;
+  }
+  return buckets;
 }
 
 function buildCampaignDeliveryAnalysis(
@@ -1681,7 +1896,8 @@ async function callOpenAI(input: {
     "Si la solicitud no trata de preparar una campana, devuelve campaignDraft como null.",
     "El servidor calcula un segmento real. Al guardar con confirmacion puede asociar destinatarios e importar identidades externas verificables, pero nunca envia ni programa.",
     "Respeta los filtros de origen, antiguedad de ultima compra y cantidad de compras informados por el servidor.",
-    "Si el usuario pide un informe, reporte, dashboard o KPI, usa exclusivamente generate_professional_report para explicar cifras, tendencias, riesgos y oportunidades.",
+    "Si el usuario pide un informe, reporte, dashboard, KPI, estadistica, tendencia o informacion de uno o varios agentes, usa exclusivamente generate_professional_report para explicar cifras, tendencias, riesgos y oportunidades.",
+    "agentIntelligence consolida los siete agentes del CRM. Usa sus estados, ejecuciones, resumenes, metricas, propuestas, alertas e integraciones para responder preguntas transversales sin atribuir acciones que no esten registradas.",
     "Cuando exista generate_professional_report, menciona el periodo analizado, destaca hasta cuatro hallazgos accionables y aclara cualquier advertencia de calidad de datos.",
     "Cuando el informe incluya campaignAnalysis, responde sobre esa campana exacta: diferencia enviados, fallidos, pendientes y omitidos; no presentes pendientes como fallidos.",
     "En analisis de campanas menciona que Gmail no mide aperturas ni clics si esos datos no existen, y nunca supongas que un correo fue leido.",
@@ -1856,6 +2072,18 @@ async function selectRows(rest: RestClient, path: string): Promise<JsonRecord[]>
   return await response.json() as JsonRecord[];
 }
 
+async function selectRowsOptional(rest: RestClient, path: string): Promise<JsonRecord[]> {
+  try {
+    return await selectRows(rest, path);
+  } catch (error) {
+    console.warn("[crm-copilot] optional report source unavailable", {
+      source: path.split("?")[0],
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return [];
+  }
+}
+
 async function insertRow(rest: RestClient, table: string, row: JsonRecord): Promise<JsonRecord | null> {
   const response = await fetch(`${rest.url}/rest/v1/${table}`, {
     method: "POST",
@@ -2007,6 +2235,9 @@ function reportFiltersFromMessage(message: string): ReportFilters {
 
 function reportTitleFromMessage(message: string) {
   const text = normalize(message);
+  if (text.includes("agente") || text.includes("gerencia") || text.includes("operacion")) return "Informe integral de agentes y operacion";
+  if (text.includes("finanza") || text.includes("cobranza")) return "Informe financiero y de cobranza";
+  if (text.includes("logistica") || text.includes("inventario") || text.includes("comercio exterior")) return "Informe de operaciones y abastecimiento";
   if (text.includes("campana") || text.includes("marketing")) return "Informe de campanas y marketing";
   if (text.includes("cliente") || text.includes("venta") || text.includes("comercial")) return "Informe comercial y de clientes";
   return "Informe ejecutivo Clima Activa";
@@ -2164,7 +2395,14 @@ function percentage(value: number, total: number) {
 
 function mentionsReport(message: string) {
   const text = normalize(message);
-  return ["informe", "reporte", "dashboard", "tablero", "power bi", "powerbi", "indicadores", "kpi"].some((word) => text.includes(word));
+  return [
+    "informe", "reporte", "dashboard", "tablero", "power bi", "powerbi", "indicadores", "kpi",
+    "estadistica", "estadisticas", "tendencia", "tendencias", "grafico", "graficos",
+    "todos los agentes", "agentes del crm", "agente comercial", "agente marketing", "agente finanzas",
+    "agente cobranza", "agente logistico", "comercio exterior", "agente gerente",
+    "finanzas", "cobranza", "logistica", "inventario", "gerencia", "salud de integraciones",
+    "propuestas pendientes", "alertas criticas", "rendimiento de agentes",
+  ].some((word) => text.includes(word));
 }
 
 function mentionsCampaignAnalysis(message: string) {

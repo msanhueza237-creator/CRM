@@ -3,14 +3,17 @@ import {
   AlertCircle,
   AlertTriangle,
   ArrowUpRight,
+  Bot,
   BarChart3,
   Building2,
   CheckCircle2,
   Clock3,
-  Download,
+  FileSpreadsheet,
+  FileText,
   Filter,
   MailCheck,
   MessageSquareText,
+  PlugZap,
   Printer,
   RefreshCw,
   Send,
@@ -25,6 +28,7 @@ import {
   type CopilotReportFilters,
   type CopilotReportSnapshot,
 } from "../../lib/copilotApi";
+import { exportReportExcel, exportReportPdf } from "../../lib/reportExport";
 import type { Company, Interaction } from "../../types/crm";
 import { useCompanyStore } from "../companies/CompanyStore";
 
@@ -43,6 +47,7 @@ export function ReportsPage() {
   const [filters, setFilters] = useState<CopilotReportFilters>(reportFiltersFromLocation);
   const [report, setReport] = useState<CopilotReportSnapshot>(() => buildLocalReport(companies, interactions, reportFiltersFromLocation()));
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState<"pdf" | "excel" | null>(null);
   const [error, setError] = useState("");
 
   const loadReport = useCallback(async (nextFilters: CopilotReportFilters = filters) => {
@@ -66,58 +71,23 @@ export function ReportsPage() {
   }, []);
 
   const maxFunnel = useMemo(() => Math.max(...report.funnel.map((item) => item.value), 1), [report.funnel]);
+  const agentIntelligence = report.agentIntelligence ?? emptyAgentIntelligence();
 
   function updateFilter<Key extends keyof CopilotReportFilters>(key: Key, value: CopilotReportFilters[Key]) {
     setFilters((current) => ({ ...current, [key]: value || undefined }));
   }
 
-  function exportCsv() {
-    const lines = [
-      ["Informe", report.title],
-      ["Periodo", report.periodLabel],
-      ["Actualizado", formatDateTime(report.generatedAt)],
-      [],
-      ["Indicador", "Valor"],
-      ["Empresas", report.kpis.companies],
-      ["Clientes", report.kpis.clients],
-      ["Conversion (%)", report.kpis.conversionRate],
-      ["Interacciones", report.kpis.interactions],
-      ["Campanas", report.kpis.campaigns],
-      ["Envios", report.kpis.sent],
-      ["Respuestas", report.kpis.replies],
-      ["Tasa de respuesta (%)", report.kpis.replyRate],
-      ...(report.campaignAnalysis ? [
-        [],
-        ["Analisis de campana", report.campaignAnalysis.name],
-        ["Estado", report.campaignAnalysis.status],
-        ["Destinatarios", report.campaignAnalysis.recipients],
-        ["Enviados", report.campaignAnalysis.sent],
-        ["Fallidos", report.campaignAnalysis.failed],
-        ["Pendientes", report.campaignAnalysis.pending],
-        ["Respuestas", report.campaignAnalysis.replies],
-        ["Diagnostico", report.campaignAnalysis.diagnosis],
-      ] : []),
-      [],
-      ["Campana", "Estado", "Canal", "Destinatarios", "Enviados", "Respuestas", "Interesados", "Tasa respuesta (%)"],
-      ...report.campaignPerformance.map((campaign) => [
-        campaign.name,
-        campaign.status,
-        campaign.channel,
-        campaign.recipients,
-        campaign.sent,
-        campaign.replies,
-        campaign.interested,
-        campaign.replyRate,
-      ]),
-    ];
-    const csv = lines.map((row) => row.map(csvValue).join(";")).join("\r\n");
-    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `informe-crm-${new Date().toISOString().slice(0, 10)}.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+  async function exportReport(format: "pdf" | "excel") {
+    setExporting(format);
+    setError("");
+    try {
+      if (format === "pdf") await exportReportPdf(report);
+      else await exportReportExcel(report);
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "No se pudo generar el archivo solicitado.");
+    } finally {
+      setExporting(null);
+    }
   }
 
   return (
@@ -126,14 +96,17 @@ export function ReportsPage() {
         <div>
           <p>Analitica verificada</p>
           <h1>Informes CRM</h1>
-          <span>Indicadores comerciales y de campanas preparados por el copiloto con datos reales.</span>
+          <span>Indicadores de cartera, campanas y todos los agentes preparados con datos reales.</span>
         </div>
         <div className="heading-actions reports-actions">
           <button className="ghost-button" type="button" onClick={() => window.print()}>
             <Printer size={18} /> Imprimir
           </button>
-          <button className="ghost-button" type="button" onClick={exportCsv}>
-            <Download size={18} /> Exportar CSV
+          <button className="ghost-button" type="button" onClick={() => void exportReport("pdf")} disabled={Boolean(exporting)}>
+            <FileText size={18} /> {exporting === "pdf" ? "Generando..." : "PDF"}
+          </button>
+          <button className="ghost-button" type="button" onClick={() => void exportReport("excel")} disabled={Boolean(exporting)}>
+            <FileSpreadsheet size={18} /> {exporting === "excel" ? "Generando..." : "Excel"}
           </button>
           <button className="primary-button" type="button" onClick={() => void loadReport()} disabled={loading}>
             <RefreshCw size={18} className={loading ? "spin-icon" : ""} />
@@ -260,6 +233,57 @@ export function ReportsPage() {
             <article key={insight.title} className={insight.tone}>
               <strong>{insight.title}</strong>
               <p>{insight.detail}</p>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel agent-intelligence-panel" aria-labelledby="agent-intelligence-title">
+        <div className="panel-heading agent-intelligence-heading">
+          <div>
+            <h2 id="agent-intelligence-title">Inteligencia de todos los agentes</h2>
+            <span>Resultados consolidados, actividad, riesgos y salud operativa</span>
+          </div>
+          <Bot size={22} />
+        </div>
+
+        <div className="agent-intelligence-kpis">
+          <div><span>Con datos</span><strong>{agentIntelligence.agentsWithData}/{agentIntelligence.totalAgents}</strong><small>agentes en el periodo</small></div>
+          <div><span>Completadas</span><strong>{formatNumber(agentIntelligence.completedTasks)}</strong><small>analisis terminados</small></div>
+          <div><span>En curso</span><strong>{formatNumber(agentIntelligence.runningTasks + agentIntelligence.pendingTasks)}</strong><small>pendientes o ejecutando</small></div>
+          <div><span>Fallidas</span><strong>{formatNumber(agentIntelligence.failedTasks)}</strong><small>requieren revision</small></div>
+          <div><span>Propuestas</span><strong>{formatNumber(agentIntelligence.pendingProposals)}</strong><small>esperan decision</small></div>
+          <div><span>Integraciones</span><strong>{agentIntelligence.healthyIntegrations}/{agentIntelligence.totalIntegrations}</strong><small>conectadas</small></div>
+        </div>
+
+        <div className="agent-intelligence-visuals">
+          <div>
+            <div className="agent-visual-heading"><strong>Tendencia de ejecuciones</strong><span>Completadas, fallidas y pendientes</span></div>
+            <AgentTaskTrendChart data={agentIntelligence.taskTrend} />
+          </div>
+          <div>
+            <div className="agent-visual-heading"><strong>Estado de ejecuciones</strong><span>Distribucion del periodo</span></div>
+            <BreakdownBars data={agentIntelligence.taskStatus} />
+            <div className="agent-operational-note"><PlugZap size={17} /><span>{agentIntelligence.criticalAlerts} alertas criticas activas</span></div>
+          </div>
+        </div>
+
+        <div className="agent-roster" aria-label="Detalle por agente">
+          {agentIntelligence.agents.map((agent) => (
+            <article className="agent-roster-row" key={agent.type}>
+              <div className="agent-roster-identity">
+                <span className={`agent-status-dot ${agent.status}`} />
+                <div><strong>{agent.label}</strong><small>{agentStatusLabel(agent.status)}</small></div>
+              </div>
+              <div className="agent-roster-success">
+                <div><span>Exito</span><strong>{formatPercent(agent.successRate)}%</strong></div>
+                <div className="report-bar-track"><span style={{ width: `${agent.successRate}%` }} /></div>
+              </div>
+              <p>{agent.summary}</p>
+              <div className="agent-roster-metrics">
+                {agent.metrics.slice(0, 3).map((metric) => <span key={metric.key}><small>{metric.label}</small><strong>{String(metric.value)}</strong></span>)}
+                {!agent.metrics.length ? <span><small>Ultimo analisis</small><strong>{agent.lastRunAt ? formatDateTime(agent.lastRunAt) : "Sin datos"}</strong></span> : null}
+              </div>
             </article>
           ))}
         </div>
@@ -409,6 +433,41 @@ function TrendChart({ data }: { data: CopilotReportSnapshot["trend"] }) {
   );
 }
 
+function AgentTaskTrendChart({ data }: { data: CopilotReportSnapshot["agentIntelligence"]["taskTrend"] }) {
+  const width = 720;
+  const height = 220;
+  const left = 42;
+  const right = 18;
+  const top = 22;
+  const bottom = 38;
+  const max = Math.max(...data.flatMap((item) => [item.completed, item.failed, item.pending]), 1);
+  const x = (index: number) => left + (data.length <= 1 ? 0 : index * ((width - left - right) / (data.length - 1)));
+  const y = (value: number) => top + (height - top - bottom) * (1 - value / max);
+  const points = (field: "completed" | "failed" | "pending") => data.map((item, index) => `${x(index)},${y(item[field])}`).join(" ");
+  return (
+    <div className="agent-task-trend-chart">
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Tendencia de ejecuciones de todos los agentes">
+        {[0, 0.5, 1].map((ratio) => {
+          const lineY = top + (height - top - bottom) * ratio;
+          return <line key={ratio} x1={left} x2={width - right} y1={lineY} y2={lineY} className="grid-line" />;
+        })}
+        <polyline points={points("completed")} className="agent-trend-line completed" />
+        <polyline points={points("failed")} className="agent-trend-line failed" />
+        <polyline points={points("pending")} className="agent-trend-line pending" />
+        {data.map((item, index) => (
+          <g key={item.key}>
+            <circle cx={x(index)} cy={y(item.completed)} r="3.5" className="agent-trend-point completed"><title>{item.label}: {item.completed} completadas</title></circle>
+            <circle cx={x(index)} cy={y(item.failed)} r="3.5" className="agent-trend-point failed"><title>{item.label}: {item.failed} fallidas</title></circle>
+            <circle cx={x(index)} cy={y(item.pending)} r="3.5" className="agent-trend-point pending"><title>{item.label}: {item.pending} pendientes</title></circle>
+            <text x={x(index)} y={height - 12} textAnchor="middle">{item.label}</text>
+          </g>
+        ))}
+      </svg>
+      <div className="agent-trend-legend"><span className="completed">Completadas</span><span className="failed">Fallidas</span><span className="pending">Pendientes</span></div>
+    </div>
+  );
+}
+
 function DonutChart({ data, total }: { data: CopilotReportBreakdown[]; total: number }) {
   const radius = 48;
   const circumference = 2 * Math.PI * radius;
@@ -481,6 +540,7 @@ function buildLocalReport(companies: Company[], interactions: Interaction[], fil
     trend: localTrend(activity),
     campaignPerformance: [],
     campaignAnalysis: null,
+    agentIntelligence: emptyAgentIntelligence(),
     insights: [
       { tone: conversion >= 35 ? "positive" : conversion < 15 ? "attention" : "neutral", title: `Conversion comercial de ${formatPercent(conversion)}%`, detail: `${clients} empresas estan actualmente en estado cliente.` },
       { tone: contactRate >= 80 ? "positive" : "attention", title: `${formatPercent(contactRate)}% de la cartera es contactable`, detail: `${selected.length - contactable} empresas requieren completar datos de contacto.` },
@@ -547,7 +607,48 @@ function formatDateTime(value: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
 }
 
-function csvValue(value: string | number | undefined) {
-  const text = String(value ?? "").replace(/"/g, '""');
-  return `"${text}"`;
+function emptyAgentIntelligence(): CopilotReportSnapshot["agentIntelligence"] {
+  return {
+    totalAgents: 7,
+    agentsWithData: 0,
+    completedTasks: 0,
+    failedTasks: 0,
+    pendingTasks: 0,
+    runningTasks: 0,
+    pendingProposals: 0,
+    criticalAlerts: 0,
+    healthyIntegrations: 0,
+    totalIntegrations: 0,
+    agents: [
+      ["commercial", "Comercial"],
+      ["marketing", "Marketing"],
+      ["finance", "Finanzas"],
+      ["collections", "Cobranza"],
+      ["logistics", "Logistica"],
+      ["foreign_trade", "Comercio exterior"],
+      ["executive", "Gerencia"],
+    ].map(([type, label]) => ({
+      type,
+      label,
+      status: "idle" as const,
+      completed: 0,
+      failed: 0,
+      pending: 0,
+      running: 0,
+      successRate: 0,
+      lastRunAt: null,
+      summary: "Sin analisis disponibles en esta lectura local.",
+      warnings: [],
+      metrics: [],
+    })),
+    taskStatus: [],
+    taskTrend: [],
+    proposalRisk: [],
+    alertSeverity: [],
+    integrationStatus: [],
+  };
+}
+
+function agentStatusLabel(status: CopilotReportSnapshot["agentIntelligence"]["agents"][number]["status"]) {
+  return status === "healthy" ? "Actualizado" : status === "attention" ? "Requiere atencion" : status === "running" ? "En ejecucion" : "Sin datos";
 }

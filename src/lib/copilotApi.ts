@@ -28,6 +28,44 @@ export interface CopilotReportBreakdown {
   percentage: number;
 }
 
+export interface CopilotAgentMetric {
+  key: string;
+  label: string;
+  value: number | string;
+}
+
+export interface CopilotAgentIntelligence {
+  totalAgents: number;
+  agentsWithData: number;
+  completedTasks: number;
+  failedTasks: number;
+  pendingTasks: number;
+  runningTasks: number;
+  pendingProposals: number;
+  criticalAlerts: number;
+  healthyIntegrations: number;
+  totalIntegrations: number;
+  agents: Array<{
+    type: string;
+    label: string;
+    status: "healthy" | "attention" | "running" | "idle";
+    completed: number;
+    failed: number;
+    pending: number;
+    running: number;
+    successRate: number;
+    lastRunAt: string | null;
+    summary: string;
+    warnings: string[];
+    metrics: CopilotAgentMetric[];
+  }>;
+  taskStatus: CopilotReportBreakdown[];
+  taskTrend: Array<{ key: string; label: string; completed: number; failed: number; pending: number }>;
+  proposalRisk: CopilotReportBreakdown[];
+  alertSeverity: CopilotReportBreakdown[];
+  integrationStatus: CopilotReportBreakdown[];
+}
+
 export interface CopilotReportSnapshot {
   toolName: "generate_professional_report";
   title: string;
@@ -99,6 +137,7 @@ export interface CopilotReportSnapshot {
     diagnosis: string;
     topErrors: Array<{ message: string; count: number }>;
   } | null;
+  agentIntelligence: CopilotAgentIntelligence;
   insights: Array<{
     tone: "positive" | "attention" | "neutral";
     title: string;
@@ -182,6 +221,9 @@ export async function sendCopilotMessage(message: string, conversationId?: strin
   }
 
   const typedPayload = payload as CopilotMessageResponse;
+  if (typedPayload.reportSnapshot) {
+    typedPayload.reportSnapshot = normalizeReportSnapshot(typedPayload.reportSnapshot);
+  }
   if (typedPayload.campaignDraft && !typedPayload.campaignDraft.recipientPreview) {
     typedPayload.campaignDraft.segmentQuery = message;
     typedPayload.campaignDraft.recipientPreview = {
@@ -249,5 +291,52 @@ export async function getCopilotReport(filters: CopilotReportFilters) {
   if (!response.ok) {
     throw new Error(String(payload.error ?? "No se pudo generar el informe."));
   }
-  return payload.report as CopilotReportSnapshot;
+  return normalizeReportSnapshot(payload.report as CopilotReportSnapshot);
+}
+
+function normalizeReportSnapshot(report: CopilotReportSnapshot): CopilotReportSnapshot {
+  if (report.agentIntelligence) return report;
+  const definitions = [
+    ["commercial", "Comercial"],
+    ["marketing", "Marketing"],
+    ["finance", "Finanzas"],
+    ["collections", "Cobranza"],
+    ["logistics", "Logistica"],
+    ["foreign_trade", "Comercio exterior"],
+    ["executive", "Gerencia"],
+  ];
+  return {
+    ...report,
+    agentIntelligence: {
+      totalAgents: definitions.length,
+      agentsWithData: 0,
+      completedTasks: 0,
+      failedTasks: 0,
+      pendingTasks: 0,
+      runningTasks: 0,
+      pendingProposals: 0,
+      criticalAlerts: 0,
+      healthyIntegrations: 0,
+      totalIntegrations: 0,
+      agents: definitions.map(([type, label]) => ({
+        type,
+        label,
+        status: "idle" as const,
+        completed: 0,
+        failed: 0,
+        pending: 0,
+        running: 0,
+        successRate: 0,
+        lastRunAt: null,
+        summary: "Actualiza la Edge Function para incluir resultados de este agente.",
+        warnings: [],
+        metrics: [],
+      })),
+      taskStatus: [],
+      taskTrend: [],
+      proposalRisk: [],
+      alertSeverity: [],
+      integrationStatus: [],
+    },
+  };
 }
