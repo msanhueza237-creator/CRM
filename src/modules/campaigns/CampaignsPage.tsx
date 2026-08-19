@@ -15,6 +15,7 @@ type CampaignCompanyTypeFilter = "todas" | CompanyType;
 
 interface CampaignDraft extends Campaign {
   templateId: string;
+  message: string;
   product: string;
   coupon: string;
   recipientIds: string[];
@@ -320,6 +321,7 @@ function defaultCampaigns(): CampaignDraft[] {
   return demoCampaigns.map((campaign, index) => ({
     ...campaign,
     templateId: demoTemplates[index === 0 ? 1 : 2]?.id ?? demoTemplates[0].id,
+    message: demoTemplates[index === 0 ? 1 : 2]?.body ?? demoTemplates[0].body,
     product: "bombas de condensado y herramientas Super Stars",
     coupon: DEFAULT_INSTALLER_BENEFIT,
     recipientIds: [],
@@ -445,12 +447,17 @@ function describeCampaignSegment(filters: { companyType: CampaignCompanyTypeFilt
 }
 
 function renderMessage(template: MessageTemplate, company: Company, campaign: CampaignDraft) {
-  const benefit = getCampaignBenefitForCompany(campaign, company);
-  return cleanEmptyBenefitText(template.body
-    .replace(/\{\{nombre_empresa\}\}/g, company.name)
-    .replace(/\{\{nombre_contacto\}\}/g, company.contactName || "equipo comercial")
-    .replace(/\{\{ciudad\}\}/g, company.city || "su zona")
-    .replace(/\{\{tipo_empresa\}\}/g, company.type)
+  return renderCampaignMessage(campaign.message || template.body, company, campaign);
+}
+
+function renderCampaignMessage(message: string, company: Company | undefined, campaign: CampaignDraft) {
+  const benefit = company ? getCampaignBenefitForCompany(campaign, company) : campaign.coupon || "";
+  return cleanEmptyBenefitText(message
+    .replace(/\{\{nombre\}\}/g, company?.contactName || "[Nombre]")
+    .replace(/\{\{nombre_empresa\}\}/g, company?.name || "[Nombre empresa]")
+    .replace(/\{\{nombre_contacto\}\}/g, company?.contactName || "[Nombre contacto]")
+    .replace(/\{\{ciudad\}\}/g, company?.city || "[Ciudad]")
+    .replace(/\{\{tipo_empresa\}\}/g, company?.type || "[Tipo de empresa]")
     .replace(/\{\{cupon\}\}/g, benefit)
     .replace(/\{\{beneficio\}\}/g, benefit)
     .replace(/\{\{producto_destacado\}\}/g, campaign.product));
@@ -1057,6 +1064,7 @@ export function CampaignsPage() {
       interested: 0,
       discarded: 0,
       templateId: templates[0]?.id || demoTemplates[0].id,
+      message: proposalForm.message,
       product: proposalForm.product,
       coupon: isInstallerCampaignSegment(prop.segment) ? proposalForm.coupon : "",
       recipientIds: targetCompanies.map((c) => c.id),
@@ -1188,6 +1196,7 @@ export function CampaignsPage() {
           interested: 0,
           discarded: 0,
           templateId: templates[0]?.id ?? demoTemplates[0].id,
+          message: String(row.message ?? ""),
           product: String(row.product ?? ""),
           coupon: String(row.coupon ?? ""),
           attachments: normalizeAttachmentRows(row.attachments),
@@ -1410,6 +1419,7 @@ export function CampaignsPage() {
       interested: 0,
       discarded: 0,
       templateId: form.templateId,
+      message: formTemplate?.body ?? "",
       product: form.product,
       coupon: campaignBenefit,
       recipientIds: targetCompanies.map((company) => company.id),
@@ -1433,7 +1443,7 @@ export function CampaignsPage() {
                 ? "email"
                 : "mixta",
             segment: created.segment,
-            message: formTemplate?.body ?? "",
+            message: created.message,
             status: "borrador",
             product: created.product,
             coupon: created.coupon,
@@ -1743,8 +1753,8 @@ export function CampaignsPage() {
       const data = await sendGmailCampaign({
         name: selectedCampaign.name,
         subject: selectedCampaign.name,
-        bodyText: selectedTemplate.body,
-        bodyHtml: selectedTemplate.body.replace(/\n/g, "<br />"),
+        bodyText: selectedCampaign.message || selectedTemplate.body,
+        bodyHtml: (selectedCampaign.message || selectedTemplate.body).replace(/\n/g, "<br />"),
         segmentFilters: {
           crm_campaign_id: selectedCampaign.id,
           segment: selectedCampaign.segment,
@@ -2195,8 +2205,9 @@ export function CampaignsPage() {
                     <span>{selectedCampaign.name}</span>
                   </div>
                   <div className="message-preview">
-                    <span>Plantilla: {selectedTemplate.name}</span>
-                    <p>{selectedCompanies[0] ? renderMessage(selectedTemplate, selectedCompanies[0], selectedCampaign) : "No hay destinatarios para este segmento."}</p>
+                    <span>{selectedCampaign.message ? "Contenido preparado" : `Plantilla: ${selectedTemplate.name}`}</span>
+                    <p>{renderCampaignMessage(selectedCampaign.message || selectedTemplate.body, selectedCompanies[0], selectedCampaign)}</p>
+                    {!selectedCompanies.length ? <small>Vista previa con variables. Aun no hay destinatarios asociados.</small> : null}
                   </div>
                   {selectedCampaign.attachments && selectedCampaign.attachments.length > 0 && (
                     <div style={{ padding: "14px", marginTop: "14px", background: "#f1f3f5", borderRadius: "8px", border: "1px solid #dee2e6" }}>
