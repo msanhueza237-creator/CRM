@@ -110,6 +110,43 @@ export async function exportReportPdf(report: CopilotReportSnapshot) {
     paragraph(insight.detail);
   });
 
+  if (report.financialAnalysis.available) {
+    const financial = report.financialAnalysis;
+    const resultValue = financial.profitabilityAvailable
+      ? Number(financial.profitabilityValue)
+      : financial.documentaryDifference;
+    const resultLabel = financial.profitabilityAvailable ? "Utilidad contable" : "Diferencia documental";
+    sectionTitle(
+      `Lectura financiera de ${financial.monthLabel}`,
+      financial.profitabilityAvailable ? "Rentabilidad certificada por cierre mensual" : "Lectura referencial; no corresponde a utilidad certificada",
+    );
+    ensureSpace(28);
+    const financialKpis = [
+      ["Ventas netas", financial.netSales, teal],
+      ["Compras netas", financial.netPurchases, gold],
+      [resultLabel, resultValue, resultValue < 0 ? red : green],
+    ] as const;
+    financialKpis.forEach(([label, value, color], index) => {
+      const x = margin + index * (boxWidth + gap);
+      document.setFillColor(`#${paleTeal}`);
+      document.roundedRect(x, y, boxWidth, 20, 1.5, 1.5, "F");
+      document.setFillColor(`#${color}`);
+      document.rect(x, y, 1.6, 20, "F");
+      document.setTextColor(`#${gray}`);
+      document.setFont("helvetica", "bold");
+      document.setFontSize(6.7);
+      document.text(label.toUpperCase(), x + 4, y + 6);
+      document.setTextColor(`#${deepTeal}`);
+      document.setFontSize(10.5);
+      document.text(formatCurrency(value), x + 4, y + 14, { maxWidth: boxWidth - 7 });
+    });
+    y += 26;
+    paragraph(financial.explanation, deepTeal);
+    if (financial.salesTrendPercent !== null) {
+      paragraph(`Variacion de ventas frente al mes disponible anterior: ${financial.salesTrendPercent > 0 ? "+" : ""}${financial.salesTrendPercent}%.`);
+    }
+  }
+
   sectionTitle("Inteligencia de agentes", `${report.agentIntelligence.agentsWithData} de ${report.agentIntelligence.totalAgents} agentes con datos en el periodo`);
   const agentMax = Math.max(...report.agentIntelligence.agents.map((agent) => agent.completed + agent.failed + agent.pending + agent.running), 1);
   report.agentIntelligence.agents.forEach((agent) => {
@@ -174,7 +211,7 @@ export async function exportReportExcel(report: CopilotReportSnapshot) {
   addWorkbookTitle(summary, report.title, report.subtitle, report.periodLabel, report.generatedAt, 4);
   summary.addRow([]);
   summary.addRow(["Indicador", "Valor"]);
-  [
+  const summaryIndicators: Array<[string, string | number]> = [
     ["Empresas", report.kpis.companies],
     ["Clientes", report.kpis.clients],
     ["Conversion (%)", report.kpis.conversionRate],
@@ -185,11 +222,46 @@ export async function exportReportExcel(report: CopilotReportSnapshot) {
     ["Respuestas", report.kpis.replies],
     ["Tasa de respuesta (%)", report.kpis.replyRate],
     ["Interesados", report.kpis.interested],
-  ].forEach((row) => summary.addRow(row));
+  ];
+  if (report.financialAnalysis.available) {
+    const financial = report.financialAnalysis;
+    summaryIndicators.push(
+      [`Ventas netas (${financial.monthLabel})`, financial.netSales],
+      [`Compras netas (${financial.monthLabel})`, financial.netPurchases],
+      [financial.profitabilityAvailable ? "Utilidad contable" : "Diferencia documental", financial.profitabilityAvailable ? Number(financial.profitabilityValue) : financial.documentaryDifference],
+      ["Rentabilidad certificada", financial.profitabilityAvailable ? "Si" : "No"],
+    );
+  }
+  summaryIndicators.forEach((row) => summary.addRow(row));
   summary.addRow([]);
   summary.addRow(["Hallazgo", "Detalle", "Tono"]);
   report.insights.forEach((insight) => summary.addRow([insight.title, insight.detail, insight.tone]));
   styleWorksheet(summary, [34, 95, 18]);
+
+  if (report.financialAnalysis.available) {
+    const financial = report.financialAnalysis;
+    const finances = workbook.addWorksheet("Finanzas", { views: [{ state: "frozen", ySplit: 1 }] });
+    finances.addRow(["Indicador", "Valor", "Contexto"]);
+    [
+      ["Periodo", financial.monthLabel, financial.isCurrentMonth ? "Mes actual" : "Ultimo mes disponible"],
+      ["Ventas netas", financial.netSales, `${financial.salesDocuments} documentos`],
+      ["IVA ventas", financial.salesTax, "Impuesto informado por Facto"],
+      ["Ventas brutas", financial.grossSales, "Neto mas impuestos"],
+      ["Compras netas", financial.netPurchases, `${financial.purchaseDocuments} documentos`],
+      ["IVA compras", financial.purchaseTax, "Credito fiscal informado por Facto"],
+      ["Compras brutas", financial.grossPurchases, "Neto mas impuestos"],
+      ["Diferencia documental", financial.documentaryDifference, "Ventas netas menos compras netas; no equivale a utilidad"],
+      ["Diferencia sobre ventas (%)", financial.documentaryMarginRate, "Indicador documental"],
+      ["Variacion mensual de ventas (%)", financial.salesTrendPercent ?? "Sin base", "Contra el mes disponible anterior"],
+      ["Utilidad contable", financial.profitabilityAvailable ? Number(financial.profitabilityValue) : "No certificada", financial.accountingPeriodLabel],
+      ["Rentabilidad contable (%)", financial.profitabilityAvailable ? Number(financial.profitabilityRate) : "No certificada", `Estado contable: ${financial.accountingStatus}`],
+      ["Actualizacion financiera", financial.updatedAt ? formatDateTime(financial.updatedAt) : "Sin registro", "Origen: snapshot financiero Facto"],
+      ["Explicacion", financial.explanation, "Alcance contable"],
+      ["Advertencias", financial.warnings.join(" | ") || "Sin advertencias adicionales", "Validaciones del backend"],
+    ].forEach((row) => finances.addRow(row));
+    styleWorksheet(finances, [34, 34, 92]);
+    for (let row = 2; row <= 10; row += 1) finances.getCell(row, 2).numFmt = "#,##0";
+  }
 
   const agents = workbook.addWorksheet("Agentes", { views: [{ state: "frozen", ySplit: 1 }] });
   agents.addRow(["Agente", "Estado", "Exito (%)", "Completadas", "Fallidas", "Pendientes", "En curso", "Ultimo analisis", "Resumen", "Advertencias"]);
@@ -286,7 +358,13 @@ function addWorkbookTitle(
 }
 
 function styleWorksheet(worksheet: import("exceljs").Worksheet, widths: number[]) {
-  const headerRows = worksheet.name === "Resumen" ? [6, 18] : [1];
+  const headerRows: number[] = [];
+  worksheet.eachRow((row, rowNumber) => {
+    const firstCell = String(row.getCell(1).value ?? "");
+    if (worksheet.name === "Resumen" ? ["Indicador", "Hallazgo"].includes(firstCell) : rowNumber === 1) {
+      headerRows.push(rowNumber);
+    }
+  });
   headerRows.forEach((rowNumber) => {
     const row = worksheet.getRow(rowNumber);
     row.font = { bold: true, color: { argb: "FFFFFFFF" } };
@@ -380,4 +458,12 @@ function formatDateTime(value: string) {
 
 function cleanText(value: string) {
   return value.replace(/[\u0000-\u001F\u007F]/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat("es-CL", {
+    style: "currency",
+    currency: "CLP",
+    maximumFractionDigits: 0,
+  }).format(value);
 }

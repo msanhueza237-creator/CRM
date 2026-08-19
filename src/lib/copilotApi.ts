@@ -66,6 +66,37 @@ export interface CopilotAgentIntelligence {
   integrationStatus: CopilotReportBreakdown[];
 }
 
+export interface CopilotFinancialAnalysis {
+  available: boolean;
+  monthKey: string;
+  monthLabel: string;
+  isCurrentMonth: boolean;
+  updatedAt: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  netSales: number;
+  grossSales: number;
+  salesTax: number;
+  salesDocuments: number;
+  netPurchases: number;
+  grossPurchases: number;
+  purchaseTax: number;
+  purchaseDocuments: number;
+  documentaryDifference: number;
+  documentaryMarginRate: number;
+  previousMonthNetSales: number;
+  salesTrendPercent: number | null;
+  referenceGrossMargin: number | null;
+  referenceMarginRate: number | null;
+  profitabilityAvailable: boolean;
+  profitabilityValue: number | null;
+  profitabilityRate: number | null;
+  accountingStatus: string;
+  accountingPeriodLabel: string;
+  explanation: string;
+  warnings: string[];
+}
+
 export interface CopilotReportSnapshot {
   toolName: "generate_professional_report";
   title: string;
@@ -138,6 +169,7 @@ export interface CopilotReportSnapshot {
     topErrors: Array<{ message: string; count: number }>;
   } | null;
   agentIntelligence: CopilotAgentIntelligence;
+  financialAnalysis: CopilotFinancialAnalysis;
   insights: Array<{
     tone: "positive" | "attention" | "neutral";
     title: string;
@@ -295,7 +327,7 @@ export async function getCopilotReport(filters: CopilotReportFilters) {
 }
 
 function normalizeReportSnapshot(report: CopilotReportSnapshot): CopilotReportSnapshot {
-  if (report.agentIntelligence) return report;
+  if (report.agentIntelligence && report.financialAnalysis) return report;
   const definitions = [
     ["commercial", "Comercial"],
     ["marketing", "Marketing"],
@@ -307,7 +339,7 @@ function normalizeReportSnapshot(report: CopilotReportSnapshot): CopilotReportSn
   ];
   return {
     ...report,
-    agentIntelligence: {
+    agentIntelligence: report.agentIntelligence ?? {
       totalAgents: definitions.length,
       agentsWithData: 0,
       completedTasks: 0,
@@ -338,5 +370,41 @@ function normalizeReportSnapshot(report: CopilotReportSnapshot): CopilotReportSn
       alertSeverity: [],
       integrationStatus: [],
     },
+    financialAnalysis: report.financialAnalysis ?? emptyFinancialAnalysis(),
+  };
+}
+
+function emptyFinancialAnalysis(): CopilotFinancialAnalysis {
+  const now = new Date();
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return {
+    available: false,
+    monthKey,
+    monthLabel: now.toLocaleDateString("es-CL", { month: "long", year: "numeric" }),
+    isCurrentMonth: true,
+    updatedAt: null,
+    periodStart: null,
+    periodEnd: null,
+    netSales: 0,
+    grossSales: 0,
+    salesTax: 0,
+    salesDocuments: 0,
+    netPurchases: 0,
+    grossPurchases: 0,
+    purchaseTax: 0,
+    purchaseDocuments: 0,
+    documentaryDifference: 0,
+    documentaryMarginRate: 0,
+    previousMonthNetSales: 0,
+    salesTrendPercent: null,
+    referenceGrossMargin: null,
+    referenceMarginRate: null,
+    profitabilityAvailable: false,
+    profitabilityValue: null,
+    profitabilityRate: null,
+    accountingStatus: "sin_cierre",
+    accountingPeriodLabel: "Sin cierre mensual",
+    explanation: "La Edge Function actual no incluye todavia el corte financiero mensual.",
+    warnings: [],
   };
 }

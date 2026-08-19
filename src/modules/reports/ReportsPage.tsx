@@ -7,18 +7,21 @@ import {
   BarChart3,
   Building2,
   CheckCircle2,
+  CircleDollarSign,
   Clock3,
   FileSpreadsheet,
   FileText,
   Filter,
   MailCheck,
   MessageSquareText,
+  PackageCheck,
   PlugZap,
   Printer,
   RefreshCw,
   Send,
   Sparkles,
   Target,
+  TrendingUp,
   UsersRound,
   XCircle,
 } from "lucide-react";
@@ -217,6 +220,10 @@ export function ReportsPage() {
         </section>
       ) : null}
 
+      {!report.campaignAnalysis && report.financialAnalysis.available ? (
+        <FinancialAnalysisPanel analysis={report.financialAnalysis} />
+      ) : null}
+
       <div className="report-kpi-grid">
         <ReportKpi icon={Building2} label="Empresas" value={formatNumber(report.kpis.companies)} detail={`${report.kpis.newCompanies} nuevas en el periodo`} />
         <ReportKpi icon={Target} label="Conversion" value={`${formatPercent(report.kpis.conversionRate)}%`} detail={`${report.kpis.clients} clientes actuales`} />
@@ -373,6 +380,50 @@ export function ReportsPage() {
 
 function ReportKpi({ icon: Icon, label, value, detail }: { icon: typeof Building2; label: string; value: string; detail: string }) {
   return <article><div><Icon size={19} /><span>{label}</span></div><strong>{value}</strong><p>{detail}</p></article>;
+}
+
+function FinancialAnalysisPanel({ analysis }: { analysis: CopilotReportSnapshot["financialAnalysis"] }) {
+  const maximum = Math.max(analysis.netSales, analysis.netPurchases, Math.abs(analysis.documentaryDifference), 1);
+  const resultLabel = analysis.profitabilityAvailable ? "Utilidad contable" : "Diferencia documental";
+  const resultValue = analysis.profitabilityAvailable ? Number(analysis.profitabilityValue) : analysis.documentaryDifference;
+  return (
+    <section className="panel financial-analysis-panel" aria-labelledby="financial-analysis-title">
+      <div className="financial-analysis-heading">
+        <div>
+          <span className="eyebrow">Agente de finanzas</span>
+          <h2 id="financial-analysis-title">Lectura financiera de {analysis.monthLabel}</h2>
+          <p>Facto y cierre contable del periodo disponible</p>
+        </div>
+        <span className={`financial-certification ${analysis.profitabilityAvailable ? "certified" : "reference"}`}>
+          {analysis.profitabilityAvailable ? "Rentabilidad certificada" : "Lectura referencial"}
+        </span>
+      </div>
+      <div className="financial-analysis-kpis">
+        <article><CircleDollarSign size={19} /><span>Ventas netas</span><strong>{formatCurrency(analysis.netSales)}</strong><small>{analysis.salesDocuments} documentos</small></article>
+        <article><PackageCheck size={19} /><span>Compras netas</span><strong>{formatCurrency(analysis.netPurchases)}</strong><small>{analysis.purchaseDocuments} documentos</small></article>
+        <article className={resultValue < 0 ? "danger" : "good"}><TrendingUp size={19} /><span>{resultLabel}</span><strong>{formatCurrency(resultValue)}</strong><small>{formatPercent(analysis.profitabilityAvailable ? Number(analysis.profitabilityRate) : analysis.documentaryMarginRate)}% sobre ventas</small></article>
+        <article><BarChart3 size={19} /><span>Variacion de ventas</span><strong>{analysis.salesTrendPercent === null ? "Sin base" : `${analysis.salesTrendPercent > 0 ? "+" : ""}${formatPercent(analysis.salesTrendPercent)}%`}</strong><small>contra el mes disponible anterior</small></article>
+      </div>
+      <div className="financial-analysis-detail">
+        <div className="financial-comparison-bars">
+          {[
+            { label: "Ventas netas", value: analysis.netSales, tone: "sales" },
+            { label: "Compras netas", value: analysis.netPurchases, tone: "purchases" },
+            { label: resultLabel, value: Math.abs(resultValue), tone: resultValue < 0 ? "loss" : "result" },
+          ].map((item) => (
+            <div key={item.label}>
+              <div><span>{item.label}</span><strong>{formatCurrency(item.value)}</strong></div>
+              <div className="report-bar-track"><span className={item.tone} style={{ width: `${Math.max((item.value / maximum) * 100, item.value ? 4 : 0)}%` }} /></div>
+            </div>
+          ))}
+        </div>
+        <div className="financial-analysis-explanation">
+          <AlertTriangle size={20} />
+          <div><strong>{analysis.profitabilityAvailable ? "Cierre mensual disponible" : "Como interpretar esta cifra"}</strong><p>{analysis.explanation}</p></div>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 function CampaignAnalysisMetric({
@@ -541,6 +592,7 @@ function buildLocalReport(companies: Company[], interactions: Interaction[], fil
     campaignPerformance: [],
     campaignAnalysis: null,
     agentIntelligence: emptyAgentIntelligence(),
+    financialAnalysis: emptyFinancialAnalysis(),
     insights: [
       { tone: conversion >= 35 ? "positive" : conversion < 15 ? "attention" : "neutral", title: `Conversion comercial de ${formatPercent(conversion)}%`, detail: `${clients} empresas estan actualmente en estado cliente.` },
       { tone: contactRate >= 80 ? "positive" : "attention", title: `${formatPercent(contactRate)}% de la cartera es contactable`, detail: `${selected.length - contactable} empresas requieren completar datos de contacto.` },
@@ -602,6 +654,10 @@ function formatPercent(value: number) {
   return new Intl.NumberFormat("es-CL", { maximumFractionDigits: 1 }).format(value);
 }
 
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(value);
+}
+
 function formatDateTime(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" });
@@ -646,6 +702,41 @@ function emptyAgentIntelligence(): CopilotReportSnapshot["agentIntelligence"] {
     proposalRisk: [],
     alertSeverity: [],
     integrationStatus: [],
+  };
+}
+
+function emptyFinancialAnalysis(): CopilotReportSnapshot["financialAnalysis"] {
+  const now = new Date();
+  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  return {
+    available: false,
+    monthKey,
+    monthLabel: now.toLocaleDateString("es-CL", { month: "long", year: "numeric" }),
+    isCurrentMonth: true,
+    updatedAt: null,
+    periodStart: null,
+    periodEnd: null,
+    netSales: 0,
+    grossSales: 0,
+    salesTax: 0,
+    salesDocuments: 0,
+    netPurchases: 0,
+    grossPurchases: 0,
+    purchaseTax: 0,
+    purchaseDocuments: 0,
+    documentaryDifference: 0,
+    documentaryMarginRate: 0,
+    previousMonthNetSales: 0,
+    salesTrendPercent: null,
+    referenceGrossMargin: null,
+    referenceMarginRate: null,
+    profitabilityAvailable: false,
+    profitabilityValue: null,
+    profitabilityRate: null,
+    accountingStatus: "sin_cierre",
+    accountingPeriodLabel: "Sin cierre mensual",
+    explanation: "Sin datos financieros en esta lectura local.",
+    warnings: [],
   };
 }
 

@@ -4,15 +4,18 @@ import {
   BarChart3,
   Bot,
   CheckCircle2,
+  CircleDollarSign,
   Database,
   FileSpreadsheet,
   FileText,
   Loader2,
   Mic,
+  PackageCheck,
   Save,
   Send,
   ShieldCheck,
   Sparkles,
+  TrendingUp,
   UserPlus,
   UserRound,
   Users,
@@ -45,6 +48,7 @@ type ChatMessage = {
 
 const baseStarterPrompts = [
   "Analiza todos los agentes del CRM y muestrame estadisticas, tendencias, riesgos y oportunidades.",
+  "Cual es la rentabilidad de este mes? Muestrame ventas, compras y si la utilidad esta certificada.",
   "Prepara un informe ejecutivo profesional de los ultimos 90 dias.",
   "Ayudame a crear una campana para clientes de climactiva.cl e invitarlos a RedTecnicos.cl.",
   "Prepara una campana para clientes de Facto que no compran hace 1 mes.",
@@ -73,7 +77,7 @@ export function CopilotPage() {
       content:
         campaignId
           ? `Estoy listo para analizar la campana ${campaignName || "seleccionada"} con datos verificados de CRM y Gmail.`
-          : "Escribeme libremente lo que necesitas. Puedo combinar la informacion de todos los agentes, mostrar estadisticas y tendencias, consultar cualquier campana y preparar borradores; nunca ejecuto acciones ni envios automaticamente.",
+          : "Escribeme libremente lo que necesitas. Puedo combinar la informacion de todos los agentes, analizar ventas, compras y rentabilidad mensual, mostrar estadisticas y tendencias, consultar cualquier campana y preparar borradores; nunca ejecuto acciones ni envios automaticamente.",
     },
   ]);
   const [draft, setDraft] = useState("");
@@ -351,6 +355,22 @@ export function CopilotPage() {
                           ))}
                         </div>
                       )}
+                      {!message.reportSnapshot.campaignAnalysis && message.reportSnapshot.financialAnalysis.available ? (
+                        <div className="copilot-financial-overview">
+                          <div className="copilot-financial-heading">
+                            <div><CircleDollarSign size={17} /><strong>{message.reportSnapshot.financialAnalysis.monthLabel}</strong></div>
+                            <span className={message.reportSnapshot.financialAnalysis.profitabilityAvailable ? "certified" : "reference"}>
+                              {message.reportSnapshot.financialAnalysis.profitabilityAvailable ? "Utilidad certificada" : "Lectura referencial"}
+                            </span>
+                          </div>
+                          <div className="copilot-financial-kpis">
+                            <div><CircleDollarSign size={15} /><span>Ventas netas</span><strong>{formatCopilotCurrency(message.reportSnapshot.financialAnalysis.netSales)}</strong></div>
+                            <div><PackageCheck size={15} /><span>Compras netas</span><strong>{formatCopilotCurrency(message.reportSnapshot.financialAnalysis.netPurchases)}</strong></div>
+                            <div><TrendingUp size={15} /><span>{message.reportSnapshot.financialAnalysis.profitabilityAvailable ? "Utilidad" : "Diferencia documental"}</span><strong>{formatCopilotCurrency(message.reportSnapshot.financialAnalysis.profitabilityAvailable ? Number(message.reportSnapshot.financialAnalysis.profitabilityValue) : message.reportSnapshot.financialAnalysis.documentaryDifference)}</strong></div>
+                          </div>
+                          <p>{message.reportSnapshot.financialAnalysis.explanation}</p>
+                        </div>
+                      ) : null}
                       {!message.reportSnapshot.campaignAnalysis ? (
                         <div className="copilot-agent-overview">
                           <div><Bot size={17} /><strong>Todos los agentes</strong><span>{message.reportSnapshot.agentIntelligence.agentsWithData}/{message.reportSnapshot.agentIntelligence.totalAgents} con datos</span></div>
@@ -459,4 +479,12 @@ export function CopilotPage() {
       </div>
     </section>
   );
+}
+
+function formatCopilotCurrency(value: number) {
+  return new Intl.NumberFormat("es-CL", {
+    style: "currency",
+    currency: "CLP",
+    maximumFractionDigits: 0,
+  }).format(value);
 }

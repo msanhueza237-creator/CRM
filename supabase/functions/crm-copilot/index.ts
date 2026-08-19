@@ -122,6 +122,37 @@ type AgentIntelligence = {
   integrationStatus: ReportBreakdown[];
 };
 
+type FinancialAnalysis = {
+  available: boolean;
+  monthKey: string;
+  monthLabel: string;
+  isCurrentMonth: boolean;
+  updatedAt: string | null;
+  periodStart: string | null;
+  periodEnd: string | null;
+  netSales: number;
+  grossSales: number;
+  salesTax: number;
+  salesDocuments: number;
+  netPurchases: number;
+  grossPurchases: number;
+  purchaseTax: number;
+  purchaseDocuments: number;
+  documentaryDifference: number;
+  documentaryMarginRate: number;
+  previousMonthNetSales: number;
+  salesTrendPercent: number | null;
+  referenceGrossMargin: number | null;
+  referenceMarginRate: number | null;
+  profitabilityAvailable: boolean;
+  profitabilityValue: number | null;
+  profitabilityRate: number | null;
+  accountingStatus: string;
+  accountingPeriodLabel: string;
+  explanation: string;
+  warnings: string[];
+};
+
 type ProfessionalReport = {
   toolName: "generate_professional_report";
   title: string;
@@ -188,6 +219,7 @@ type ProfessionalReport = {
     topErrors: Array<{ message: string; count: number }>;
   } | null;
   agentIntelligence: AgentIntelligence;
+  financialAnalysis: FinancialAnalysis;
   insights: Array<{ tone: "positive" | "attention" | "neutral"; title: string; detail: string }>;
   dataQuality: {
     contactable: number;
@@ -653,7 +685,9 @@ async function runReadOnlyTools(
     results.push({
       ok: true,
       data: report,
-      humanSummary: `${report.title}: ${report.kpis.companies} empresas, ${report.kpis.interactions} interacciones y ${report.kpis.replyRate}% de respuesta en el periodo.`,
+      humanSummary: mentionsFinancialAnalysis(message) && report.financialAnalysis.available
+        ? `${report.financialAnalysis.monthLabel}: ${reportCurrency(report.financialAnalysis.netSales)} en ventas netas, ${reportCurrency(report.financialAnalysis.netPurchases)} en compras netas y ${reportCurrency(report.financialAnalysis.documentaryDifference)} de diferencia documental; ${report.financialAnalysis.profitabilityAvailable ? "utilidad contable disponible" : "utilidad neta aun no certificada"}.`
+        : `${report.title}: ${report.kpis.companies} empresas, ${report.kpis.interactions} interacciones y ${report.kpis.replyRate}% de respuesta en el periodo.`,
       evidence: [
         { entityType: "report", label: report.title },
         { entityType: "analytics", label: `Actualizado ${report.generatedAt}` },
@@ -706,6 +740,7 @@ function getAvailableMetrics(): ToolResult {
     { key: "companies_by_status", label: "Empresas por estado comercial", dimensions: ["status"] },
     { key: "campaigns_total", label: "Campanas por estado", dimensions: ["status", "type"] },
     { key: "tasks_pending", label: "Tareas pendientes", dimensions: ["due_date"] },
+    { key: "monthly_financials", label: "Ventas, compras, diferencia documental y rentabilidad certificada", dimensions: ["month", "accounting_status"] },
   ];
 
   return {
@@ -928,6 +963,8 @@ async function generateProfessionalReport(
     actionProposals,
     inventoryAlerts,
     integrationConnections,
+    financialSnapshots,
+    accountingSnapshots,
   ] = await Promise.all([
     selectRows(rest, "companies?select=id,status,type,region,source,email,phone,whatsapp,created_at&limit=5000"),
     selectRows(rest, "interactions?select=id,company_id,type,occurred_at&limit=5000&order=occurred_at.asc"),
@@ -940,6 +977,8 @@ async function generateProfessionalReport(
     selectRowsOptional(rest, "action_proposals?select=id,kind,risk_level,status,created_at&limit=5000&order=created_at.desc"),
     selectRowsOptional(rest, "inventory_risk_alerts?select=id,severity,status,created_at,resolved_at&limit=5000&order=created_at.desc"),
     selectRowsOptional(rest, "integration_connections?select=provider,status,enabled,read_only,last_checked_at,last_success_at,updated_at&limit=100"),
+    selectRowsOptional(rest, "integration_records?select=payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
+    selectRowsOptional(rest, "accounting_snapshots?select=id,fiscal_year,version,period_start,period_end,status,basis,prebalance_rows,controls,findings,updated_at&order=period_end.desc,version.desc&limit=24"),
   ]);
 
   const selectedCampaign = filters.campaignId
@@ -1007,6 +1046,7 @@ async function generateProfessionalReport(
     integrationConnections,
     filters.periodDays,
   );
+  const financialAnalysis = buildFinancialAnalysis(financialSnapshots, accountingSnapshots);
   const warnings: string[] = [];
   if (filters.campaignId && !selectedCampaign) warnings.push("No se encontro la campana seleccionada.");
   if (!filteredCompanies.length) warnings.push("No hay empresas que coincidan con los filtros seleccionados.");
@@ -1014,6 +1054,8 @@ async function generateProfessionalReport(
   if (!periodCampaigns.length) warnings.push("No hay campanas registradas en el periodo seleccionado.");
   if (!agentIntelligence.agentsWithData) warnings.push("Los agentes aun no registran analisis completados en el periodo seleccionado.");
   if (!integrationConnections.length) warnings.push("No fue posible incluir el estado de las integraciones del Agent Hub.");
+  if (!financialAnalysis.available) warnings.push("No hay un corte financiero mensual disponible para calcular indicadores de ventas y compras.");
+  else warnings.push(...financialAnalysis.warnings);
   if ([companies, interactions, tasks].some((rows) => rows.length >= 5000) || recipients.length >= 10000 || emailRecipients.length >= 10000) {
     warnings.push("La consulta alcanzo el limite de lectura; el informe puede representar una muestra parcial.");
   }
@@ -1083,6 +1125,17 @@ async function generateProfessionalReport(
         detail: `Aporta ${sourceBreakdown[0].value} empresas (${sourceBreakdown[0].percentage}% del conjunto filtrado).`,
       });
     }
+    if (financialAnalysis.available) {
+      insights.push({
+        tone: financialAnalysis.profitabilityAvailable
+          ? Number(financialAnalysis.profitabilityValue) >= 0 ? "positive" : "attention"
+          : "attention",
+        title: financialAnalysis.profitabilityAvailable
+          ? `Rentabilidad contable de ${reportCurrency(Number(financialAnalysis.profitabilityValue))}`
+          : `Diferencia documental de ${reportCurrency(financialAnalysis.documentaryDifference)}`,
+        detail: financialAnalysis.explanation,
+      });
+    }
     insights.push({
       tone: agentIntelligence.agentsWithData === agentIntelligence.totalAgents ? "positive" : "attention",
       title: `${agentIntelligence.agentsWithData} de ${agentIntelligence.totalAgents} agentes aportan datos`,
@@ -1139,6 +1192,7 @@ async function generateProfessionalReport(
     campaignPerformance,
     campaignAnalysis,
     agentIntelligence,
+    financialAnalysis,
     insights,
     dataQuality: {
       contactable,
@@ -1276,6 +1330,155 @@ function buildAgentTaskTrend(tasks: JsonRecord[], periodDays: number) {
     else if (status === "pending" || status === "in_progress") bucket.pending += 1;
   }
   return buckets;
+}
+
+function buildFinancialAnalysis(financialRows: JsonRecord[], accountingRows: JsonRecord[]): FinancialAnalysis {
+  const currentMonthKey = chileCurrentMonthKey();
+  const financialRow = financialRows[0];
+  const financial = asRecord(financialRow?.payload);
+  const rawSalesMonths = financial.sales_by_month ?? financial.monthly_sales;
+  const rawPurchaseMonths = financial.purchases_by_month ?? financial.monthly_purchases;
+  const salesMonths = Array.isArray(rawSalesMonths)
+    ? rawSalesMonths.map(asRecord).filter((month) => financialMonthKeyFromRow(month))
+    : [];
+  const purchaseMonths = Array.isArray(rawPurchaseMonths)
+    ? rawPurchaseMonths.map(asRecord).filter((month) => financialMonthKeyFromRow(month))
+    : [];
+  const monthKeys = [...new Set([
+    ...salesMonths.map(financialMonthKeyFromRow),
+    ...purchaseMonths.map(financialMonthKeyFromRow),
+  ])].filter(Boolean).sort();
+  const monthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys.at(-1) ?? currentMonthKey;
+  const salesMonth = salesMonths.find((month) => financialMonthKeyFromRow(month) === monthKey);
+  const purchaseMonth = purchaseMonths.find((month) => financialMonthKeyFromRow(month) === monthKey);
+  const salesMonthKeys = salesMonths.map(financialMonthKeyFromRow).filter(Boolean).sort();
+  const salesMonthIndex = salesMonthKeys.indexOf(monthKey);
+  const previousMonthKey = salesMonthIndex > 0 ? salesMonthKeys[salesMonthIndex - 1] : "";
+  const previousSalesMonth = salesMonths.find((month) => financialMonthKeyFromRow(month) === previousMonthKey);
+  const netSales = reportNumber(salesMonth?.net_sales ?? salesMonth?.net_total ?? salesMonth?.total);
+  const salesTax = reportNumber(salesMonth?.tax);
+  const grossSales = reportNumber(salesMonth?.gross_sales ?? salesMonth?.gross_total) || netSales + salesTax;
+  const salesDocuments = reportNumber(salesMonth?.documents ?? salesMonth?.document_count ?? salesMonth?.count);
+  const netPurchases = reportNumber(purchaseMonth?.net_purchases ?? purchaseMonth?.net_total ?? purchaseMonth?.total);
+  const purchaseTax = reportNumber(purchaseMonth?.tax);
+  const grossPurchases = reportNumber(purchaseMonth?.gross_purchases ?? purchaseMonth?.gross_total) || netPurchases + purchaseTax;
+  const purchaseDocuments = reportNumber(purchaseMonth?.documents ?? purchaseMonth?.document_count ?? purchaseMonth?.count);
+  const documentaryDifference = netSales - netPurchases;
+  const previousMonthNetSales = reportNumber(previousSalesMonth?.net_sales ?? previousSalesMonth?.net_total ?? previousSalesMonth?.total);
+  const salesTrendPercent = previousMonthNetSales
+    ? Math.round(((netSales - previousMonthNetSales) / Math.abs(previousMonthNetSales)) * 1000) / 10
+    : null;
+  const reportPeriodStart = optionalReportDate(financial.period_start);
+  const reportPeriodEnd = optionalReportDate(financial.period_end);
+  const referenceAppliesToMonth = reportPeriodStart?.slice(0, 7) === monthKey && reportPeriodEnd?.slice(0, 7) === monthKey;
+  const referenceMarginAvailable = Boolean(financial.reference_margin_available && referenceAppliesToMonth);
+  const referenceGrossMargin = referenceMarginAvailable ? reportNumber(financial.reference_gross_margin) : null;
+
+  const accounting = accountingRows
+    .map(asRecord)
+    .find((row) => optionalReportDate(row.period_start)?.slice(0, 7) === monthKey && optionalReportDate(row.period_end)?.slice(0, 7) === monthKey)
+    ?? asRecord(accountingRows[0]);
+  const controls = asRecord(accounting.controls);
+  const accountingStart = optionalReportDate(accounting.period_start);
+  const accountingEnd = optionalReportDate(accounting.period_end);
+  const accountingCoversOnlyMonth = accountingStart?.slice(0, 7) === monthKey && accountingEnd?.slice(0, 7) === monthKey;
+  const profitCertifiable = Boolean(
+    controls.profit_certifiable &&
+    accountingCoversOnlyMonth &&
+    ["reviewed", "closed"].includes(String(accounting.status)),
+  );
+  const prebalanceRows = Array.isArray(accounting.prebalance_rows) ? accounting.prebalance_rows.map(asRecord) : [];
+  const accountingProfit = prebalanceRows.reduce((total, row) => (
+    total + reportNumber(row.result_gain) - reportNumber(row.result_loss)
+  ), 0);
+  const profitabilityAvailable = profitCertifiable && prebalanceRows.length > 0;
+  const profitabilityValue = profitabilityAvailable ? accountingProfit : null;
+  const warnings: string[] = [];
+
+  if (monthKey !== currentMonthKey && monthKeys.length) {
+    warnings.push(`El ultimo mes financiero disponible es ${financialMonthLabel(monthKey)}; todavia no existe un corte para ${financialMonthLabel(currentMonthKey)}.`);
+  }
+  if (!purchaseMonth) {
+    warnings.push("No hay compras mensuales conciliadas para el periodo; no se calcula diferencia documental completa.");
+  }
+  if (!profitabilityAvailable) {
+    warnings.push("La utilidad neta no esta certificada: faltan costo de ventas por inventario, gastos devengados y cierre contable mensual.");
+  }
+  const accountingFindings = Array.isArray(accounting.findings) ? accounting.findings.map(asRecord) : [];
+  for (const finding of accountingFindings.slice(0, 2)) {
+    const title = String(finding.title ?? "").trim();
+    if (title) warnings.push(title);
+  }
+
+  return {
+    available: Boolean(financialRow && (salesMonth || purchaseMonth)),
+    monthKey,
+    monthLabel: financialMonthLabel(monthKey),
+    isCurrentMonth: monthKey === currentMonthKey,
+    updatedAt: financialRow?.updated_at ? String(financialRow.updated_at) : null,
+    periodStart: reportPeriodStart,
+    periodEnd: reportPeriodEnd,
+    netSales,
+    grossSales,
+    salesTax,
+    salesDocuments,
+    netPurchases,
+    grossPurchases,
+    purchaseTax,
+    purchaseDocuments,
+    documentaryDifference,
+    documentaryMarginRate: percentage(documentaryDifference, netSales),
+    previousMonthNetSales,
+    salesTrendPercent,
+    referenceGrossMargin,
+    referenceMarginRate: referenceGrossMargin === null ? null : percentage(referenceGrossMargin, netSales),
+    profitabilityAvailable,
+    profitabilityValue,
+    profitabilityRate: profitabilityValue === null ? null : percentage(profitabilityValue, netSales),
+    accountingStatus: String(accounting.status ?? "sin_cierre"),
+    accountingPeriodLabel: accountingStart && accountingEnd ? `${accountingStart} a ${accountingEnd}` : "Sin cierre mensual",
+    explanation: profitabilityAvailable
+      ? `El cierre contable de ${financialMonthLabel(monthKey)} permite informar una utilidad de ${reportCurrency(accountingProfit)}.`
+      : `Para ${financialMonthLabel(monthKey)} hay ${reportCurrency(netSales)} en ventas netas y ${reportCurrency(netPurchases)} en compras netas. La diferencia documental de ${reportCurrency(documentaryDifference)} no es utilidad: compras no equivale a costo de ventas y faltan gastos y cierre de inventario.`,
+    warnings: [...new Set(warnings)].slice(0, 5),
+  };
+}
+
+function reportNumber(value: unknown) {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? Math.round(number) : 0;
+}
+
+function optionalReportDate(value: unknown) {
+  const text = String(value ?? "").trim();
+  return /^\d{4}-\d{2}-\d{2}/.test(text) ? text.slice(0, 10) : null;
+}
+
+function chileCurrentMonthKey() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    timeZone: "America/Santiago",
+  }).formatToParts(new Date());
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  return year && month ? `${year}-${month}` : new Date().toISOString().slice(0, 7);
+}
+
+function financialMonthKeyFromRow(row: JsonRecord) {
+  return String(row.month ?? row.period ?? row.period_month ?? "").slice(0, 7);
+}
+
+function financialMonthLabel(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  if (!year || !month) return monthKey || "Sin periodo";
+  return new Intl.DateTimeFormat("es-CL", { month: "long", year: "numeric", timeZone: "UTC" })
+    .format(new Date(Date.UTC(year, month - 1, 1)))
+    .replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function reportCurrency(value: number) {
+  return new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(value);
 }
 
 function buildCampaignDeliveryAnalysis(
@@ -1898,6 +2101,9 @@ async function callOpenAI(input: {
     "Respeta los filtros de origen, antiguedad de ultima compra y cantidad de compras informados por el servidor.",
     "Si el usuario pide un informe, reporte, dashboard, KPI, estadistica, tendencia o informacion de uno o varios agentes, usa exclusivamente generate_professional_report para explicar cifras, tendencias, riesgos y oportunidades.",
     "agentIntelligence consolida los siete agentes del CRM. Usa sus estados, ejecuciones, resumenes, metricas, propuestas, alertas e integraciones para responder preguntas transversales sin atribuir acciones que no esten registradas.",
+    "financialAnalysis contiene el corte financiero mensual. Si preguntan por rentabilidad, utilidad, ventas, compras o margen, responde con el mes exacto, las cifras disponibles y su fecha de actualizacion.",
+    "Nunca llames utilidad o rentabilidad a documentaryDifference: ventas netas menos compras netas es solo diferencia documental, porque compras no equivale a costo de ventas. Solo informa utilidad cuando profitabilityAvailable sea true.",
+    "Si profitabilityAvailable es false, entrega igualmente ventas, compras, diferencia documental, tendencia y explica con claridad que la utilidad neta requiere inventario, costo de ventas, gastos devengados y cierre contable.",
     "Cuando exista generate_professional_report, menciona el periodo analizado, destaca hasta cuatro hallazgos accionables y aclara cualquier advertencia de calidad de datos.",
     "Cuando el informe incluya campaignAnalysis, responde sobre esa campana exacta: diferencia enviados, fallidos, pendientes y omitidos; no presentes pendientes como fallidos.",
     "En analisis de campanas menciona que Gmail no mide aperturas ni clics si esos datos no existen, y nunca supongas que un correo fue leido.",
@@ -2235,6 +2441,7 @@ function reportFiltersFromMessage(message: string): ReportFilters {
 
 function reportTitleFromMessage(message: string) {
   const text = normalize(message);
+  if (mentionsFinancialAnalysis(message)) return "Informe financiero mensual";
   if (text.includes("agente") || text.includes("gerencia") || text.includes("operacion")) return "Informe integral de agentes y operacion";
   if (text.includes("finanza") || text.includes("cobranza")) return "Informe financiero y de cobranza";
   if (text.includes("logistica") || text.includes("inventario") || text.includes("comercio exterior")) return "Informe de operaciones y abastecimiento";
@@ -2402,6 +2609,17 @@ function mentionsReport(message: string) {
     "agente cobranza", "agente logistico", "comercio exterior", "agente gerente",
     "finanzas", "cobranza", "logistica", "inventario", "gerencia", "salud de integraciones",
     "propuestas pendientes", "alertas criticas", "rendimiento de agentes",
+    "rentabilidad", "utilidad", "margen", "ventas", "compras", "resultado financiero",
+    "flujo de caja", "cuanto vendimos", "cuanto compramos", "cuanto ganamos",
+  ].some((word) => text.includes(word));
+}
+
+function mentionsFinancialAnalysis(message: string) {
+  const text = normalize(message);
+  return [
+    "rentabilidad", "rentable", "utilidad", "ganancia", "margen", "ventas", "compras",
+    "financiero", "finanzas", "resultado financiero", "flujo de caja", "cuanto vendimos",
+    "cuanto compramos", "cuanto ganamos", "cuanto facturamos", "facturacion",
   ].some((word) => text.includes(word));
 }
 
