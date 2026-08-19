@@ -194,6 +194,16 @@ function isInstallerAccountTemplate(template?: MessageTemplate) {
   return text.includes("cuenta instalador") || text.includes("cuenta de instalador") || text.includes(INSTALLER_REGISTER_URL);
 }
 
+function usesInstallerAccountContent(campaign: CampaignDraft, template?: MessageTemplate) {
+  const preparedMessage = campaign.message.trim();
+  if (preparedMessage) {
+    const text = preparedMessage.toLowerCase();
+    return text.includes("cuenta instalador") || text.includes("cuenta de instalador") || text.includes(INSTALLER_REGISTER_URL);
+  }
+
+  return isInstallerAccountTemplate(template);
+}
+
 function canReceiveInstallerBenefit(company: Company) {
   return company.type === "tecnico" || company.type === "instalador grande";
 }
@@ -446,8 +456,9 @@ function describeCampaignSegment(filters: { companyType: CampaignCompanyTypeFilt
   return parts.filter(Boolean).join(" · ");
 }
 
-function renderMessage(template: MessageTemplate, company: Company, campaign: CampaignDraft) {
-  return renderCampaignMessage(campaign.message || template.body, company, campaign);
+function renderMessage(template: MessageTemplate | undefined, company: Company, campaign: CampaignDraft) {
+  const message = campaign.message || template?.body || "";
+  return message ? renderCampaignMessage(message, company, campaign) : "Sin contenido preparado";
 }
 
 function renderCampaignMessage(message: string, company: Company | undefined, campaign: CampaignDraft) {
@@ -1196,7 +1207,7 @@ export function CampaignsPage() {
           replied: 0,
           interested: 0,
           discarded: 0,
-          templateId: templates[0]?.id ?? demoTemplates[0].id,
+          templateId: "",
           message: String(row.message ?? ""),
           product: String(row.product ?? ""),
           coupon: String(row.coupon ?? ""),
@@ -1312,7 +1323,7 @@ export function CampaignsPage() {
   }, [selectedCampaignId]);
 
   const selectedCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId) ?? campaigns[0];
-  const selectedTemplate = templates.find((template) => template.id === selectedCampaign?.templateId) ?? templates[0];
+  const selectedTemplate = templates.find((template) => template.id === selectedCampaign?.templateId);
   const selectedCompanies = useMemo(() => {
     if (!selectedCampaign) return [];
     const recipientIds = getCampaignRecipientIds(selectedCampaign, companies);
@@ -1614,7 +1625,7 @@ export function CampaignsPage() {
     setSendingCampaign(true);
     setSendingResults(null);
 
-    if (selectedTemplate && isInstallerAccountTemplate(selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
+    if (usesInstallerAccountContent(selectedCampaign, selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
       setSendingResults({
         success: 0,
         failed: selectedCompanies.length,
@@ -1776,7 +1787,7 @@ export function CampaignsPage() {
       return;
     }
 
-    if (selectedTemplate && isInstallerAccountTemplate(selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
+    if (usesInstallerAccountContent(selectedCampaign, selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
       setShowGmailConfirmation(false);
       setSendingResults({
         success: 0,
@@ -2278,8 +2289,12 @@ export function CampaignsPage() {
                     <span>{selectedCampaign.name}</span>
                   </div>
                   <div className="message-preview">
-                    <span>{selectedCampaign.message ? "Contenido preparado" : `Plantilla: ${selectedTemplate.name}`}</span>
-                    <p>{renderCampaignMessage(selectedCampaign.message || selectedTemplate.body, selectedCompanies[0], selectedCampaign)}</p>
+                    <span>{selectedCampaign.message ? "Contenido preparado" : selectedTemplate ? `Plantilla: ${selectedTemplate.name}` : "Sin contenido preparado"}</span>
+                    <p>
+                      {selectedCampaign.message || selectedTemplate?.body
+                        ? renderCampaignMessage(selectedCampaign.message || selectedTemplate?.body || "", selectedCompanies[0], selectedCampaign)
+                        : "Esta campana no tiene contenido preparado para enviar."}
+                    </p>
                     {!selectedCompanies.length ? <small>Vista previa con variables. Aun no hay destinatarios asociados.</small> : null}
                   </div>
                   {selectedCampaign.attachments && selectedCampaign.attachments.length > 0 && (
@@ -2322,7 +2337,7 @@ export function CampaignsPage() {
                         className="primary-button" 
                         type="button" 
                         onClick={() => {
-                          if (!metaTemplateName && selectedTemplate.name) {
+                          if (!metaTemplateName && selectedTemplate?.name) {
                             setMetaTemplateName(selectedTemplate.name);
                           }
                           setShowMetaModal(true);
