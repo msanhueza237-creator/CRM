@@ -376,6 +376,19 @@ export function CopilotPage() {
                             <div><TrendingUp size={15} /><span>{message.reportSnapshot.financialAnalysis.profitabilityAvailable ? "Utilidad" : "Diferencia documental"}</span><strong>{formatCopilotCurrency(message.reportSnapshot.financialAnalysis.profitabilityAvailable ? Number(message.reportSnapshot.financialAnalysis.profitabilityValue) : message.reportSnapshot.financialAnalysis.documentaryDifference)}</strong></div>
                           </div>
                           <p>{message.reportSnapshot.financialAnalysis.explanation}</p>
+                          {message.reportSnapshot.financialAnalysis.comparison?.available ? (
+                            <div className="copilot-year-comparison">
+                              <strong>{message.reportSnapshot.financialAnalysis.comparison.periodLabel}</strong>
+                              {[message.reportSnapshot.financialAnalysis.comparison.first, message.reportSnapshot.financialAnalysis.comparison.second].map((year) => (
+                                <div key={year.year}>
+                                  <span>{year.year}</span>
+                                  <span>Ventas {formatCopilotCurrency(year.netSales)}</span>
+                                  <span>Compras {formatCopilotCurrency(year.netPurchases)}</span>
+                                </div>
+                              ))}
+                              <small>{message.reportSnapshot.financialAnalysis.comparison.explanation}</small>
+                            </div>
+                          ) : null}
                         </div>
                       ) : null}
                       {!message.reportSnapshot.campaignAnalysis && !message.reportSnapshot.title.toLowerCase().includes("financier") ? (
@@ -391,7 +404,7 @@ export function CopilotPage() {
                         </div>
                       ) : null}
                       <div className="copilot-report-actions">
-                        <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : message.reportSnapshot.title.toLowerCase().includes("financier") ? `&view=financial${message.reportSnapshot.filters.financialYear ? `&year=${message.reportSnapshot.filters.financialYear}` : ""}` : ""}`}>
+                        <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : message.reportSnapshot.title.toLowerCase().includes("financier") ? `&view=financial${message.reportSnapshot.filters.financialYear ? `&year=${message.reportSnapshot.filters.financialYear}` : ""}${message.reportSnapshot.filters.financialCompareYear ? `&compareYear=${message.reportSnapshot.filters.financialCompareYear}` : ""}` : ""}`}>
                           <BarChart3 size={17} /> Abrir informe <ArrowUpRight size={16} />
                         </Link>
                         <button className="ghost-button" type="button" disabled={Boolean(exportingReport)} onClick={() => void downloadReport(message.id, message.reportSnapshot!, "pdf")}>

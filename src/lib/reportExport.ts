@@ -148,6 +148,28 @@ export async function exportReportPdf(report: CopilotReportSnapshot) {
     if (financial.salesTrendPercent !== null) {
       paragraph(`Variacion de ventas frente al mes disponible anterior: ${financial.salesTrendPercent > 0 ? "+" : ""}${financial.salesTrendPercent}%.`);
     }
+    if (financial.comparison?.available) {
+      sectionTitle(`Comparacion ${financial.comparison.firstYear} vs ${financial.comparison.secondYear}`, financial.comparison.periodLabel);
+      drawPdfTable(
+        document,
+        ["Ano", "Ventas netas", "Compras netas", "Diferencia documental"],
+        [financial.comparison.first, financial.comparison.second].map((year) => [
+          String(year.year),
+          formatCurrency(year.netSales),
+          formatCurrency(year.netPurchases),
+          formatCurrency(year.documentaryDifference),
+        ]),
+        margin,
+        contentWidth,
+        () => y,
+        (nextY) => { y = nextY; },
+        ensureSpace,
+      );
+      paragraph(financial.comparison.explanation, deepTeal);
+      if (financial.comparison.salesChangePercent !== null) {
+        paragraph(`Variacion de ventas: ${financial.comparison.salesChangePercent > 0 ? "+" : ""}${financial.comparison.salesChangePercent}%.`);
+      }
+    }
   }
 
   if (!financialOnly) {
@@ -267,6 +289,20 @@ export async function exportReportExcel(report: CopilotReportSnapshot) {
       ["Explicacion", financial.explanation, "Alcance contable"],
       ["Advertencias", financial.warnings.join(" | ") || "Sin advertencias adicionales", "Validaciones del backend"],
     ].forEach((row) => finances.addRow(row));
+    if (financial.comparison?.available) {
+      finances.addRow([]);
+      finances.addRow(["Comparacion anual", financial.comparison.periodLabel, "Mismos meses para ambos anos"]);
+      finances.addRow(["Ano", "Ventas netas", "Compras netas", "Diferencia documental", "Documentos venta", "Documentos compra"]);
+      [financial.comparison.first, financial.comparison.second].forEach((year) => finances.addRow([
+        year.year,
+        year.netSales,
+        year.netPurchases,
+        year.documentaryDifference,
+        year.salesDocuments,
+        year.purchaseDocuments,
+      ]));
+      finances.addRow(["Variacion ventas (%)", financial.comparison.salesChangePercent ?? "Sin base", financial.comparison.explanation]);
+    }
     styleWorksheet(finances, [34, 34, 92]);
     for (let row = 2; row <= 10; row += 1) finances.getCell(row, 2).numFmt = "#,##0";
   }

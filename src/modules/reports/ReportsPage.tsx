@@ -425,6 +425,25 @@ function FinancialAnalysisPanel({ analysis }: { analysis: CopilotReportSnapshot[
           <div><strong>{analysis.profitabilityAvailable ? "Cierre mensual disponible" : "Como interpretar esta cifra"}</strong><p>{analysis.explanation}</p></div>
         </div>
       </div>
+      {analysis.comparison?.available ? (
+        <div className="financial-year-comparison" aria-label={`Comparacion financiera ${analysis.comparison.firstYear} y ${analysis.comparison.secondYear}`}>
+          <div className="financial-year-comparison-heading">
+            <div><BarChart3 size={19} /><strong>{analysis.comparison.periodLabel}</strong></div>
+            <span>{analysis.comparison.salesChangePercent === null ? "Sin base" : `${analysis.comparison.salesChangePercent > 0 ? "+" : ""}${formatPercent(analysis.comparison.salesChangePercent)}% ventas`}</span>
+          </div>
+          <div className="financial-year-comparison-grid">
+            {[analysis.comparison.first, analysis.comparison.second].map((year) => (
+              <article key={year.year}>
+                <strong>{year.year}</strong>
+                <div><span>Ventas netas</span><b>{formatCurrency(year.netSales)}</b></div>
+                <div><span>Compras netas</span><b>{formatCurrency(year.netPurchases)}</b></div>
+                <div><span>Diferencia documental</span><b>{formatCurrency(year.documentaryDifference)}</b></div>
+              </article>
+            ))}
+          </div>
+          <p>{analysis.comparison.explanation}</p>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -644,6 +663,7 @@ function reportFiltersFromLocation(): CopilotReportFilters {
     campaignId: params.get("campaign") || undefined,
     reportKind: params.get("view") === "financial" ? "financial" : undefined,
     financialYear: /^20\d{2}$/.test(params.get("year") ?? "") ? Number(params.get("year")) : undefined,
+    financialCompareYear: /^20\d{2}$/.test(params.get("compareYear") ?? "") ? Number(params.get("compareYear")) : undefined,
   };
 }
 
@@ -742,6 +762,7 @@ function emptyFinancialAnalysis(): CopilotReportSnapshot["financialAnalysis"] {
     accountingPeriodLabel: "Sin cierre mensual",
     explanation: "Sin datos financieros en esta lectura local.",
     warnings: [],
+    comparison: null,
   };
 }
 

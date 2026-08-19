@@ -95,6 +95,31 @@ export interface CopilotFinancialAnalysis {
   accountingPeriodLabel: string;
   explanation: string;
   warnings: string[];
+  comparison: CopilotFinancialYearComparison | null;
+}
+
+export interface CopilotFinancialYearTotals {
+  year: number;
+  netSales: number;
+  salesDocuments: number;
+  netPurchases: number;
+  purchaseDocuments: number;
+  documentaryDifference: number;
+}
+
+export interface CopilotFinancialYearComparison {
+  available: boolean;
+  firstYear: number;
+  secondYear: number;
+  throughMonth: number;
+  periodLabel: string;
+  first: CopilotFinancialYearTotals;
+  second: CopilotFinancialYearTotals;
+  salesChangePercent: number | null;
+  purchasesChangePercent: number | null;
+  documentaryDifferenceChangePercent: number | null;
+  explanation: string;
+  warnings: string[];
 }
 
 export interface CopilotReportSnapshot {
@@ -110,6 +135,7 @@ export interface CopilotReportSnapshot {
     region: string;
     campaignId: string;
     financialYear?: number;
+    financialCompareYear?: number;
   };
   filterOptions: {
     sources: string[];
@@ -192,6 +218,7 @@ export interface CopilotReportFilters {
   campaignId?: string;
   reportKind?: "financial";
   financialYear?: number;
+  financialCompareYear?: number;
 }
 
 export interface CopilotCampaignDraft {
@@ -409,5 +436,6 @@ function emptyFinancialAnalysis(): CopilotFinancialAnalysis {
     accountingPeriodLabel: "Sin cierre mensual",
     explanation: "La Edge Function actual no incluye todavia el corte financiero mensual.",
     warnings: [],
+    comparison: null,
   };
 }
