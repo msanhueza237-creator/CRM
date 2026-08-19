@@ -75,6 +75,7 @@ type ReportFilters = {
   companyType: string;
   region: string;
   campaignId: string;
+  financialYear: number | null;
 };
 
 type ReportBreakdown = {
@@ -966,6 +967,10 @@ async function generateProfessionalReport(
   filters: ReportFilters,
   title: string,
 ): Promise<ProfessionalReport> {
+  if (!filters.campaignId && normalize(title).includes("financier")) {
+    return generateFinancialReport(rest, filters, title);
+  }
+
   const [
     companies,
     interactions,
@@ -1061,7 +1066,7 @@ async function generateProfessionalReport(
     integrationConnections,
     filters.periodDays,
   );
-  const financialAnalysis = buildFinancialAnalysis(financialSnapshots, accountingSnapshots);
+  const financialAnalysis = buildFinancialAnalysis(financialSnapshots, accountingSnapshots, filters.financialYear);
   const financialReportRequested = !campaignAnalysis && normalize(title).includes("financier");
   const warnings: string[] = [];
   if (filters.campaignId && !selectedCampaign) warnings.push("No se encontro la campana seleccionada.");
@@ -1221,6 +1226,74 @@ async function generateProfessionalReport(
   };
 }
 
+async function generateFinancialReport(
+  rest: RestClient,
+  filters: ReportFilters,
+  title: string,
+): Promise<ProfessionalReport> {
+  const [financialSnapshots, accountingSnapshots] = await Promise.all([
+    selectRowsOptional(
+      rest,
+      "integration_records?select=payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1",
+    ),
+    selectRowsOptional(
+      rest,
+      "accounting_snapshots?select=id,fiscal_year,version,period_start,period_end,status,basis,prebalance_rows,controls,findings,updated_at&order=period_end.desc,version.desc&limit=3",
+    ),
+  ]);
+  const financialAnalysis = buildFinancialAnalysis(financialSnapshots, accountingSnapshots);
+  const warnings = financialAnalysis.available
+    ? financialAnalysis.warnings
+    : ["No hay un corte financiero mensual disponible para calcular indicadores de ventas y compras."];
+  const insights: ProfessionalReport["insights"] = financialAnalysis.available
+    ? [{
+      tone: financialAnalysis.profitabilityAvailable
+        ? Number(financialAnalysis.profitabilityValue) >= 0 ? "positive" : "attention"
+        : "attention",
+      title: financialAnalysis.profitabilityAvailable
+        ? `Utilidad contable de ${reportCurrency(Number(financialAnalysis.profitabilityValue))}`
+        : `Diferencia documental de ${reportCurrency(financialAnalysis.documentaryDifference)}`,
+      detail: financialAnalysis.explanation,
+    }]
+    : [];
+
+  return {
+    toolName: "generate_professional_report",
+    title,
+    subtitle: "Ventas, compras, tendencia mensual y rentabilidad contable disponible.",
+    generatedAt: new Date().toISOString(),
+    periodLabel: financialAnalysis.available ? financialAnalysis.monthLabel : reportPeriodLabel(filters.periodDays),
+    filters,
+    filterOptions: { sources: [], companyTypes: [], regions: [], campaigns: [] },
+    kpis: {
+      companies: 0,
+      clients: 0,
+      conversionRate: 0,
+      newCompanies: 0,
+      interactions: 0,
+      campaigns: 0,
+      recipients: 0,
+      sent: 0,
+      replies: 0,
+      replyRate: 0,
+      interested: 0,
+      pendingTasks: 0,
+    },
+    funnel: [],
+    companyTypes: [],
+    sources: [],
+    campaignStatuses: [],
+    trend: [],
+    campaignPerformance: [],
+    campaignAnalysis: null,
+    agentIntelligence: buildAgentIntelligence([], [], [], [], filters.periodDays),
+    financialAnalysis,
+    insights,
+    dataQuality: { contactable: 0, missingContact: 0, missingLocation: 0 },
+    warnings,
+  };
+}
+
 function buildAgentIntelligence(
   tasks: JsonRecord[],
   proposals: JsonRecord[],
@@ -1350,7 +1423,11 @@ function buildAgentTaskTrend(tasks: JsonRecord[], periodDays: number) {
   return buckets;
 }
 
-function buildFinancialAnalysis(financialRows: JsonRecord[], accountingRows: JsonRecord[]): FinancialAnalysis {
+function buildFinancialAnalysis(
+  financialRows: JsonRecord[],
+  accountingRows: JsonRecord[],
+  financialYear: number | null = null,
+): FinancialAnalysis {
   const currentMonthKey = chileCurrentMonthKey();
   const financialRow = financialRows[0];
   const financial = asRecord(financialRow?.payload);
@@ -1362,6 +1439,15 @@ function buildFinancialAnalysis(financialRows: JsonRecord[], accountingRows: Jso
   const purchaseMonths = Array.isArray(rawPurchaseMonths)
     ? rawPurchaseMonths.map(asRecord).filter((month) => financialMonthKeyFromRow(month))
     : [];
+  if (financialYear) {
+    return buildAnnualFinancialAnalysis(
+      financialRow,
+      salesMonths,
+      purchaseMonths,
+      accountingRows,
+      financialYear,
+    );
+  }
   const monthKeys = [...new Set([
     ...salesMonths.map(financialMonthKeyFromRow),
     ...purchaseMonths.map(financialMonthKeyFromRow),
@@ -1460,6 +1546,116 @@ function buildFinancialAnalysis(financialRows: JsonRecord[], accountingRows: Jso
       : `Para ${financialMonthLabel(monthKey)} hay ${reportCurrency(netSales)} en ventas netas y ${reportCurrency(netPurchases)} en compras netas. La diferencia documental de ${reportCurrency(documentaryDifference)} no es utilidad: compras no equivale a costo de ventas y faltan gastos y cierre de inventario.`,
     warnings: [...new Set(warnings)].slice(0, 5),
   };
+}
+
+function buildAnnualFinancialAnalysis(
+  financialRow: JsonRecord | undefined,
+  salesMonths: JsonRecord[],
+  purchaseMonths: JsonRecord[],
+  accountingRows: JsonRecord[],
+  year: number,
+): FinancialAnalysis {
+  const yearPrefix = `${year}-`;
+  const annualSales = salesMonths.filter((month) => financialMonthKeyFromRow(month).startsWith(yearPrefix));
+  const annualPurchases = purchaseMonths.filter((month) => financialMonthKeyFromRow(month).startsWith(yearPrefix));
+  const availableMonthKeys = [...new Set([
+    ...annualSales.map(financialMonthKeyFromRow),
+    ...annualPurchases.map(financialMonthKeyFromRow),
+  ])].filter(Boolean).sort();
+  const lastMonthKey = availableMonthKeys.at(-1) ?? `${year}-12`;
+  const lastMonthNumber = Number(lastMonthKey.slice(5, 7)) || 12;
+  const netSales = sumFinancialRows(annualSales, ["net_sales", "net_total", "total"]);
+  const salesTax = sumFinancialRows(annualSales, ["tax"]);
+  const grossSales = sumFinancialRows(annualSales, ["gross_sales", "gross_total"]) || netSales + salesTax;
+  const salesDocuments = sumFinancialRows(annualSales, ["documents", "document_count", "count"]);
+  const netPurchases = sumFinancialRows(annualPurchases, ["net_purchases", "net_total", "total"]);
+  const purchaseTax = sumFinancialRows(annualPurchases, ["tax"]);
+  const grossPurchases = sumFinancialRows(annualPurchases, ["gross_purchases", "gross_total"]) || netPurchases + purchaseTax;
+  const purchaseDocuments = sumFinancialRows(annualPurchases, ["documents", "document_count", "count"]);
+  const documentaryDifference = netSales - netPurchases;
+  const previousYearSales = salesMonths.filter((month) => {
+    const key = financialMonthKeyFromRow(month);
+    return key.startsWith(`${year - 1}-`) && Number(key.slice(5, 7)) <= lastMonthNumber;
+  });
+  const previousYearNetSales = sumFinancialRows(previousYearSales, ["net_sales", "net_total", "total"]);
+  const salesTrendPercent = previousYearNetSales
+    ? Math.round(((netSales - previousYearNetSales) / Math.abs(previousYearNetSales)) * 1000) / 10
+    : null;
+  const accounting = accountingRows
+    .map(asRecord)
+    .find((row) => {
+      const start = optionalReportDate(row.period_start);
+      const end = optionalReportDate(row.period_end);
+      return start?.startsWith(`${year}-01`) && end?.startsWith(`${year}-12`);
+    }) ?? {};
+  const controls = asRecord(accounting.controls);
+  const prebalanceRows = Array.isArray(accounting.prebalance_rows) ? accounting.prebalance_rows.map(asRecord) : [];
+  const profitabilityAvailable = Boolean(
+    controls.profit_certifiable &&
+    ["reviewed", "closed"].includes(String(accounting.status)) &&
+    prebalanceRows.length,
+  );
+  const accountingProfit = prebalanceRows.reduce((total, row) => (
+    total + reportNumber(row.result_gain) - reportNumber(row.result_loss)
+  ), 0);
+  const profitabilityValue = profitabilityAvailable ? accountingProfit : null;
+  const warnings: string[] = [];
+  if (availableMonthKeys.length && lastMonthNumber < 12) {
+    warnings.push(`El informe ${year} es parcial: hay datos disponibles hasta ${financialMonthLabel(lastMonthKey)}.`);
+  }
+  if (!annualPurchases.length) {
+    warnings.push(`No hay compras mensuales conciliadas para ${year}.`);
+  }
+  if (!profitabilityAvailable) {
+    warnings.push(`La utilidad anual de ${year} no esta certificada: falta un cierre contable revisado que cubra todo el ano.`);
+  }
+  const lastPeriodLabel = availableMonthKeys.length ? financialMonthLabel(lastMonthKey) : `el ano ${year}`;
+
+  return {
+    available: Boolean(financialRow && availableMonthKeys.length),
+    monthKey: String(year),
+    monthLabel: `Ano ${year}`,
+    isCurrentMonth: false,
+    updatedAt: financialRow?.updated_at ? String(financialRow.updated_at) : null,
+    periodStart: `${year}-01-01`,
+    periodEnd: availableMonthKeys.length ? financialMonthEndDate(lastMonthKey) : `${year}-12-31`,
+    netSales,
+    grossSales,
+    salesTax,
+    salesDocuments,
+    netPurchases,
+    grossPurchases,
+    purchaseTax,
+    purchaseDocuments,
+    documentaryDifference,
+    documentaryMarginRate: percentage(documentaryDifference, netSales),
+    previousMonthNetSales: previousYearNetSales,
+    salesTrendPercent,
+    referenceGrossMargin: null,
+    referenceMarginRate: null,
+    profitabilityAvailable,
+    profitabilityValue,
+    profitabilityRate: profitabilityValue === null ? null : percentage(profitabilityValue, netSales),
+    accountingStatus: String(accounting.status ?? "sin_cierre_anual"),
+    accountingPeriodLabel: profitabilityAvailable ? `${year}-01-01 a ${year}-12-31` : `Sin cierre anual certificado para ${year}`,
+    explanation: profitabilityAvailable
+      ? `El cierre contable anual de ${year} permite informar una utilidad de ${reportCurrency(accountingProfit)}.`
+      : `Entre enero y ${lastPeriodLabel} hay ${reportCurrency(netSales)} en ventas netas y ${reportCurrency(netPurchases)} en compras netas. La diferencia documental de ${reportCurrency(documentaryDifference)} no es utilidad porque faltan costo de ventas, gastos y cierre de inventario.`,
+    warnings: [...new Set(warnings)].slice(0, 5),
+  };
+}
+
+function sumFinancialRows(rows: JsonRecord[], fields: string[]) {
+  return rows.reduce((total, row) => {
+    const field = fields.find((candidate) => row[candidate] !== undefined && row[candidate] !== null);
+    return total + reportNumber(field ? row[field] : 0);
+  }, 0);
+}
+
+function financialMonthEndDate(monthKey: string) {
+  const [year, month] = monthKey.split("-").map(Number);
+  if (!year || !month) return null;
+  return new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
 }
 
 function reportNumber(value: unknown) {
@@ -1938,8 +2134,8 @@ function buildFinancialReply(report: ProfessionalReport | null) {
     : financial.documentaryDifference;
   const resultLabel = financial.profitabilityAvailable ? "Utilidad contable" : "Diferencia documental";
   const trend = financial.salesTrendPercent === null
-    ? "No existe un mes anterior comparable."
-    : `Las ventas variaron ${financial.salesTrendPercent > 0 ? "+" : ""}${financial.salesTrendPercent}% frente al mes disponible anterior.`;
+    ? `No existe un ${financial.monthKey.length === 4 ? "ano" : "mes"} anterior comparable.`
+    : `Las ventas variaron ${financial.salesTrendPercent > 0 ? "+" : ""}${financial.salesTrendPercent}% frente ${financial.monthKey.length === 4 ? "al mismo periodo del ano anterior" : "al mes disponible anterior"}.`;
   return [
     `Informe financiero de ${financial.monthLabel}.`,
     `Ventas netas: ${reportCurrency(financial.netSales)} (${financial.salesDocuments} documentos).`,
@@ -2477,6 +2673,7 @@ function countBy(rows: JsonRecord[], field: string) {
 
 function reportFiltersFromPayload(payload: JsonRecord): ReportFilters {
   const rawPeriod = Number(payload.periodDays ?? 90);
+  const rawFinancialYear = Number(payload.financialYear ?? 0);
   const allowedPeriods = new Set([0, 30, 90, 180, 365]);
   return {
     periodDays: allowedPeriods.has(rawPeriod) ? rawPeriod : 90,
@@ -2484,28 +2681,35 @@ function reportFiltersFromPayload(payload: JsonRecord): ReportFilters {
     companyType: optionalText(payload.companyType, 80),
     region: optionalText(payload.region, 120),
     campaignId: optionalText(payload.campaignId, 80),
+    financialYear: rawFinancialYear >= 2000 && rawFinancialYear <= 2100 ? rawFinancialYear : null,
   };
 }
 
 function reportFiltersFromMessage(message: string): ReportFilters {
   const text = normalize(message);
   const explicitDays = text.match(/(?:ultimos?\s+)?(30|90|180|365)\s+dias?/);
+  const explicitYear = text.match(/\b(20\d{2})\b/);
+  const financialYear = explicitYear ? Number(explicitYear[1]) : null;
   let periodDays = explicitDays ? Number(explicitDays[1]) : 90;
   if (/\b(?:este|ultimo)\s+mes\b|\bmensual\b/.test(text)) periodDays = 30;
   if (/\b(?:ultimo|este)\s+(?:trimestre|trimestral)\b/.test(text)) periodDays = 90;
   if (/\b(?:ultimo|este)\s+(?:semestre|semestral)\b/.test(text)) periodDays = 180;
   if (/\b(?:ultimo|este)\s+ano\b|\banual\b/.test(text)) periodDays = 365;
+  if (financialYear) periodDays = 365;
   if (/\bhistorico\b|\bdesde el inicio\b|\btodo el periodo\b/.test(text)) periodDays = 0;
 
   const knownTypes = ["distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia"];
   const companyType = knownTypes.find((type) => text.includes(type)) ?? "";
   const source = text.includes("facto") ? "facto" : text.includes("tiendanube") || text.includes("climactiva.cl") ? "tiendanube" : "";
-  return { periodDays, source, companyType, region: "", campaignId: "" };
+  return { periodDays, source, companyType, region: "", campaignId: "", financialYear };
 }
 
 function reportTitleFromMessage(message: string) {
   const text = normalize(message);
-  if (mentionsFinancialAnalysis(message)) return "Informe financiero mensual";
+  if (mentionsFinancialAnalysis(message)) {
+    const year = text.match(/\b(20\d{2})\b/)?.[1];
+    return year ? `Informe financiero ${year}` : "Informe financiero mensual";
+  }
   if (text.includes("agente") || text.includes("gerencia") || text.includes("operacion")) return "Informe integral de agentes y operacion";
   if (text.includes("finanza") || text.includes("cobranza")) return "Informe financiero y de cobranza";
   if (text.includes("logistica") || text.includes("inventario") || text.includes("comercio exterior")) return "Informe de operaciones y abastecimiento";
@@ -2681,7 +2885,7 @@ function mentionsReport(message: string) {
 function mentionsFinancialAnalysis(message: string) {
   const text = normalize(message);
   return [
-    "rentabilidad", "rentable", "utilidad", "ganancia", "margen", "ventas", "compras",
+    "rentabilidad", "rentable", "utilidad", "ganancia", "margen", "ventas", "compras", "financier",
     "financiero", "finanzas", "resultado financiero", "flujo de caja", "cuanto vendimos",
     "cuanto compramos", "cuanto ganamos", "cuanto facturamos", "facturacion",
   ].some((word) => text.includes(word));

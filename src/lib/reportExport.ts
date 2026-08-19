@@ -251,7 +251,7 @@ export async function exportReportExcel(report: CopilotReportSnapshot) {
     const finances = workbook.addWorksheet("Finanzas", { views: [{ state: "frozen", ySplit: 1 }] });
     finances.addRow(["Indicador", "Valor", "Contexto"]);
     [
-      ["Periodo", financial.monthLabel, financial.isCurrentMonth ? "Mes actual" : "Ultimo mes disponible"],
+      ["Periodo", financial.monthLabel, financial.monthKey.length === 4 ? "Ano solicitado" : financial.isCurrentMonth ? "Mes actual" : "Ultimo mes disponible"],
       ["Ventas netas", financial.netSales, `${financial.salesDocuments} documentos`],
       ["IVA ventas", financial.salesTax, "Impuesto informado por Facto"],
       ["Ventas brutas", financial.grossSales, "Neto mas impuestos"],

@@ -391,7 +391,7 @@ export function CopilotPage() {
                         </div>
                       ) : null}
                       <div className="copilot-report-actions">
-                        <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : message.reportSnapshot.title.toLowerCase().includes("financier") ? "&view=financial" : ""}`}>
+                        <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : message.reportSnapshot.title.toLowerCase().includes("financier") ? `&view=financial${message.reportSnapshot.filters.financialYear ? `&year=${message.reportSnapshot.filters.financialYear}` : ""}` : ""}`}>
                           <BarChart3 size={17} /> Abrir informe <ArrowUpRight size={16} />
                         </Link>
                         <button className="ghost-button" type="button" disabled={Boolean(exportingReport)} onClick={() => void downloadReport(message.id, message.reportSnapshot!, "pdf")}>

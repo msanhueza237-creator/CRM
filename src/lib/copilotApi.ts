@@ -109,6 +109,7 @@ export interface CopilotReportSnapshot {
     companyType: string;
     region: string;
     campaignId: string;
+    financialYear?: number;
   };
   filterOptions: {
     sources: string[];
@@ -190,6 +191,7 @@ export interface CopilotReportFilters {
   region?: string;
   campaignId?: string;
   reportKind?: "financial";
+  financialYear?: number;
 }
 
 export interface CopilotCampaignDraft {

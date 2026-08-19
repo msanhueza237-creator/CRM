@@ -643,6 +643,7 @@ function reportFiltersFromLocation(): CopilotReportFilters {
     periodDays: [0, 30, 90, 180, 365].includes(requested) ? requested : 90,
     campaignId: params.get("campaign") || undefined,
     reportKind: params.get("view") === "financial" ? "financial" : undefined,
+    financialYear: /^20\d{2}$/.test(params.get("year") ?? "") ? Number(params.get("year")) : undefined,
   };
 }
 
