@@ -74,6 +74,7 @@ type ReportFilters = {
   source: string;
   companyType: string;
   region: string;
+  campaignId: string;
 };
 
 type ReportBreakdown = {
@@ -94,6 +95,7 @@ type ProfessionalReport = {
     sources: string[];
     companyTypes: string[];
     regions: string[];
+    campaigns: Array<{ id: string; name: string }>;
   };
   kpis: {
     companies: number;
@@ -125,6 +127,28 @@ type ProfessionalReport = {
     interested: number;
     replyRate: number;
   }>;
+  campaignAnalysis: {
+    id: string;
+    name: string;
+    status: string;
+    channel: string;
+    recipients: number;
+    sent: number;
+    failed: number;
+    pending: number;
+    skipped: number;
+    replies: number;
+    interested: number;
+    sendRate: number;
+    replyRate: number;
+    failureRate: number;
+    pendingRate: number;
+    emailBatches: number;
+    firstSentAt: string | null;
+    lastSentAt: string | null;
+    diagnosis: string;
+    topErrors: Array<{ message: string; count: number }>;
+  } | null;
   insights: Array<{ tone: "positive" | "attention" | "neutral"; title: string; detail: string }>;
   dataQuality: {
     contactable: number;
@@ -145,7 +169,7 @@ const jsonHeaders = {
   "Content-Type": "application/json; charset=utf-8",
 };
 
-const promptVersion = "copilot-reports-2026-08-19";
+const promptVersion = "copilot-campaign-analysis-2026-08-19";
 const defaultTenantId = "default";
 const allowedRoles = new Set(["administrador", "vendedor", "visualizador"]);
 
@@ -228,7 +252,12 @@ Deno.serve(async (req) => {
     });
 
     const toolStarted = Date.now();
-    const toolResults = await runReadOnlyTools(rest, context, message);
+    const toolResults = await runReadOnlyTools(
+      rest,
+      context,
+      message,
+      optionalText(payload.campaignId, 80),
+    );
     for (const result of toolResults) {
       await insertToolRun(rest, {
         conversation_id: conversation.id,
@@ -516,13 +545,58 @@ async function saveCampaignDraft(input: {
   });
 }
 
-async function runReadOnlyTools(rest: RestClient, context: ToolContext, message: string): Promise<ToolResult[]> {
+async function runReadOnlyTools(
+  rest: RestClient,
+  context: ToolContext,
+  message: string,
+  requestedCampaignId = "",
+): Promise<ToolResult[]> {
   const results: ToolResult[] = [];
   results.push(await searchCrmEntities(rest, context, message));
   results.push(getAvailableMetrics());
   results.push(await runAnalyticsQuery(rest));
 
-  if (mentionsReport(message)) {
+  const campaignDraftRequested = mentionsCampaignDraft(message);
+  const campaignAnalysisRequested = Boolean(requestedCampaignId) || mentionsCampaignAnalysis(message);
+  const campaignId = requestedCampaignId || (
+    !campaignDraftRequested && normalize(message).includes("campana")
+      ? await resolveCampaignIdFromMessage(rest, message)
+      : ""
+  );
+  const shouldAnalyzeCampaign = Boolean(campaignId) || campaignAnalysisRequested;
+
+  if (campaignId) {
+    const report = await generateProfessionalReport(
+      rest,
+      { ...reportFiltersFromMessage(message), periodDays: 0, campaignId },
+      "Analisis de campana",
+    );
+    results.push({
+      ok: Boolean(report.campaignAnalysis),
+      data: report,
+      humanSummary: report.campaignAnalysis
+        ? `${report.campaignAnalysis.name}: ${report.campaignAnalysis.sent} enviados de ${report.campaignAnalysis.recipients}, ${report.campaignAnalysis.failed} fallidos y ${report.campaignAnalysis.pending} pendientes.`
+        : "No se encontro la campana solicitada.",
+      evidence: report.campaignAnalysis
+        ? [{ entityType: "campaign", entityId: report.campaignAnalysis.id, label: report.campaignAnalysis.name }]
+        : [],
+      warnings: report.warnings,
+      riskLevel: "read",
+      requiresConfirmation: false,
+      errorCode: report.campaignAnalysis ? undefined : "CAMPAIGN_NOT_FOUND",
+    });
+  } else if (shouldAnalyzeCampaign) {
+    results.push({
+      ok: false,
+      data: { toolName: "analyze_campaign", found: false },
+      humanSummary: "No se pudo identificar una campana especifica en la solicitud.",
+      evidence: [],
+      warnings: ["Indica el nombre exacto de la campana o pide ver las campanas recientes."],
+      riskLevel: "read",
+      requiresConfirmation: false,
+      errorCode: "CAMPAIGN_NOT_IDENTIFIED",
+    });
+  } else if (mentionsReport(message)) {
     const report = await generateProfessionalReport(
       rest,
       reportFiltersFromMessage(message),
@@ -542,11 +616,11 @@ async function runReadOnlyTools(rest: RestClient, context: ToolContext, message:
     });
   }
 
-  if (mentionsSegment(message)) {
+  if (mentionsSegment(message) && !shouldAnalyzeCampaign) {
     results.push(await previewCustomerSegment(rest, message));
   }
 
-  if (mentionsCampaignDraft(message)) {
+  if (campaignDraftRequested && !shouldAnalyzeCampaign) {
     results.push(generateCampaignTemplate(message));
   }
 
@@ -794,15 +868,30 @@ async function generateProfessionalReport(
   filters: ReportFilters,
   title: string,
 ): Promise<ProfessionalReport> {
-  const [companies, interactions, campaigns, recipients, tasks] = await Promise.all([
+  const [companies, interactions, campaigns, recipients, tasks, emailCampaigns, emailRecipients] = await Promise.all([
     selectRows(rest, "companies?select=id,status,type,region,source,email,phone,whatsapp,created_at&limit=5000"),
     selectRows(rest, "interactions?select=id,company_id,type,occurred_at&limit=5000&order=occurred_at.asc"),
     selectRows(rest, "campaigns?select=id,name,status,type,created_at,send_at&limit=2000&order=created_at.desc"),
     selectRows(rest, "campaign_recipients?select=id,campaign_id,company_id,created_at,sent_at,replied_at,interested,discarded&limit=10000"),
     selectRows(rest, "tasks?select=id,company_id,due_date,completed_at,created_at&limit=5000"),
+    selectRows(rest, "email_campaigns?select=id,name,status,segment_filters,created_at,updated_at&limit=2000&order=created_at.desc"),
+    selectRows(rest, "email_campaign_recipients?select=id,campaign_id,company_id,contact_email,status,sent_at,replied_at,error_message,created_at,updated_at&limit=10000"),
   ]);
 
-  const filteredCompanies = companies.filter((company) => companyMatchesReportFilters(company, filters));
+  const selectedCampaign = filters.campaignId
+    ? campaigns.find((campaign) => String(campaign.id) === filters.campaignId)
+    : undefined;
+  const selectedCampaignCompanyIds = selectedCampaign
+    ? new Set(
+      recipients
+        .filter((recipient) => String(recipient.campaign_id) === String(selectedCampaign.id))
+        .map((recipient) => String(recipient.company_id)),
+    )
+    : null;
+  const filteredCompanies = companies.filter((company) =>
+    companyMatchesReportFilters(company, filters) &&
+    (!selectedCampaignCompanyIds || selectedCampaignCompanyIds.has(String(company.id)))
+  );
   const companyIds = new Set(filteredCompanies.map((company) => String(company.id)));
   const periodInteractions = interactions.filter((interaction) =>
     companyIds.has(String(interaction.company_id)) && isWithinReportPeriod(interaction.occurred_at, filters.periodDays)
@@ -814,11 +903,13 @@ async function generateProfessionalReport(
     (!recipient.sent_at && !recipient.replied_at && isWithinReportPeriod(recipient.created_at, filters.periodDays))
   );
   const campaignsWithActivity = new Set(recipientActivity.map((recipient) => String(recipient.campaign_id)));
-  const periodCampaigns = campaigns.filter((campaign) =>
-    isWithinReportPeriod(campaign.send_at, filters.periodDays) ||
-    isWithinReportPeriod(campaign.created_at, filters.periodDays) ||
-    campaignsWithActivity.has(String(campaign.id))
-  );
+  const periodCampaigns = selectedCampaign
+    ? [selectedCampaign]
+    : campaigns.filter((campaign) =>
+      isWithinReportPeriod(campaign.send_at, filters.periodDays) ||
+      isWithinReportPeriod(campaign.created_at, filters.periodDays) ||
+      campaignsWithActivity.has(String(campaign.id))
+    );
   const campaignIds = new Set(periodCampaigns.map((campaign) => String(campaign.id)));
   const periodRecipients = companyRecipients.filter((recipient) => campaignIds.has(String(recipient.campaign_id)));
   const pendingTasks = tasks.filter((task) =>
@@ -826,80 +917,118 @@ async function generateProfessionalReport(
   ).length;
   const clients = filteredCompanies.filter((company) => String(company.status) === "cliente").length;
   const activePipeline = filteredCompanies.filter((company) => String(company.status) !== "descartado").length;
-  const sent = periodRecipients.filter((recipient) => recipient.sent_at && isWithinReportPeriod(recipient.sent_at, filters.periodDays)).length;
-  const replies = periodRecipients.filter((recipient) => recipient.replied_at && isWithinReportPeriod(recipient.replied_at, filters.periodDays)).length;
-  const interested = periodRecipients.filter((recipient) => Boolean(recipient.interested)).length;
+  const campaignAnalyses = periodCampaigns.map((campaign) => buildCampaignDeliveryAnalysis(
+    campaign,
+    recipients,
+    emailCampaigns,
+    emailRecipients,
+    companyIds,
+  ));
+  const campaignAnalysis = selectedCampaign
+    ? campaignAnalyses.find((analysis) => analysis.id === String(selectedCampaign.id)) ?? null
+    : null;
+  const sent = campaignAnalyses.reduce((total, campaign) => total + campaign.sent, 0);
+  const replies = campaignAnalyses.reduce((total, campaign) => total + campaign.replies, 0);
+  const interested = campaignAnalyses.reduce((total, campaign) => total + campaign.interested, 0);
+  const recipientCount = campaignAnalyses.reduce((total, campaign) => total + campaign.recipients, 0);
   const contactable = filteredCompanies.filter((company) =>
     Boolean(String(company.email ?? "").trim() || String(company.phone ?? "").trim() || String(company.whatsapp ?? "").trim())
   ).length;
   const missingLocation = filteredCompanies.filter((company) => !String(company.region ?? "").trim()).length;
   const generatedAt = new Date().toISOString();
   const warnings: string[] = [];
+  if (filters.campaignId && !selectedCampaign) warnings.push("No se encontro la campana seleccionada.");
   if (!filteredCompanies.length) warnings.push("No hay empresas que coincidan con los filtros seleccionados.");
   if (!periodInteractions.length) warnings.push("No hay interacciones registradas en el periodo seleccionado.");
   if (!periodCampaigns.length) warnings.push("No hay campanas registradas en el periodo seleccionado.");
-  if ([companies, interactions, tasks].some((rows) => rows.length >= 5000) || recipients.length >= 10000) {
+  if ([companies, interactions, tasks].some((rows) => rows.length >= 5000) || recipients.length >= 10000 || emailRecipients.length >= 10000) {
     warnings.push("La consulta alcanzo el limite de lectura; el informe puede representar una muestra parcial.");
   }
 
   const sourceBreakdown = buildReportBreakdown(filteredCompanies, "source", filteredCompanies.length, 8);
-  const campaignPerformance = periodCampaigns.map((campaign) => {
-    const campaignRecipients = periodRecipients.filter((recipient) => String(recipient.campaign_id) === String(campaign.id));
-    const campaignSent = campaignRecipients.filter((recipient) => recipient.sent_at && isWithinReportPeriod(recipient.sent_at, filters.periodDays)).length;
-    const campaignReplies = campaignRecipients.filter((recipient) => recipient.replied_at && isWithinReportPeriod(recipient.replied_at, filters.periodDays)).length;
-    return {
-      id: String(campaign.id),
-      name: String(campaign.name ?? "Campana sin nombre"),
-      status: String(campaign.status ?? "borrador"),
-      channel: String(campaign.type ?? "sin canal"),
-      recipients: campaignRecipients.length,
-      sent: campaignSent,
-      replies: campaignReplies,
-      interested: campaignRecipients.filter((recipient) => Boolean(recipient.interested)).length,
-      replyRate: percentage(campaignReplies, campaignSent),
-    };
-  }).sort((a, b) => b.sent - a.sent || b.recipients - a.recipients).slice(0, 12);
+  const campaignPerformance = campaignAnalyses.map((campaign) => ({
+    id: campaign.id,
+    name: campaign.name,
+    status: campaign.status,
+    channel: campaign.channel,
+    recipients: campaign.recipients,
+    sent: campaign.sent,
+    replies: campaign.replies,
+    interested: campaign.interested,
+    replyRate: campaign.replyRate,
+  })).sort((a, b) => b.sent - a.sent || b.recipients - a.recipients).slice(0, 12);
 
   const conversionRate = percentage(clients, activePipeline);
   const replyRate = percentage(replies, sent);
   const contactabilityRate = percentage(contactable, filteredCompanies.length);
   const insights: ProfessionalReport["insights"] = [];
-  insights.push({
-    tone: conversionRate >= 35 ? "positive" : conversionRate < 15 ? "attention" : "neutral",
-    title: `Conversion comercial de ${conversionRate}%`,
-    detail: `${clients} empresas estan en estado cliente sobre ${activePipeline} oportunidades no descartadas.`,
-  });
-  insights.push({
-    tone: replyRate >= 15 ? "positive" : sent > 0 && replyRate < 5 ? "attention" : "neutral",
-    title: sent ? `Respuesta de campanas en ${replyRate}%` : "Sin envios registrados en el periodo",
-    detail: sent
-      ? `${replies} respuestas sobre ${sent} envios, con ${interested} contactos marcados como interesados.`
-      : "Conviene revisar borradores y destinatarios antes de programar la siguiente campana.",
-  });
-  insights.push({
-    tone: contactabilityRate >= 80 ? "positive" : contactabilityRate < 60 ? "attention" : "neutral",
-    title: `${contactabilityRate}% de la cartera es contactable`,
-    detail: `${contactable} empresas tienen email, telefono o WhatsApp; ${filteredCompanies.length - contactable} requieren completar datos.`,
-  });
-  if (sourceBreakdown[0]) {
+  if (campaignAnalysis) {
     insights.push({
-      tone: "neutral",
-      title: `${sourceBreakdown[0].label} lidera el origen de la cartera`,
-      detail: `Aporta ${sourceBreakdown[0].value} empresas (${sourceBreakdown[0].percentage}% del conjunto filtrado).`,
+      tone: campaignAnalysis.sendRate >= 95 ? "positive" : "attention",
+      title: `Cobertura de envio de ${campaignAnalysis.sendRate}%`,
+      detail: `${campaignAnalysis.sent} de ${campaignAnalysis.recipients} destinatarios figuran enviados; ${campaignAnalysis.pending} siguen pendientes y ${campaignAnalysis.failed} fallaron.`,
     });
+    insights.push({
+      tone: campaignAnalysis.replyRate >= 10 ? "positive" : campaignAnalysis.sent > 0 ? "attention" : "neutral",
+      title: `${campaignAnalysis.replyRate}% de respuesta`,
+      detail: `${campaignAnalysis.replies} respuestas detectadas sobre ${campaignAnalysis.sent} correos enviados y ${campaignAnalysis.interested} interesados marcados.`,
+    });
+    insights.push({
+      tone: campaignAnalysis.failed > 0 ? "attention" : "positive",
+      title: campaignAnalysis.failed ? `${campaignAnalysis.failed} entregas con error` : "Sin errores de entrega registrados",
+      detail: campaignAnalysis.topErrors[0]
+        ? `${campaignAnalysis.topErrors[0].count} caso(s): ${campaignAnalysis.topErrors[0].message}`
+        : "Gmail no registra fallos para los destinatarios procesados.",
+    });
+    insights.push({
+      tone: campaignAnalysis.status === "borrador" && campaignAnalysis.sent > 0 ? "attention" : "neutral",
+      title: `Estado CRM: ${humanizeReportLabel(campaignAnalysis.status)}`,
+      detail: campaignAnalysis.diagnosis,
+    });
+  } else {
+    insights.push({
+      tone: conversionRate >= 35 ? "positive" : conversionRate < 15 ? "attention" : "neutral",
+      title: `Conversion comercial de ${conversionRate}%`,
+      detail: `${clients} empresas estan en estado cliente sobre ${activePipeline} oportunidades no descartadas.`,
+    });
+    insights.push({
+      tone: replyRate >= 15 ? "positive" : sent > 0 && replyRate < 5 ? "attention" : "neutral",
+      title: sent ? `Respuesta de campanas en ${replyRate}%` : "Sin envios registrados en el periodo",
+      detail: sent
+        ? `${replies} respuestas sobre ${sent} envios, con ${interested} contactos marcados como interesados.`
+        : "Conviene revisar borradores y destinatarios antes de programar la siguiente campana.",
+    });
+    insights.push({
+      tone: contactabilityRate >= 80 ? "positive" : contactabilityRate < 60 ? "attention" : "neutral",
+      title: `${contactabilityRate}% de la cartera es contactable`,
+      detail: `${contactable} empresas tienen email, telefono o WhatsApp; ${filteredCompanies.length - contactable} requieren completar datos.`,
+    });
+    if (sourceBreakdown[0]) {
+      insights.push({
+        tone: "neutral",
+        title: `${sourceBreakdown[0].label} lidera el origen de la cartera`,
+        detail: `Aporta ${sourceBreakdown[0].value} empresas (${sourceBreakdown[0].percentage}% del conjunto filtrado).`,
+      });
+    }
   }
 
   return {
     toolName: "generate_professional_report",
-    title,
-    subtitle: "Cartera, actividad comercial y rendimiento de campanas con datos verificados del CRM.",
+    title: campaignAnalysis ? `Analisis de campana: ${campaignAnalysis.name}` : title,
+    subtitle: campaignAnalysis
+      ? "Entregas, pendientes, errores y respuestas reconciliados entre el CRM y Gmail."
+      : "Cartera, actividad comercial y rendimiento de campanas con datos verificados del CRM.",
     generatedAt,
-    periodLabel: reportPeriodLabel(filters.periodDays),
+    periodLabel: campaignAnalysis ? "Campana seleccionada" : reportPeriodLabel(filters.periodDays),
     filters,
     filterOptions: {
       sources: uniqueReportValues(companies, "source"),
       companyTypes: uniqueReportValues(companies, "type"),
       regions: uniqueReportValues(companies, "region"),
+      campaigns: campaigns.slice(0, 200).map((campaign) => ({
+        id: String(campaign.id),
+        name: String(campaign.name ?? "Campana sin nombre"),
+      })),
     },
     kpis: {
       companies: filteredCompanies.length,
@@ -908,7 +1037,7 @@ async function generateProfessionalReport(
       newCompanies: filteredCompanies.filter((company) => isWithinReportPeriod(company.created_at, filters.periodDays)).length,
       interactions: periodInteractions.length,
       campaigns: periodCampaigns.length,
-      recipients: periodRecipients.length,
+      recipients: recipientCount,
       sent,
       replies,
       replyRate,
@@ -923,6 +1052,7 @@ async function generateProfessionalReport(
     campaignStatuses: buildReportBreakdown(periodCampaigns, "status", periodCampaigns.length, 8),
     trend: buildReportTrend(periodInteractions, periodCampaigns, periodRecipients, filters.periodDays),
     campaignPerformance,
+    campaignAnalysis,
     insights,
     dataQuality: {
       contactable,
@@ -930,6 +1060,148 @@ async function generateProfessionalReport(
       missingLocation,
     },
     warnings,
+  };
+}
+
+function buildCampaignDeliveryAnalysis(
+  campaign: JsonRecord,
+  crmRecipients: JsonRecord[],
+  emailCampaigns: JsonRecord[],
+  emailRecipients: JsonRecord[],
+  allowedCompanyIds: Set<string>,
+): NonNullable<ProfessionalReport["campaignAnalysis"]> {
+  type DeliveryState = {
+    sent: boolean;
+    failed: boolean;
+    skipped: boolean;
+    replied: boolean;
+    interested: boolean;
+    sentAt: string | null;
+    error: string;
+  };
+
+  const campaignId = String(campaign.id);
+  const campaignName = String(campaign.name ?? "Campana sin nombre");
+  const deliveryByRecipient = new Map<string, DeliveryState>();
+  const campaignRecipientRows = crmRecipients.filter((recipient) =>
+    String(recipient.campaign_id) === campaignId &&
+    allowedCompanyIds.has(String(recipient.company_id))
+  );
+
+  for (const recipient of campaignRecipientRows) {
+    const key = `company:${String(recipient.company_id)}`;
+    deliveryByRecipient.set(key, {
+      sent: Boolean(recipient.sent_at),
+      failed: false,
+      skipped: false,
+      replied: Boolean(recipient.replied_at),
+      interested: Boolean(recipient.interested),
+      sentAt: recipient.sent_at ? String(recipient.sent_at) : null,
+      error: "",
+    });
+  }
+
+  const linkedEmailCampaigns = emailCampaigns.filter((emailCampaign) => {
+    const filters = asRecord(emailCampaign.segment_filters);
+    const linkedCampaignId = String(filters.crm_campaign_id ?? "");
+    if (linkedCampaignId) return linkedCampaignId === campaignId;
+    return normalize(String(emailCampaign.name ?? "")) === normalize(campaignName);
+  });
+  const linkedEmailCampaignIds = new Set(linkedEmailCampaigns.map((emailCampaign) => String(emailCampaign.id)));
+
+  for (const recipient of emailRecipients) {
+    if (!linkedEmailCampaignIds.has(String(recipient.campaign_id))) continue;
+    const companyId = String(recipient.company_id ?? "");
+    if (companyId && !allowedCompanyIds.has(companyId)) continue;
+    const email = normalizeEmail(String(recipient.contact_email ?? ""));
+    const key = companyId ? `company:${companyId}` : `email:${email || String(recipient.id)}`;
+    const current = deliveryByRecipient.get(key) ?? {
+      sent: false,
+      failed: false,
+      skipped: false,
+      replied: false,
+      interested: false,
+      sentAt: null,
+      error: "",
+    };
+    const status = String(recipient.status ?? "pending");
+    const sentAt = recipient.sent_at ? String(recipient.sent_at) : null;
+    if (status === "sent" || sentAt) {
+      current.sent = true;
+      current.failed = false;
+      current.skipped = false;
+      current.sentAt = sentAt || current.sentAt;
+      current.error = "";
+    } else if (status === "failed" && !current.sent) {
+      current.failed = true;
+      current.error = String(recipient.error_message ?? "Error sin detalle").trim().slice(0, 180);
+    } else if (status === "skipped" && !current.sent && !current.failed) {
+      current.skipped = true;
+    }
+    current.replied = current.replied || Boolean(recipient.replied_at);
+    deliveryByRecipient.set(key, current);
+  }
+
+  const deliveries = [...deliveryByRecipient.values()];
+  const recipients = deliveries.length;
+  const sent = deliveries.filter((recipient) => recipient.sent).length;
+  const failed = deliveries.filter((recipient) => !recipient.sent && recipient.failed).length;
+  const skipped = deliveries.filter((recipient) => !recipient.sent && !recipient.failed && recipient.skipped).length;
+  const replies = deliveries.filter((recipient) => recipient.replied).length;
+  const interested = deliveries.filter((recipient) => recipient.interested).length;
+  const pending = Math.max(0, recipients - sent - failed - skipped);
+  const sentDates = deliveries
+    .map((recipient) => recipient.sentAt)
+    .filter((value): value is string => Boolean(value))
+    .sort();
+  const errorCounts = deliveries.reduce<Record<string, number>>((counts, recipient) => {
+    if (!recipient.failed || !recipient.error) return counts;
+    counts[recipient.error] = (counts[recipient.error] ?? 0) + 1;
+    return counts;
+  }, {});
+  const topErrors = Object.entries(errorCounts)
+    .map(([message, count]) => ({ message, count }))
+    .sort((a, b) => b.count - a.count || a.message.localeCompare(b.message, "es"))
+    .slice(0, 5);
+
+  let diagnosis = recipients
+    ? "La campana aun no registra entregas procesadas."
+    : "La campana no tiene destinatarios asociados.";
+  if (sent === recipients && recipients > 0) {
+    diagnosis = `La lista fue procesada completamente: ${sent} destinatarios figuran enviados.`;
+  } else if (sent > 0 && pending > 0) {
+    diagnosis = `El envio quedo parcial: ${sent} destinatarios enviados y ${pending} pendientes de procesamiento.`;
+  } else if (failed > 0) {
+    diagnosis = `El envio registra ${failed} destinatarios fallidos; revisa los errores agrupados antes de reintentar.`;
+  }
+  if (String(campaign.status) === "borrador" && sent > 0) {
+    diagnosis += " El estado CRM sigue en borrador pese a que existen envios, por lo que conviene sincronizar o finalizar su estado.";
+  }
+  if (sent > 0 && replies === 0) {
+    diagnosis += " Todavia no se detectan respuestas en Gmail.";
+  }
+
+  return {
+    id: campaignId,
+    name: campaignName,
+    status: String(campaign.status ?? "borrador"),
+    channel: String(campaign.type ?? "sin canal"),
+    recipients,
+    sent,
+    failed,
+    pending,
+    skipped,
+    replies,
+    interested,
+    sendRate: percentage(sent, recipients),
+    replyRate: percentage(replies, sent),
+    failureRate: percentage(failed, recipients),
+    pendingRate: percentage(pending, recipients),
+    emailBatches: linkedEmailCampaigns.length,
+    firstSentAt: sentDates[0] ?? null,
+    lastSentAt: sentDates.at(-1) ?? null,
+    diagnosis,
+    topErrors,
   };
 }
 
@@ -1159,7 +1431,14 @@ function asRecord(value: unknown): JsonRecord {
 function modelSafeToolData(value: unknown): unknown {
   const data = asRecord(value);
   if (data.toolName === "generate_professional_report") {
-    return value;
+    const filterOptions = asRecord(data.filterOptions);
+    return {
+      ...data,
+      filterOptions: {
+        ...filterOptions,
+        campaigns: [],
+      },
+    };
   }
   if (data.toolName === "preview_customer_segment") {
     return {
@@ -1404,6 +1683,9 @@ async function callOpenAI(input: {
     "Respeta los filtros de origen, antiguedad de ultima compra y cantidad de compras informados por el servidor.",
     "Si el usuario pide un informe, reporte, dashboard o KPI, usa exclusivamente generate_professional_report para explicar cifras, tendencias, riesgos y oportunidades.",
     "Cuando exista generate_professional_report, menciona el periodo analizado, destaca hasta cuatro hallazgos accionables y aclara cualquier advertencia de calidad de datos.",
+    "Cuando el informe incluya campaignAnalysis, responde sobre esa campana exacta: diferencia enviados, fallidos, pendientes y omitidos; no presentes pendientes como fallidos.",
+    "En analisis de campanas menciona que Gmail no mide aperturas ni clics si esos datos no existen, y nunca supongas que un correo fue leido.",
+    "Si no se identifico una campana especifica, pide su nombre exacto o ofrece listar las campanas recientes.",
     "El frontend renderiza el informe profesional; no inventes graficos ni valores adicionales y deja campaignDraft en null salvo que tambien pidan una campana.",
     "Muestra filtros y evidencia cuando uses datos reales.",
   ].join("\n");
@@ -1703,6 +1985,7 @@ function reportFiltersFromPayload(payload: JsonRecord): ReportFilters {
     source: optionalText(payload.source, 120),
     companyType: optionalText(payload.companyType, 80),
     region: optionalText(payload.region, 120),
+    campaignId: optionalText(payload.campaignId, 80),
   };
 }
 
@@ -1719,7 +2002,7 @@ function reportFiltersFromMessage(message: string): ReportFilters {
   const knownTypes = ["distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia"];
   const companyType = knownTypes.find((type) => text.includes(type)) ?? "";
   const source = text.includes("facto") ? "facto" : text.includes("tiendanube") || text.includes("climactiva.cl") ? "tiendanube" : "";
-  return { periodDays, source, companyType, region: "" };
+  return { periodDays, source, companyType, region: "", campaignId: "" };
 }
 
 function reportTitleFromMessage(message: string) {
@@ -1727,6 +2010,52 @@ function reportTitleFromMessage(message: string) {
   if (text.includes("campana") || text.includes("marketing")) return "Informe de campanas y marketing";
   if (text.includes("cliente") || text.includes("venta") || text.includes("comercial")) return "Informe comercial y de clientes";
   return "Informe ejecutivo Clima Activa";
+}
+
+async function resolveCampaignIdFromMessage(rest: RestClient, message: string) {
+  const normalizedMessage = normalize(message);
+  const campaigns = await selectRows(rest, "campaigns?select=id,name,updated_at&limit=200&order=updated_at.desc");
+  const exactMatches = campaigns
+    .map((campaign) => ({
+      id: String(campaign.id ?? ""),
+      normalizedName: normalize(String(campaign.name ?? "")),
+    }))
+    .filter((campaign) => campaign.id && campaign.normalizedName.length >= 6 && normalizedMessage.includes(campaign.normalizedName))
+    .sort((a, b) => b.normalizedName.length - a.normalizedName.length);
+  if (exactMatches[0]) return exactMatches[0].id;
+
+  const ignoredWords = new Set([
+    "analiza", "analizar", "campana", "clientes", "correo", "envio", "enviar",
+    "informe", "marketing", "paso", "resultado", "resultados", "sobre",
+  ]);
+  const requestTokens = new Set(
+    normalizedMessage
+      .split(/[^a-z0-9]+/)
+      .filter((token) => token.length >= 4 && !ignoredWords.has(token)),
+  );
+  const partialMatches = campaigns
+    .map((campaign) => {
+      const campaignTokens = [...new Set(
+        normalize(String(campaign.name ?? ""))
+          .split(/[^a-z0-9]+/)
+          .filter((token) => token.length >= 4 && !ignoredWords.has(token)),
+      )];
+      const matchedTokens = campaignTokens.filter((token) => requestTokens.has(token));
+      return {
+        id: String(campaign.id ?? ""),
+        score: matchedTokens.length,
+        longestMatch: Math.max(0, ...matchedTokens.map((token) => token.length)),
+      };
+    })
+    .filter((campaign) => campaign.id && campaign.score > 0 && campaign.longestMatch >= 6)
+    .sort((a, b) => b.score - a.score || b.longestMatch - a.longestMatch);
+
+  if (!partialMatches[0]) return "";
+  const best = partialMatches[0];
+  const tied = partialMatches.filter((campaign) =>
+    campaign.score === best.score && campaign.longestMatch === best.longestMatch
+  );
+  return tied.length === 1 ? best.id : "";
 }
 
 function companyMatchesReportFilters(company: JsonRecord, filters: ReportFilters) {
@@ -1836,6 +2165,34 @@ function percentage(value: number, total: number) {
 function mentionsReport(message: string) {
   const text = normalize(message);
   return ["informe", "reporte", "dashboard", "tablero", "power bi", "powerbi", "indicadores", "kpi"].some((word) => text.includes(word));
+}
+
+function mentionsCampaignAnalysis(message: string) {
+  const text = normalize(message);
+  if (!text.includes("campana")) return false;
+  return [
+    "analiza",
+    "analisis",
+    "que paso",
+    "resultado",
+    "rendimiento",
+    "desempeno",
+    "como fue",
+    "como va",
+    "estado",
+    "informacion",
+    "detalle",
+    "metricas",
+    "envios",
+    "enviados",
+    "fallidos",
+    "pendientes",
+    "cuantos envio",
+    "cuantos enviados",
+    "respuestas",
+    "campana especifica",
+    "esta campana",
+  ].some((phrase) => text.includes(phrase));
 }
 
 function mentionsSegment(message: string) {

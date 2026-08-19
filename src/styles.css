@@ -1807,6 +1807,65 @@ th {
   padding-top: 12px;
 }
 
+.campaign-send-progress {
+  display: grid;
+  gap: 9px;
+  margin-top: 12px;
+  border-top: 1px solid #dfe7ea;
+  padding-top: 12px;
+}
+
+.campaign-send-progress-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.campaign-send-progress-heading span {
+  color: #08798a;
+  font-weight: 800;
+}
+
+.campaign-send-progress progress {
+  width: 100%;
+  height: 12px;
+  border: 0;
+  border-radius: 4px;
+  overflow: hidden;
+  accent-color: #08798a;
+}
+
+.campaign-send-progress progress::-webkit-progress-bar {
+  background: #e7eef0;
+}
+
+.campaign-send-progress progress::-webkit-progress-value {
+  background: #08798a;
+}
+
+.campaign-send-progress progress::-moz-progress-bar {
+  background: #08798a;
+}
+
+.campaign-send-progress p {
+  margin: 0;
+  color: #445b63;
+  font-size: 13px;
+}
+
+.campaign-send-progress-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  color: #445b63;
+  font-size: 13px;
+}
+
+.campaign-send-progress-metrics strong {
+  color: #16252b;
+}
+
 .gmail-send-confirmation p,
 .campaign-send-results p {
   margin: 6px 0 10px;
@@ -7708,7 +7767,7 @@ th {
 .reports-page{min-width:0}
 .reports-heading{align-items:flex-start}
 .reports-actions{display:flex;flex-wrap:wrap;justify-content:flex-end}
-.report-filter-band{align-items:end;background:#fff;border:1px solid #d7e3e5;border-radius:8px;display:grid;gap:.75rem;grid-template-columns:auto minmax(340px,1.5fr) repeat(3,minmax(145px,.72fr)) auto;padding:.85rem}
+.report-filter-band{align-items:end;background:#fff;border:1px solid #d7e3e5;border-radius:8px;display:grid;gap:.65rem;grid-template-columns:auto minmax(250px,1.2fr) minmax(175px,.9fr) repeat(3,minmax(105px,.55fr)) auto;padding:.85rem}
 .report-filter-title{align-items:center;color:#164c55;display:flex;gap:.45rem;padding-bottom:.58rem}
 .report-filter-band label{display:grid;gap:.28rem;min-width:0}
 .report-filter-band label>span{color:#60777c;font-size:.65rem;font-weight:800;text-transform:uppercase}
@@ -7728,6 +7787,30 @@ th {
 .report-freshness svg{color:#76d5ae;grid-row:1/3}
 .report-freshness span{color:#acd4d6;font-size:.62rem;text-transform:uppercase}
 .report-freshness strong{font-size:.7rem;white-space:nowrap}
+
+.campaign-analysis-panel{display:grid;gap:1rem}
+.campaign-analysis-heading{align-items:center;display:flex;gap:1rem;justify-content:space-between}
+.campaign-analysis-heading>div{display:grid;gap:.15rem;min-width:0}
+.campaign-analysis-heading .eyebrow{color:#0b7e89;font-size:.62rem;font-weight:850;text-transform:uppercase}
+.campaign-analysis-heading h2{color:#173f47;font-size:1.12rem;margin:0;overflow-wrap:anywhere}
+.campaign-analysis-heading p{color:#647c81;font-size:.68rem;margin:0}
+.campaign-analysis-heading>a{flex:0 0 auto;text-decoration:none}
+.campaign-analysis-kpis{display:grid;gap:.65rem;grid-template-columns:repeat(6,minmax(0,1fr))}
+.campaign-analysis-kpis article{align-items:center;background:#f7f9fa;border-left:4px solid #78969a;border-radius:6px;display:grid;gap:.18rem;grid-template-columns:auto minmax(0,1fr);padding:.65rem .7rem}
+.campaign-analysis-kpis article.good{border-left-color:#2d9c73}.campaign-analysis-kpis article.attention{border-left-color:#d58e27}.campaign-analysis-kpis article.danger{border-left-color:#c65345}
+.campaign-analysis-kpis svg{color:#53757a;grid-row:1/3}.campaign-analysis-kpis article.good svg{color:#2d8e69}.campaign-analysis-kpis article.attention svg{color:#b4771d}.campaign-analysis-kpis article.danger svg{color:#b2473b}
+.campaign-analysis-kpis span{color:#647b80;font-size:.58rem;font-weight:850;text-transform:uppercase}
+.campaign-analysis-kpis strong{color:#173f47;font-size:1.25rem;line-height:1}
+.campaign-analysis-detail-grid{display:grid;gap:1rem;grid-template-columns:minmax(0,1.1fr) minmax(300px,.9fr)}
+.campaign-analysis-rates{display:grid;gap:.7rem}
+.campaign-analysis-rates>div{display:grid;gap:.35rem}
+.campaign-analysis-rates>div>div{align-items:center;display:flex;gap:.5rem;justify-content:space-between}
+.campaign-analysis-rates span{color:#506d72;font-size:.68rem}.campaign-analysis-rates strong{color:#244c53;font-size:.7rem}
+.campaign-analysis-rates progress{accent-color:#0b7f8a;border:0;height:9px;width:100%}.campaign-analysis-rates .good progress{accent-color:#2d9c73}.campaign-analysis-rates .attention progress{accent-color:#d58e27}.campaign-analysis-rates .danger progress{accent-color:#c65345}
+.campaign-analysis-diagnosis{background:#f2f6f6;border-left:4px solid #d59b32;display:grid;gap:.5rem;padding:.75rem .85rem}
+.campaign-analysis-diagnosis>div{align-items:center;color:#714d12;display:flex;gap:.45rem}.campaign-analysis-diagnosis p{color:#3e5d63;font-size:.7rem;line-height:1.5;margin:0}.campaign-analysis-diagnosis small{color:#6c8084;font-size:.61rem;line-height:1.4}
+.campaign-analysis-diagnosis details{font-size:.65rem}.campaign-analysis-diagnosis summary{cursor:pointer;font-weight:800}.campaign-analysis-diagnosis ul{display:grid;gap:.35rem;margin:.5rem 0 0;padding-left:1.1rem}
+.report-campaign-link{min-height:30px;padding:.28rem .45rem;white-space:nowrap}
 
 .report-kpi-grid{display:grid;gap:.7rem;grid-template-columns:repeat(6,minmax(0,1fr))}
 .report-kpi-grid>article{background:#fff;border:1px solid #d8e4e6;border-radius:8px;display:grid;gap:.28rem;min-height:118px;padding:.85rem}
@@ -7828,12 +7911,17 @@ th {
 .copilot-report-mini-funnel i{background:#0b7f8a;border-radius:inherit;display:block;height:100%}
 .copilot-report-mini-funnel strong{font-size:.62rem;text-align:right}
 .copilot-report-preview>.primary-button{justify-self:start;text-decoration:none}
+.copilot-campaign-context{align-items:center;background:#eef6f6;border-left:4px solid #0b7f8a;display:grid;gap:.55rem;grid-template-columns:auto minmax(0,1fr) auto;padding:.6rem .75rem}
+.copilot-campaign-context svg{color:#0b7f8a}.copilot-campaign-context>div{display:grid;gap:.08rem;min-width:0}.copilot-campaign-context span{color:#687f84;font-size:.58rem;font-weight:850;text-transform:uppercase}.copilot-campaign-context strong{color:#17434b;font-size:.72rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.copilot-campaign-context>a{color:#087886;font-size:.65rem;font-weight:800;text-decoration:none}
+.copilot-campaign-diagnosis{background:#fff;border-left:4px solid #d59b32;color:#4d666b;font-size:.68rem;line-height:1.45;margin:0;padding:.6rem .7rem}
 
 @media(max-width:1180px){
-  .report-filter-band{grid-template-columns:auto minmax(320px,1fr) repeat(2,minmax(150px,.6fr))}
-  .report-filter-band label:last-of-type{grid-column:2}
+  .report-filter-band{grid-template-columns:auto repeat(3,minmax(150px,1fr))}
+  .report-period-control{grid-column:2/-1}
+  .report-campaign-filter{grid-column:1/3}
   .report-apply-button{grid-column:4}
   .report-kpi-grid{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .campaign-analysis-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
   .report-insight-strip{grid-template-columns:1fr}
   .report-insight-list{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
@@ -7843,6 +7931,7 @@ th {
   .report-filter-title{padding:0}.report-period-control{grid-column:1/-1;grid-row:2}
   .report-filter-band label:last-of-type,.report-apply-button{grid-column:auto}
   .report-main-grid,.report-secondary-grid{grid-template-columns:1fr}
+  .campaign-analysis-detail-grid{grid-template-columns:1fr}
   .report-trend-panel{min-height:360px}
 }
 
@@ -7853,9 +7942,11 @@ th {
   .report-filter-title,.report-period-control,.report-filter-band label:last-of-type,.report-apply-button{grid-column:1;grid-row:auto}
   .report-period-control{height:auto}.report-period-control button{min-height:38px;padding:.35rem .2rem}
   .report-title-band{align-items:flex-start;flex-direction:column}
+  .campaign-analysis-heading{align-items:flex-start;flex-direction:column}.campaign-analysis-heading>a{width:100%}
   .report-freshness{align-items:center;border-left:0;border-top:1px solid rgba(255,255,255,.22);padding-left:0;padding-top:.65rem;width:100%}
   .report-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .report-kpi-grid>article{min-height:108px;padding:.7rem}.report-kpi-grid strong{font-size:1.45rem}
+  .campaign-analysis-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   .report-insight-list{grid-template-columns:1fr}
   .report-trend-panel{min-height:300px}.report-trend-chart{overflow-x:auto}.report-trend-chart svg{min-width:560px}
   .report-donut-layout{grid-template-columns:120px minmax(0,1fr)}.report-donut{width:120px}
@@ -7866,6 +7957,8 @@ th {
   .reports-actions{grid-template-columns:1fr}.reports-actions .primary-button{grid-column:1}
   .report-period-control{grid-template-columns:repeat(2,minmax(0,1fr))}.report-period-control button{border-bottom:1px solid #d7e2e4}.report-period-control button:last-child{grid-column:1/-1}
   .report-kpi-grid{grid-template-columns:1fr}
+  .campaign-analysis-kpis{grid-template-columns:1fr}
+  .copilot-campaign-context{grid-template-columns:auto minmax(0,1fr)}.copilot-campaign-context>a{grid-column:2}
   .report-donut-layout{grid-template-columns:1fr}.report-donut{margin:0 auto}
   .report-funnel>div,.report-breakdown-bars>div{grid-template-columns:minmax(90px,1fr) minmax(70px,1fr) 35px}
 }

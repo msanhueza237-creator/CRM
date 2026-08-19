@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
+  ArrowUpRight,
   BarChart3,
   Building2,
   CheckCircle2,
+  Clock3,
   Download,
   Filter,
   MailCheck,
@@ -14,6 +17,7 @@ import {
   Sparkles,
   Target,
   UsersRound,
+  XCircle,
 } from "lucide-react";
 import {
   getCopilotReport,
@@ -36,8 +40,8 @@ const chartColors = ["#087f8c", "#d39a2c", "#4381c1", "#d8674c", "#55a56d", "#8c
 
 export function ReportsPage() {
   const { companies, interactions } = useCompanyStore();
-  const [filters, setFilters] = useState<CopilotReportFilters>(() => ({ periodDays: reportPeriodFromLocation() }));
-  const [report, setReport] = useState<CopilotReportSnapshot>(() => buildLocalReport(companies, interactions, { periodDays: reportPeriodFromLocation() }));
+  const [filters, setFilters] = useState<CopilotReportFilters>(reportFiltersFromLocation);
+  const [report, setReport] = useState<CopilotReportSnapshot>(() => buildLocalReport(companies, interactions, reportFiltersFromLocation()));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -82,6 +86,17 @@ export function ReportsPage() {
       ["Envios", report.kpis.sent],
       ["Respuestas", report.kpis.replies],
       ["Tasa de respuesta (%)", report.kpis.replyRate],
+      ...(report.campaignAnalysis ? [
+        [],
+        ["Analisis de campana", report.campaignAnalysis.name],
+        ["Estado", report.campaignAnalysis.status],
+        ["Destinatarios", report.campaignAnalysis.recipients],
+        ["Enviados", report.campaignAnalysis.sent],
+        ["Fallidos", report.campaignAnalysis.failed],
+        ["Pendientes", report.campaignAnalysis.pending],
+        ["Respuestas", report.campaignAnalysis.replies],
+        ["Diagnostico", report.campaignAnalysis.diagnosis],
+      ] : []),
       [],
       ["Campana", "Estado", "Canal", "Destinatarios", "Enviados", "Respuestas", "Interesados", "Tasa respuesta (%)"],
       ...report.campaignPerformance.map((campaign) => [
@@ -141,6 +156,13 @@ export function ReportsPage() {
             </button>
           ))}
         </div>
+        <label className="report-campaign-filter">
+          <span>Campana especifica</span>
+          <select value={filters.campaignId ?? ""} onChange={(event) => updateFilter("campaignId", event.target.value)}>
+            <option value="">Todas las campanas</option>
+            {(report.filterOptions.campaigns ?? []).map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
+          </select>
+        </label>
         <label>
           <span>Origen</span>
           <select value={filters.source ?? ""} onChange={(event) => updateFilter("source", event.target.value)}>
@@ -178,6 +200,49 @@ export function ReportsPage() {
         </div>
         <div className="report-freshness"><CheckCircle2 size={17} /><span>Actualizado</span><strong>{formatDateTime(report.generatedAt)}</strong></div>
       </section>
+
+      {report.campaignAnalysis ? (
+        <section className="panel campaign-analysis-panel" aria-labelledby="campaign-analysis-title">
+          <div className="campaign-analysis-heading">
+            <div>
+              <span className="eyebrow">Analisis individual</span>
+              <h2 id="campaign-analysis-title">{report.campaignAnalysis.name}</h2>
+              <p>{humanize(report.campaignAnalysis.channel)} · {humanize(report.campaignAnalysis.status)} · {report.campaignAnalysis.emailBatches} lote(s) Gmail</p>
+            </div>
+          </div>
+
+          <div className="campaign-analysis-kpis">
+            <CampaignAnalysisMetric icon={UsersRound} label="Destinatarios" value={report.campaignAnalysis.recipients} tone="neutral" />
+            <CampaignAnalysisMetric icon={MailCheck} label="Enviados" value={report.campaignAnalysis.sent} tone="good" />
+            <CampaignAnalysisMetric icon={XCircle} label="Fallidos" value={report.campaignAnalysis.failed} tone="danger" />
+            <CampaignAnalysisMetric icon={Clock3} label="Pendientes" value={report.campaignAnalysis.pending} tone="attention" />
+            <CampaignAnalysisMetric icon={MessageSquareText} label="Respuestas" value={report.campaignAnalysis.replies} tone="neutral" />
+            <CampaignAnalysisMetric icon={Target} label="Interesados" value={report.campaignAnalysis.interested} tone="good" />
+          </div>
+
+          <div className="campaign-analysis-detail-grid">
+            <div className="campaign-analysis-rates" aria-label="Tasas de la campana">
+              <CampaignRate label="Cobertura de envio" value={report.campaignAnalysis.sendRate} tone="good" />
+              <CampaignRate label="Pendientes" value={report.campaignAnalysis.pendingRate} tone="attention" />
+              <CampaignRate label="Fallos" value={report.campaignAnalysis.failureRate} tone="danger" />
+              <CampaignRate label="Respuestas sobre enviados" value={report.campaignAnalysis.replyRate} tone="neutral" />
+            </div>
+            <div className="campaign-analysis-diagnosis">
+              <div><AlertTriangle size={20} /><strong>Que paso con esta campana</strong></div>
+              <p>{report.campaignAnalysis.diagnosis}</p>
+              <small>
+                Primer envio: {report.campaignAnalysis.firstSentAt ? formatDateTime(report.campaignAnalysis.firstSentAt) : "Sin registro"} · Ultimo envio: {report.campaignAnalysis.lastSentAt ? formatDateTime(report.campaignAnalysis.lastSentAt) : "Sin registro"}
+              </small>
+              {report.campaignAnalysis.topErrors.length ? (
+                <details>
+                  <summary>Ver errores agrupados</summary>
+                  <ul>{report.campaignAnalysis.topErrors.map((error) => <li key={error.message}><strong>{error.count}</strong> {error.message}</li>)}</ul>
+                </details>
+              ) : null}
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       <div className="report-kpi-grid">
         <ReportKpi icon={Building2} label="Empresas" value={formatNumber(report.kpis.companies)} detail={`${report.kpis.newCompanies} nuevas en el periodo`} />
@@ -241,7 +306,7 @@ export function ReportsPage() {
         {report.campaignPerformance.length ? (
           <div className="report-table-scroll">
             <table>
-              <thead><tr><th>Campana</th><th>Estado</th><th>Canal</th><th>Destinatarios</th><th>Enviados</th><th>Respuestas</th><th>Interesados</th><th>Tasa</th></tr></thead>
+              <thead><tr><th>Campana</th><th>Estado</th><th>Canal</th><th>Destinatarios</th><th>Enviados</th><th>Respuestas</th><th>Interesados</th><th>Tasa</th><th></th></tr></thead>
               <tbody>
                 {report.campaignPerformance.map((campaign) => (
                   <tr key={campaign.id}>
@@ -253,6 +318,19 @@ export function ReportsPage() {
                     <td>{formatNumber(campaign.replies)}</td>
                     <td>{formatNumber(campaign.interested)}</td>
                     <td><strong>{formatPercent(campaign.replyRate)}%</strong></td>
+                    <td>
+                      <button
+                        className="ghost-button report-campaign-link"
+                        type="button"
+                        onClick={() => {
+                          const nextFilters = { ...filters, periodDays: 0, campaignId: campaign.id };
+                          setFilters(nextFilters);
+                          void loadReport(nextFilters);
+                        }}
+                      >
+                        Analizar <ArrowUpRight size={14} />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -271,6 +349,29 @@ export function ReportsPage() {
 
 function ReportKpi({ icon: Icon, label, value, detail }: { icon: typeof Building2; label: string; value: string; detail: string }) {
   return <article><div><Icon size={19} /><span>{label}</span></div><strong>{value}</strong><p>{detail}</p></article>;
+}
+
+function CampaignAnalysisMetric({
+  icon: Icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: typeof Building2;
+  label: string;
+  value: number;
+  tone: "good" | "attention" | "danger" | "neutral";
+}) {
+  return <article className={tone}><Icon size={18} /><span>{label}</span><strong>{formatNumber(value)}</strong></article>;
+}
+
+function CampaignRate({ label, value, tone }: { label: string; value: number; tone: "good" | "attention" | "danger" | "neutral" }) {
+  return (
+    <div className={tone}>
+      <div><span>{label}</span><strong>{formatPercent(value)}%</strong></div>
+      <progress value={value} max={100}>{formatPercent(value)}%</progress>
+    </div>
+  );
 }
 
 function TrendChart({ data }: { data: CopilotReportSnapshot["trend"] }) {
@@ -365,11 +466,12 @@ function buildLocalReport(companies: Company[], interactions: Interaction[], fil
     subtitle: "Vista parcial de cartera y actividad disponible en este navegador.",
     generatedAt: new Date().toISOString(),
     periodLabel: periodLabel(filters.periodDays),
-    filters: { periodDays: filters.periodDays, source: filters.source ?? "", companyType: filters.companyType ?? "", region: filters.region ?? "" },
+    filters: { periodDays: filters.periodDays, source: filters.source ?? "", companyType: filters.companyType ?? "", region: filters.region ?? "", campaignId: filters.campaignId ?? "" },
     filterOptions: {
       sources: unique(companies.map((company) => company.source)),
       companyTypes: unique(companies.map((company) => company.type)),
       regions: unique(companies.map((company) => company.region)),
+      campaigns: [],
     },
     kpis: { companies: selected.length, clients, conversionRate: conversion, newCompanies: 0, interactions: activity.length, campaigns: 0, recipients: 0, sent: 0, replies: 0, replyRate: 0, interested: 0, pendingTasks: 0 },
     funnel,
@@ -378,6 +480,7 @@ function buildLocalReport(companies: Company[], interactions: Interaction[], fil
     campaignStatuses: [],
     trend: localTrend(activity),
     campaignPerformance: [],
+    campaignAnalysis: null,
     insights: [
       { tone: conversion >= 35 ? "positive" : conversion < 15 ? "attention" : "neutral", title: `Conversion comercial de ${formatPercent(conversion)}%`, detail: `${clients} empresas estan actualmente en estado cliente.` },
       { tone: contactRate >= 80 ? "positive" : "attention", title: `${formatPercent(contactRate)}% de la cartera es contactable`, detail: `${selected.length - contactable} empresas requieren completar datos de contacto.` },
@@ -418,9 +521,13 @@ function periodLabel(days: number) {
   return `Ultimos ${days} dias`;
 }
 
-function reportPeriodFromLocation() {
-  const requested = Number(new URLSearchParams(window.location.search).get("period") ?? 90);
-  return [0, 30, 90, 180, 365].includes(requested) ? requested : 90;
+function reportFiltersFromLocation(): CopilotReportFilters {
+  const params = new URLSearchParams(window.location.search);
+  const requested = Number(params.get("period") ?? 90);
+  return {
+    periodDays: [0, 30, 90, 180, 365].includes(requested) ? requested : 90,
+    campaignId: params.get("campaign") || undefined,
+  };
 }
 
 function humanize(value: string) {

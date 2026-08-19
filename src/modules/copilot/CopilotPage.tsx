@@ -16,7 +16,7 @@ import {
   Users,
   UserX,
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   saveCopilotCampaignDraft,
   sendCopilotMessage,
@@ -40,7 +40,7 @@ type ChatMessage = {
   saveError?: string;
 };
 
-const starterPrompts = [
+const baseStarterPrompts = [
   "Prepara un informe ejecutivo profesional de los ultimos 90 dias.",
   "Ayudame a crear una campana para clientes de climactiva.cl e invitarlos a RedTecnicos.cl.",
   "Prepara una campana para clientes de Facto que no compran hace 1 mes.",
@@ -48,13 +48,28 @@ const starterPrompts = [
 ];
 
 export function CopilotPage() {
+  const [searchParams] = useSearchParams();
+  const campaignId = searchParams.get("campaign") ?? "";
+  const campaignName = searchParams.get("campaignName") ?? "";
+  const starterPrompts = useMemo(
+    () => campaignId
+      ? [
+        `Analiza que paso con la campana ${campaignName || "seleccionada"}.`,
+        "Explica cuantos destinatarios fueron enviados, fallaron o siguen pendientes.",
+        "Evalua sus respuestas e interesados y recomienda los siguientes pasos.",
+      ]
+      : baseStarterPrompts,
+    [campaignId, campaignName],
+  );
   const [conversationId, setConversationId] = useState<string>();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: "welcome",
       role: "assistant",
       content:
-        "Escribeme libremente lo que necesitas. Puedo preparar informes profesionales, analizar indicadores y crear campanas con sus clientes; nunca programo ni envio automaticamente.",
+        campaignId
+          ? `Estoy listo para analizar la campana ${campaignName || "seleccionada"} con datos verificados de CRM y Gmail.`
+          : "Escribeme libremente lo que necesitas. Puedo consultar por nombre los resultados de cualquier campana, preparar informes profesionales y crear campanas con sus clientes; nunca programo ni envio automaticamente.",
     },
   ]);
   const [draft, setDraft] = useState("");
@@ -80,7 +95,7 @@ export function CopilotPage() {
     setLoading(true);
 
     try {
-      const response = await sendCopilotMessage(content, conversationId);
+      const response = await sendCopilotMessage(content, conversationId, campaignId || undefined);
       setConversationId(response.conversationId);
       setMessages((current) => [
         ...current,
@@ -162,6 +177,14 @@ export function CopilotPage() {
             </div>
             <Sparkles size={22} />
           </div>
+
+          {campaignId ? (
+            <div className="copilot-campaign-context" role="status">
+              <BarChart3 size={18} />
+              <div><span>Campana en contexto</span><strong>{campaignName || campaignId}</strong></div>
+              <Link to={`/informes?period=0&campaign=${encodeURIComponent(campaignId)}`}>Abrir informe</Link>
+            </div>
+          ) : null}
 
           <div className="copilot-messages" aria-live="polite">
             {messages.map((message) => (
@@ -280,21 +303,36 @@ export function CopilotPage() {
                       </div>
                       <h3>{message.reportSnapshot.title}</h3>
                       <div className="copilot-report-kpis">
-                        <div><span>Empresas</span><strong>{message.reportSnapshot.kpis.companies}</strong></div>
-                        <div><span>Conversion</span><strong>{message.reportSnapshot.kpis.conversionRate}%</strong></div>
-                        <div><span>Interacciones</span><strong>{message.reportSnapshot.kpis.interactions}</strong></div>
-                        <div><span>Respuesta</span><strong>{message.reportSnapshot.kpis.replyRate}%</strong></div>
+                        {message.reportSnapshot.campaignAnalysis ? (
+                          <>
+                            <div><span>Destinatarios</span><strong>{message.reportSnapshot.campaignAnalysis.recipients}</strong></div>
+                            <div><span>Enviados</span><strong>{message.reportSnapshot.campaignAnalysis.sent}</strong></div>
+                            <div><span>Pendientes</span><strong>{message.reportSnapshot.campaignAnalysis.pending}</strong></div>
+                            <div><span>Respuesta</span><strong>{message.reportSnapshot.campaignAnalysis.replyRate}%</strong></div>
+                          </>
+                        ) : (
+                          <>
+                            <div><span>Empresas</span><strong>{message.reportSnapshot.kpis.companies}</strong></div>
+                            <div><span>Conversion</span><strong>{message.reportSnapshot.kpis.conversionRate}%</strong></div>
+                            <div><span>Interacciones</span><strong>{message.reportSnapshot.kpis.interactions}</strong></div>
+                            <div><span>Respuesta</span><strong>{message.reportSnapshot.kpis.replyRate}%</strong></div>
+                          </>
+                        )}
                       </div>
-                      <div className="copilot-report-mini-funnel">
-                        {message.reportSnapshot.funnel.slice(0, 5).map((stage) => (
-                          <div key={stage.key}>
-                            <span>{stage.label}</span>
-                            <div><i style={{ width: `${Math.max(stage.percentage, stage.value ? 4 : 0)}%` }} /></div>
-                            <strong>{stage.value}</strong>
-                          </div>
-                        ))}
-                      </div>
-                      <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}`}>
+                      {message.reportSnapshot.campaignAnalysis ? (
+                        <p className="copilot-campaign-diagnosis">{message.reportSnapshot.campaignAnalysis.diagnosis}</p>
+                      ) : (
+                        <div className="copilot-report-mini-funnel">
+                          {message.reportSnapshot.funnel.slice(0, 5).map((stage) => (
+                            <div key={stage.key}>
+                              <span>{stage.label}</span>
+                              <div><i style={{ width: `${Math.max(stage.percentage, stage.value ? 4 : 0)}%` }} /></div>
+                              <strong>{stage.value}</strong>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : ""}`}>
                         <BarChart3 size={17} /> Abrir informe interactivo <ArrowUpRight size={16} />
                       </Link>
                     </section>

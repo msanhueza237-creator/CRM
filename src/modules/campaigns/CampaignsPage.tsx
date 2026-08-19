@@ -40,6 +40,22 @@ interface RecipientState {
   replyPhone?: string;
 }
 
+interface CampaignSendResults {
+  success: number;
+  failed: number;
+  pending?: number;
+  log: string[];
+}
+
+interface GmailSendingProgress {
+  total: number;
+  processed: number;
+  sent: number;
+  failed: number;
+  batch: number;
+  totalBatches: number;
+}
+
 type Row = Record<string, unknown>;
 
 function asRecord(value: unknown): Row {
@@ -52,6 +68,7 @@ const PROPOSAL_OVERRIDES_STORAGE_KEY = "climactiva_proposal_overrides";
 const DISMISSED_PROPOSALS_STORAGE_KEY = "climactiva_dismissed_proposals";
 const CAMPAIGN_ATTACHMENTS_BUCKET = "campaign-attachments";
 const MAX_ATTACHMENT_SIZE_MB = 20;
+const GMAIL_CAMPAIGN_BATCH_SIZE = 10;
 const ALLOWED_ATTACHMENT_TYPES = new Set([
   "application/pdf",
   "application/vnd.ms-excel",
@@ -494,7 +511,8 @@ export function CampaignsPage() {
   const [allowWithoutOptIn, setAllowWithoutOptIn] = useState(false);
   const [adminOverrideReason, setAdminOverrideReason] = useState("");
   const [sendingCampaign, setSendingCampaign] = useState(false);
-  const [sendingResults, setSendingResults] = useState<{ success: number; failed: number; log: string[] } | null>(null);
+  const [sendingResults, setSendingResults] = useState<CampaignSendResults | null>(null);
+  const [gmailSendingProgress, setGmailSendingProgress] = useState<GmailSendingProgress | null>(null);
   const [showGmailConfirmation, setShowGmailConfirmation] = useState(false);
   const [gmailConnected, setGmailConnected] = useState(false);
   const [syncingReplies, setSyncingReplies] = useState(false);
@@ -1349,6 +1367,21 @@ export function CampaignsPage() {
     discarded: campaignRecipients.filter((recipient) => recipient.discarded).length,
     withoutOptIn: selectedCompanies.filter((company) => !company.whatsappOptIn).length,
   };
+  const gmailProgressPercent = gmailSendingProgress?.total
+    ? Math.min(100, Math.round((gmailSendingProgress.processed / gmailSendingProgress.total) * 100))
+    : 0;
+  const gmailSendIncomplete = Boolean(
+    sendingResults && (sendingResults.failed > 0 || (sendingResults.pending ?? 0) > 0 || sendingResults.success === 0),
+  );
+  const gmailSendResultTitle = !sendingResults
+    ? ""
+    : (sendingResults.pending ?? 0) > 0
+      ? "Envio detenido"
+      : sendingResults.failed > 0
+        ? "Envio completado con incidencias"
+        : sendingResults.success > 0
+          ? "Envio completado"
+          : "No se pudo completar el envio";
   const selectedReplies = campaignRecipients
     .filter((recipient) => recipient.replied && (recipient.replyBody || recipient.replySnippet || recipient.replySubject))
     .map((recipient) => ({
@@ -1827,46 +1860,102 @@ export function CampaignsPage() {
     setShowGmailConfirmation(false);
     setSendingCampaign(true);
     setSendingResults(null);
+    const totalBatches = Math.ceil(emailRecipients.length / GMAIL_CAMPAIGN_BATCH_SIZE);
+    let processed = 0;
+    let sent = 0;
+    let failed = 0;
+    const log: string[] = [];
+    const sentCompanyIds = new Set<string>();
+    setGmailSendingProgress({
+      total: emailRecipients.length,
+      processed: 0,
+      sent: 0,
+      failed: 0,
+      batch: 1,
+      totalBatches,
+    });
 
     try {
-      const data = await sendGmailCampaign({
-        name: selectedCampaign.name,
-        subject: selectedCampaign.name,
-        bodyText: campaignBody,
-        bodyHtml: campaignBody.replace(/\n/g, "<br />"),
-        segmentFilters: {
-          crm_campaign_id: selectedCampaign.id,
-          segment: selectedCampaign.segment,
-          type: selectedCampaign.type,
-          product: selectedCampaign.product,
-          coupon: selectedCompanies.every(canReceiveInstallerBenefit) ? selectedCampaign.coupon : "",
-        },
-        recipients: emailRecipients,
-        attachments: selectedCampaign.attachments || [],
-      });
+      for (let batchIndex = 0; batchIndex < totalBatches; batchIndex += 1) {
+        const batchRecipients = emailRecipients.slice(
+          batchIndex * GMAIL_CAMPAIGN_BATCH_SIZE,
+          (batchIndex + 1) * GMAIL_CAMPAIGN_BATCH_SIZE,
+        );
+        setGmailSendingProgress({
+          total: emailRecipients.length,
+          processed,
+          sent,
+          failed,
+          batch: batchIndex + 1,
+          totalBatches,
+        });
 
-      setSendingResults({
-        success: Number(data.sent || 0),
-        failed: Number(data.failed || 0),
-        log: Array.isArray(data.log) ? data.log : [],
-      });
+        const data = await sendGmailCampaign({
+          name: selectedCampaign.name,
+          subject: selectedCampaign.name,
+          bodyText: campaignBody,
+          bodyHtml: campaignBody.replace(/\n/g, "<br />"),
+          segmentFilters: {
+            crm_campaign_id: selectedCampaign.id,
+            segment: selectedCampaign.segment,
+            type: selectedCampaign.type,
+            product: selectedCampaign.product,
+            coupon: selectedCompanies.every(canReceiveInstallerBenefit) ? selectedCampaign.coupon : "",
+            batch: batchIndex + 1,
+            total_batches: totalBatches,
+          },
+          recipients: batchRecipients,
+          attachments: selectedCampaign.attachments || [],
+        });
 
-      const successfulCompanyIds = Array.isArray(data.sentCompanyIds)
-        ? data.sentCompanyIds
-        : Number(data.failed || 0) === 0
-          ? emailRecipients.map((recipient) => recipient.companyId)
-          : [];
-      if (successfulCompanyIds.length) {
-        await markCampaignEmailRecipientsSent(successfulCompanyIds, Number(data.failed || 0) === 0);
+        const batchSent = Number(data.sent || 0);
+        const batchFailed = Number(data.failed || 0);
+        sent += batchSent;
+        failed += batchFailed;
+        processed += batchRecipients.length;
+        if (Array.isArray(data.log)) {
+          log.push(...data.log.map((line) => `Lote ${batchIndex + 1}: ${line}`));
+        }
+
+        const successfulCompanyIds = Array.isArray(data.sentCompanyIds)
+          ? data.sentCompanyIds
+          : batchFailed === 0
+            ? batchRecipients.map((recipient) => recipient.companyId)
+            : [];
+        successfulCompanyIds.forEach((companyId) => sentCompanyIds.add(companyId));
+        if (sentCompanyIds.size) {
+          await markCampaignEmailRecipientsSent(Array.from(sentCompanyIds), false);
+        }
+
+        setGmailSendingProgress({
+          total: emailRecipients.length,
+          processed,
+          sent,
+          failed,
+          batch: batchIndex + 1,
+          totalBatches,
+        });
       }
+
+      if (sentCompanyIds.size) {
+        await markCampaignEmailRecipientsSent(Array.from(sentCompanyIds), failed === 0 && processed === emailRecipients.length);
+      }
+      setSendingResults({ success: sent, failed, pending: 0, log });
     } catch (error) {
+      const pending = Math.max(0, emailRecipients.length - processed);
       setSendingResults({
-        success: 0,
-        failed: emailRecipients.length,
-        log: [error instanceof Error ? error.message : "Error inesperado al enviar Gmail."],
+        success: sent,
+        failed,
+        pending,
+        log: [
+          ...log,
+          error instanceof Error ? error.message : "Error inesperado al enviar Gmail.",
+          pending ? `El envio se detuvo con ${pending} destinatario(s) pendientes. No se reintentaron para evitar duplicados.` : "",
+        ].filter(Boolean),
       });
     } finally {
       setSendingCampaign(false);
+      setGmailSendingProgress(null);
     }
   }
 
@@ -2369,7 +2458,11 @@ export function CampaignsPage() {
                           title={gmailConnected ? undefined : "Gmail no esta conectado. Ve a Administracion para conectar."}
                         >
                           <Send size={18} />
-                          {sendingCampaign ? "Enviando..." : "Enviar via Gmail API"}
+                          {gmailSendingProgress
+                            ? `Enviando ${gmailSendingProgress.processed}/${gmailSendingProgress.total}`
+                            : sendingCampaign
+                              ? "Enviando..."
+                              : "Enviar via Gmail API"}
                         </button>
                         <button
                           className="ghost-button"
@@ -2392,7 +2485,7 @@ export function CampaignsPage() {
                     <div className="gmail-send-confirmation" role="alertdialog" aria-labelledby="gmail-send-confirmation-title">
                       <strong id="gmail-send-confirmation-title">Confirmar envio por Gmail</strong>
                       <p>
-                        Se enviaran {pendingGmailCompanies.length} correos desde msanhueza@latinchile.cl. Los destinatarios ya enviados quedan excluidos.
+                        Se enviaran {pendingGmailCompanies.length} correos desde msanhueza@latinchile.cl en {Math.ceil(pendingGmailCompanies.length / GMAIL_CAMPAIGN_BATCH_SIZE)} lote(s). Los destinatarios ya enviados quedan excluidos.
                       </p>
                       <div className="campaign-actions">
                         <button className="ghost-button" type="button" onClick={() => setShowGmailConfirmation(false)}>
@@ -2405,11 +2498,31 @@ export function CampaignsPage() {
                       </div>
                     </div>
                   ) : null}
+                  {gmailSendingProgress ? (
+                    <div className="campaign-send-progress" role="status" aria-live="polite">
+                      <div className="campaign-send-progress-heading">
+                        <strong>Enviando campana</strong>
+                        <span>{gmailProgressPercent}%</span>
+                      </div>
+                      <progress value={gmailSendingProgress.processed} max={gmailSendingProgress.total}>
+                        {gmailProgressPercent}%
+                      </progress>
+                      <p>
+                        {gmailSendingProgress.processed} de {gmailSendingProgress.total} procesados · Lote {gmailSendingProgress.batch} de {gmailSendingProgress.totalBatches}
+                      </p>
+                      <div className="campaign-send-progress-metrics">
+                        <span><strong>{gmailSendingProgress.sent}</strong> enviados</span>
+                        <span><strong>{gmailSendingProgress.failed}</strong> fallidos</span>
+                        <span><strong>{gmailSendingProgress.total - gmailSendingProgress.processed}</strong> pendientes</span>
+                      </div>
+                    </div>
+                  ) : null}
                   {sendingResults ? (
-                    <div className={`campaign-send-results ${sendingResults.failed || !sendingResults.success ? "error" : "success"}`} role="status" aria-live="polite">
-                      <strong>{sendingResults.failed || !sendingResults.success ? "No se pudo completar el envio" : "Envio completado"}</strong>
+                    <div className={`campaign-send-results ${gmailSendIncomplete ? "error" : "success"}`} role="status" aria-live="polite">
+                      <strong>{gmailSendResultTitle}</strong>
                       <p>
                         Enviados: {sendingResults.success}. Fallidos: {sendingResults.failed}.
+                        {(sendingResults.pending ?? 0) > 0 ? ` Pendientes: ${sendingResults.pending}.` : ""}
                       </p>
                       {sendingResults.log.length ? (
                         <details>

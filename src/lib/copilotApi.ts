@@ -39,11 +39,13 @@ export interface CopilotReportSnapshot {
     source: string;
     companyType: string;
     region: string;
+    campaignId: string;
   };
   filterOptions: {
     sources: string[];
     companyTypes: string[];
     regions: string[];
+    campaigns: Array<{ id: string; name: string }>;
   };
   kpis: {
     companies: number;
@@ -75,6 +77,28 @@ export interface CopilotReportSnapshot {
     interested: number;
     replyRate: number;
   }>;
+  campaignAnalysis: {
+    id: string;
+    name: string;
+    status: string;
+    channel: string;
+    recipients: number;
+    sent: number;
+    failed: number;
+    pending: number;
+    skipped: number;
+    replies: number;
+    interested: number;
+    sendRate: number;
+    replyRate: number;
+    failureRate: number;
+    pendingRate: number;
+    emailBatches: number;
+    firstSentAt: string | null;
+    lastSentAt: string | null;
+    diagnosis: string;
+    topErrors: Array<{ message: string; count: number }>;
+  } | null;
   insights: Array<{
     tone: "positive" | "attention" | "neutral";
     title: string;
@@ -93,6 +117,7 @@ export interface CopilotReportFilters {
   source?: string;
   companyType?: string;
   region?: string;
+  campaignId?: string;
 }
 
 export interface CopilotCampaignDraft {
@@ -133,7 +158,7 @@ export interface SavedCopilotCampaign {
   excludedCount?: number;
 }
 
-export async function sendCopilotMessage(message: string, conversationId?: string) {
+export async function sendCopilotMessage(message: string, conversationId?: string, campaignId?: string) {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error("Conecta Supabase para usar el copiloto OpenAI.");
   }
@@ -148,7 +173,7 @@ export async function sendCopilotMessage(message: string, conversationId?: strin
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ message, conversationId }),
+    body: JSON.stringify({ message, conversationId, campaignId }),
   });
   const payload = await response.json().catch(() => ({}));
 
