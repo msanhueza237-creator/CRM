@@ -250,7 +250,7 @@ export function AdminPage() {
     try {
       const data = await getGmailStatus();
       setGmailStatus(data);
-      setGmailDailyLimit(Number(data.dailyLimit ?? 50));
+      setGmailDailyLimit(Number(data.dailyLimit ?? 200));
     } catch (error) {
       setGmailNoticeType("error");
       setGmailNotice(error instanceof Error ? error.message : "No se pudo cargar Gmail.");

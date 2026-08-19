@@ -9,7 +9,7 @@ create table if not exists public.gmail_integrations (
   connected_email text,
   refresh_token_encrypted text,
   status text not null default 'disconnected',
-  daily_limit integer not null default 50,
+  daily_limit integer not null default 200,
   sent_today integer not null default 0,
   sent_today_date date not null default current_date,
   last_connected_at timestamptz,

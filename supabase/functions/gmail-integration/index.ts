@@ -462,7 +462,7 @@ async function handleStatus(supabase: SupabaseClient, req: Request) {
     connected: integration?.status === "connected",
     connectedEmail: integration?.connected_email ?? null,
     status: integration?.status ?? "disconnected",
-    dailyLimit: integration?.daily_limit ?? 50,
+    dailyLimit: integration?.daily_limit ?? 200,
     sentToday: integration?.sent_today ?? 0,
     lastConnectedAt: integration?.last_connected_at ?? null,
     lastHealthCheckAt: integration?.last_health_check_at ?? null,
@@ -489,7 +489,7 @@ async function handleMetrics(supabase: SupabaseClient, req: Request) {
 
   return json({
     sentToday: sentToday ?? integration?.sent_today ?? 0,
-    dailyLimit: integration?.daily_limit ?? 50,
+    dailyLimit: integration?.daily_limit ?? 200,
     activeCampaigns: activeCampaigns ?? 0,
     failedEmails: failed ?? 0,
     companiesContacted: new Set((contactedRows || []).map((row) => row.company_id)).size,
@@ -619,6 +619,24 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
   if (!recipients.length) throw new HttpError("Selecciona al menos un destinatario.", 400);
   if (recipients.length > 200) throw new HttpError("Por seguridad, el lote maximo local es 200 destinatarios.", 400);
 
+  const integration = await prepareIntegrationForSend(supabase);
+  const validRecipientCount = recipients.filter((recipient) => isEmail(String(recipient.toEmail || "").trim())).length;
+  const remainingToday = Math.max(0, integration.daily_limit - integration.sent_today);
+  if (validRecipientCount > remainingToday) {
+    throw new HttpError(
+      `El lote tiene ${validRecipientCount} correos validos, pero quedan ${remainingToday} envios disponibles hoy. Reduce la lista o espera al reinicio diario.`,
+      429,
+    );
+  }
+
+  console.info("[gmail-integration] campaign send requested", {
+    name,
+    recipients: recipients.length,
+    validRecipients: validRecipientCount,
+    remainingToday,
+    userId: user.id,
+  });
+
   // Fetch campaign attachments once at the beginning
   const fetchedAttachments: { name: string; contentBase64: string; contentType: string }[] = [];
   for (const att of payloadAttachments) {
@@ -652,6 +670,8 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
   let sent = 0;
   let failed = 0;
   const log: string[] = [];
+  const sentCompanyIds: string[] = [];
+  const failedCompanyIds: string[] = [];
 
   for (const recipient of recipients) {
     const toEmail = String(recipient.toEmail || "").trim().toLowerCase();
@@ -671,6 +691,7 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
 
     if (!isEmail(toEmail)) {
       failed += 1;
+      if (recipient.companyId) failedCompanyIds.push(recipient.companyId);
       const message = "Correo invalido";
       log.push(`${toEmail || "sin correo"}: ${message}`);
       await updateRecipientFailure(supabase, recipientRow?.id, message);
@@ -692,6 +713,7 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
       });
 
       sent += 1;
+      if (recipient.companyId) sentCompanyIds.push(recipient.companyId);
       log.push(`${toEmail}: enviado`);
       await supabase
         .from("email_campaign_recipients")
@@ -703,6 +725,7 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
         .eq("id", recipientRow.id);
     } catch (error) {
       failed += 1;
+      if (recipient.companyId) failedCompanyIds.push(recipient.companyId);
       const message = error instanceof Error ? error.message : "Error desconocido";
       log.push(`${toEmail}: ${message}`);
       await updateRecipientFailure(supabase, recipientRow?.id, message);
@@ -714,7 +737,13 @@ async function handleSendCampaign(req: Request, supabase: SupabaseClient, user: 
     .update({ status: failed && !sent ? "failed" : "sent" })
     .eq("id", campaign.id);
 
-  return json({ success: failed === 0, campaignId: campaign.id, sent, failed, log }, 200, req);
+  console.info("[gmail-integration] campaign send finished", {
+    campaignId: campaign.id,
+    sent,
+    failed,
+  });
+
+  return json({ success: failed === 0, campaignId: campaign.id, sent, failed, log, sentCompanyIds, failedCompanyIds }, 200, req);
 }
 
 async function handleSyncReplies(supabase: SupabaseClient, _user: AuthenticatedUser, req: Request) {
@@ -1265,7 +1294,7 @@ async function recordIntegrationError(supabase: SupabaseClient, lastError: strin
     await supabase.from("gmail_integrations").insert({
       status: "error",
       last_error: lastError,
-      daily_limit: 50,
+      daily_limit: 200,
     });
     return;
   }

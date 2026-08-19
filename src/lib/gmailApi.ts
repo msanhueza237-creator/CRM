@@ -45,6 +45,8 @@ export interface GmailCampaignResult {
   sent: number;
   failed: number;
   log: string[];
+  sentCompanyIds?: string[];
+  failedCompanyIds?: string[];
 }
 
 export interface GmailReplySyncResult {
@@ -85,7 +87,7 @@ export const emptyGmailStatus: GmailStatus = {
   connected: false,
   connectedEmail: null,
   status: "disconnected",
-  dailyLimit: 50,
+  dailyLimit: 200,
   sentToday: 0,
   lastConnectedAt: null,
   lastHealthCheckAt: null,

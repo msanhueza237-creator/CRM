@@ -484,6 +484,7 @@ export function CampaignsPage() {
   const [adminOverrideReason, setAdminOverrideReason] = useState("");
   const [sendingCampaign, setSendingCampaign] = useState(false);
   const [sendingResults, setSendingResults] = useState<{ success: number; failed: number; log: string[] } | null>(null);
+  const [showGmailConfirmation, setShowGmailConfirmation] = useState(false);
   const [gmailConnected, setGmailConnected] = useState(false);
   const [syncingReplies, setSyncingReplies] = useState(false);
   const [syncingWhatsAppReplies, setSyncingWhatsAppReplies] = useState(false);
@@ -1305,6 +1306,11 @@ export function CampaignsPage() {
       .catch(() => setGmailConnected(false));
   }, []);
 
+  useEffect(() => {
+    setShowGmailConfirmation(false);
+    setSendingResults(null);
+  }, [selectedCampaignId]);
+
   const selectedCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId) ?? campaigns[0];
   const selectedTemplate = templates.find((template) => template.id === selectedCampaign?.templateId) ?? templates[0];
   const selectedCompanies = useMemo(() => {
@@ -1318,6 +1324,12 @@ export function CampaignsPage() {
   );
 
   const campaignRecipients = recipients.filter((recipient) => recipient.campaignId === selectedCampaign?.id);
+  const sentCampaignCompanyIds = new Set(
+    campaignRecipients.filter((recipient) => recipient.sent).map((recipient) => recipient.companyId),
+  );
+  const pendingGmailCompanies = selectedCompanies.filter(
+    (company) => company.email && !sentCampaignCompanyIds.has(company.id),
+  );
   const analytics = {
     total: selectedCompanies.length,
     sent: campaignRecipients.filter((recipient) => recipient.sent).length,
@@ -1559,7 +1571,7 @@ export function CampaignsPage() {
     updateCampaignStatus("enviada");
   }
 
-  async function markCampaignEmailRecipientsSent(companyIds: string[]) {
+  async function markCampaignEmailRecipientsSent(companyIds: string[], completed: boolean) {
     if (!selectedCampaign || !companyIds.length) return;
 
     const ids = new Set(companyIds);
@@ -1583,7 +1595,8 @@ export function CampaignsPage() {
       .concat(createdRows);
 
     persistRecipients(nextRecipients);
-    updateCampaignStatus("enviada");
+    const nextStatus: CampaignStatus = completed ? "enviada" : "programada";
+    updateCampaignStatus(nextStatus);
 
     if (isSupabaseConfigured && supabase) {
       const sentAt = new Date().toISOString();
@@ -1592,7 +1605,7 @@ export function CampaignsPage() {
         .update({ sent_at: sentAt })
         .eq("campaign_id", selectedCampaign.id)
         .in("company_id", companyIds);
-      await supabase.from("campaigns").update({ status: "enviada" }).eq("id", selectedCampaign.id);
+      await supabase.from("campaigns").update({ status: nextStatus }).eq("id", selectedCampaign.id);
     }
   }
 
@@ -1701,10 +1714,70 @@ export function CampaignsPage() {
     }
   }
 
-  async function executeGmailCampaign() {
-    if (!selectedCampaign || !selectedTemplate || !isSupabaseConfigured || !supabase) return;
+  function requestGmailCampaignSend() {
+    setSendingResults(null);
 
-    if (isInstallerAccountTemplate(selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
+    if (!selectedCampaign) return;
+    if (!isSupabaseConfigured || !supabase) {
+      setSendingResults({
+        success: 0,
+        failed: 0,
+        log: ["Conecta Supabase antes de enviar la campana mediante Gmail API."],
+      });
+      return;
+    }
+
+    if (!gmailConnected) {
+      setSendingResults({
+        success: 0,
+        failed: 0,
+        log: ["Gmail no esta conectado. Conecta la cuenta desde Administracion antes de enviar."],
+      });
+      return;
+    }
+
+    const campaignBody = selectedCampaign.message.trim() || selectedTemplate?.body.trim() || "";
+    if (!campaignBody) {
+      setSendingResults({
+        success: 0,
+        failed: 0,
+        log: ["La campana no tiene contenido preparado para enviar."],
+      });
+      return;
+    }
+
+    if (!pendingGmailCompanies.length) {
+      setSendingResults({
+        success: 0,
+        failed: 0,
+        log: [sentCampaignCompanyIds.size ? "Todos los destinatarios con correo ya fueron enviados." : "No hay destinatarios con correo en esta campana."],
+      });
+      return;
+    }
+
+    setShowGmailConfirmation(true);
+  }
+
+  async function executeGmailCampaign() {
+    if (!selectedCampaign || !isSupabaseConfigured || !supabase) {
+      setShowGmailConfirmation(false);
+      setSendingResults({
+        success: 0,
+        failed: 0,
+        log: ["No fue posible iniciar el envio. Revisa la conexion con Supabase."],
+      });
+      return;
+    }
+
+    const campaignBody = selectedCampaign.message.trim() || selectedTemplate?.body.trim() || "";
+    if (!campaignBody) {
+      setShowGmailConfirmation(false);
+      setSendingResults({ success: 0, failed: 0, log: ["La campana no tiene contenido preparado para enviar."] });
+      return;
+    }
+
+    if (selectedTemplate && isInstallerAccountTemplate(selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
+      setShowGmailConfirmation(false);
       setSendingResults({
         success: 0,
         failed: selectedCompanies.length,
@@ -1713,8 +1786,7 @@ export function CampaignsPage() {
       return;
     }
 
-    const emailRecipients = selectedCompanies
-      .filter((company) => company.email)
+    const emailRecipients = pendingGmailCompanies
       .map((company) => {
         const benefit = getCampaignBenefitForCompany(selectedCampaign, company);
         return {
@@ -1741,11 +1813,7 @@ export function CampaignsPage() {
       return;
     }
 
-    const confirmed = window.confirm(
-      `Enviar campana Gmail a ${emailRecipients.length} destinatarios desde msanhueza@latinchile.cl?\n\nRevisa que el segmento sea preciso, que el mensaje este personalizado y que tengas permiso comercial para contactar.`,
-    );
-    if (!confirmed) return;
-
+    setShowGmailConfirmation(false);
     setSendingCampaign(true);
     setSendingResults(null);
 
@@ -1753,8 +1821,8 @@ export function CampaignsPage() {
       const data = await sendGmailCampaign({
         name: selectedCampaign.name,
         subject: selectedCampaign.name,
-        bodyText: selectedCampaign.message || selectedTemplate.body,
-        bodyHtml: (selectedCampaign.message || selectedTemplate.body).replace(/\n/g, "<br />"),
+        bodyText: campaignBody,
+        bodyHtml: campaignBody.replace(/\n/g, "<br />"),
         segmentFilters: {
           crm_campaign_id: selectedCampaign.id,
           segment: selectedCampaign.segment,
@@ -1772,8 +1840,13 @@ export function CampaignsPage() {
         log: Array.isArray(data.log) ? data.log : [],
       });
 
-      if (Number(data.sent || 0) > 0) {
-        await markCampaignEmailRecipientsSent(emailRecipients.map((recipient) => recipient.companyId));
+      const successfulCompanyIds = Array.isArray(data.sentCompanyIds)
+        ? data.sentCompanyIds
+        : Number(data.failed || 0) === 0
+          ? emailRecipients.map((recipient) => recipient.companyId)
+          : [];
+      if (successfulCompanyIds.length) {
+        await markCampaignEmailRecipientsSent(successfulCompanyIds, Number(data.failed || 0) === 0);
       }
     } catch (error) {
       setSendingResults({
@@ -2276,12 +2349,12 @@ export function CampaignsPage() {
                         <button
                           className="primary-button"
                           type="button"
-                          onClick={executeGmailCampaign}
-                          disabled={sendingCampaign || !gmailConnected}
+                          onClick={requestGmailCampaignSend}
+                          disabled={sendingCampaign}
                           title={gmailConnected ? undefined : "Gmail no esta conectado. Ve a Administracion para conectar."}
                         >
                           <Send size={18} />
-                          {sendingCampaign ? "Enviando..." : gmailConnected ? "Enviar via Gmail API" : "Gmail desconectado"}
+                          {sendingCampaign ? "Enviando..." : "Enviar via Gmail API"}
                         </button>
                         <button
                           className="ghost-button"
@@ -2300,6 +2373,39 @@ export function CampaignsPage() {
                       Pausar
                     </button>
                   </div>
+                  {showGmailConfirmation ? (
+                    <div className="gmail-send-confirmation" role="alertdialog" aria-labelledby="gmail-send-confirmation-title">
+                      <strong id="gmail-send-confirmation-title">Confirmar envio por Gmail</strong>
+                      <p>
+                        Se enviaran {pendingGmailCompanies.length} correos desde msanhueza@latinchile.cl. Los destinatarios ya enviados quedan excluidos.
+                      </p>
+                      <div className="campaign-actions">
+                        <button className="ghost-button" type="button" onClick={() => setShowGmailConfirmation(false)}>
+                          Cancelar
+                        </button>
+                        <button className="primary-button" type="button" onClick={() => void executeGmailCampaign()}>
+                          <Send size={18} />
+                          Confirmar envio a {pendingGmailCompanies.length}
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                  {sendingResults ? (
+                    <div className={`campaign-send-results ${sendingResults.failed || !sendingResults.success ? "error" : "success"}`} role="status" aria-live="polite">
+                      <strong>{sendingResults.failed || !sendingResults.success ? "No se pudo completar el envio" : "Envio completado"}</strong>
+                      <p>
+                        Enviados: {sendingResults.success}. Fallidos: {sendingResults.failed}.
+                      </p>
+                      {sendingResults.log.length ? (
+                        <details>
+                          <summary>Ver detalle</summary>
+                          <ul>
+                            {sendingResults.log.map((line, index) => <li key={`${index}-${line}`}>{line}</li>)}
+                          </ul>
+                        </details>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
 
                 <div className="panel">

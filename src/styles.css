@@ -1800,6 +1800,45 @@ th {
   color: rgba(255, 255, 255, 0.72);
 }
 
+.gmail-send-confirmation,
+.campaign-send-results {
+  margin-top: 12px;
+  border-top: 1px solid #dfe7ea;
+  padding-top: 12px;
+}
+
+.gmail-send-confirmation p,
+.campaign-send-results p {
+  margin: 6px 0 10px;
+  color: #445b63;
+  font-size: 14px;
+}
+
+.campaign-send-results.success strong {
+  color: #24623b;
+}
+
+.campaign-send-results.error strong {
+  color: #8c2d22;
+}
+
+.campaign-send-results details {
+  margin-top: 8px;
+}
+
+.campaign-send-results summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.campaign-send-results ul {
+  max-height: 180px;
+  margin: 8px 0 0;
+  padding-left: 20px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
 .copilot-campaign-draft {
   display: grid;
   gap: 12px;
