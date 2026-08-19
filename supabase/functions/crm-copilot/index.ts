@@ -285,7 +285,12 @@ Deno.serve(async (req) => {
     const payload = await readJson(req);
     if (route === "report") {
       const filters = reportFiltersFromPayload(payload);
-      const report = await generateProfessionalReport(rest, filters, "Informe comercial Clima Activa");
+      const requestedReportKind = optionalText(payload.reportKind, 30);
+      const report = await generateProfessionalReport(
+        rest,
+        filters,
+        requestedReportKind === "financial" ? "Informe financiero mensual" : "Informe comercial Clima Activa",
+      );
       return json({ report, traceId });
     }
 
@@ -358,6 +363,7 @@ Deno.serve(async (req) => {
       });
     }
 
+    const reportSnapshot = findProfessionalReport(toolResults);
     const openai = await callOpenAI({
       profile,
       message,
@@ -365,6 +371,7 @@ Deno.serve(async (req) => {
       context,
       conversationId: conversation.id,
     });
+    const assistantText = ensureIntentAlignedReply(message, openai.text, reportSnapshot);
     const campaignDraft = openai.campaignDraft
       ? {
         ...openai.campaignDraft,
@@ -372,14 +379,12 @@ Deno.serve(async (req) => {
         recipientPreview: publicRecipientPreview(findSegmentPreview(toolResults)),
       }
       : null;
-    const reportSnapshot = findProfessionalReport(toolResults);
-
     await insertMessage(rest, {
       conversation_id: conversation.id,
       tenant_id: context.tenantId,
       user_id: context.userId,
       role: "assistant",
-      content: openai.text,
+      content: assistantText,
       model: openai.model,
       prompt_version: promptVersion,
       tokens_input: openai.tokensInput,
@@ -413,7 +418,7 @@ Deno.serve(async (req) => {
 
     return json({
       conversationId: conversation.id,
-      message: openai.text,
+      message: assistantText,
       traceId,
       model: openai.model,
       campaignDraft,
@@ -632,14 +637,17 @@ async function runReadOnlyTools(
   requestedCampaignId = "",
 ): Promise<ToolResult[]> {
   const results: ToolResult[] = [];
-  results.push(await searchCrmEntities(rest, context, message));
-  results.push(getAvailableMetrics());
-  results.push(await runAnalyticsQuery(rest));
-
   const campaignDraftRequested = mentionsCampaignDraft(message);
-  const campaignAnalysisRequested = Boolean(requestedCampaignId) || mentionsCampaignAnalysis(message);
-  const campaignId = requestedCampaignId || (
-    !campaignDraftRequested && normalize(message).includes("campana")
+  const financialAnalysisRequested = mentionsFinancialAnalysis(message);
+  const reportRequested = mentionsReport(message);
+  const normalizedMessage = normalize(message);
+  const nonCampaignReportRequested = reportRequested && !normalizedMessage.includes("campana");
+  const useCampaignContext = Boolean(
+    requestedCampaignId && !campaignDraftRequested && !financialAnalysisRequested && !nonCampaignReportRequested,
+  );
+  const campaignAnalysisRequested = useCampaignContext || mentionsCampaignAnalysis(message);
+  const campaignId = (useCampaignContext ? requestedCampaignId : "") || (
+    !campaignDraftRequested && !financialAnalysisRequested && normalizedMessage.includes("campana")
       ? await resolveCampaignIdFromMessage(rest, message)
       : ""
   );
@@ -665,6 +673,7 @@ async function runReadOnlyTools(
       requiresConfirmation: false,
       errorCode: report.campaignAnalysis ? undefined : "CAMPAIGN_NOT_FOUND",
     });
+    return results;
   } else if (shouldAnalyzeCampaign) {
     results.push({
       ok: false,
@@ -676,7 +685,8 @@ async function runReadOnlyTools(
       requiresConfirmation: false,
       errorCode: "CAMPAIGN_NOT_IDENTIFIED",
     });
-  } else if (mentionsReport(message)) {
+    return results;
+  } else if (reportRequested) {
     const report = await generateProfessionalReport(
       rest,
       reportFiltersFromMessage(message),
@@ -696,7 +706,12 @@ async function runReadOnlyTools(
       riskLevel: "read",
       requiresConfirmation: false,
     });
+    return results;
   }
+
+  results.push(await searchCrmEntities(rest, context, message));
+  results.push(getAvailableMetrics());
+  results.push(await runAnalyticsQuery(rest));
 
   if (mentionsSegment(message) && !shouldAnalyzeCampaign) {
     results.push(await previewCustomerSegment(rest, message));
@@ -1047,13 +1062,16 @@ async function generateProfessionalReport(
     filters.periodDays,
   );
   const financialAnalysis = buildFinancialAnalysis(financialSnapshots, accountingSnapshots);
+  const financialReportRequested = !campaignAnalysis && normalize(title).includes("financier");
   const warnings: string[] = [];
   if (filters.campaignId && !selectedCampaign) warnings.push("No se encontro la campana seleccionada.");
-  if (!filteredCompanies.length) warnings.push("No hay empresas que coincidan con los filtros seleccionados.");
-  if (!periodInteractions.length) warnings.push("No hay interacciones registradas en el periodo seleccionado.");
-  if (!periodCampaigns.length) warnings.push("No hay campanas registradas en el periodo seleccionado.");
-  if (!agentIntelligence.agentsWithData) warnings.push("Los agentes aun no registran analisis completados en el periodo seleccionado.");
-  if (!integrationConnections.length) warnings.push("No fue posible incluir el estado de las integraciones del Agent Hub.");
+  if (!financialReportRequested) {
+    if (!filteredCompanies.length) warnings.push("No hay empresas que coincidan con los filtros seleccionados.");
+    if (!periodInteractions.length) warnings.push("No hay interacciones registradas en el periodo seleccionado.");
+    if (!periodCampaigns.length) warnings.push("No hay campanas registradas en el periodo seleccionado.");
+    if (!agentIntelligence.agentsWithData) warnings.push("Los agentes aun no registran analisis completados en el periodo seleccionado.");
+    if (!integrationConnections.length) warnings.push("No fue posible incluir el estado de las integraciones del Agent Hub.");
+  }
   if (!financialAnalysis.available) warnings.push("No hay un corte financiero mensual disponible para calcular indicadores de ventas y compras.");
   else warnings.push(...financialAnalysis.warnings);
   if ([companies, interactions, tasks].some((rows) => rows.length >= 5000) || recipients.length >= 10000 || emailRecipients.length >= 10000) {
@@ -1846,9 +1864,20 @@ function asRecord(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
 }
 
-function modelSafeToolData(value: unknown): unknown {
+function modelSafeToolData(value: unknown, request = ""): unknown {
   const data = asRecord(value);
   if (data.toolName === "generate_professional_report") {
+    if (mentionsFinancialAnalysis(request)) {
+      const financialAnalysis = asRecord(data.financialAnalysis);
+      return {
+        toolName: data.toolName,
+        title: data.title,
+        generatedAt: data.generatedAt,
+        periodLabel: data.periodLabel,
+        financialAnalysis,
+        warnings: Array.isArray(financialAnalysis.warnings) ? financialAnalysis.warnings : [],
+      };
+    }
     const filterOptions = asRecord(data.filterOptions);
     return {
       ...data,
@@ -1888,6 +1917,37 @@ function findProfessionalReport(toolResults: ToolResult[]): ProfessionalReport |
     if (data.toolName === "generate_professional_report") return data as ProfessionalReport;
   }
   return null;
+}
+
+function ensureIntentAlignedReply(message: string, reply: string, report: ProfessionalReport | null) {
+  if (!mentionsFinancialAnalysis(message)) return reply;
+  const normalizedReply = normalize(reply);
+  const financialSignals = ["venta", "compra", "utilidad", "diferencia documental", "margen", "rentabilidad"]
+    .filter((signal) => normalizedReply.includes(signal)).length;
+  if (financialSignals >= 2 && !normalizedReply.includes("informe de campanas")) return reply;
+  return buildFinancialReply(report);
+}
+
+function buildFinancialReply(report: ProfessionalReport | null) {
+  const financial = report?.financialAnalysis;
+  if (!financial?.available) {
+    return "No hay un corte financiero mensual disponible en Facto. Debes sincronizar ventas y compras antes de solicitar la rentabilidad; no usare datos de campanas como reemplazo.";
+  }
+  const resultValue = financial.profitabilityAvailable
+    ? Number(financial.profitabilityValue)
+    : financial.documentaryDifference;
+  const resultLabel = financial.profitabilityAvailable ? "Utilidad contable" : "Diferencia documental";
+  const trend = financial.salesTrendPercent === null
+    ? "No existe un mes anterior comparable."
+    : `Las ventas variaron ${financial.salesTrendPercent > 0 ? "+" : ""}${financial.salesTrendPercent}% frente al mes disponible anterior.`;
+  return [
+    `Informe financiero de ${financial.monthLabel}.`,
+    `Ventas netas: ${reportCurrency(financial.netSales)} (${financial.salesDocuments} documentos).`,
+    `Compras netas: ${reportCurrency(financial.netPurchases)} (${financial.purchaseDocuments} documentos).`,
+    `${resultLabel}: ${reportCurrency(resultValue)}.`,
+    trend,
+    financial.explanation,
+  ].join("\n");
 }
 
 function findSegmentPreview(toolResults: ToolResult[]): SegmentPreview {
@@ -2100,6 +2160,7 @@ async function callOpenAI(input: {
     "El servidor calcula un segmento real. Al guardar con confirmacion puede asociar destinatarios e importar identidades externas verificables, pero nunca envia ni programa.",
     "Respeta los filtros de origen, antiguedad de ultima compra y cantidad de compras informados por el servidor.",
     "Si el usuario pide un informe, reporte, dashboard, KPI, estadistica, tendencia o informacion de uno o varios agentes, usa exclusivamente generate_professional_report para explicar cifras, tendencias, riesgos y oportunidades.",
+    "La intencion explicita de la solicitud actual siempre domina el contexto de navegacion. Si pide finanzas o rentabilidad, no respondas sobre campanas aunque la conversacion se haya abierto desde una campana.",
     "agentIntelligence consolida los siete agentes del CRM. Usa sus estados, ejecuciones, resumenes, metricas, propuestas, alertas e integraciones para responder preguntas transversales sin atribuir acciones que no esten registradas.",
     "financialAnalysis contiene el corte financiero mensual. Si preguntan por rentabilidad, utilidad, ventas, compras o margen, responde con el mes exacto, las cifras disponibles y su fecha de actualizacion.",
     "Nunca llames utilidad o rentabilidad a documentaryDifference: ventas netas menos compras netas es solo diferencia documental, porque compras no equivale a costo de ventas. Solo informa utilidad cuando profitabilityAvailable sea true.",
@@ -2124,10 +2185,13 @@ async function callOpenAI(input: {
             text: JSON.stringify({
               user: { id: input.context.userId, role: input.profile.role, locale: input.context.locale },
               request: input.message,
+              requestIntent: mentionsFinancialAnalysis(input.message)
+                ? "financial_report"
+                : mentionsCampaignAnalysis(input.message) ? "campaign_analysis" : mentionsReport(input.message) ? "professional_report" : "general",
               conversationId: input.conversationId,
               crmContext: input.toolResults.map((result) => ({
                 summary: result.humanSummary,
-                data: modelSafeToolData(result.data),
+                data: modelSafeToolData(result.data, input.message),
                 warnings: result.warnings,
                 evidence: result.evidence,
               })),

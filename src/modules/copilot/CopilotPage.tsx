@@ -333,6 +333,13 @@ export function CopilotPage() {
                             <div><span>Pendientes</span><strong>{message.reportSnapshot.campaignAnalysis.pending}</strong></div>
                             <div><span>Respuesta</span><strong>{message.reportSnapshot.campaignAnalysis.replyRate}%</strong></div>
                           </>
+                        ) : message.reportSnapshot.title.toLowerCase().includes("financier") && message.reportSnapshot.financialAnalysis.available ? (
+                          <>
+                            <div><span>Ventas netas</span><strong>{formatCopilotCurrency(message.reportSnapshot.financialAnalysis.netSales)}</strong></div>
+                            <div><span>Compras netas</span><strong>{formatCopilotCurrency(message.reportSnapshot.financialAnalysis.netPurchases)}</strong></div>
+                            <div><span>{message.reportSnapshot.financialAnalysis.profitabilityAvailable ? "Utilidad" : "Diferencia documental"}</span><strong>{formatCopilotCurrency(message.reportSnapshot.financialAnalysis.profitabilityAvailable ? Number(message.reportSnapshot.financialAnalysis.profitabilityValue) : message.reportSnapshot.financialAnalysis.documentaryDifference)}</strong></div>
+                            <div><span>Variacion ventas</span><strong>{message.reportSnapshot.financialAnalysis.salesTrendPercent === null ? "Sin base" : `${message.reportSnapshot.financialAnalysis.salesTrendPercent > 0 ? "+" : ""}${message.reportSnapshot.financialAnalysis.salesTrendPercent}%`}</strong></div>
+                          </>
                         ) : (
                           <>
                             <div><span>Empresas</span><strong>{message.reportSnapshot.kpis.companies}</strong></div>
@@ -344,7 +351,7 @@ export function CopilotPage() {
                       </div>
                       {message.reportSnapshot.campaignAnalysis ? (
                         <p className="copilot-campaign-diagnosis">{message.reportSnapshot.campaignAnalysis.diagnosis}</p>
-                      ) : (
+                      ) : !message.reportSnapshot.title.toLowerCase().includes("financier") ? (
                         <div className="copilot-report-mini-funnel">
                           {message.reportSnapshot.funnel.slice(0, 5).map((stage) => (
                             <div key={stage.key}>
@@ -354,7 +361,7 @@ export function CopilotPage() {
                             </div>
                           ))}
                         </div>
-                      )}
+                      ) : null}
                       {!message.reportSnapshot.campaignAnalysis && message.reportSnapshot.financialAnalysis.available ? (
                         <div className="copilot-financial-overview">
                           <div className="copilot-financial-heading">
@@ -371,7 +378,7 @@ export function CopilotPage() {
                           <p>{message.reportSnapshot.financialAnalysis.explanation}</p>
                         </div>
                       ) : null}
-                      {!message.reportSnapshot.campaignAnalysis ? (
+                      {!message.reportSnapshot.campaignAnalysis && !message.reportSnapshot.title.toLowerCase().includes("financier") ? (
                         <div className="copilot-agent-overview">
                           <div><Bot size={17} /><strong>Todos los agentes</strong><span>{message.reportSnapshot.agentIntelligence.agentsWithData}/{message.reportSnapshot.agentIntelligence.totalAgents} con datos</span></div>
                           {message.reportSnapshot.agentIntelligence.agents.map((agent) => (
@@ -384,7 +391,7 @@ export function CopilotPage() {
                         </div>
                       ) : null}
                       <div className="copilot-report-actions">
-                        <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : ""}`}>
+                        <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}${message.reportSnapshot.campaignAnalysis ? `&campaign=${encodeURIComponent(message.reportSnapshot.campaignAnalysis.id)}` : message.reportSnapshot.title.toLowerCase().includes("financier") ? "&view=financial" : ""}`}>
                           <BarChart3 size={17} /> Abrir informe <ArrowUpRight size={16} />
                         </Link>
                         <button className="ghost-button" type="button" disabled={Boolean(exportingReport)} onClick={() => void downloadReport(message.id, message.reportSnapshot!, "pdf")}>

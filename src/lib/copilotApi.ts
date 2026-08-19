@@ -189,6 +189,7 @@ export interface CopilotReportFilters {
   companyType?: string;
   region?: string;
   campaignId?: string;
+  reportKind?: "financial";
 }
 
 export interface CopilotCampaignDraft {

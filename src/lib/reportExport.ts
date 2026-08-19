@@ -16,6 +16,7 @@ export async function exportReportPdf(report: CopilotReportSnapshot) {
   const margin = 14;
   const contentWidth = pageWidth - margin * 2;
   let y = 0;
+  const financialOnly = report.title.toLowerCase().includes("financier");
 
   const addHeader = (continued = false) => {
     document.setFillColor(`#${deepTeal}`);
@@ -70,6 +71,9 @@ export async function exportReportPdf(report: CopilotReportSnapshot) {
   addHeader();
   paragraph(report.subtitle);
 
+  const gap = 3;
+  const boxWidth = (contentWidth - gap * 2) / 3;
+  if (!financialOnly) {
   const kpis = [
     ["Empresas", report.kpis.companies],
     ["Clientes", report.kpis.clients],
@@ -78,8 +82,6 @@ export async function exportReportPdf(report: CopilotReportSnapshot) {
     ["Envios", report.kpis.sent],
     ["Respuesta", `${report.kpis.replyRate}%`],
   ] as const;
-  const gap = 3;
-  const boxWidth = (contentWidth - gap * 2) / 3;
   kpis.forEach(([label, value], index) => {
     if (index === 3) y += 24;
     const column = index % 3;
@@ -109,6 +111,7 @@ export async function exportReportPdf(report: CopilotReportSnapshot) {
     y += 4;
     paragraph(insight.detail);
   });
+  }
 
   if (report.financialAnalysis.available) {
     const financial = report.financialAnalysis;
@@ -147,6 +150,7 @@ export async function exportReportPdf(report: CopilotReportSnapshot) {
     }
   }
 
+  if (!financialOnly) {
   sectionTitle("Inteligencia de agentes", `${report.agentIntelligence.agentsWithData} de ${report.agentIntelligence.totalAgents} agentes con datos en el periodo`);
   const agentMax = Math.max(...report.agentIntelligence.agents.map((agent) => agent.completed + agent.failed + agent.pending + agent.running), 1);
   report.agentIntelligence.agents.forEach((agent) => {
@@ -189,6 +193,7 @@ export async function exportReportPdf(report: CopilotReportSnapshot) {
     (nextY) => { y = nextY; },
     ensureSpace,
   );
+  }
 
   if (report.warnings.length) {
     sectionTitle("Alcance y advertencias");
@@ -206,12 +211,13 @@ export async function exportReportExcel(report: CopilotReportSnapshot) {
   workbook.created = new Date();
   workbook.modified = new Date();
   workbook.subject = report.title;
+  const financialOnly = report.title.toLowerCase().includes("financier");
 
   const summary = workbook.addWorksheet("Resumen", { views: [{ state: "frozen", ySplit: 4 }] });
   addWorkbookTitle(summary, report.title, report.subtitle, report.periodLabel, report.generatedAt, 4);
   summary.addRow([]);
   summary.addRow(["Indicador", "Valor"]);
-  const summaryIndicators: Array<[string, string | number]> = [
+  const summaryIndicators: Array<[string, string | number]> = financialOnly ? [] : [
     ["Empresas", report.kpis.companies],
     ["Clientes", report.kpis.clients],
     ["Conversion (%)", report.kpis.conversionRate],
@@ -233,9 +239,11 @@ export async function exportReportExcel(report: CopilotReportSnapshot) {
     );
   }
   summaryIndicators.forEach((row) => summary.addRow(row));
-  summary.addRow([]);
-  summary.addRow(["Hallazgo", "Detalle", "Tono"]);
-  report.insights.forEach((insight) => summary.addRow([insight.title, insight.detail, insight.tone]));
+  if (!financialOnly) {
+    summary.addRow([]);
+    summary.addRow(["Hallazgo", "Detalle", "Tono"]);
+    report.insights.forEach((insight) => summary.addRow([insight.title, insight.detail, insight.tone]));
+  }
   styleWorksheet(summary, [34, 95, 18]);
 
   if (report.financialAnalysis.available) {
@@ -263,6 +271,7 @@ export async function exportReportExcel(report: CopilotReportSnapshot) {
     for (let row = 2; row <= 10; row += 1) finances.getCell(row, 2).numFmt = "#,##0";
   }
 
+  if (!financialOnly) {
   const agents = workbook.addWorksheet("Agentes", { views: [{ state: "frozen", ySplit: 1 }] });
   agents.addRow(["Agente", "Estado", "Exito (%)", "Completadas", "Fallidas", "Pendientes", "En curso", "Ultimo analisis", "Resumen", "Advertencias"]);
   report.agentIntelligence.agents.forEach((agent) => agents.addRow([
@@ -328,6 +337,7 @@ export async function exportReportExcel(report: CopilotReportSnapshot) {
     (rows as CopilotReportSnapshot["funnel"]).forEach((row) => segmentation.addRow([dimension, row.label, row.value, row.percentage]));
   });
   styleWorksheet(segmentation, [28, 30, 14, 14]);
+  }
 
   const buffer = await workbook.xlsx.writeBuffer();
   downloadBlob(

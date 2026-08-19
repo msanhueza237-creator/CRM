@@ -75,6 +75,7 @@ export function ReportsPage() {
 
   const maxFunnel = useMemo(() => Math.max(...report.funnel.map((item) => item.value), 1), [report.funnel]);
   const agentIntelligence = report.agentIntelligence ?? emptyAgentIntelligence();
+  const financialOnly = filters.reportKind === "financial";
 
   function updateFilter<Key extends keyof CopilotReportFilters>(key: Key, value: CopilotReportFilters[Key]) {
     setFilters((current) => ({ ...current, [key]: value || undefined }));
@@ -98,8 +99,8 @@ export function ReportsPage() {
       <div className="page-heading reports-heading">
         <div>
           <p>Analitica verificada</p>
-          <h1>Informes CRM</h1>
-          <span>Indicadores de cartera, campanas y todos los agentes preparados con datos reales.</span>
+          <h1>{financialOnly ? "Informe financiero" : "Informes CRM"}</h1>
+          <span>{financialOnly ? "Ventas, compras, tendencia mensual y rentabilidad contable disponible." : "Indicadores de cartera, campanas y todos los agentes preparados con datos reales."}</span>
         </div>
         <div className="heading-actions reports-actions">
           <button className="ghost-button" type="button" onClick={() => window.print()}>
@@ -118,7 +119,7 @@ export function ReportsPage() {
         </div>
       </div>
 
-      <section className="report-filter-band" aria-label="Filtros del informe">
+      {!financialOnly ? <section className="report-filter-band" aria-label="Filtros del informe">
         <div className="report-filter-title"><Filter size={18} /><strong>Filtros</strong></div>
         <div className="report-period-control" role="group" aria-label="Periodo de actividad">
           {periodOptions.map((option) => (
@@ -163,7 +164,7 @@ export function ReportsPage() {
         <button className="primary-button report-apply-button" type="button" onClick={() => void loadReport()} disabled={loading}>
           <BarChart3 size={18} /> Aplicar
         </button>
-      </section>
+      </section> : null}
 
       {error ? <div className="notice-banner info" role="status"><AlertCircle size={18} /><span>{error}</span></div> : null}
       {report.warnings.length ? <div className="notice-banner info"><strong>Alcance:</strong> {report.warnings.join(" ")}</div> : null}
@@ -224,6 +225,7 @@ export function ReportsPage() {
         <FinancialAnalysisPanel analysis={report.financialAnalysis} />
       ) : null}
 
+      {!financialOnly ? <>
       <div className="report-kpi-grid">
         <ReportKpi icon={Building2} label="Empresas" value={formatNumber(report.kpis.companies)} detail={`${report.kpis.newCompanies} nuevas en el periodo`} />
         <ReportKpi icon={Target} label="Conversion" value={`${formatPercent(report.kpis.conversionRate)}%`} detail={`${report.kpis.clients} clientes actuales`} />
@@ -369,6 +371,7 @@ export function ReportsPage() {
           </div>
         ) : <div className="report-empty"><BarChart3 size={24} /><span>No hay campanas para los filtros y periodo seleccionados.</span></div>}
       </section>
+      </> : null}
 
       <div className="report-method-note">
         <CheckCircle2 size={18} />
@@ -572,8 +575,8 @@ function buildLocalReport(companies: Company[], interactions: Interaction[], fil
   const contactRate = selected.length ? Math.round((contactable / selected.length) * 1000) / 10 : 0;
   return {
     toolName: "generate_professional_report",
-    title: "Informe comercial Clima Activa",
-    subtitle: "Vista parcial de cartera y actividad disponible en este navegador.",
+    title: filters.reportKind === "financial" ? "Informe financiero mensual" : "Informe comercial Clima Activa",
+    subtitle: filters.reportKind === "financial" ? "Sin corte financiero local disponible." : "Vista parcial de cartera y actividad disponible en este navegador.",
     generatedAt: new Date().toISOString(),
     periodLabel: periodLabel(filters.periodDays),
     filters: { periodDays: filters.periodDays, source: filters.source ?? "", companyType: filters.companyType ?? "", region: filters.region ?? "", campaignId: filters.campaignId ?? "" },
@@ -598,7 +601,7 @@ function buildLocalReport(companies: Company[], interactions: Interaction[], fil
       { tone: contactRate >= 80 ? "positive" : "attention", title: `${formatPercent(contactRate)}% de la cartera es contactable`, detail: `${selected.length - contactable} empresas requieren completar datos de contacto.` },
     ],
     dataQuality: { contactable, missingContact: selected.length - contactable, missingLocation: selected.filter((company) => !company.region).length },
-    warnings: ["La Edge Function de informes no esta disponible; campanas y respuestas no se incluyen en esta lectura parcial."],
+    warnings: [filters.reportKind === "financial" ? "Conecta la Edge Function para consultar ventas, compras y cierre contable." : "La Edge Function de informes no esta disponible; campanas y respuestas no se incluyen en esta lectura parcial."],
   };
 }
 
@@ -639,6 +642,7 @@ function reportFiltersFromLocation(): CopilotReportFilters {
   return {
     periodDays: [0, 30, 90, 180, 365].includes(requested) ? requested : 90,
     campaignId: params.get("campaign") || undefined,
+    reportKind: params.get("view") === "financial" ? "financial" : undefined,
   };
 }
 
