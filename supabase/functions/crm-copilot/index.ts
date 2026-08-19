@@ -69,6 +69,71 @@ type SegmentPreview = PublicRecipientPreview & {
   companiesById: Record<string, JsonRecord>;
 };
 
+type ReportFilters = {
+  periodDays: number;
+  source: string;
+  companyType: string;
+  region: string;
+};
+
+type ReportBreakdown = {
+  key: string;
+  label: string;
+  value: number;
+  percentage: number;
+};
+
+type ProfessionalReport = {
+  toolName: "generate_professional_report";
+  title: string;
+  subtitle: string;
+  generatedAt: string;
+  periodLabel: string;
+  filters: ReportFilters;
+  filterOptions: {
+    sources: string[];
+    companyTypes: string[];
+    regions: string[];
+  };
+  kpis: {
+    companies: number;
+    clients: number;
+    conversionRate: number;
+    newCompanies: number;
+    interactions: number;
+    campaigns: number;
+    recipients: number;
+    sent: number;
+    replies: number;
+    replyRate: number;
+    interested: number;
+    pendingTasks: number;
+  };
+  funnel: ReportBreakdown[];
+  companyTypes: ReportBreakdown[];
+  sources: ReportBreakdown[];
+  campaignStatuses: ReportBreakdown[];
+  trend: Array<{ key: string; label: string; interactions: number; campaigns: number; replies: number }>;
+  campaignPerformance: Array<{
+    id: string;
+    name: string;
+    status: string;
+    channel: string;
+    recipients: number;
+    sent: number;
+    replies: number;
+    interested: number;
+    replyRate: number;
+  }>;
+  insights: Array<{ tone: "positive" | "attention" | "neutral"; title: string; detail: string }>;
+  dataQuality: {
+    contactable: number;
+    missingContact: number;
+    missingLocation: number;
+  };
+  warnings: string[];
+};
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
@@ -80,7 +145,7 @@ const jsonHeaders = {
   "Content-Type": "application/json; charset=utf-8",
 };
 
-const promptVersion = "copilot-draft-recipients-2026-08-18";
+const promptVersion = "copilot-reports-2026-08-19";
 const defaultTenantId = "default";
 const allowedRoles = new Set(["administrador", "vendedor", "visualizador"]);
 
@@ -98,7 +163,7 @@ Deno.serve(async (req) => {
       return json({ ok: true, service: "crm-copilot" });
     }
 
-    if (!["message", "campaign-draft"].includes(route) || req.method !== "POST") {
+    if (!["message", "campaign-draft", "report"].includes(route) || req.method !== "POST") {
       return json({ error: "Ruta no encontrada" }, 404);
     }
 
@@ -114,6 +179,12 @@ Deno.serve(async (req) => {
     }
 
     const payload = await readJson(req);
+    if (route === "report") {
+      const filters = reportFiltersFromPayload(payload);
+      const report = await generateProfessionalReport(rest, filters, "Informe comercial Clima Activa");
+      return json({ report, traceId });
+    }
+
     if (route === "campaign-draft") {
       return await saveCampaignDraft({
         rest,
@@ -192,6 +263,7 @@ Deno.serve(async (req) => {
         recipientPreview: publicRecipientPreview(findSegmentPreview(toolResults)),
       }
       : null;
+    const reportSnapshot = findProfessionalReport(toolResults);
 
     await insertMessage(rest, {
       conversation_id: conversation.id,
@@ -236,6 +308,7 @@ Deno.serve(async (req) => {
       traceId,
       model: openai.model,
       campaignDraft,
+      reportSnapshot,
       tools: toolResults.map((item) => ({
         ok: item.ok,
         humanSummary: item.humanSummary,
@@ -448,6 +521,26 @@ async function runReadOnlyTools(rest: RestClient, context: ToolContext, message:
   results.push(await searchCrmEntities(rest, context, message));
   results.push(getAvailableMetrics());
   results.push(await runAnalyticsQuery(rest));
+
+  if (mentionsReport(message)) {
+    const report = await generateProfessionalReport(
+      rest,
+      reportFiltersFromMessage(message),
+      reportTitleFromMessage(message),
+    );
+    results.push({
+      ok: true,
+      data: report,
+      humanSummary: `${report.title}: ${report.kpis.companies} empresas, ${report.kpis.interactions} interacciones y ${report.kpis.replyRate}% de respuesta en el periodo.`,
+      evidence: [
+        { entityType: "report", label: report.title },
+        { entityType: "analytics", label: `Actualizado ${report.generatedAt}` },
+      ],
+      warnings: report.warnings,
+      riskLevel: "read",
+      requiresConfirmation: false,
+    });
+  }
 
   if (mentionsSegment(message)) {
     results.push(await previewCustomerSegment(rest, message));
@@ -696,6 +789,150 @@ async function previewCustomerSegment(
   };
 }
 
+async function generateProfessionalReport(
+  rest: RestClient,
+  filters: ReportFilters,
+  title: string,
+): Promise<ProfessionalReport> {
+  const [companies, interactions, campaigns, recipients, tasks] = await Promise.all([
+    selectRows(rest, "companies?select=id,status,type,region,source,email,phone,whatsapp,created_at&limit=5000"),
+    selectRows(rest, "interactions?select=id,company_id,type,occurred_at&limit=5000&order=occurred_at.asc"),
+    selectRows(rest, "campaigns?select=id,name,status,type,created_at,send_at&limit=2000&order=created_at.desc"),
+    selectRows(rest, "campaign_recipients?select=id,campaign_id,company_id,created_at,sent_at,replied_at,interested,discarded&limit=10000"),
+    selectRows(rest, "tasks?select=id,company_id,due_date,completed_at,created_at&limit=5000"),
+  ]);
+
+  const filteredCompanies = companies.filter((company) => companyMatchesReportFilters(company, filters));
+  const companyIds = new Set(filteredCompanies.map((company) => String(company.id)));
+  const periodInteractions = interactions.filter((interaction) =>
+    companyIds.has(String(interaction.company_id)) && isWithinReportPeriod(interaction.occurred_at, filters.periodDays)
+  );
+  const companyRecipients = recipients.filter((recipient) => companyIds.has(String(recipient.company_id)));
+  const recipientActivity = companyRecipients.filter((recipient) =>
+    isWithinReportPeriod(recipient.sent_at, filters.periodDays) ||
+    isWithinReportPeriod(recipient.replied_at, filters.periodDays) ||
+    (!recipient.sent_at && !recipient.replied_at && isWithinReportPeriod(recipient.created_at, filters.periodDays))
+  );
+  const campaignsWithActivity = new Set(recipientActivity.map((recipient) => String(recipient.campaign_id)));
+  const periodCampaigns = campaigns.filter((campaign) =>
+    isWithinReportPeriod(campaign.send_at, filters.periodDays) ||
+    isWithinReportPeriod(campaign.created_at, filters.periodDays) ||
+    campaignsWithActivity.has(String(campaign.id))
+  );
+  const campaignIds = new Set(periodCampaigns.map((campaign) => String(campaign.id)));
+  const periodRecipients = companyRecipients.filter((recipient) => campaignIds.has(String(recipient.campaign_id)));
+  const pendingTasks = tasks.filter((task) =>
+    !task.completed_at && (!task.company_id || companyIds.has(String(task.company_id)))
+  ).length;
+  const clients = filteredCompanies.filter((company) => String(company.status) === "cliente").length;
+  const activePipeline = filteredCompanies.filter((company) => String(company.status) !== "descartado").length;
+  const sent = periodRecipients.filter((recipient) => recipient.sent_at && isWithinReportPeriod(recipient.sent_at, filters.periodDays)).length;
+  const replies = periodRecipients.filter((recipient) => recipient.replied_at && isWithinReportPeriod(recipient.replied_at, filters.periodDays)).length;
+  const interested = periodRecipients.filter((recipient) => Boolean(recipient.interested)).length;
+  const contactable = filteredCompanies.filter((company) =>
+    Boolean(String(company.email ?? "").trim() || String(company.phone ?? "").trim() || String(company.whatsapp ?? "").trim())
+  ).length;
+  const missingLocation = filteredCompanies.filter((company) => !String(company.region ?? "").trim()).length;
+  const generatedAt = new Date().toISOString();
+  const warnings: string[] = [];
+  if (!filteredCompanies.length) warnings.push("No hay empresas que coincidan con los filtros seleccionados.");
+  if (!periodInteractions.length) warnings.push("No hay interacciones registradas en el periodo seleccionado.");
+  if (!periodCampaigns.length) warnings.push("No hay campanas registradas en el periodo seleccionado.");
+  if ([companies, interactions, tasks].some((rows) => rows.length >= 5000) || recipients.length >= 10000) {
+    warnings.push("La consulta alcanzo el limite de lectura; el informe puede representar una muestra parcial.");
+  }
+
+  const sourceBreakdown = buildReportBreakdown(filteredCompanies, "source", filteredCompanies.length, 8);
+  const campaignPerformance = periodCampaigns.map((campaign) => {
+    const campaignRecipients = periodRecipients.filter((recipient) => String(recipient.campaign_id) === String(campaign.id));
+    const campaignSent = campaignRecipients.filter((recipient) => recipient.sent_at && isWithinReportPeriod(recipient.sent_at, filters.periodDays)).length;
+    const campaignReplies = campaignRecipients.filter((recipient) => recipient.replied_at && isWithinReportPeriod(recipient.replied_at, filters.periodDays)).length;
+    return {
+      id: String(campaign.id),
+      name: String(campaign.name ?? "Campana sin nombre"),
+      status: String(campaign.status ?? "borrador"),
+      channel: String(campaign.type ?? "sin canal"),
+      recipients: campaignRecipients.length,
+      sent: campaignSent,
+      replies: campaignReplies,
+      interested: campaignRecipients.filter((recipient) => Boolean(recipient.interested)).length,
+      replyRate: percentage(campaignReplies, campaignSent),
+    };
+  }).sort((a, b) => b.sent - a.sent || b.recipients - a.recipients).slice(0, 12);
+
+  const conversionRate = percentage(clients, activePipeline);
+  const replyRate = percentage(replies, sent);
+  const contactabilityRate = percentage(contactable, filteredCompanies.length);
+  const insights: ProfessionalReport["insights"] = [];
+  insights.push({
+    tone: conversionRate >= 35 ? "positive" : conversionRate < 15 ? "attention" : "neutral",
+    title: `Conversion comercial de ${conversionRate}%`,
+    detail: `${clients} empresas estan en estado cliente sobre ${activePipeline} oportunidades no descartadas.`,
+  });
+  insights.push({
+    tone: replyRate >= 15 ? "positive" : sent > 0 && replyRate < 5 ? "attention" : "neutral",
+    title: sent ? `Respuesta de campanas en ${replyRate}%` : "Sin envios registrados en el periodo",
+    detail: sent
+      ? `${replies} respuestas sobre ${sent} envios, con ${interested} contactos marcados como interesados.`
+      : "Conviene revisar borradores y destinatarios antes de programar la siguiente campana.",
+  });
+  insights.push({
+    tone: contactabilityRate >= 80 ? "positive" : contactabilityRate < 60 ? "attention" : "neutral",
+    title: `${contactabilityRate}% de la cartera es contactable`,
+    detail: `${contactable} empresas tienen email, telefono o WhatsApp; ${filteredCompanies.length - contactable} requieren completar datos.`,
+  });
+  if (sourceBreakdown[0]) {
+    insights.push({
+      tone: "neutral",
+      title: `${sourceBreakdown[0].label} lidera el origen de la cartera`,
+      detail: `Aporta ${sourceBreakdown[0].value} empresas (${sourceBreakdown[0].percentage}% del conjunto filtrado).`,
+    });
+  }
+
+  return {
+    toolName: "generate_professional_report",
+    title,
+    subtitle: "Cartera, actividad comercial y rendimiento de campanas con datos verificados del CRM.",
+    generatedAt,
+    periodLabel: reportPeriodLabel(filters.periodDays),
+    filters,
+    filterOptions: {
+      sources: uniqueReportValues(companies, "source"),
+      companyTypes: uniqueReportValues(companies, "type"),
+      regions: uniqueReportValues(companies, "region"),
+    },
+    kpis: {
+      companies: filteredCompanies.length,
+      clients,
+      conversionRate,
+      newCompanies: filteredCompanies.filter((company) => isWithinReportPeriod(company.created_at, filters.periodDays)).length,
+      interactions: periodInteractions.length,
+      campaigns: periodCampaigns.length,
+      recipients: periodRecipients.length,
+      sent,
+      replies,
+      replyRate,
+      interested,
+      pendingTasks,
+    },
+    funnel: buildReportBreakdown(filteredCompanies, "status", activePipeline, 8, [
+      "prospecto", "contactado", "interesado", "cotizado", "cliente", "descartado",
+    ]),
+    companyTypes: buildReportBreakdown(filteredCompanies, "type", filteredCompanies.length, 8),
+    sources: sourceBreakdown,
+    campaignStatuses: buildReportBreakdown(periodCampaigns, "status", periodCampaigns.length, 8),
+    trend: buildReportTrend(periodInteractions, periodCampaigns, periodRecipients, filters.periodDays),
+    campaignPerformance,
+    insights,
+    dataQuality: {
+      contactable,
+      missingContact: filteredCompanies.length - contactable,
+      missingLocation,
+    },
+    warnings,
+  };
+}
+
 function parseSegmentCriteria(normalized: string) {
   const sources = new Set<"facto" | "tiendanube" | "crm">();
   const labels: string[] = [];
@@ -921,6 +1158,9 @@ function asRecord(value: unknown): JsonRecord {
 
 function modelSafeToolData(value: unknown): unknown {
   const data = asRecord(value);
+  if (data.toolName === "generate_professional_report") {
+    return value;
+  }
   if (data.toolName === "preview_customer_segment") {
     return {
       toolName: data.toolName,
@@ -943,6 +1183,14 @@ function modelSafeToolData(value: unknown): unknown {
     return { ...data, companies };
   }
   return value;
+}
+
+function findProfessionalReport(toolResults: ToolResult[]): ProfessionalReport | null {
+  for (const result of toolResults) {
+    const data = asRecord(result.data);
+    if (data.toolName === "generate_professional_report") return data as ProfessionalReport;
+  }
+  return null;
 }
 
 function findSegmentPreview(toolResults: ToolResult[]): SegmentPreview {
@@ -1154,6 +1402,9 @@ async function callOpenAI(input: {
     "Si la solicitud no trata de preparar una campana, devuelve campaignDraft como null.",
     "El servidor calcula un segmento real. Al guardar con confirmacion puede asociar destinatarios e importar identidades externas verificables, pero nunca envia ni programa.",
     "Respeta los filtros de origen, antiguedad de ultima compra y cantidad de compras informados por el servidor.",
+    "Si el usuario pide un informe, reporte, dashboard o KPI, usa exclusivamente generate_professional_report para explicar cifras, tendencias, riesgos y oportunidades.",
+    "Cuando exista generate_professional_report, menciona el periodo analizado, destaca hasta cuatro hallazgos accionables y aclara cualquier advertencia de calidad de datos.",
+    "El frontend renderiza el informe profesional; no inventes graficos ni valores adicionales y deja campaignDraft en null salvo que tambien pidan una campana.",
     "Muestra filtros y evidencia cuando uses datos reales.",
   ].join("\n");
 
@@ -1442,6 +1693,149 @@ function countBy(rows: JsonRecord[], field: string) {
     acc[key] = (acc[key] ?? 0) + 1;
     return acc;
   }, {});
+}
+
+function reportFiltersFromPayload(payload: JsonRecord): ReportFilters {
+  const rawPeriod = Number(payload.periodDays ?? 90);
+  const allowedPeriods = new Set([0, 30, 90, 180, 365]);
+  return {
+    periodDays: allowedPeriods.has(rawPeriod) ? rawPeriod : 90,
+    source: optionalText(payload.source, 120),
+    companyType: optionalText(payload.companyType, 80),
+    region: optionalText(payload.region, 120),
+  };
+}
+
+function reportFiltersFromMessage(message: string): ReportFilters {
+  const text = normalize(message);
+  const explicitDays = text.match(/(?:ultimos?\s+)?(30|90|180|365)\s+dias?/);
+  let periodDays = explicitDays ? Number(explicitDays[1]) : 90;
+  if (/\b(?:este|ultimo)\s+mes\b|\bmensual\b/.test(text)) periodDays = 30;
+  if (/\b(?:ultimo|este)\s+(?:trimestre|trimestral)\b/.test(text)) periodDays = 90;
+  if (/\b(?:ultimo|este)\s+(?:semestre|semestral)\b/.test(text)) periodDays = 180;
+  if (/\b(?:ultimo|este)\s+ano\b|\banual\b/.test(text)) periodDays = 365;
+  if (/\bhistorico\b|\bdesde el inicio\b|\btodo el periodo\b/.test(text)) periodDays = 0;
+
+  const knownTypes = ["distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia"];
+  const companyType = knownTypes.find((type) => text.includes(type)) ?? "";
+  const source = text.includes("facto") ? "facto" : text.includes("tiendanube") || text.includes("climactiva.cl") ? "tiendanube" : "";
+  return { periodDays, source, companyType, region: "" };
+}
+
+function reportTitleFromMessage(message: string) {
+  const text = normalize(message);
+  if (text.includes("campana") || text.includes("marketing")) return "Informe de campanas y marketing";
+  if (text.includes("cliente") || text.includes("venta") || text.includes("comercial")) return "Informe comercial y de clientes";
+  return "Informe ejecutivo Clima Activa";
+}
+
+function companyMatchesReportFilters(company: JsonRecord, filters: ReportFilters) {
+  if (filters.source && !normalize(String(company.source ?? "")).includes(normalize(filters.source))) return false;
+  if (filters.companyType && normalize(String(company.type ?? "")) !== normalize(filters.companyType)) return false;
+  if (filters.region && normalize(String(company.region ?? "")) !== normalize(filters.region)) return false;
+  return true;
+}
+
+function isWithinReportPeriod(value: unknown, periodDays: number) {
+  if (!periodDays) return true;
+  const date = new Date(String(value ?? ""));
+  if (Number.isNaN(date.getTime())) return false;
+  const threshold = Date.now() - periodDays * 24 * 60 * 60 * 1000;
+  return date.getTime() >= threshold && date.getTime() <= Date.now() + 24 * 60 * 60 * 1000;
+}
+
+function buildReportBreakdown(
+  rows: JsonRecord[],
+  field: string,
+  total: number,
+  limit: number,
+  preferredOrder: string[] = [],
+): ReportBreakdown[] {
+  const counts = countBy(rows, field);
+  const order = new Map(preferredOrder.map((key, index) => [key, index]));
+  return Object.entries(counts)
+    .map(([key, value]) => ({
+      key,
+      label: humanizeReportLabel(key),
+      value,
+      percentage: percentage(value, total),
+    }))
+    .sort((a, b) => {
+      const aOrder = order.get(a.key);
+      const bOrder = order.get(b.key);
+      if (aOrder !== undefined || bOrder !== undefined) return (aOrder ?? 999) - (bOrder ?? 999);
+      return b.value - a.value || a.label.localeCompare(b.label);
+    })
+    .slice(0, limit);
+}
+
+function buildReportTrend(
+  interactions: JsonRecord[],
+  campaigns: JsonRecord[],
+  recipients: JsonRecord[],
+  periodDays: number,
+) {
+  const bucketCount = periodDays === 30 ? 2 : periodDays <= 90 && periodDays > 0 ? 4 : periodDays <= 180 && periodDays > 0 ? 6 : 12;
+  const now = new Date();
+  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+    const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (bucketCount - index - 1), 1));
+    const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+    return {
+      key,
+      label: new Intl.DateTimeFormat("es-CL", { month: "short", year: bucketCount > 6 ? "2-digit" : undefined, timeZone: "UTC" }).format(date),
+      interactions: 0,
+      campaigns: 0,
+      replies: 0,
+    };
+  });
+  const byKey = new Map(buckets.map((bucket) => [bucket.key, bucket]));
+  for (const interaction of interactions) {
+    const bucket = byKey.get(reportMonthKey(interaction.occurred_at));
+    if (bucket) bucket.interactions += 1;
+  }
+  for (const campaign of campaigns) {
+    const bucket = byKey.get(reportMonthKey(campaign.send_at || campaign.created_at));
+    if (bucket) bucket.campaigns += 1;
+  }
+  for (const recipient of recipients) {
+    if (!recipient.replied_at) continue;
+    const bucket = byKey.get(reportMonthKey(recipient.replied_at));
+    if (bucket) bucket.replies += 1;
+  }
+  return buckets;
+}
+
+function reportMonthKey(value: unknown) {
+  const date = new Date(String(value ?? ""));
+  if (Number.isNaN(date.getTime())) return "";
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function uniqueReportValues(rows: JsonRecord[], field: string) {
+  return [...new Set(rows.map((row) => String(row[field] ?? "").trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, "es"));
+}
+
+function reportPeriodLabel(periodDays: number) {
+  if (!periodDays) return "Historico completo";
+  if (periodDays === 30) return "Ultimos 30 dias";
+  if (periodDays === 90) return "Ultimos 90 dias";
+  if (periodDays === 180) return "Ultimos 6 meses";
+  return "Ultimos 12 meses";
+}
+
+function humanizeReportLabel(value: string) {
+  if (!value || value === "sin_dato") return "Sin dato";
+  return value.replace(/_/g, " ").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function percentage(value: number, total: number) {
+  return total > 0 ? Math.round((value / total) * 1000) / 10 : 0;
+}
+
+function mentionsReport(message: string) {
+  const text = normalize(message);
+  return ["informe", "reporte", "dashboard", "tablero", "power bi", "powerbi", "indicadores", "kpi"].some((word) => text.includes(word));
 }
 
 function mentionsSegment(message: string) {

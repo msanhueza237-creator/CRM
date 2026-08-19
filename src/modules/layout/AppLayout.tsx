@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
   Building2,
+  BarChart3,
   Bot,
   FileText,
   LayoutDashboard,
@@ -20,6 +21,7 @@ const navItems = [
   { to: "/agentes", label: "Agentes", icon: Bot },
   { to: "/campanas", label: "Campanas", icon: Megaphone },
   { to: "/copiloto", label: "Copiloto", icon: Bot },
+  { to: "/informes", label: "Informes", icon: BarChart3 },
   { to: "/plantillas", label: "Plantillas", icon: FileText },
   { to: "/administracion", label: "Administracion", icon: Settings },
 ];

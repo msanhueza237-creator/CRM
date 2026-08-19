@@ -1,5 +1,7 @@
 import { FormEvent, useMemo, useState } from "react";
 import {
+  ArrowUpRight,
+  BarChart3,
   Bot,
   CheckCircle2,
   Database,
@@ -19,6 +21,7 @@ import {
   saveCopilotCampaignDraft,
   sendCopilotMessage,
   type CopilotCampaignDraft,
+  type CopilotReportSnapshot,
   type CopilotToolSummary,
   type SavedCopilotCampaign,
 } from "../../lib/copilotApi";
@@ -31,12 +34,14 @@ type ChatMessage = {
   tools?: CopilotToolSummary[];
   conversationId?: string;
   campaignDraft?: CopilotCampaignDraft;
+  reportSnapshot?: CopilotReportSnapshot;
   saveKey?: string;
   savedCampaign?: SavedCopilotCampaign;
   saveError?: string;
 };
 
 const starterPrompts = [
+  "Prepara un informe ejecutivo profesional de los ultimos 90 dias.",
   "Ayudame a crear una campana para clientes de climactiva.cl e invitarlos a RedTecnicos.cl.",
   "Prepara una campana para clientes de Facto que no compran hace 1 mes.",
   "Crea un borrador para clientes de Facto o Climactiva.cl con mas de 2 compras.",
@@ -49,7 +54,7 @@ export function CopilotPage() {
       id: "welcome",
       role: "assistant",
       content:
-        "Escribeme libremente lo que necesitas. Puedo preparar campanas, calcular sus clientes y agregarlos al borrador cuando tu lo confirmes; nunca programo ni envio automaticamente.",
+        "Escribeme libremente lo que necesitas. Puedo preparar informes profesionales, analizar indicadores y crear campanas con sus clientes; nunca programo ni envio automaticamente.",
     },
   ]);
   const [draft, setDraft] = useState("");
@@ -87,6 +92,7 @@ export function CopilotPage() {
           tools: response.tools,
           conversationId: response.conversationId,
           campaignDraft: response.campaignDraft ?? undefined,
+          reportSnapshot: response.reportSnapshot ?? undefined,
           saveKey: response.campaignDraft ? crypto.randomUUID() : undefined,
         },
       ]);
@@ -266,6 +272,33 @@ export function CopilotPage() {
                       {message.saveError ? <p className="form-error" role="alert">{message.saveError}</p> : null}
                     </section>
                   ) : null}
+                  {message.reportSnapshot ? (
+                    <section className="copilot-report-preview" aria-label="Informe profesional preparado">
+                      <div className="copilot-report-preview-heading">
+                        <div><BarChart3 size={19} /><span>Informe preparado</span></div>
+                        <small>{message.reportSnapshot.periodLabel}</small>
+                      </div>
+                      <h3>{message.reportSnapshot.title}</h3>
+                      <div className="copilot-report-kpis">
+                        <div><span>Empresas</span><strong>{message.reportSnapshot.kpis.companies}</strong></div>
+                        <div><span>Conversion</span><strong>{message.reportSnapshot.kpis.conversionRate}%</strong></div>
+                        <div><span>Interacciones</span><strong>{message.reportSnapshot.kpis.interactions}</strong></div>
+                        <div><span>Respuesta</span><strong>{message.reportSnapshot.kpis.replyRate}%</strong></div>
+                      </div>
+                      <div className="copilot-report-mini-funnel">
+                        {message.reportSnapshot.funnel.slice(0, 5).map((stage) => (
+                          <div key={stage.key}>
+                            <span>{stage.label}</span>
+                            <div><i style={{ width: `${Math.max(stage.percentage, stage.value ? 4 : 0)}%` }} /></div>
+                            <strong>{stage.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                      <Link className="primary-button" to={`/informes?period=${message.reportSnapshot.filters.periodDays}`}>
+                        <BarChart3 size={17} /> Abrir informe interactivo <ArrowUpRight size={16} />
+                      </Link>
+                    </section>
+                  ) : null}
                 </div>
               </article>
             ))}
@@ -301,7 +334,7 @@ export function CopilotPage() {
                   void submitMessage();
                 }
               }}
-              placeholder="Ej: Ayudame a crear una campana para clientes de climactiva.cl e invitarlos a redtecnicos.cl..."
+              placeholder="Ej: Prepara un informe comercial de los ultimos 90 dias..."
               rows={5}
             />
             <div>
@@ -325,6 +358,7 @@ export function CopilotPage() {
             <li>Sin SQL generado por el modelo.</li>
             <li>Guarda campanas solo como borrador y con confirmacion.</li>
             <li>Puede asociar e importar clientes solo al confirmar.</li>
+            <li>Informes de solo lectura con cifras calculadas por el backend.</li>
             <li>Sin programacion ni envios automaticos.</li>
             <li>Sesion, usuario y rol salen del backend.</li>
             <li>Auditoria de mensajes, herramientas y errores.</li>

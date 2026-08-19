@@ -13,6 +13,7 @@ import { TemplatesPage } from "./modules/templates/TemplatesPage";
 import { ProspectingPage } from "./modules/prospecting/ProspectingPage";
 import { AgentsPage } from "./modules/agents/AgentsPage";
 import { AgentDashboardPage } from "./modules/agents/AgentDashboardPage";
+import { ReportsPage } from "./modules/reports/ReportsPage";
 
 export function App() {
   return (
@@ -33,6 +34,7 @@ export function App() {
         <Route path="/empresas/:companyId/editar" element={<CompanyFormPage />} />
         <Route path="/campanas" element={<CampaignsPage />} />
         <Route path="/copiloto" element={<CopilotPage />} />
+        <Route path="/informes" element={<ReportsPage />} />
         <Route path="/prospeccion" element={<ProspectingPage />} />
         <Route path="/plantillas" element={<TemplatesPage />} />
         <Route path="/administracion" element={<AdminPage />} />

@@ -17,7 +17,82 @@ export interface CopilotMessageResponse {
   traceId: string;
   model: string;
   campaignDraft: CopilotCampaignDraft | null;
+  reportSnapshot: CopilotReportSnapshot | null;
   tools: CopilotToolSummary[];
+}
+
+export interface CopilotReportBreakdown {
+  key: string;
+  label: string;
+  value: number;
+  percentage: number;
+}
+
+export interface CopilotReportSnapshot {
+  toolName: "generate_professional_report";
+  title: string;
+  subtitle: string;
+  generatedAt: string;
+  periodLabel: string;
+  filters: {
+    periodDays: number;
+    source: string;
+    companyType: string;
+    region: string;
+  };
+  filterOptions: {
+    sources: string[];
+    companyTypes: string[];
+    regions: string[];
+  };
+  kpis: {
+    companies: number;
+    clients: number;
+    conversionRate: number;
+    newCompanies: number;
+    interactions: number;
+    campaigns: number;
+    recipients: number;
+    sent: number;
+    replies: number;
+    replyRate: number;
+    interested: number;
+    pendingTasks: number;
+  };
+  funnel: CopilotReportBreakdown[];
+  companyTypes: CopilotReportBreakdown[];
+  sources: CopilotReportBreakdown[];
+  campaignStatuses: CopilotReportBreakdown[];
+  trend: Array<{ key: string; label: string; interactions: number; campaigns: number; replies: number }>;
+  campaignPerformance: Array<{
+    id: string;
+    name: string;
+    status: string;
+    channel: string;
+    recipients: number;
+    sent: number;
+    replies: number;
+    interested: number;
+    replyRate: number;
+  }>;
+  insights: Array<{
+    tone: "positive" | "attention" | "neutral";
+    title: string;
+    detail: string;
+  }>;
+  dataQuality: {
+    contactable: number;
+    missingContact: number;
+    missingLocation: number;
+  };
+  warnings: string[];
+}
+
+export interface CopilotReportFilters {
+  periodDays: number;
+  source?: string;
+  companyType?: string;
+  region?: string;
 }
 
 export interface CopilotCampaignDraft {
@@ -126,4 +201,28 @@ export async function saveCopilotCampaignDraft(
   }
 
   return payload.campaign as SavedCopilotCampaign;
+}
+
+export async function getCopilotReport(filters: CopilotReportFilters) {
+  if (!isSupabaseConfigured || !supabase) {
+    throw new Error("Conecta Supabase para generar informes con datos reales.");
+  }
+
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Tu sesion expiro. Inicia sesion nuevamente.");
+
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "report"), {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(filters),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(String(payload.error ?? "No se pudo generar el informe."));
+  }
+  return payload.report as CopilotReportSnapshot;
 }
