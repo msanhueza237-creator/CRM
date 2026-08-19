@@ -756,6 +756,11 @@ function getAvailableMetrics(): ToolResult {
     { key: "companies_by_status", label: "Empresas por estado comercial", dimensions: ["status"] },
     { key: "campaigns_total", label: "Campanas por estado", dimensions: ["status", "type"] },
     { key: "tasks_pending", label: "Tareas pendientes", dimensions: ["due_date"] },
+    { key: "interactions_total", label: "Interacciones comerciales", dimensions: ["type", "month"] },
+    { key: "agent_runs", label: "Ejecuciones de todos los agentes", dimensions: ["agent_type", "status"] },
+    { key: "action_proposals", label: "Propuestas de accion", dimensions: ["kind", "risk_level", "status"] },
+    { key: "inventory_alerts", label: "Alertas de inventario", dimensions: ["severity", "status"] },
+    { key: "integration_health", label: "Salud de integraciones", dimensions: ["provider", "status"] },
     { key: "monthly_financials", label: "Ventas, compras, diferencia documental y rentabilidad certificada", dimensions: ["month", "accounting_status"] },
   ];
 
@@ -771,15 +776,31 @@ function getAvailableMetrics(): ToolResult {
 }
 
 async function runAnalyticsQuery(rest: RestClient): Promise<ToolResult> {
-  const [companies, campaigns, tasks] = await Promise.all([
+  const [
+    companies,
+    campaigns,
+    tasks,
+    interactions,
+    agentTasks,
+    actionProposals,
+    inventoryAlerts,
+    integrationConnections,
+  ] = await Promise.all([
     selectRows(rest, "companies?select=id,status,type,region,city,priority,source,next_follow_up&limit=1000"),
     selectRows(rest, "campaigns?select=id,status,type&limit=1000"),
     selectRows(rest, "tasks?select=id,completed_at,due_date&limit=1000"),
+    selectRows(rest, "interactions?select=id,type,occurred_at&limit=1000&order=occurred_at.desc"),
+    selectRowsOptional(rest, "business_agent_tasks?select=id,agent_type,status,completed_at,updated_at&limit=1000&order=updated_at.desc"),
+    selectRowsOptional(rest, "action_proposals?select=id,kind,risk_level,status&limit=1000&order=created_at.desc"),
+    selectRowsOptional(rest, "inventory_risk_alerts?select=id,severity,status,resolved_at&limit=1000&order=created_at.desc"),
+    selectRowsOptional(rest, "integration_connections?select=provider,status,enabled,read_only,last_success_at&limit=100"),
   ]);
 
   const companiesByStatus = countBy(companies, "status");
   const companiesByType = countBy(companies, "type");
   const pendingTasks = tasks.filter((task) => !task.completed_at).length;
+  const activeProposals = actionProposals.filter((proposal) => String(proposal.status) === "pending");
+  const activeAlerts = inventoryAlerts.filter((alert) => String(alert.status) !== "resolved" && !alert.resolved_at);
 
   return {
     ok: true,
@@ -792,12 +813,23 @@ async function runAnalyticsQuery(rest: RestClient): Promise<ToolResult> {
         campaignsTotal: campaigns.length,
         campaignsByStatus: countBy(campaigns, "status"),
         pendingTasks,
+        interactionsTotal: interactions.length,
+        interactionsByType: countBy(interactions, "type"),
+        agentTasksTotal: agentTasks.length,
+        agentTasksByType: countBy(agentTasks, "agent_type"),
+        agentTasksByStatus: countBy(agentTasks, "status"),
+        pendingProposals: activeProposals.length,
+        proposalsByRisk: countBy(activeProposals, "risk_level"),
+        activeInventoryAlerts: activeAlerts.length,
+        alertsBySeverity: countBy(activeAlerts, "severity"),
+        integrationsTotal: integrationConnections.length,
+        integrationsByStatus: countBy(integrationConnections, "status"),
       },
       source: "Supabase PostgREST con service role dentro de Edge Function",
       refreshedAt: new Date().toISOString(),
     },
-    humanSummary: `Base actual: ${companies.length} empresas, ${campaigns.length} campanas y ${pendingTasks} tareas pendientes.`,
-    evidence: [{ entityType: "analytics", label: "companies/campaigns/tasks" }],
+    humanSummary: `Lectura transversal: ${companies.length} empresas, ${campaigns.length} campanas, ${interactions.length} interacciones, ${agentTasks.length} ejecuciones de agentes, ${activeProposals.length} propuestas pendientes y ${activeAlerts.length} alertas activas.`,
+    evidence: [{ entityType: "analytics", label: "CRM, agentes, integraciones y operaciones" }],
     warnings: [],
     riskLevel: "read",
     requiresConfirmation: false,
@@ -1241,7 +1273,7 @@ async function generateFinancialReport(
       "accounting_snapshots?select=id,fiscal_year,version,period_start,period_end,status,basis,prebalance_rows,controls,findings,updated_at&order=period_end.desc,version.desc&limit=3",
     ),
   ]);
-  const financialAnalysis = buildFinancialAnalysis(financialSnapshots, accountingSnapshots);
+  const financialAnalysis = buildFinancialAnalysis(financialSnapshots, accountingSnapshots, filters.financialYear);
   const warnings = financialAnalysis.available
     ? financialAnalysis.warnings
     : ["No hay un corte financiero mensual disponible para calcular indicadores de ventas y compras."];
