@@ -13,6 +13,7 @@ import {
   Mail,
   Megaphone,
   PackageSearch,
+  Palette,
   RefreshCw,
   SearchCheck,
   ShieldCheck,
@@ -80,6 +81,12 @@ interface GlobalDashboard {
   campaignInterested: number;
   emailReplies: number;
   whatsappReplies: number;
+  contentScheduled: number;
+  contentPublishedThisWeek: number;
+  contentPendingApproval: number;
+  contentErrors: number;
+  contentNextPublication: string | null;
+  contentChannels: Array<{ code: string; enabled: boolean; last_error: string | null }>;
   latestAgents: AgentRunSummary[];
   activities: DashboardActivity[];
   leadTimeDays: number;
@@ -110,6 +117,12 @@ const emptyDashboard: GlobalDashboard = {
   campaignInterested: 0,
   emailReplies: 0,
   whatsappReplies: 0,
+  contentScheduled: 0,
+  contentPublishedThisWeek: 0,
+  contentPendingApproval: 0,
+  contentErrors: 0,
+  contentNextPublication: null,
+  contentChannels: [],
   latestAgents: [],
   activities: [],
   leadTimeDays: 95,
@@ -195,8 +208,10 @@ export function DashboardPage() {
         emailReplyRowsResult,
         whatsappCountResult,
         whatsappRowsResult,
+        contentPublicationsResult,
+        contentChannelsResult,
       ] = await Promise.all([
-        supabase.from("integration_connections").select("provider,status,message,last_success_at").in("provider", ["facto", "tiendanube", "gmail", "brave", "meta_whatsapp"]),
+        supabase.from("integration_connections").select("provider,status,message,last_success_at").in("provider", ["facto", "tiendanube", "gmail", "brave", "meta_whatsapp", "meta_social"]),
         supabase.from("integration_records").select("id", { count: "exact", head: true }).eq("provider", "facto").eq("resource", "products"),
         supabase.from("integration_records").select("id", { count: "exact", head: true }).eq("provider", "tiendanube").eq("resource", "products"),
         supabase.from("integration_records").select("provider,resource,updated_at").eq("resource", "products").order("updated_at", { ascending: false }).limit(200),
@@ -213,6 +228,8 @@ export function DashboardPage() {
         supabase.from("email_campaign_recipients").select("id,campaign_id,company_id,reply_from_email,reply_subject,reply_snippet,replied_at").not("replied_at", "is", null).order("replied_at", { ascending: false }).limit(8),
         supabase.from("whatsapp_messages").select("id", { count: "exact", head: true }).eq("direction", "incoming"),
         supabase.from("whatsapp_messages").select("id,company_id,phone_number,body,occurred_at,created_at").eq("direction", "incoming").order("occurred_at", { ascending: false, nullsFirst: false }).limit(8),
+        supabase.from("content_publications").select("id,status,scheduled_at,published_at,created_at").order("created_at", { ascending: false }).limit(2000),
+        supabase.from("content_channels").select("code,enabled,last_error").in("code", ["instagram", "facebook"]),
       ]);
 
       const results = [
@@ -228,6 +245,7 @@ export function DashboardPage() {
         ["campañas", campaignsResult.error || recipientsResult.error],
         ["respuestas email", emailReplyCountResult.error || emailReplyRowsResult.error],
         ["respuestas WhatsApp", whatsappCountResult.error || whatsappRowsResult.error],
+        ["centro de contenido", contentPublicationsResult.error || contentChannelsResult.error],
       ] as const;
       const warnings = results.filter(([, error]) => Boolean(error)).map(([label]) => `No se pudo actualizar ${label}.`);
 
@@ -254,6 +272,12 @@ export function DashboardPage() {
       const campaignRows = campaignsResult.data ?? [];
       const recipientRows = recipientsResult.data ?? [];
       const alertRows = alertsResult.data ?? [];
+      const contentRows = contentPublicationsResult.data ?? [];
+      const weekStart = new Date();
+      weekStart.setDate(weekStart.getDate() - 7);
+      const scheduledContent = contentRows
+        .filter((row) => String(row.status) === "scheduled" && row.scheduled_at)
+        .sort((a, b) => String(a.scheduled_at).localeCompare(String(b.scheduled_at)));
 
       const emailActivities: DashboardActivity[] = (emailReplyRowsResult.data ?? []).map((row) => ({
         id: `email-${row.id}`,
@@ -306,6 +330,16 @@ export function DashboardPage() {
         campaignInterested: recipientRows.filter((row) => Boolean(row.interested)).length,
         emailReplies: emailReplyCountResult.count ?? recipientRows.filter((row) => Boolean(row.replied_at)).length,
         whatsappReplies: whatsappCountResult.count ?? 0,
+        contentScheduled: scheduledContent.length,
+        contentPublishedThisWeek: contentRows.filter((row) => String(row.status) === "published" && row.published_at && new Date(String(row.published_at)) >= weekStart).length,
+        contentPendingApproval: contentRows.filter((row) => String(row.status) === "pending_approval").length,
+        contentErrors: contentRows.filter((row) => String(row.status) === "failed").length,
+        contentNextPublication: scheduledContent[0]?.scheduled_at ? String(scheduledContent[0].scheduled_at) : null,
+        contentChannels: (contentChannelsResult.data ?? []).map((row) => ({
+          code: String(row.code),
+          enabled: Boolean(row.enabled),
+          last_error: row.last_error ? String(row.last_error) : null,
+        })),
         latestAgents,
         activities: [...emailActivities, ...whatsappActivities, ...agentActivities]
           .filter((activity) => activity.occurredAt)
@@ -414,6 +448,8 @@ export function DashboardPage() {
         <MetricCard to="/campanas" icon={Mail} label="Respuestas recibidas" value={formatCount(totalReplies)} detail={`${dashboard.campaignInterested} interesados marcados`} />
         <MetricCard to="/agentes/logistics/dashboard" icon={AlertTriangle} label="Riesgos de inventario" value={formatCount(dashboard.openInventoryAlerts)} detail={`${dashboard.severeInventoryAlerts} críticos o altos`} tone={dashboard.severeInventoryAlerts ? "danger" : "default"} />
         <MetricCard to="/agentes" icon={Sparkles} label="Decisiones pendientes" value={formatCount(dashboard.pendingProposals)} detail={`${dashboard.pendingAgentTasks} análisis en proceso`} tone={dashboard.pendingProposals ? "attention" : "default"} />
+        <MetricCard to="/contenido?view=calendar" icon={CalendarClock} label="Contenido programado" value={formatCount(dashboard.contentScheduled)} detail={`${dashboard.contentPendingApproval} pendientes de aprobación`} tone={dashboard.contentPendingApproval ? "attention" : "default"} />
+        <MetricCard to="/contenido?view=statistics" icon={Palette} label="Publicaciones esta semana" value={formatCount(dashboard.contentPublishedThisWeek)} detail={dashboard.contentErrors ? `${dashboard.contentErrors} con error` : `Próxima: ${formatDateTime(dashboard.contentNextPublication) || "sin programar"}`} tone={dashboard.contentErrors ? "danger" : "default"} />
       </div>
 
       <section className="global-section">
@@ -428,6 +464,7 @@ export function DashboardPage() {
           <ModuleCard to="/agentes" icon={Bot} title="Centro de agentes" value={`${dashboard.latestAgents.length}/${agentTypes.length} con historial`} detail={`${dashboard.pendingAgentTasks} tareas abiertas · ${dashboard.pendingProposals} propuestas`} status={dashboard.pendingAgentTasks ? "Trabajando" : "Disponible"} />
           <ModuleCard to="/agentes/logistics/dashboard" icon={PackageSearch} title="Inventario" value={`${formatCount(dashboard.productCounts.facto)} SKU Facto`} detail={`${formatCount(dashboard.productCounts.tiendanube)} productos Tiendanube · ${dashboard.leadTimeDays} días importación`} status={`${dashboard.openInventoryAlerts} alertas`} />
           <ModuleCard to="/administracion" icon={Database} title="Integraciones" value={`${connectedIntegrations} conectadas`} detail="Facto, Tiendanube, Gmail, Brave y WhatsApp Meta" status={integrationErrors ? `${integrationErrors} con error` : "Operativas"} />
+          <ModuleCard to="/contenido" icon={Palette} title="Centro de contenido" value={`${dashboard.contentScheduled} programadas`} detail={`${dashboard.contentPublishedThisWeek} publicadas esta semana · ${dashboard.contentPendingApproval} por aprobar`} status={contentChannelStatus(dashboard)} />
         </div>
       </section>
 
@@ -440,6 +477,7 @@ export function DashboardPage() {
             <PriorityRow to="/empresas" icon={CalendarClock} label="Seguimientos vencidos o para hoy" value={dueFollowUps.length} />
             <PriorityRow to="/agentes" icon={Sparkles} label="Propuestas esperando decisión" value={dashboard.pendingProposals} />
             <PriorityRow to="/administracion" icon={Database} label="Integraciones con incidencia" value={integrationErrors} />
+            <PriorityRow to="/contenido?view=publications" icon={Palette} label="Contenido por aprobar o con error" value={dashboard.contentPendingApproval + dashboard.contentErrors} />
           </div>
         </div>
 
@@ -560,6 +598,14 @@ function EmptyState({ text }: { text: string }) {
 
 function connectionStatus(dashboard: GlobalDashboard, provider: string) {
   return dashboard.connections.find((connection) => connection.provider === provider)?.status ?? "pendiente";
+}
+
+function contentChannelStatus(dashboard: GlobalDashboard) {
+  const connected = dashboard.contentChannels.filter((channel) => channel.enabled).length;
+  if (dashboard.contentErrors) return `${dashboard.contentErrors} con error`;
+  if (connected === 2) return "Instagram y Facebook";
+  if (connected === 1) return "1 canal conectado";
+  return "Falta conectar Meta";
 }
 
 function buildGlobalHeadline(attention: number, integrationErrors: number, replies: number) {

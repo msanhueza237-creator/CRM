@@ -59,7 +59,10 @@ El endpoint base para agentes esta en `supabase/functions/crm-agent`.
 - Campanas con confirmacion manual antes de envio.
 - Plantillas con variables.
 - Administracion inicial.
+- Centro de Contenido Inteligente con Tiendanube, IA fundamentada, calendario, Instagram/Facebook y piloto automático.
 - Esquema SQL inicial para Supabase.
+
+La instalación y operación del Centro de Contenido está documentada en `docs/content-center.md`.
 
 ## Siguientes etapas
 

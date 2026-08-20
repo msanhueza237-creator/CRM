@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.crm-copilot]
 verify_jwt = false
+
+[functions.content-center]
+verify_jwt = false

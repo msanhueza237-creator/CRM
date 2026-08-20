@@ -1,6 +1,9 @@
-import { FormEvent, useEffect, useState } from "react";
-import { CheckCircle2, Database, Mail, MapPinned, MessageCircle, RefreshCw, Save, Send, ShieldCheck, Unplug, Users, XCircle } from "lucide-react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { CheckCircle2, Database, Mail, MapPinned, MessageCircle, Palette, RefreshCw, Save, Send, ShieldCheck, Unplug, Users, XCircle } from "lucide-react";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
+import { checkContentConnections } from "../../lib/contentCenterApi";
+import type { ContentConnectionCheck } from "../../types/content";
 import { useAuth } from "../auth/AuthContext";
 import {
   type GmailStatus,
@@ -90,6 +93,31 @@ export function AdminPage() {
   const [integrationNotice, setIntegrationNotice] = useState("");
   const [bravePolicy, setBravePolicy] = useState<BravePolicy>({ monthlyLimitUsd: 5, freeCreditUsd: 5, socialSearchEnabled: false, maxSocialQueries: 6 });
   const [savingBravePolicy, setSavingBravePolicy] = useState(false);
+  const [socialConnections, setSocialConnections] = useState<ContentConnectionCheck | null>(null);
+  const [socialBusy, setSocialBusy] = useState(false);
+  const [socialNotice, setSocialNotice] = useState("");
+
+  const loadSocialConnections = useCallback(async (showNotice = true) => {
+    setSocialBusy(true);
+    if (showNotice) setSocialNotice("Consultando Tiendanube e interfaces sociales de Meta...");
+    try {
+      const result = await checkContentConnections();
+      setSocialConnections(result);
+      if (showNotice) {
+        const connected = [result.instagram, result.facebook].filter((channel) => channel.connected).length;
+        setSocialNotice(connected === 2 ? "Instagram y Facebook respondieron correctamente." : `Meta Social tiene ${connected} de 2 canales conectados.`);
+      }
+    } catch (error) {
+      setSocialNotice(error instanceof Error ? error.message : "No se pudo revisar Meta Social.");
+    } finally {
+      setSocialBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    void loadSocialConnections(false);
+  }, [loadSocialConnections, user]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !user) return;
@@ -604,6 +632,53 @@ export function AdminPage() {
               Conectar Gmail
             </button>
           )}
+        </div>
+      </div>
+
+      <div className="panel admin-integration-form" id="meta-social">
+        <div className="panel-heading">
+          <div>
+            <h2>Instagram y Facebook</h2>
+            <span>Canales de publicación del Centro de Contenido mediante Meta Graph API.</span>
+          </div>
+          <span className={`status-badge ${socialConnections?.instagram.connected && socialConnections?.facebook.connected ? "cliente" : "pausada"}`}>
+            {[socialConnections?.instagram, socialConnections?.facebook].filter((item) => item?.connected).length}/2 conectados
+          </span>
+        </div>
+
+        <div className="admin-integration-summary">
+          <Palette size={24} />
+          <div>
+            <strong>Meta Social seguro</strong>
+            <p className="muted">El token y los identificadores viven como secretos del backend. El Centro de Contenido solo consume esta conexión y nunca recibe credenciales.</p>
+          </div>
+        </div>
+
+        <div className="gmail-status-grid">
+          <div>
+            <span>Instagram</span>
+            <strong>{socialConnections?.instagram.connected ? socialConnections.instagram.accountName || "Conectado" : "Pendiente"}</strong>
+            <small>{socialConnections?.instagram.message || "Sin prueba registrada"}</small>
+          </div>
+          <div>
+            <span>Facebook</span>
+            <strong>{socialConnections?.facebook.connected ? socialConnections.facebook.accountName || "Conectado" : "Pendiente"}</strong>
+            <small>{socialConnections?.facebook.message || "Sin prueba registrada"}</small>
+          </div>
+          <div>
+            <span>Catálogo Tiendanube</span>
+            <strong>{socialConnections?.tiendanube?.status === "connected" ? "Disponible" : "Revisar"}</strong>
+            <small>{socialConnections?.tiendanube?.message || "Sin lectura"}</small>
+          </div>
+        </div>
+
+        {socialNotice ? <p className="muted">{socialNotice}</p> : null}
+        <div className="form-actions">
+          <button className="ghost-button" type="button" onClick={() => void loadSocialConnections(true)} disabled={socialBusy}>
+            <RefreshCw size={18} className={socialBusy ? "spin-icon" : ""} />
+            {socialBusy ? "Comprobando..." : "Probar conexión real"}
+          </button>
+          <Link className="primary-button" to="/contenido?view=settings"><Palette size={18} />Abrir Centro de Contenido</Link>
         </div>
       </div>
 

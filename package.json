@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "lint": "eslint .",
+    "test:content": "node --experimental-strip-types scripts/test-content-center.mjs",
     "test:prospecting": "node scripts/test-prospecting-contract.mjs",
     "commit": "node scripts/commit.js"
   },
