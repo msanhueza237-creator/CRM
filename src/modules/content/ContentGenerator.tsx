@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarClock, CheckCircle2, Facebook, Instagram, RefreshCw, Send, ShieldCheck, Sparkles, XCircle } from "lucide-react";
+import { AlertTriangle, CalendarClock, CheckCircle2, ClipboardCheck, Facebook, FileText, Hash, Instagram, RefreshCw, Send, ShieldCheck, Sparkles, XCircle } from "lucide-react";
 import {
   approveContentPublication,
   generateSocialContent,
@@ -158,44 +158,57 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   return (
     <div className="content-generator-layout">
       <form className="panel content-generator-form" onSubmit={submit}>
-        <div className="panel-heading"><div><h2>Generador con IA</h2><span>Los hechos provienen exclusivamente de Tiendanube</span></div><ShieldCheck size={22} /></div>
-        <div className="form-grid">
-          <label className="wide-field"><span>Producto</span><select required value={selectedProductId} onChange={(event) => onProductChange(event.target.value)}><option value="">Selecciona un producto</option>{availableProducts.map((product) => <option value={product.id} key={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ""}</option>)}</select></label>
-          <fieldset className="wide-field content-channel-picker"><legend>Redes sociales</legend><button className={channels.includes("instagram") ? "active" : ""} type="button" onClick={() => toggleChannel("instagram")}><Instagram size={19} /> Instagram</button><button className={channels.includes("facebook") ? "active" : ""} type="button" onClick={() => toggleChannel("facebook")}><Facebook size={19} /> Facebook</button></fieldset>
-          <label><span>Tipo</span><select value={publicationType} onChange={(event) => setPublicationType(event.target.value)}><option value="feed">Publicación de feed</option><option value="product">Producto destacado</option><option value="educational">Educativa</option><option value="promotion">Promoción</option></select></label>
-          <label><span>Plantilla</span><select value={templateId} onChange={(event) => setTemplateId(event.target.value)}>{data.bootstrap?.templates.filter((item) => item.active).map((template) => <option value={template.id} key={template.id}>{template.name}</option>)}</select></label>
-          <label><span>Personalidad</span><select value={brandId} onChange={(event) => setBrandId(event.target.value)}>{data.bootstrap?.brands.map((brand) => <option value={brand.id} key={brand.id}>{brand.name}</option>)}</select></label>
-          <label><span>Variantes por red</span><input type="number" min={1} max={3} value={variants} onChange={(event) => setVariants(Number(event.target.value))} /></label>
-          <label className="wide-field"><span>Objetivo</span><input value={objective} onChange={(event) => setObjective(event.target.value)} /></label>
-          <label className="wide-field"><span>Llamada a la acción</span><input value={cta} onChange={(event) => setCta(event.target.value)} /></label>
-          <label className="wide-field"><span>Contexto de campaña, fecha o temporada</span><textarea value={context} onChange={(event) => setContext(event.target.value)} placeholder="Opcional. No agregues datos del producto que no estén verificados en Tiendanube." /></label>
-        </div>
-        <div className="content-generator-options">
-          <label><input type="checkbox" checked={useHashtags} onChange={(event) => setUseHashtags(event.target.checked)} /> Usar hashtags</label>
-          <label><input type="radio" checked={operationMode === "manual"} onChange={() => setOperationMode("manual")} /> Manual</label>
-          <label><input type="radio" checked={operationMode === "approval"} onChange={() => setOperationMode("approval")} /> Con aprobación</label>
+        <div className="panel-heading content-generator-heading"><div><h2>Generador con IA</h2><span>Contenido basado en datos verificados de Tiendanube</span></div><ShieldCheck size={22} /></div>
+
+        <section className="content-generator-section">
+          <div className="content-generator-section-heading"><strong>Producto y canales</strong><span>{availableProducts.length} productos disponibles</span></div>
+          <label className="content-generator-field content-product-selector"><span>Producto</span><select required value={selectedProductId} onChange={(event) => onProductChange(event.target.value)}><option value="">Selecciona un producto</option>{availableProducts.map((product) => <option value={product.id} key={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ""}</option>)}</select></label>
+          <fieldset className="content-channel-picker"><legend>Redes sociales</legend><button className={channels.includes("instagram") ? "active" : ""} type="button" aria-pressed={channels.includes("instagram")} onClick={() => toggleChannel("instagram")}><Instagram size={19} /> Instagram</button><button className={channels.includes("facebook") ? "active" : ""} type="button" aria-pressed={channels.includes("facebook")} onClick={() => toggleChannel("facebook")}><Facebook size={19} /> Facebook</button></fieldset>
+        </section>
+
+        <section className="content-generator-section">
+          <div className="content-generator-section-heading"><strong>Estilo y formato</strong></div>
+          <div className="content-generator-field-grid">
+            <label className="content-generator-field"><span>Tipo</span><select value={publicationType} onChange={(event) => setPublicationType(event.target.value)}><option value="feed">Publicación de feed</option><option value="product">Producto destacado</option><option value="educational">Educativa</option><option value="promotion">Promoción</option></select></label>
+            <label className="content-generator-field"><span>Plantilla</span><select value={templateId} onChange={(event) => setTemplateId(event.target.value)}>{data.bootstrap?.templates.filter((item) => item.active).map((template) => <option value={template.id} key={template.id}>{template.name}</option>)}</select></label>
+            <label className="content-generator-field"><span>Personalidad</span><select value={brandId} onChange={(event) => setBrandId(event.target.value)}>{data.bootstrap?.brands.map((brand) => <option value={brand.id} key={brand.id}>{brand.name}</option>)}</select></label>
+            <label className="content-generator-field content-variants-field"><span>Variantes por red</span><input type="number" min={1} max={3} value={variants} onChange={(event) => setVariants(Number(event.target.value))} /></label>
+          </div>
+        </section>
+
+        <section className="content-generator-section">
+          <div className="content-generator-section-heading"><strong>Mensaje</strong></div>
+          <div className="content-generator-copy-grid">
+            <label className="content-generator-field"><span>Objetivo</span><input value={objective} onChange={(event) => setObjective(event.target.value)} /></label>
+            <label className="content-generator-field"><span>Llamada a la acción</span><input value={cta} onChange={(event) => setCta(event.target.value)} /></label>
+          </div>
+          <label className="content-generator-field"><span>Contexto de campaña, fecha o temporada</span><textarea value={context} onChange={(event) => setContext(event.target.value)} placeholder="Opcional. No agregues datos del producto que no estén verificados en Tiendanube." /></label>
+        </section>
+
+        <div className="content-generator-preferences">
+          <label className="content-hashtag-toggle"><input type="checkbox" checked={useHashtags} onChange={(event) => setUseHashtags(event.target.checked)} /><Hash size={17} /> Usar hashtags</label>
+          <fieldset className="content-mode-picker"><legend>Flujo de revisión</legend><button className={operationMode === "manual" ? "active" : ""} type="button" aria-pressed={operationMode === "manual"} onClick={() => setOperationMode("manual")}><FileText size={17} /> Manual</button><button className={operationMode === "approval" ? "active" : ""} type="button" aria-pressed={operationMode === "approval"} onClick={() => setOperationMode("approval")}><ClipboardCheck size={17} /> Con aprobación</button></fieldset>
         </div>
         {selectedProduct ? <ProductFacts product={selectedProduct} /> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={18} /> {error}</div> : null}
         {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}
-        <div className="form-actions"><button className="primary-button" type="submit" disabled={busy === "generate" || !selectedProductId || !channels.length}><Sparkles size={18} /> {busy === "generate" ? "Generando y verificando..." : "Generar borradores"}</button></div>
+        <div className="content-generator-submit"><span>{channels.length ? `${channels.length} ${channels.length === 1 ? "canal seleccionado" : "canales seleccionados"}` : "Selecciona al menos un canal"}</span><button className="primary-button" type="submit" disabled={busy === "generate" || !selectedProductId || !channels.length}><Sparkles size={18} /> {busy === "generate" ? "Generando y verificando..." : "Generar borradores"}</button></div>
       </form>
 
       <section className="content-generated-column">
         <div className="content-generated-heading"><div><h2>Resultado</h2><span>Versiones específicas por canal</span></div></div>
         {generated.map((publication) => {
           const channel = data.bootstrap?.channels.find((item) => item.id === publication.channel_id);
+          const publicationProduct = data.products.find((item) => item.id === publication.product_id);
           const isAdmin = user?.role === "administrador";
           return (
             <article className="content-draft-card" key={publication.id}>
               <div className="content-draft-card-heading"><span>{channel?.code === "instagram" ? <Instagram size={18} /> : <Facebook size={18} />}{channel?.name || "Red social"}</span><span className={`content-state ${publication.status}`}>{statusLabel(publication.status)}</span></div>
-              {publication.image_url ? <img src={publication.image_url} alt={selectedProduct?.name || "Producto"} /> : null}
-              <p>{publication.body}</p>
-              {publication.hashtags.length ? <div className="content-hashtags">{publication.hashtags.map((tag) => <span key={tag}>#{tag}</span>)}</div> : null}
-              {publication.cta ? <strong>{publication.cta}</strong> : null}
-              <small>Modelo: {publication.model_name || "IA configurada"} · hechos verificados antes de guardar</small>
-              {isAdmin && ["draft", "pending_approval"].includes(publication.status) ? <div className="content-review-actions"><button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void approve(publication)}><CheckCircle2 size={17} /> {busy === `approve-${publication.id}` ? "Aprobando..." : "Aprobar"}</button><button className="ghost-button danger" type="button" disabled={Boolean(busy)} onClick={() => void reject(publication)}><XCircle size={17} /> {busy === `reject-${publication.id}` ? "Desaprobando..." : "Desaprobar"}</button>{publication.id === alternativeActionPublicationId && canTryAnotherProduct ? <button className="ghost-button content-alternative-action" type="button" disabled={Boolean(busy)} onClick={() => void tryAnotherProduct()}><RefreshCw size={17} /> {busy === "alternative" ? "Buscando alternativa..." : "Probar otro producto"}</button> : null}</div> : null}
-              {publication.status === "approved" ? <div className="content-schedule-action"><input type="datetime-local" value={scheduleDates[publication.id] || ""} onChange={(event) => setScheduleDates((current) => ({ ...current, [publication.id]: event.target.value }))} /><button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void schedule(publication)}><CalendarClock size={17} /> Programar</button>{isAdmin ? <button className="primary-button" type="button" disabled={Boolean(busy)} onClick={() => void publish(publication)}><Send size={17} /> Publicar ahora</button> : null}</div> : null}
+              {publication.image_url ? <div className="content-draft-media"><img src={publication.image_url} alt={publicationProduct?.name || "Producto"} /></div> : null}
+              <div className="content-draft-copy"><p>{publication.body}</p>{publication.hashtags.length ? <div className="content-hashtags">{publication.hashtags.map((tag) => <span key={tag}>#{tag}</span>)}</div> : null}{publication.cta ? <strong>{publication.cta}</strong> : null}</div>
+              <div className="content-draft-footer"><small>Modelo: {publication.model_name || "IA configurada"} · hechos verificados antes de guardar</small>
+              {isAdmin && ["draft", "pending_approval"].includes(publication.status) ? <div className="content-review-actions"><button className="primary-button" type="button" disabled={Boolean(busy)} onClick={() => void approve(publication)}><CheckCircle2 size={17} /> {busy === `approve-${publication.id}` ? "Aprobando..." : "Aprobar"}</button><button className="ghost-button danger" type="button" disabled={Boolean(busy)} onClick={() => void reject(publication)}><XCircle size={17} /> {busy === `reject-${publication.id}` ? "Desaprobando..." : "Desaprobar"}</button>{publication.id === alternativeActionPublicationId && canTryAnotherProduct ? <button className="ghost-button content-alternative-action" type="button" disabled={Boolean(busy)} onClick={() => void tryAnotherProduct()}><RefreshCw size={17} /> {busy === "alternative" ? "Buscando alternativa..." : "Probar otro producto"}</button> : null}</div> : null}
+              {publication.status === "approved" ? <div className="content-schedule-action"><label><span>Fecha y hora</span><input type="datetime-local" value={scheduleDates[publication.id] || ""} onChange={(event) => setScheduleDates((current) => ({ ...current, [publication.id]: event.target.value }))} /></label><button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void schedule(publication)}><CalendarClock size={17} /> Programar</button>{isAdmin ? <button className="primary-button" type="button" disabled={Boolean(busy)} onClick={() => void publish(publication)}><Send size={17} /> Publicar ahora</button> : null}</div> : null}</div>
               {publication.error_message ? <div className="notice-banner error">{publication.error_message}</div> : null}
             </article>
           );
