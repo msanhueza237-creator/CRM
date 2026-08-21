@@ -47,6 +47,8 @@ CONTENT_SCHEDULER_SECRET=una-cadena-aleatoria-larga-y-privada
 
 El token de Meta debe pertenecer a una aplicación autorizada para administrar la página y la cuenta profesional de Instagram asociada. La pantalla `Administración > Instagram y Facebook` valida la conexión sin mostrar secretos.
 
+Para publicar en Facebook, el token de usuario debe incluir `pages_show_list`, `pages_read_engagement` y `pages_manage_posts`. Después se debe consultar `/me/accounts?fields=id,name,access_token,tasks,instagram_business_account` y guardar en `META_SOCIAL_ACCESS_TOKEN` el `access_token` de la página, no el token de usuario temporal. La página debe incluir la tarea `CREATE_CONTENT`. Si Meta no permite solicitar `pages_manage_posts`, habilitar ese permiso o caso de uso en el panel de la aplicación y completar App Review cuando la aplicación vaya a ser usada por personas que no tengan un rol en ella.
+
 ## Scheduler en Dokploy
 
 Crear una tarea cada minuto que realice una solicitud `POST` a:

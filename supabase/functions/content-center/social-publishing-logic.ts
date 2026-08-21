@@ -18,3 +18,8 @@ export function isInstagramMediaNotReady(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || "");
   return /media id is not available|media is not ready|media.*not available/i.test(message);
 }
+
+export function isFacebookPublishPermissionMissing(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /pages_manage_posts/i.test(message);
+}

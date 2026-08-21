@@ -9,6 +9,7 @@ import {
 } from "../supabase/functions/content-center/content-logic.ts";
 import {
   classifyInstagramContainerStatus,
+  isFacebookPublishPermissionMissing,
   isInstagramMediaNotReady,
 } from "../supabase/functions/content-center/social-publishing-logic.ts";
 
@@ -160,6 +161,11 @@ assert.deepEqual(classifyInstagramContainerStatus({ status_code: "FINISHED", sta
 });
 assert.equal(classifyInstagramContainerStatus({ status_code: "ERROR" }).state, "failed");
 assert.equal(isInstagramMediaNotReady(new Error("Media ID is not available")), true);
+assert.equal(
+  isFacebookPublishPermissionMissing(new Error("(#200) The permission(s) pages_manage_posts are not available.")),
+  true,
+);
+assert.equal(isFacebookPublishPermissionMissing(new Error("Meta rechazo la operacion.")), false);
 
 await db.close();
 console.log("Centro de Contenido: esquema, catálogo, cola y rotación verificados.");

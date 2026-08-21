@@ -1,5 +1,6 @@
 import {
   classifyInstagramContainerStatus,
+  isFacebookPublishPermissionMissing,
   isInstagramMediaNotReady,
 } from "./social-publishing-logic.ts";
 
@@ -345,15 +346,28 @@ export class FacebookAdapter extends MetaAdapterBase {
   async createPost(input: SocialPostInput): Promise<SocialPostResult> {
     if (this.missing(this.config.facebookPageId)) throw missingConfiguration();
     const text = caption(input);
-    const data = input.imageUrl
-      ? await graphRequest(this.config, `${this.config.facebookPageId}/photos`, {
-        method: "POST",
-        params: { url: input.imageUrl, caption: text, published: "true" },
-      })
-      : await graphRequest(this.config, `${this.config.facebookPageId}/feed`, {
-        method: "POST",
-        params: { message: text, ...(input.productUrl ? { link: input.productUrl } : {}) },
-      });
+    let data: Record<string, unknown>;
+    try {
+      data = input.imageUrl
+        ? await graphRequest(this.config, `${this.config.facebookPageId}/photos`, {
+          method: "POST",
+          params: { url: input.imageUrl, caption: text, published: "true" },
+        })
+        : await graphRequest(this.config, `${this.config.facebookPageId}/feed`, {
+          method: "POST",
+          params: { message: text, ...(input.productUrl ? { link: input.productUrl } : {}) },
+        });
+    } catch (error) {
+      if (isFacebookPublishPermissionMissing(error)) {
+        throw new SocialPublishError(
+          "Facebook esta conectado para lectura, pero el token no permite publicar. Habilita pages_manage_posts en Meta, genera un nuevo token de pagina y actualiza META_SOCIAL_ACCESS_TOKEN en Supabase.",
+          "facebook_publish_permission_missing",
+          false,
+          403,
+        );
+      }
+      throw error;
+    }
     const externalId = String(data.post_id || data.id || "");
     if (!externalId) throw new SocialPublishError("Meta no confirmo la publicacion de Facebook.", "facebook_publish_missing", true);
     return { externalId, raw: { post_id: externalId } };
