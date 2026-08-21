@@ -1,9 +1,10 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarClock, CheckCircle2, Facebook, Instagram, Send, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, CalendarClock, CheckCircle2, Facebook, Instagram, RefreshCw, Send, ShieldCheck, Sparkles, XCircle } from "lucide-react";
 import {
   approveContentPublication,
   generateSocialContent,
   publishContentPublication,
+  rejectContentPublication,
   scheduleContentPublication,
 } from "../../lib/contentCenterApi";
 import type { ContentChannelCode, ContentPublication } from "../../types/content";
@@ -36,6 +37,10 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
 
   const availableProducts = useMemo(() => data.products.filter((item) => item.source_status === "active" && item.sync_status === "synced" && !item.paused), [data.products]);
   const selectedProduct = data.products.find((item) => item.id === selectedProductId);
+  const reviewableGenerated = generated.filter((item) => ["draft", "pending_approval"].includes(item.status));
+  const hasCommittedGenerated = generated.some((item) => !["draft", "pending_approval", "cancelled"].includes(item.status));
+  const canTryAnotherProduct = availableProducts.length > 1 && reviewableGenerated.length > 0 && !hasCommittedGenerated;
+  const alternativeActionPublicationId = reviewableGenerated[0]?.id;
 
   useEffect(() => {
     if (!selectedProductId && availableProducts[0]) onProductChange(availableProducts[0].id);
@@ -49,6 +54,22 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
     setChannels((current) => current.includes(channel) ? current.filter((item) => item !== channel) : [...current, channel]);
   }
 
+  function generationInput(productId: string) {
+    return {
+      productId,
+      channels,
+      templateId,
+      brandProfileId: brandId,
+      publicationType,
+      objective,
+      cta,
+      context,
+      variants,
+      useHashtags,
+      operationMode,
+    };
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!selectedProductId || !channels.length) return;
@@ -56,19 +77,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
     setError("");
     setNotice("");
     try {
-      const result = await generateSocialContent({
-        productId: selectedProductId,
-        channels,
-        templateId,
-        brandProfileId: brandId,
-        publicationType,
-        objective,
-        cta,
-        context,
-        variants,
-        useHashtags,
-        operationMode,
-      });
+      const result = await generateSocialContent(generationInput(selectedProductId));
       setGenerated(result.publications);
       setNotice(`${result.publications.length} borrador(es) creados con verificación de hechos.`);
       await data.refresh();
@@ -84,6 +93,35 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
       const result = await approveContentPublication(publication.id);
       replaceGenerated(result.publication);
       setNotice("Contenido aprobado. Ya puedes programarlo o publicarlo.");
+    });
+  }
+
+  async function reject(publication: ContentPublication) {
+    await act(`reject-${publication.id}`, async () => {
+      const result = await rejectContentPublication(publication.id);
+      replaceGenerated(result.publication);
+      setNotice("Borrador desaprobado. No se programara ni se publicara.");
+    });
+  }
+
+  async function tryAnotherProduct() {
+    if (availableProducts.length < 2) {
+      setError("No hay otro producto elegible para probar.");
+      return;
+    }
+    const currentIndex = availableProducts.findIndex((product) => product.id === selectedProductId);
+    const nextProduct = availableProducts[(currentIndex + 1 + availableProducts.length) % availableProducts.length];
+    if (!nextProduct || nextProduct.id === selectedProductId) {
+      setError("No hay otro producto elegible para probar.");
+      return;
+    }
+
+    await act("alternative", async () => {
+      await Promise.all(reviewableGenerated.map((item) => rejectContentPublication(item.id, "Borrador reemplazado para probar otro producto.")));
+      const result = await generateSocialContent(generationInput(nextProduct.id));
+      onProductChange(nextProduct.id);
+      setGenerated(result.publications);
+      setNotice(`Se descartaron los borradores anteriores y se genero una alternativa para ${nextProduct.name}.`);
     });
   }
 
@@ -156,7 +194,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
               {publication.hashtags.length ? <div className="content-hashtags">{publication.hashtags.map((tag) => <span key={tag}>#{tag}</span>)}</div> : null}
               {publication.cta ? <strong>{publication.cta}</strong> : null}
               <small>Modelo: {publication.model_name || "IA configurada"} · hechos verificados antes de guardar</small>
-              {isAdmin && ["draft", "pending_approval"].includes(publication.status) ? <button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void approve(publication)}><CheckCircle2 size={17} /> {busy === `approve-${publication.id}` ? "Aprobando..." : "Aprobar"}</button> : null}
+              {isAdmin && ["draft", "pending_approval"].includes(publication.status) ? <div className="content-review-actions"><button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void approve(publication)}><CheckCircle2 size={17} /> {busy === `approve-${publication.id}` ? "Aprobando..." : "Aprobar"}</button><button className="ghost-button danger" type="button" disabled={Boolean(busy)} onClick={() => void reject(publication)}><XCircle size={17} /> {busy === `reject-${publication.id}` ? "Desaprobando..." : "Desaprobar"}</button>{publication.id === alternativeActionPublicationId && canTryAnotherProduct ? <button className="ghost-button content-alternative-action" type="button" disabled={Boolean(busy)} onClick={() => void tryAnotherProduct()}><RefreshCw size={17} /> {busy === "alternative" ? "Buscando alternativa..." : "Probar otro producto"}</button> : null}</div> : null}
               {publication.status === "approved" ? <div className="content-schedule-action"><input type="datetime-local" value={scheduleDates[publication.id] || ""} onChange={(event) => setScheduleDates((current) => ({ ...current, [publication.id]: event.target.value }))} /><button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void schedule(publication)}><CalendarClock size={17} /> Programar</button>{isAdmin ? <button className="primary-button" type="button" disabled={Boolean(busy)} onClick={() => void publish(publication)}><Send size={17} /> Publicar ahora</button> : null}</div> : null}
               {publication.error_message ? <div className="notice-banner error">{publication.error_message}</div> : null}
             </article>
@@ -173,7 +211,7 @@ function ProductFacts({ product }: { product: ContentCenterData["products"][numb
 }
 
 function statusLabel(status: string) {
-  return ({ draft: "Borrador", pending_approval: "Pendiente de aprobación", approved: "Aprobado", scheduled: "Programado", publishing: "Publicando", published: "Publicado", failed: "Error" } as Record<string, string>)[status] || status;
+  return ({ draft: "Borrador", pending_approval: "Pendiente de aprobación", approved: "Aprobado", scheduled: "Programado", publishing: "Publicando", published: "Publicado", failed: "Error", cancelled: "Desaprobado" } as Record<string, string>)[status] || status;
 }
 
 function formatMoney(value: number | null) {

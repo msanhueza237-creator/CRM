@@ -84,6 +84,10 @@ Deno.serve(async (req) => {
       requirePermission(profile, "content.approve");
       return json(await approvePublication(rest, profile, await readJson(req), requestId), 200, req);
     }
+    if (route === "reject" && req.method === "POST") {
+      requirePermission(profile, "content.approve");
+      return json(await rejectPublication(rest, profile, await readJson(req), requestId), 200, req);
+    }
     if (route === "schedule" && req.method === "POST") {
       requirePermission(profile, "content.schedule");
       return json(await schedulePublication(rest, profile, await readJson(req), requestId), 200, req);
@@ -362,6 +366,26 @@ async function approvePublication(rest: RestClient, profile: Profile, payload: J
     updated_by: profile.id, error_code: null, error_message: null,
   });
   await history(rest, publication, "content_approved", "Contenido aprobado para programacion o publicacion.", profile, requestId);
+  return { publication: updated[0] || null };
+}
+
+async function rejectPublication(rest: RestClient, profile: Profile, payload: JsonRecord, requestId: string) {
+  const id = requiredUuid(payload.publicationId, "publicacion");
+  const rows = await selectRows(rest, `content_publications?select=id,status,product_id,correlation_id&id=eq.${id}&limit=1`);
+  const publication = rows[0];
+  if (!publication) throw new HttpError(404, "Publicacion no encontrada.");
+  if (!["draft", "pending_approval"].includes(String(publication.status))) {
+    throw new HttpError(409, "La publicacion ya fue procesada.");
+  }
+  const reason = optionalText(payload.reason, 500) || "Borrador desaprobado durante la revision.";
+  const updated = await patchRows(rest, "content_publications", `id=eq.${id}`, {
+    status: "cancelled",
+    scheduled_at: null,
+    updated_by: profile.id,
+    error_code: null,
+    error_message: null,
+  });
+  await history(rest, publication, "content_rejected", reason, profile, requestId);
   return { publication: updated[0] || null };
 }
 

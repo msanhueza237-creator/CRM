@@ -75,6 +75,10 @@ export function approveContentPublication(publicationId: string) {
   return contentRequest<{ publication: ContentPublication }>("approve", { method: "POST", body: { publicationId } });
 }
 
+export function rejectContentPublication(publicationId: string, reason?: string) {
+  return contentRequest<{ publication: ContentPublication }>("reject", { method: "POST", body: { publicationId, reason } });
+}
+
 export function scheduleContentPublication(publicationId: string, scheduledAt: string) {
   return contentRequest<{ publication: ContentPublication }>("schedule", { method: "POST", body: { publicationId, scheduledAt } });
 }
