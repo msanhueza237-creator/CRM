@@ -7,6 +7,10 @@ import {
   selectRotatedProduct,
   textSimilarity,
 } from "../supabase/functions/content-center/content-logic.ts";
+import {
+  classifyInstagramContainerStatus,
+  isInstagramMediaNotReady,
+} from "../supabase/functions/content-center/social-publishing-logic.ts";
 
 const db = new PGlite();
 await db.exec(`
@@ -144,6 +148,18 @@ const schedule = {
 assert.equal(nextScheduleAt(schedule, new Date("2026-08-20T23:31:00Z"))?.toISOString(), "2026-08-24T23:30:00.000Z");
 assert.ok(textSimilarity("Conoce esta bomba de vacío profesional", "Conoce esta bomba de vacio profesional") > 0.95);
 assert.equal(findSimilarDraft([{ body: "Conoce esta bomba de vacío profesional" }], [{ body: "Conoce esta bomba de vacio profesional" }], 0.8)?.similarity, 1);
+assert.deepEqual(classifyInstagramContainerStatus({ status_code: "IN_PROGRESS" }), {
+  state: "pending",
+  statusCode: "IN_PROGRESS",
+  message: "",
+});
+assert.deepEqual(classifyInstagramContainerStatus({ status_code: "FINISHED", status: "Ready" }), {
+  state: "ready",
+  statusCode: "FINISHED",
+  message: "Ready",
+});
+assert.equal(classifyInstagramContainerStatus({ status_code: "ERROR" }).state, "failed");
+assert.equal(isInstagramMediaNotReady(new Error("Media ID is not available")), true);
 
 await db.close();
 console.log("Centro de Contenido: esquema, catálogo, cola y rotación verificados.");

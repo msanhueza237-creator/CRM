@@ -1,3 +1,8 @@
+import {
+  classifyInstagramContainerStatus,
+  isInstagramMediaNotReady,
+} from "./social-publishing-logic.ts";
+
 export type SocialChannelCode = "instagram" | "facebook";
 
 export type SocialConnectionStatus = {
@@ -110,6 +115,71 @@ async function graphRequest(
     );
   }
   return data;
+}
+
+function delay(milliseconds: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForInstagramContainer(config: MetaConfig, creationId: string) {
+  const attempts = 15;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const raw = await graphRequest(config, creationId, {
+      params: { fields: "status_code,status" },
+    });
+    const status = classifyInstagramContainerStatus(raw);
+    console.info("[content-center][instagram] estado del contenedor", {
+      creationId,
+      attempt,
+      statusCode: status.statusCode,
+    });
+    if (status.state === "ready") return raw;
+    if (status.state === "failed") {
+      throw new SocialPublishError(
+        `Instagram no pudo preparar la imagen${status.message ? `: ${status.message}` : "."}`,
+        `instagram_container_${status.statusCode.toLowerCase()}`,
+        false,
+        422,
+      );
+    }
+    if (attempt < attempts) await delay(2_000);
+  }
+  throw new SocialPublishError(
+    "Instagram aun esta procesando la imagen. El sistema volvera a intentarlo automaticamente.",
+    "instagram_container_processing",
+    true,
+    503,
+  );
+}
+
+async function publishInstagramContainer(config: MetaConfig, accountId: string, creationId: string) {
+  const attempts = 3;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await graphRequest(config, `${accountId}/media_publish`, {
+        method: "POST",
+        params: { creation_id: creationId },
+      });
+    } catch (error) {
+      if (!isInstagramMediaNotReady(error)) throw error;
+      if (attempt < attempts) {
+        await delay(2_000);
+        continue;
+      }
+      throw new SocialPublishError(
+        "Instagram todavia no termina de preparar la imagen. El sistema volvera a intentarlo automaticamente.",
+        "instagram_media_not_ready",
+        true,
+        503,
+      );
+    }
+  }
+  throw new SocialPublishError(
+    "Instagram no confirmo que la imagen estuviera lista.",
+    "instagram_media_not_ready",
+    true,
+    503,
+  );
 }
 
 function readInsightValues(raw: Record<string, unknown>) {
@@ -243,10 +313,8 @@ export class InstagramAdapter extends MetaAdapterBase {
     });
     const creationId = String(container.id || "");
     if (!creationId) throw new SocialPublishError("Meta no devolvio el contenedor de Instagram.", "instagram_container_missing", true);
-    const published = await graphRequest(this.config, `${this.config.instagramAccountId}/media_publish`, {
-      method: "POST",
-      params: { creation_id: creationId },
-    });
+    await waitForInstagramContainer(this.config, creationId);
+    const published = await publishInstagramContainer(this.config, this.config.instagramAccountId, creationId);
     const externalId = String(published.id || "");
     if (!externalId) throw new SocialPublishError("Meta no confirmo la publicacion de Instagram.", "instagram_publish_missing", true);
     return { externalId, raw: { container_id: creationId, media_id: externalId } };

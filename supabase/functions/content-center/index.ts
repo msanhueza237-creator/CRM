@@ -412,12 +412,34 @@ async function publishPublication(rest: RestClient, profile: Profile, payload: J
   if (!['approved', 'scheduled', 'failed'].includes(String(publication.status))) {
     throw new HttpError(409, "Aprueba el contenido antes de publicarlo.");
   }
-  await insertIgnoreRows(rest, "content_jobs", [{
+  const jobKey = `publish:${id}`;
+  const jobPayload = { publication_id: id, requested_by: profile.id };
+  const existingJobs = await selectRows(
+    rest,
+    `content_jobs?select=id,status&idempotency_key=eq.${encodeURIComponent(jobKey)}&limit=1`,
+  );
+  const existingJob = existingJobs[0];
+  if (existingJob && ["completed", "failed", "cancelled", "retry"].includes(String(existingJob.status))) {
+    await patchRows(rest, "content_jobs", `id=eq.${existingJob.id}`, {
+      status: "retry",
+      payload: jobPayload,
+      attempts: 0,
+      next_attempt_at: new Date().toISOString(),
+      worker_id: null,
+      lease_token: null,
+      lease_expires_at: null,
+      result: null,
+      error_code: null,
+      error_message: null,
+      started_at: null,
+      completed_at: null,
+    });
+  } else if (!existingJob) await insertIgnoreRows(rest, "content_jobs", [{
     kind: "publish",
     publication_id: id,
-    payload: { publication_id: id, requested_by: profile.id },
+    payload: jobPayload,
     priority: 100,
-    idempotency_key: `publish:${id}`,
+    idempotency_key: jobKey,
     correlation_id: publication.correlation_id || requestIdToUuid(requestId),
   }], "idempotency_key");
   await patchRows(rest, "content_publications", `id=eq.${id}`, {
