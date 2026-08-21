@@ -24,7 +24,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const [brandId, setBrandId] = useState("");
   const [publicationType, setPublicationType] = useState("feed");
   const [objective, setObjective] = useState("Presentar el producto y generar interés comercial");
-  const [cta, setCta] = useState("Conoce más en climactiva.cl");
+  const [cta, setCta] = useState("Conoce más en https://climactiva.cl");
   const [context, setContext] = useState("");
   const [variants, setVariants] = useState(1);
   const [useHashtags, setUseHashtags] = useState(true);
@@ -186,7 +186,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
         </section>
 
         <div className="content-generator-preferences">
-          <label className="content-hashtag-toggle"><input type="checkbox" checked={useHashtags} onChange={(event) => setUseHashtags(event.target.checked)} /><Hash size={17} /> Usar hashtags</label>
+          <label className="content-hashtag-toggle" title="#ClimaActiva se incluye siempre"><input type="checkbox" checked={useHashtags} onChange={(event) => setUseHashtags(event.target.checked)} /><Hash size={17} /> Agregar hashtags adicionales</label>
           <fieldset className="content-mode-picker"><legend>Flujo de revisión</legend><button className={operationMode === "manual" ? "active" : ""} type="button" aria-pressed={operationMode === "manual"} onClick={() => setOperationMode("manual")}><FileText size={17} /> Manual</button><button className={operationMode === "approval" ? "active" : ""} type="button" aria-pressed={operationMode === "approval"} onClick={() => setOperationMode("approval")}><ClipboardCheck size={17} /> Con aprobación</button></fieldset>
         </div>
         {selectedProduct ? <ProductFacts product={selectedProduct} /> : null}

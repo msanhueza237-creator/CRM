@@ -1,4 +1,5 @@
 import {
+  buildSocialCaption,
   classifyInstagramContainerStatus,
   isFacebookPublishPermissionMissing,
   isInstagramMediaNotReady,
@@ -16,6 +17,7 @@ export type SocialConnectionStatus = {
 
 export type SocialPostInput = {
   body: string;
+  cta?: string | null;
   hashtags: string[];
   imageUrl?: string | null;
   productUrl?: string | null;
@@ -72,15 +74,6 @@ function readMetaConfig(): MetaConfig {
     facebookPageId: Deno.env.get("META_FACEBOOK_PAGE_ID")?.trim() || "",
     instagramAccountId: Deno.env.get("META_INSTAGRAM_BUSINESS_ACCOUNT_ID")?.trim() || "",
   };
-}
-
-function caption(input: SocialPostInput) {
-  const hashtagText = input.hashtags
-    .map((tag) => tag.trim().replace(/^#/, ""))
-    .filter(Boolean)
-    .map((tag) => `#${tag}`)
-    .join(" ");
-  return [input.body.trim(), hashtagText].filter(Boolean).join("\n\n");
 }
 
 function graphUrl(config: MetaConfig, path: string) {
@@ -310,7 +303,7 @@ export class InstagramAdapter extends MetaAdapterBase {
     }
     const container = await graphRequest(this.config, `${this.config.instagramAccountId}/media`, {
       method: "POST",
-      params: { image_url: input.imageUrl, caption: caption(input) },
+      params: { image_url: input.imageUrl, caption: buildSocialCaption(input) },
     });
     const creationId = String(container.id || "");
     if (!creationId) throw new SocialPublishError("Meta no devolvio el contenedor de Instagram.", "instagram_container_missing", true);
@@ -345,7 +338,7 @@ export class FacebookAdapter extends MetaAdapterBase {
 
   async createPost(input: SocialPostInput): Promise<SocialPostResult> {
     if (this.missing(this.config.facebookPageId)) throw missingConfiguration();
-    const text = caption(input);
+    const text = buildSocialCaption(input);
     let data: Record<string, unknown>;
     try {
       data = input.imageUrl

@@ -3,6 +3,7 @@ import {
   SocialPublishError,
   createSocialAdapter,
 } from "./social-adapters.ts";
+import { ensureBrandHashtag, ensureOfficialWebsiteCta } from "./social-publishing-logic.ts";
 import { findSimilarDraft, nextScheduleAt, selectRotatedProduct } from "./content-logic.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -314,6 +315,8 @@ async function generateContent(
   for (const variant of generation.variants) {
     const channel = channelMap.get(variant.channel);
     if (!channel) continue;
+    const brandedCta = ensureOfficialWebsiteCta(variant.cta);
+    const brandedHashtags = ensureBrandHashtag(variant.hashtags);
     rows.push({
       generation_group_id: groupId,
       product_id: productId,
@@ -322,9 +325,9 @@ async function generateContent(
       brand_profile_id: brandRows[0]?.id || null,
       publication_type: optionalText(payload.publicationType, 80) || "feed",
       objective: optionalText(payload.objective, 500),
-      cta: variant.cta,
+      cta: brandedCta,
       body: variant.body,
-      hashtags: variant.hashtags,
+      hashtags: brandedHashtags,
       image_url: String(product.primary_image_url || "") || null,
       source_facts: facts,
       missing_facts: [],
@@ -560,6 +563,7 @@ async function processJob(rest: RestClient, job: JsonRecord, requestId: string):
   }
   const result = await adapter.createPost({
     body: String(publication.body || ""),
+    cta: String(publication.cta || "") || null,
     hashtags: stringArray(publication.hashtags, 30),
     imageUrl: String(publication.image_url || "") || null,
     productUrl: String(products[0]?.product_url || "") || null,
@@ -745,6 +749,8 @@ async function processAutomationTick(rest: RestClient, job: JsonRecord, requestI
   for (const variant of generation.variants) {
     const channel = channelMap.get(variant.channel);
     if (!channel) continue;
+    const brandedCta = ensureOfficialWebsiteCta(variant.cta);
+    const brandedHashtags = ensureBrandHashtag(variant.hashtags);
     rows.push({
       generation_group_id: groupId,
       product_id: selected.id,
@@ -753,9 +759,9 @@ async function processAutomationTick(rest: RestClient, job: JsonRecord, requestI
       brand_profile_id: brands[0]?.id || null,
       publication_type: "feed",
       objective: "Rotación editorial automática",
-      cta: variant.cta,
+      cta: brandedCta,
       body: variant.body,
-      hashtags: variant.hashtags,
+      hashtags: brandedHashtags,
       image_url: selected.primary_image_url,
       source_facts: facts,
       missing_facts: [],
@@ -875,6 +881,7 @@ async function createGroundedVariants(context: GenerationContext) {
       "Si un dato no aparece, omitelo. Nunca rellenes vacios con conocimiento general.",
       "Instagram y Facebook deben tener redacciones propias, no copias identicas.",
       "No incluyas marcadores como [dato faltante].",
+      "Incluye ClimaActiva como hashtag de marca y dirige la llamada a la accion a https://climactiva.cl.",
     ],
     product_facts: context.facts,
     brand_profile: context.brand,

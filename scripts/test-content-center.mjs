@@ -8,7 +8,10 @@ import {
   textSimilarity,
 } from "../supabase/functions/content-center/content-logic.ts";
 import {
+  buildSocialCaption,
   classifyInstagramContainerStatus,
+  ensureBrandHashtag,
+  ensureOfficialWebsiteCta,
   isFacebookPublishPermissionMissing,
   isInstagramMediaNotReady,
 } from "../supabase/functions/content-center/social-publishing-logic.ts";
@@ -166,6 +169,21 @@ assert.equal(
   true,
 );
 assert.equal(isFacebookPublishPermissionMissing(new Error("Meta rechazo la operacion.")), false);
+assert.deepEqual(
+  ensureBrandHashtag(["Refrigeracion", "#climactiva", "Refrigeracion"]),
+  ["Refrigeracion", "ClimaActiva"],
+  "el hashtag de marca debe quedar una sola vez",
+);
+assert.equal(
+  ensureOfficialWebsiteCta("Conoce mas en climactiva.cl"),
+  "Conoce mas en https://climactiva.cl",
+  "la llamada a la accion debe contener la URL completa",
+);
+assert.equal(
+  buildSocialCaption({ body: "Contenido verificado", cta: "Compra ahora", hashtags: [] }),
+  "Contenido verificado\n\nCompra ahora\nVisita https://climactiva.cl\n\n#ClimaActiva",
+  "la publicacion final siempre debe dirigir al sitio y conservar la marca",
+);
 
 await db.close();
 console.log("Centro de Contenido: esquema, catálogo, cola y rotación verificados.");
