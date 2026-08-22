@@ -668,6 +668,58 @@ assert.equal(reclassifiedSupporting.rows[0].document_type, "agency_settlement");
 assert.equal(reclassifiedSupporting.rows[0].parse_status, "uploaded");
 assert.equal(reclassifiedSupporting.rows[0].extraction_error, null);
 
+await db.exec("set role service_role");
+await db.query(
+  "select public.set_foreign_trade_document_extraction($1,'extracting','{}'::jsonb,null,'[]'::jsonb,null,null,$2)",
+  [settlementDocument.rows[0].id, "request-before-cancel"],
+);
+await db.exec("reset role");
+await db.query("select public.cancel_foreign_trade_document_extraction($1)", [settlementDocument.rows[0].id]);
+const cancelledDocument = await db.query(
+  "select parse_status,extraction_request_id,extraction_error from public.foreign_trade_documents where id=$1",
+  [settlementDocument.rows[0].id],
+);
+assert.equal(cancelledDocument.rows[0].parse_status, "failed");
+assert.match(cancelledDocument.rows[0].extraction_request_id, /^cancelled:/);
+assert.match(cancelledDocument.rows[0].extraction_error, /detenido/i);
+
+await db.exec("set role service_role");
+await assert.rejects(
+  db.query(
+    "select public.set_foreign_trade_document_extraction($1,'review_required',$2::jsonb,$3,$4::jsonb,null,'gpt-test',$5)",
+    [settlementDocument.rows[0].id, JSON.stringify(preparedExtraction.extraction), preparedExtraction.confidence, JSON.stringify(preparedExtraction.warnings), "request-before-cancel"],
+  ),
+  /foreign_trade_document_request_stale_or_unavailable/,
+  "una respuesta tardía no debe revivir un análisis cancelado",
+);
+await db.exec("reset role");
+await db.query("select public.update_foreign_trade_document_type($1,$2)", [settlementDocument.rows[0].id, "agency_settlement"]);
+
+const removableDocument = await db.query("select public.register_foreign_trade_document($1::jsonb) as id", [JSON.stringify({
+  operation_id: operationId,
+  supplier_id: supplier.rows[0].id,
+  document_type: "other",
+  original_file_name: "documento-reemplazable.pdf",
+  storage_path: `${operationId}/documento-reemplazable.pdf`,
+  mime_type: "application/pdf",
+  file_size: "1024",
+  file_hash: "d".repeat(64),
+})]);
+const deletedDocument = await db.query(
+  "select public.delete_foreign_trade_document($1) as result",
+  [removableDocument.rows[0].id],
+);
+assert.equal(deletedDocument.rows[0].result.storage_path, `${operationId}/documento-reemplazable.pdf`);
+assert.equal(
+  (await db.query("select count(*)::integer as count from public.foreign_trade_documents where id=$1", [removableDocument.rows[0].id])).rows[0].count,
+  0,
+);
+await assert.rejects(
+  db.query("select public.delete_foreign_trade_document($1)", [documentId]),
+  /foreign_trade_document_not_found_or_confirmed/,
+  "un documento confirmado no puede eliminarse",
+);
+
 const reconciliationLines = [
   { line_type: "agency_fee", cost_category: "customs_agency", concept: "Factura agencia", provider_name: "Agencia de Aduana", document_number: "23177", source_page: 1, provision_total_clp: 655322, actual_net_clp: 402233, actual_vat_clp: 76424, actual_total_clp: 478657, recoverable_tax: true, include_in_costing: true },
   { line_type: "operating_expense", cost_category: "chile_port", concept: "Servicios portuarios AGUNSA", provider_name: "AGUNSA", document_number: "2082486", source_page: 2, provision_total_clp: 528544, actual_net_clp: 444155, actual_vat_clp: 84389, actual_total_clp: 528544, recoverable_tax: true, include_in_costing: true },

@@ -8694,6 +8694,25 @@ th {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
+.foreign-trade-upload-action-buttons {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.ghost-button.danger {
+  border-color: #e4b8af;
+  color: #a23f2f;
+}
+
+.ghost-button.danger:hover,
+.ghost-button.danger:focus-visible {
+  background: #fbe9e5;
+  border-color: #cf8475;
+}
+
 .foreign-trade-upload-actions label {
   display: grid;
   gap: 5px;
@@ -8738,6 +8757,30 @@ th {
 .foreign-trade-document-type-editor select {
   min-height: 32px;
   padding: 4px 7px;
+}
+
+.foreign-trade-document-items .foreign-trade-row-actions {
+  flex-wrap: wrap;
+  max-width: 310px;
+}
+
+.foreign-trade-replace-file {
+  cursor: pointer;
+  position: relative;
+}
+
+.foreign-trade-replace-file.disabled {
+  cursor: not-allowed;
+  opacity: .55;
+  pointer-events: none;
+}
+
+.foreign-trade-replace-file input {
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 1px;
 }
 
 .foreign-trade-document-items {
@@ -9033,7 +9076,14 @@ th {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .foreign-trade-upload-action-buttons {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-upload-action-buttons button,
   .foreign-trade-upload-actions .primary-button {
+    justify-content: center;
     width: 100%;
   }
 

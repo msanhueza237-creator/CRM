@@ -1,7 +1,8 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
+  CircleStop,
   Download,
   Eye,
   FileSpreadsheet,
@@ -12,10 +13,13 @@ import {
   RefreshCw,
   ScanText,
   ShieldCheck,
+  Trash2,
   X,
 } from "lucide-react";
 import {
+  cancelForeignTradeDocumentExtraction,
   confirmForeignTradeDocument,
+  deleteForeignTradeDocument,
   extractForeignTradeDocument,
   getForeignTradeDocumentUrl,
   getForeignTradeDocuments,
@@ -79,6 +83,10 @@ export function ForeignTradeDocumentsPanel({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [reviewDocument, setReviewDocument] = useState<ForeignTradeDocument | null>(null);
+  const [extractingIds, setExtractingIds] = useState<Set<string>>(() => new Set());
+  const extractionControllers = useRef(new Map<string, AbortController>());
+  const stopBatchRequested = useRef(false);
+  const activeUploadDocumentId = useRef("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,15 +105,41 @@ export function ForeignTradeDocumentsPanel({
 
   useEffect(() => { void load(); }, [load]);
 
+  useEffect(() => () => {
+    extractionControllers.current.forEach((controller) => controller.abort());
+    extractionControllers.current.clear();
+  }, []);
+
   useEffect(() => {
     if (!documents.some((document) => ["queued", "extracting"].includes(document.parse_status))) return;
     const timer = window.setInterval(() => void load(), 4000);
     return () => window.clearInterval(timer);
   }, [documents, load]);
 
+  async function runExtraction(documentId: string) {
+    const previous = extractionControllers.current.get(documentId);
+    previous?.abort();
+    const controller = new AbortController();
+    extractionControllers.current.set(documentId, controller);
+    setExtractingIds((current) => new Set(current).add(documentId));
+    try {
+      return await extractForeignTradeDocument(documentId, controller.signal);
+    } finally {
+      if (extractionControllers.current.get(documentId) === controller) {
+        extractionControllers.current.delete(documentId);
+        setExtractingIds((current) => {
+          const next = new Set(current);
+          next.delete(documentId);
+          return next;
+        });
+      }
+    }
+  }
+
   async function upload(event: FormEvent) {
     event.preventDefault();
     if (!pendingFiles.length) return;
+    stopBatchRequested.current = false;
     setBusyId("upload"); setError(""); setMessage("Guardando el original en el repositorio privado...");
     const uploadedKeys = new Set<string>();
     const uploadErrors: string[] = [];
@@ -114,6 +148,7 @@ export function ForeignTradeDocumentsPanel({
     let originalsOnly = 0;
     try {
       for (let index = 0; index < pendingFiles.length; index += 1) {
+        if (stopBatchRequested.current) break;
         const pending = pendingFiles[index];
         setMessage(`Procesando documento ${index + 1} de ${pendingFiles.length}: ${pending.file.name}`);
         let documentId = "";
@@ -124,22 +159,33 @@ export function ForeignTradeDocumentsPanel({
             documentType: pending.documentType,
             file: pending.file,
           });
+          activeUploadDocumentId.current = documentId;
           uploadedKeys.add(pending.key);
+          await load();
         } catch (uploadError) {
           uploadErrors.push(`${pending.file.name}: ${humanizeDocumentError(uploadError)}`);
           continue;
         }
 
+        if (stopBatchRequested.current) {
+          await cancelForeignTradeDocumentExtraction(documentId).catch(() => undefined);
+          originalsOnly += 1;
+          break;
+        }
         if (!extractableDocumentTypes.has(pending.documentType)) {
           originalsOnly += 1;
+          activeUploadDocumentId.current = "";
           continue;
         }
         try {
-          await extractForeignTradeDocument(documentId);
+          await runExtraction(documentId);
           extracted += 1;
         } catch (extractionError) {
-          extractionErrors.push(`${pending.file.name}: ${humanizeDocumentError(extractionError)}`);
+          if (!isAbortError(extractionError)) extractionErrors.push(`${pending.file.name}: ${humanizeDocumentError(extractionError)}`);
+        } finally {
+          activeUploadDocumentId.current = "";
         }
+        if (stopBatchRequested.current) break;
       }
       setPendingFiles((current) => current.filter((item) => !uploadedKeys.has(item.key)));
       await load();
@@ -148,9 +194,29 @@ export function ForeignTradeDocumentsPanel({
         extracted ? `${extracted} extracción(es) lista(s) para revisar` : "",
         originalsOnly ? `${originalsOnly} documento(s) conservado(s) como respaldo` : "",
       ].filter(Boolean).join(" · ");
-      setMessage(summary || "No se cargaron documentos.");
+      setMessage(stopBatchRequested.current
+        ? `${summary || "Carga detenida"}. No se procesarán más archivos.`
+        : summary || "No se cargaron documentos.");
       setError([...uploadErrors, ...extractionErrors].join(" "));
-    } finally { setBusyId(""); }
+    } finally {
+      activeUploadDocumentId.current = "";
+      stopBatchRequested.current = false;
+      setBusyId("");
+    }
+  }
+
+  async function stopUpload() {
+    stopBatchRequested.current = true;
+    extractionControllers.current.forEach((controller) => controller.abort());
+    setMessage("Deteniendo la carga después de conservar el original actual...");
+    const documentId = activeUploadDocumentId.current;
+    if (!documentId) return;
+    try {
+      await cancelForeignTradeDocumentExtraction(documentId);
+      await load();
+    } catch (cancelError) {
+      setError(humanizeDocumentError(cancelError));
+    }
   }
 
   function selectFiles(fileList: FileList | null) {
@@ -174,13 +240,27 @@ export function ForeignTradeDocumentsPanel({
 
   async function retry(document: ForeignTradeDocument) {
     setBusyId(document.id); setError(""); setMessage("Reintentando la extracción...");
+    setDocuments((current) => current.map((item) => item.id === document.id ? { ...item, parse_status: "extracting" } : item));
     try {
-      await extractForeignTradeDocument(document.id);
+      await runExtraction(document.id);
       await load();
       setMessage("Extracción lista para revisión.");
     } catch (retryError) {
       await load();
-      setError(humanizeDocumentError(retryError));
+      if (!isAbortError(retryError)) setError(humanizeDocumentError(retryError));
+    } finally { setBusyId(""); }
+  }
+
+  async function stopExtraction(document: ForeignTradeDocument) {
+    extractionControllers.current.get(document.id)?.abort();
+    setBusyId(`cancel:${document.id}`); setError(""); setMessage("Deteniendo el análisis...");
+    try {
+      await cancelForeignTradeDocumentExtraction(document.id);
+      await load();
+      setMessage("Análisis detenido. Puedes cambiar la clasificación, reemplazar el archivo o eliminarlo.");
+    } catch (cancelError) {
+      await load();
+      setError(humanizeDocumentError(cancelError));
     } finally { setBusyId(""); }
   }
 
@@ -188,6 +268,10 @@ export function ForeignTradeDocumentsPanel({
     if (nextType === document.document_type) return;
     setBusyId(`type:${document.id}`); setError(""); setMessage("");
     try {
+      if (["queued", "extracting"].includes(document.parse_status) || extractingIds.has(document.id)) {
+        extractionControllers.current.get(document.id)?.abort();
+        await cancelForeignTradeDocumentExtraction(document.id);
+      }
       await updateForeignTradeDocumentType(document.id, nextType);
       await load();
       setMessage(extractableDocumentTypes.has(nextType)
@@ -196,6 +280,55 @@ export function ForeignTradeDocumentsPanel({
     } catch (updateError) {
       await load();
       setError(humanizeDocumentError(updateError));
+    } finally { setBusyId(""); }
+  }
+
+  async function removeDocument(document: ForeignTradeDocument) {
+    if (!window.confirm(`¿Eliminar definitivamente ${document.original_file_name}? Esta acción no se puede deshacer.`)) return;
+    extractionControllers.current.get(document.id)?.abort();
+    setBusyId(`delete:${document.id}`); setError(""); setMessage("");
+    try {
+      await deleteForeignTradeDocument(document.id);
+      await load();
+      setMessage("Documento eliminado junto con su archivo privado.");
+    } catch (deleteError) {
+      await load();
+      setError(humanizeDocumentError(deleteError));
+    } finally { setBusyId(""); }
+  }
+
+  async function replaceDocument(document: ForeignTradeDocument, replacement: File | null) {
+    if (!replacement) return;
+    if (!window.confirm(`¿Reemplazar ${document.original_file_name} por ${replacement.name}? El original anterior se eliminará cuando el nuevo quede guardado.`)) return;
+    extractionControllers.current.get(document.id)?.abort();
+    setBusyId(`replace:${document.id}`); setError(""); setMessage("Guardando el archivo de reemplazo...");
+    let replacementId = "";
+    try {
+      if (["queued", "extracting"].includes(document.parse_status) || extractingIds.has(document.id)) {
+        await cancelForeignTradeDocumentExtraction(document.id);
+      }
+      replacementId = await uploadForeignTradeDocument({
+        operationId,
+        supplierId: document.supplier_id || supplierId,
+        documentType: document.document_type,
+        file: replacement,
+      });
+      await deleteForeignTradeDocument(document.id);
+      await load();
+      if (extractableDocumentTypes.has(document.document_type)) {
+        setMessage("Archivo reemplazado. Analizando el nuevo original...");
+        await runExtraction(replacementId);
+        await load();
+        setMessage("Archivo reemplazado y extracción lista para revisión.");
+      } else {
+        setMessage("Archivo reemplazado correctamente.");
+      }
+    } catch (replaceError) {
+      await load();
+      if (!isAbortError(replaceError)) {
+        const prefix = replacementId ? "El nuevo original quedó guardado. " : "";
+        setError(prefix + humanizeDocumentError(replaceError));
+      }
     } finally { setBusyId(""); }
   }
 
@@ -233,7 +366,10 @@ export function ForeignTradeDocumentsPanel({
         </article>)}</div> : null}
         <div className="foreign-trade-upload-actions">
           <label><span>Tipo predeterminado</span><select value={documentType} disabled={Boolean(busyId)} onChange={(event) => { const nextType = event.target.value as ForeignTradeDocumentType; setDocumentType(nextType); setPendingFiles((current) => current.map((item) => ({ ...item, documentType: nextType }))); }}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-          <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
+          <div className="foreign-trade-upload-action-buttons">
+            {busyId === "upload" ? <button className="ghost-button danger" type="button" onClick={() => void stopUpload()}><CircleStop size={17} /> Detener carga</button> : null}
+            <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
+          </div>
         </div>
         <p className="foreign-trade-document-type-help">Usa <strong>Rendición final de agencia</strong> para paquetes de facturas y gastos. Usa <strong>Proforma</strong> solo cuando el documento contiene productos que deben importarse al catálogo de la operación.</p>
         {message ? <div className="notice-banner success"><CheckCircle2 size={17} /> {message}</div> : null}
@@ -245,23 +381,30 @@ export function ForeignTradeDocumentsPanel({
         {loading && !documents.length ? <div className="foreign-trade-loading compact"><LoaderCircle className="spin" size={22} /><span>Cargando documentos...</span></div> : null}
         {!loading && !documents.length ? <div className="empty-state"><FileText size={27} /><strong>Sin documentos</strong><span>Carga la primera proforma para iniciar la revisión asistida.</span></div> : null}
         <div className="foreign-trade-document-items">
-          {documents.map((document) => (
-            <article key={document.id}>
+          {documents.map((document) => {
+            const isExtracting = ["queued", "extracting"].includes(document.parse_status) || extractingIds.has(document.id);
+            const replacing = busyId === `replace:${document.id}`;
+            const deleting = busyId === `delete:${document.id}`;
+            const cancelling = busyId === `cancel:${document.id}`;
+            return <article key={document.id}>
               <div className="foreign-trade-document-icon">{document.mime_type === "application/pdf" ? <FileText /> : <FileSpreadsheet />}</div>
               <div className="foreign-trade-document-info">
                 <strong>{document.original_file_name}</strong>
                 <span>{documentTypeLabel(document.document_type)} · {formatFileSize(document.file_size)} · {formatDateTime(document.created_at)}</span>
-                {document.parse_status !== "confirmed" ? <label className="foreign-trade-document-type-editor"><span>Clasificación</span><select value={document.document_type} disabled={busyId === `type:${document.id}`} onChange={(event) => void reclassify(document, event.target.value as ForeignTradeDocumentType)}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label> : null}
+                {document.parse_status !== "confirmed" ? <label className="foreign-trade-document-type-editor"><span>Clasificación</span><select value={document.document_type} disabled={busyId === `type:${document.id}` || replacing || deleting || cancelling} onChange={(event) => void reclassify(document, event.target.value as ForeignTradeDocumentType)}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label> : null}
                 {document.extraction_error ? <small>{document.extraction_error}</small> : null}
               </div>
-              <DocumentStatus document={document} />
+              <DocumentStatus document={isExtracting ? { ...document, parse_status: "extracting" } : document} />
               <div className="foreign-trade-row-actions">
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
+                {document.parse_status !== "confirmed" ? <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title="Cambiar el archivo conservando su clasificación"><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label> : null}
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
-                {document.parse_status === "failed" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Reintentar</button> : null}
+                {isExtracting ? <button className="ghost-button danger" type="button" disabled={cancelling} onClick={() => void stopExtraction(document)}>{cancelling ? <LoaderCircle className="spin" size={16} /> : <CircleStop size={16} />} Detener</button> : null}
+                {!isExtracting && document.parse_status === "failed" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Reintentar</button> : null}
+                {document.parse_status !== "confirmed" ? <button className="icon-button danger" type="button" title="Eliminar documento" disabled={deleting || replacing} onClick={() => void removeDocument(document)}>{deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}</button> : null}
               </div>
-            </article>
-          ))}
+            </article>;
+          })}
         </div>
       </section>
 
@@ -381,12 +524,18 @@ function inferDocumentType(fileName: string, fallback: ForeignTradeDocumentType)
 function formatFileSize(bytes: number) { return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`; }
 function formatDateTime(value: string) { return new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
 function formatNumber(value: number) { return new Intl.NumberFormat("es-CL", { maximumFractionDigits: 6 }).format(value); }
+function isAbortError(error: unknown) { return error instanceof DOMException && error.name === "AbortError"; }
 function humanizeDocumentError(error: unknown) {
-  const message = error instanceof Error ? error.message : "No se pudo procesar el documento.";
+  const details = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  const message = error instanceof Error
+    ? error.message
+    : String(details.message || details.details || details.hint || "No se pudo procesar el documento.");
   if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase.";
   if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
-  if (/update_foreign_trade_document_type|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase5_reconciliation.sql.";
+  if (/update_foreign_trade_document_type|cancel_foreign_trade_document_extraction|delete_foreign_trade_document|schema cache|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase5_reconciliation.sql.";
+  if (/request_stale|detenido por el usuario/i.test(message)) return "El análisis fue detenido y su respuesta anterior quedó descartada.";
   if (message.includes("already") || message.includes("not_ready")) return "El documento ya fue confirmado o todavía no está listo para revisión.";
+  if (message.includes("not_found_or_confirmed")) return "El documento ya no existe o fue confirmado y no puede modificarse.";
   if (message.includes("invalid_review") || message.includes("invalid_product")) return "Revisa los datos marcados antes de confirmar.";
   return message;
 }

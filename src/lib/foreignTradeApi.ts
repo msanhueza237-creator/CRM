@@ -390,13 +390,13 @@ export async function uploadForeignTradeDocument(input: {
   }
 }
 
-export async function extractForeignTradeDocument(documentId: string) {
+export async function extractForeignTradeDocument(documentId: string, signal?: AbortSignal) {
   return foreignTradeDocumentRequest<{
     documentId: string;
     status: "review_required";
     extraction: ForeignTradeDocumentExtraction;
     confidence: number | null;
-  }>("extract", { document_id: documentId });
+  }>("extract", { document_id: documentId }, signal);
 }
 
 export async function updateForeignTradeDocumentType(documentId: string, documentType: ForeignTradeDocumentType) {
@@ -406,6 +406,30 @@ export async function updateForeignTradeDocumentType(documentId: string, documen
     p_document_type: documentType,
   });
   if (error) throw error;
+}
+
+export async function cancelForeignTradeDocumentExtraction(documentId: string) {
+  requireSupabase();
+  const { error } = await supabase!.rpc("cancel_foreign_trade_document_extraction", {
+    p_document_id: documentId,
+  });
+  if (error) throw error;
+}
+
+export async function deleteForeignTradeDocument(documentId: string) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("delete_foreign_trade_document", {
+    p_document_id: documentId,
+  });
+  if (error) throw error;
+  const deleted = data as { storage_bucket?: string; storage_path?: string } | null;
+  if (!deleted?.storage_bucket || !deleted.storage_path) return;
+  const { error: storageError } = await supabase!.storage
+    .from(deleted.storage_bucket)
+    .remove([deleted.storage_path]);
+  if (storageError) {
+    throw new Error("El documento se eliminó del CRM, pero no se pudo limpiar el archivo privado de Storage.");
+  }
 }
 
 export async function confirmForeignTradeDocument(documentId: string, review: ForeignTradeDocumentExtraction) {
@@ -427,7 +451,7 @@ export async function getForeignTradeDocumentUrl(document: ForeignTradeDocument)
   return data.signedUrl;
 }
 
-async function foreignTradeDocumentRequest<T>(route: string, body: Record<string, unknown>): Promise<T> {
+async function foreignTradeDocumentRequest<T>(route: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   requireSupabase();
   const { data } = await supabase!.auth.getSession();
   const token = data.session?.access_token;
@@ -438,8 +462,10 @@ async function foreignTradeDocumentRequest<T>(route: string, body: Record<string
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: JSON.stringify(body),
+      signal,
     });
-  } catch {
+  } catch (requestError) {
+    if (requestError instanceof DOMException && requestError.name === "AbortError") throw requestError;
     throw new Error("No se pudo contactar el servicio de documentos.");
   }
   const result = await response.json().catch(() => ({}));

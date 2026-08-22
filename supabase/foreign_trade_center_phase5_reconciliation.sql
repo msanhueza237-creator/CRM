@@ -138,6 +138,119 @@ begin
 end
 $$;
 
+-- Evita que una respuesta tardía de una extracción cancelada o reemplazada
+-- vuelva a modificar el documento. El request id funciona como token de versión.
+create or replace function public.set_foreign_trade_document_extraction(
+  p_document_id uuid,
+  p_status text,
+  p_payload jsonb default '{}'::jsonb,
+  p_confidence numeric default null,
+  p_warnings jsonb default '[]'::jsonb,
+  p_error text default null,
+  p_model text default null,
+  p_request_id text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if p_status not in ('extracting', 'review_required', 'failed') then
+    raise exception 'foreign_trade_invalid_parse_status';
+  end if;
+  if jsonb_typeof(coalesce(p_payload, '{}'::jsonb)) <> 'object'
+     or jsonb_typeof(coalesce(p_warnings, '[]'::jsonb)) <> 'array' then
+    raise exception 'foreign_trade_invalid_extraction_payload';
+  end if;
+  if p_confidence is not null and (p_confidence < 0 or p_confidence > 1) then
+    raise exception 'foreign_trade_invalid_extraction_confidence';
+  end if;
+  if p_status = 'review_required' and (
+    jsonb_typeof(p_payload->'general') <> 'object'
+    or jsonb_typeof(p_payload->'lines') <> 'array'
+  ) then
+    raise exception 'foreign_trade_incomplete_extraction';
+  end if;
+
+  if p_status = 'extracting' then
+    update public.foreign_trade_documents
+    set parse_status = 'extracting',
+        extraction_request_id = p_request_id,
+        extraction_started_at = now(),
+        extraction_completed_at = null,
+        extraction_error = null
+    where id = p_document_id and parse_status <> 'confirmed';
+  else
+    update public.foreign_trade_documents
+    set parse_status = p_status,
+        extraction_result = case when p_status = 'review_required' then p_payload else extraction_result end,
+        extraction_confidence = case when p_status = 'review_required' then p_confidence else extraction_confidence end,
+        review_warnings = case when p_status = 'review_required' then p_warnings else review_warnings end,
+        extraction_model = coalesce(p_model, extraction_model),
+        extraction_completed_at = now(),
+        extraction_error = case when p_status = 'failed' then left(coalesce(p_error, 'Error de extraccion'), 2000) else null end
+    where id = p_document_id
+      and parse_status <> 'confirmed'
+      and (
+        extraction_request_id = p_request_id
+        or (extraction_request_id is null and parse_status = 'queued')
+      );
+  end if;
+
+  if not found then raise exception 'foreign_trade_document_request_stale_or_unavailable'; end if;
+end
+$$;
+
+create or replace function public.cancel_foreign_trade_document_extraction(p_document_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if not public.foreign_trade_has_permission('foreign_trade.documents.manage') then
+    raise exception 'foreign_trade_forbidden' using errcode = '42501';
+  end if;
+
+  update public.foreign_trade_documents
+  set parse_status = 'failed',
+      extraction_request_id = 'cancelled:' || gen_random_uuid()::text,
+      extraction_completed_at = now(),
+      extraction_error = 'Analisis detenido por el usuario.'
+  where id = p_document_id and parse_status <> 'confirmed';
+
+  if not found then raise exception 'foreign_trade_document_not_found_or_confirmed'; end if;
+end
+$$;
+
+create or replace function public.delete_foreign_trade_document(p_document_id uuid)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_document record;
+begin
+  if not public.foreign_trade_has_permission('foreign_trade.documents.manage') then
+    raise exception 'foreign_trade_forbidden' using errcode = '42501';
+  end if;
+
+  delete from public.foreign_trade_documents
+  where id = p_document_id and parse_status <> 'confirmed'
+  returning storage_bucket, storage_path, original_file_name
+  into v_document;
+
+  if not found then raise exception 'foreign_trade_document_not_found_or_confirmed'; end if;
+  return jsonb_build_object(
+    'storage_bucket', v_document.storage_bucket,
+    'storage_path', v_document.storage_path,
+    'original_file_name', v_document.original_file_name
+  );
+end
+$$;
+
 create table if not exists public.foreign_trade_expense_reconciliations (
   id uuid primary key default gen_random_uuid(),
   operation_id uuid not null references public.import_shipments(id) on delete cascade,
@@ -782,11 +895,15 @@ revoke all on function public.save_foreign_trade_expense_reconciliation(jsonb) f
 revoke all on function public.apply_foreign_trade_expense_reconciliation(uuid) from public;
 revoke all on function public.register_foreign_trade_document(jsonb) from public;
 revoke all on function public.update_foreign_trade_document_type(uuid,text) from public;
+revoke all on function public.cancel_foreign_trade_document_extraction(uuid) from public;
+revoke all on function public.delete_foreign_trade_document(uuid) from public;
 grant execute on function public.foreign_trade_expense_reconciliation_list(uuid) to authenticated, service_role;
 grant execute on function public.save_foreign_trade_expense_reconciliation(jsonb) to authenticated, service_role;
 grant execute on function public.apply_foreign_trade_expense_reconciliation(uuid) to authenticated, service_role;
 grant execute on function public.register_foreign_trade_document(jsonb) to authenticated, service_role;
 grant execute on function public.update_foreign_trade_document_type(uuid,text) to authenticated, service_role;
+grant execute on function public.cancel_foreign_trade_document_extraction(uuid) to authenticated, service_role;
+grant execute on function public.delete_foreign_trade_document(uuid) to authenticated, service_role;
 
 grant select on public.foreign_trade_expense_reconciliations, public.foreign_trade_expense_reconciliation_lines to authenticated;
 grant select, insert, update, delete on public.foreign_trade_expense_reconciliations, public.foreign_trade_expense_reconciliation_lines to service_role;

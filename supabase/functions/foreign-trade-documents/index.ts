@@ -25,7 +25,7 @@ Deno.serve(async (req) => {
     if (route === "extract" && req.method === "POST") {
       const payload = await readJson(req);
       const documentId = requiredUuid(payload.document_id, "documento");
-      return json(await extractDocument(rest, documentId, requestId), 200, req);
+      return json(await extractDocument(rest, documentId, requestId, req.signal), 200, req);
     }
     throw new HttpError(404, "Ruta no encontrada.");
   } catch (error) {
@@ -36,7 +36,7 @@ Deno.serve(async (req) => {
   }
 });
 
-async function extractDocument(rest: RestClient, documentId: string, requestId: string) {
+async function extractDocument(rest: RestClient, documentId: string, requestId: string, requestSignal: AbortSignal) {
   const documents = await selectRows(rest,
     `foreign_trade_documents?select=id,operation_id,storage_bucket,storage_path,original_file_name,mime_type,file_size,parse_status&id=eq.${documentId}&limit=1`,
   );
@@ -58,6 +58,7 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
       String(document.original_file_name),
       mimeType,
       requestId,
+      requestSignal,
     );
     const prepared = prepareExtraction(openAiResult.data);
     await setExtraction(
@@ -69,13 +70,14 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
       prepared.warnings,
       null,
       openAiResult.model,
-      openAiResult.requestId || requestId,
+      requestId,
     );
     console.info("[foreign-trade-documents] extraction ready", {
       requestId,
       documentId,
       lines: prepared.extraction.lines.length,
       warnings: prepared.warnings.length,
+      openAiRequestId: openAiResult.requestId || null,
     });
     return { documentId, status: "review_required", ...prepared, model: openAiResult.model, requestId };
   } catch (error) {
@@ -85,7 +87,7 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
   }
 }
 
-async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeType: string, requestId: string) {
+async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeType: string, requestId: string, requestSignal: AbortSignal) {
   const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
   if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
   const model = Deno.env.get("OPENAI_DOCUMENT_MODEL")?.trim()
@@ -94,7 +96,11 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   const timeoutMs = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
   const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const abortFromRequest = () => controller.abort();
+  if (requestSignal.aborted) controller.abort();
+  else requestSignal.addEventListener("abort", abortFromRequest, { once: true });
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
   console.info("[foreign-trade-documents] OpenAI extraction started", {
     requestId,
     filename,
@@ -147,11 +153,13 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
+      if (!timedOut) throw new HttpError(499, "Análisis detenido por el usuario.");
       throw new HttpError(504, `La extracción excedió ${Math.round(timeoutMs / 1000)} segundos. El original quedó guardado y puedes reintentar sin subirlo nuevamente.`);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    requestSignal.removeEventListener("abort", abortFromRequest);
   }
 }
 
