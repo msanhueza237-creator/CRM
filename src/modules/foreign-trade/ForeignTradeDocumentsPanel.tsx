@@ -58,7 +58,7 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   "packing_list",
 ]);
 
-const currentExtractionVersion = "complete_lines_v2";
+const currentExtractionVersion = "pdf_skill_v3";
 
 type PendingDocumentUpload = {
   key: string;
@@ -512,7 +512,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
 
 function ReviewLineCard({ line, catalog, onChange }: { line: ForeignTradeExtractedLine; catalog: ForeignTradeCatalogProduct[]; onChange: (patch: Partial<ForeignTradeExtractedLine>) => void }) {
   return <article className={!line.include ? "excluded" : ""}>
-    <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Línea {line.source_index}</span></label><ConfidenceBadge value={line.confidence} /></header>
+    <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Línea {line.source_index}{line.source_row_label ? ` · ref. ${line.source_row_label}` : ""}{line.source_page ? ` · pág. ${line.source_page}` : ""}</span></label><ConfidenceBadge value={line.confidence} /></header>
     <div className="foreign-trade-form-grid">
       <label className="wide-field"><span>Producto</span><input value={line.product_name} onChange={(event) => onChange({ product_name: event.target.value })} /></label>
       <label className="wide-field"><span>Vincular catálogo CRM</span><select value={line.content_product_id || ""} onChange={(event) => { const selected = catalog.find((product) => product.id === event.target.value); onChange({ content_product_id: event.target.value || null, sku: selected?.sku || line.sku, product_name: selected?.name || line.product_name }); }}><option value="">Producto temporal / coincidencia automática por SKU</option>{catalog.map((product) => <option key={product.id} value={product.id}>{product.sku ? `${product.sku} · ` : ""}{product.name}</option>)}</select></label>

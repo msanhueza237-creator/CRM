@@ -8,6 +8,12 @@ import {
   type ExtractionRange,
   type JsonRecord,
 } from "./extraction-logic.ts";
+import {
+  FOREIGN_TRADE_PDF_SKILL_VERSION,
+  assessPdfExtractionQuality,
+  createForeignTradePdfReadingSkill,
+  type ForeignTradePdfReadingSkill,
+} from "./pdf-reading-skill.ts";
 
 type RestClient = { url: string; anonKey: string; serviceRoleKey: string };
 type Profile = { id: string; role: string; active: boolean };
@@ -24,7 +30,7 @@ Deno.serve(async (req) => {
   try {
     const rest = getRestClient();
     const route = getRoute(req.url);
-    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, requestId }, 200, req);
+    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
 
     const user = await authenticateRequest(req, rest);
     const profile = await getProfile(rest, user.id);
@@ -47,7 +53,7 @@ Deno.serve(async (req) => {
 
 async function extractDocument(rest: RestClient, documentId: string, requestId: string, requestSignal: AbortSignal) {
   const documents = await selectRows(rest,
-    `foreign_trade_documents?select=id,operation_id,storage_bucket,storage_path,original_file_name,mime_type,file_size,parse_status&id=eq.${documentId}&limit=1`,
+    `foreign_trade_documents?select=id,operation_id,document_type,storage_bucket,storage_path,original_file_name,mime_type,file_size,parse_status&id=eq.${documentId}&limit=1`,
   );
   const document = documents[0];
   if (!document) throw new HttpError(404, "El documento no existe.");
@@ -66,6 +72,7 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
       bytes,
       String(document.original_file_name),
       mimeType,
+      String(document.document_type || "other"),
       requestId,
       requestSignal,
     );
@@ -96,7 +103,7 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
   }
 }
 
-async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeType: string, requestId: string, requestSignal: AbortSignal) {
+async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeType: string, documentType: string, requestId: string, requestSignal: AbortSignal) {
   const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
   if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
   const model = Deno.env.get("OPENAI_DOCUMENT_MODEL")?.trim()
@@ -106,28 +113,32 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
   const fileData = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
   const common = { apiKey, model, filename, mimeType, fileData, requestId, requestSignal, timeoutMs };
+  const skill = createForeignTradePdfReadingSkill(documentType);
   console.info("[foreign-trade-documents] OpenAI extraction started", {
     requestId,
     filename,
     fileSize: bytes.byteLength,
     timeoutMs,
     model,
+    documentType,
+    pdfSkillVersion: skill.version,
   });
 
   const headerResult = await callOpenAiStructuredExtraction({
     ...common,
     stage: "header",
-    prompt: headerExtractionPrompt,
+    prompt: skill.headerPrompt,
     schemaName: "foreign_trade_document_header",
     schema: headerExtractionSchema,
     maxTokens: Math.min(maxTokens, 5_000),
   });
   const headerTotals = asObject(asObject(headerResult.data).document_totals);
   const expectedLineCount = Number(headerTotals.line_count || 0);
-  const ranges = buildExtractionRanges(expectedLineCount);
-  let batches = await mapWithConcurrency(ranges, 2, async (range) => extractLineRange(common, range, maxTokens, false));
+  const ranges = buildExtractionRanges(expectedLineCount, 30);
+  let batches = await mapWithConcurrency(ranges, 2, async (range) => extractLineRange(common, skill, range, maxTokens, "extract"));
+  let requestBatches = [...batches];
   let merged = mergeExtractionPasses(headerResult.data, batches);
-  const recoveryRanges = missingExtractionRanges(expectedLineCount, merged.lines);
+  const recoveryRanges = missingExtractionRanges(expectedLineCount, merged.lines, 30);
   if (recoveryRanges.length) {
     console.warn("[foreign-trade-documents] incomplete first pass, recovering ranges", {
       requestId,
@@ -138,24 +149,52 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     const recovered = await mapWithConcurrency(
       recoveryRanges,
       2,
-      async (range) => extractLineRange(common, range, maxTokens, true),
+      async (range) => extractLineRange(common, skill, range, maxTokens, "recover"),
     );
     batches = [...batches, ...recovered];
+    requestBatches = [...requestBatches, ...recovered];
     merged = mergeExtractionPasses(headerResult.data, batches);
   }
 
-  if (expectedLineCount > 0 && merged.lines.length / expectedLineCount < 0.8) {
+  let quality = assessPdfExtractionQuality(merged);
+  if (quality.requiresVerification && quality.verificationRanges.length) {
+    console.warn("[foreign-trade-documents] quality verification started", {
+      requestId,
+      score: quality.score,
+      warnings: quality.warnings,
+    });
+    const verifiedBatches = await mapWithConcurrency(
+      quality.verificationRanges,
+      2,
+      async (range) => extractLineRange(common, skill, range, maxTokens, "verify"),
+    );
+    requestBatches = [...requestBatches, ...verifiedBatches];
+    const verifiedMerged = mergeExtractionPasses(headerResult.data, verifiedBatches);
+    const verifiedQuality = assessPdfExtractionQuality(verifiedMerged);
+    if (verifiedMerged.lines.length >= merged.lines.length && verifiedQuality.score >= quality.score) {
+      merged = verifiedMerged;
+      quality = verifiedQuality;
+    }
+  }
+
+  const extractionWithSkill = {
+    ...merged,
+    pdf_skill_version: skill.version,
+    warnings: [...new Set([...merged.warnings, ...quality.warnings])].slice(0, 30),
+  };
+
+  if (quality.critical) {
     throw new HttpError(
       502,
-      `La extracción quedó incompleta: se reconocieron ${merged.lines.length} de ${expectedLineCount} productos. Reintenta; el original permanece guardado.`,
+      `La extracción quedó incompleta: se reconocieron ${quality.extractedLineCount} de ${quality.expectedLineCount} productos. Reintenta; el original permanece guardado.`,
     );
   }
   return {
     model,
-    requestId: [headerResult.requestId, ...batches.map((batch) => String(asObject(batch.data)._request_id || ""))]
+    requestId: [headerResult.requestId, ...requestBatches.map((batch) => String(asObject(batch.data)._request_id || ""))]
       .filter(Boolean)
       .join(","),
-    data: merged,
+    data: extractionWithSkill,
   };
 }
 
@@ -177,14 +216,15 @@ type StructuredExtractionInput = {
 
 async function extractLineRange(
   common: Omit<StructuredExtractionInput, "maxTokens" | "stage" | "prompt" | "schemaName" | "schema">,
+  skill: ForeignTradePdfReadingSkill,
   range: ExtractionRange,
   maxTokens: number,
-  recovery: boolean,
+  mode: "extract" | "recover" | "verify",
 ): Promise<ExtractionLineBatch> {
   const result = await callOpenAiStructuredExtraction({
     ...common,
-    stage: `${recovery ? "recovery" : "lines"}-${range.start}-${range.end}`,
-    prompt: lineExtractionPrompt(range, recovery),
+    stage: `${mode}-${range.start}-${range.end}`,
+    prompt: skill.linePrompt(range, mode),
     schemaName: "foreign_trade_document_lines",
     schema: lineExtractionSchema,
     maxTokens,
@@ -256,36 +296,6 @@ async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) 
   }
 }
 
-const headerExtractionPrompt = `Analiza todas las páginas u hojas de este documento de comercio exterior.
-En esta primera pasada extrae solo el encabezado, las condiciones, los totales y el número EXACTO de
-filas comerciales físicas. Cuenta cada producto real una vez, aunque su descripción continúe en otra
-línea; incluye productos sin número impreso. No extraigas una muestra de productos.
-
-Usa exclusivamente datos visibles. Nunca inventes fechas, vigencias, puertos ni condiciones. Convierte
-fechas inequívocas a YYYY-MM-DD. El texto rotulado Date es la fecha documental; el nombre del archivo no
-la reemplaza. Si es una PROFORMA INVOICE sin un campo PI/Proforma No. pero contiene Order No., conserva
-ese valor en order_number y úsalo también como proforma_number, indicando la decisión en warnings.
-TOTAL CTNS, TOTAL G.W. y TOTAL CBM son totales documentales. Usa null cuando un dato no aparezca.`;
-
-function lineExtractionPrompt(range: ExtractionRange, recovery: boolean) {
-  const allRows = range.end >= 500;
-  const target = allRows
-    ? "todas las filas comerciales físicas del documento, desde la primera hasta la última"
-    : `las filas comerciales físicas ordinales ${range.start} a ${range.end}, ambas incluidas`;
-  return `Analiza todas las páginas u hojas del documento y extrae ${target}.
-${recovery ? "Esta es una pasada de recuperación: no omitas ninguna de las posiciones solicitadas.\n" : ""}
-source_index es la posición física global del producto comenzando en 1. No copies ciegamente el número
-impreso: una fila sin número también cuenta y desplaza las posiciones siguientes. Devuelve cada producto
-solicitado, en orden, sin muestras, resúmenes ni filas representativas. Une descripciones partidas en dos
-líneas visuales y asocia sus cifras con el producto correcto.
-
-Respeta el encabezado real de las columnas. En particular, una columna rotulada TOTAL CBM es el volumen
-TOTAL de esa fila y siempre va en cbm_total, nunca en cbm_per_box. Conserva 0 o 0.00 como dato válido.
-Solo usa cbm_per_box cuando el documento lo identifique expresamente como volumen por caja. No traslades
-un CBM impreso en una línea de continuación a otro producto. unit_price y total_price deben seguir la
-base comercial visible (FOB, EXW o CIF) sin calcular impuestos. Usa null para datos ausentes y no inventes.`;
-}
-
 const nullableString = { anyOf: [{ type: "string", maxLength: 2000 }, { type: "null" }] };
 const nullableNumber = { anyOf: [{ type: "number" }, { type: "null" }] };
 const nullableInteger = { anyOf: [{ type: "integer" }, { type: "null" }] };
@@ -325,9 +335,10 @@ const headerExtractionSchema: JsonRecord = {
 const extractedLineSchema: JsonRecord = {
   type: "object",
   additionalProperties: false,
-  required: ["source_index", "supplier_sku", "sku", "product_name", "description", "model", "quantity", "quantity_per_box", "box_count", "currency", "unit_price", "total_price", "unit_weight_kg", "gross_weight_kg", "net_weight_kg", "box_length_cm", "box_width_cm", "box_height_cm", "cbm_per_box", "cbm_total", "country_of_origin", "hs_code", "confidence", "warnings"],
+  required: ["source_index", "source_page", "source_row_label", "supplier_sku", "sku", "product_name", "description", "model", "quantity", "quantity_per_box", "box_count", "currency", "unit_price", "total_price", "unit_weight_kg", "gross_weight_kg", "net_weight_kg", "box_length_cm", "box_width_cm", "box_height_cm", "cbm_per_box", "cbm_total", "country_of_origin", "hs_code", "confidence", "warnings"],
   properties: {
-    source_index: { type: "integer", minimum: 1, maximum: 500 }, supplier_sku: nullableString, sku: nullableString,
+    source_index: { type: "integer", minimum: 1, maximum: 500 }, source_page: nullableInteger,
+    source_row_label: nullableString, supplier_sku: nullableString, sku: nullableString,
     product_name: nullableString, description: nullableString, model: nullableString,
     quantity: nullableNumber, quantity_per_box: nullableNumber, box_count: nullableNumber,
     currency: nullableString, unit_price: nullableNumber, total_price: nullableNumber,

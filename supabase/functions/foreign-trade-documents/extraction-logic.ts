@@ -1,6 +1,6 @@
 export type JsonRecord = Record<string, unknown>;
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "complete_lines_v2";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v3";
 
 export type ExtractionWarning = {
   code: string;
@@ -173,6 +173,8 @@ export function prepareExtraction(value: unknown) {
 
     return {
       source_index: sourceIndex,
+      source_page: integer(row.source_page),
+      source_row_label: nullableText(row.source_row_label),
       include: true,
       content_product_id: null,
       remember_link: false,
@@ -240,6 +242,7 @@ export function prepareExtraction(value: unknown) {
   return {
     extraction: {
       extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
+      pdf_skill_version: nullableText(source.pdf_skill_version),
       general: {
         supplier_id: null,
         supplier_name: nullableText(general.supplier_name),

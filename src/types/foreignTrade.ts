@@ -501,6 +501,8 @@ export interface ForeignTradeExtractionGeneral {
 
 export interface ForeignTradeExtractedLine {
   source_index: number;
+  source_page: number | null;
+  source_row_label: string | null;
   include: boolean;
   content_product_id: string | null;
   remember_link: boolean;
@@ -538,6 +540,7 @@ export interface ForeignTradeExtractedLine {
 
 export interface ForeignTradeDocumentExtraction {
   extraction_version?: string;
+  pdf_skill_version?: string | null;
   general: ForeignTradeExtractionGeneral;
   lines: ForeignTradeExtractedLine[];
   document_totals: {

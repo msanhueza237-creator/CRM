@@ -53,6 +53,9 @@ La migración incremental `supabase/foreign_trade_center_phase3.sql` y la Edge F
 - hash SHA-256 para identificar el original y ruta aislada por operación;
 - descarga privada mediante URL firmada de corta duración;
 - extracción estructurada de datos generales, productos, cantidades, precios, embalaje, peso, CBM, origen y HS Code;
+- habilidad PDF especializada por tipo documental, con lectura visual/textual de todas las páginas, evidencia de página y referencia de fila;
+- segunda lectura independiente cuando la cobertura o los totales de importe, cajas, peso o CBM no concilian;
+- contrato de calidad que conserva advertencias y rechaza extracciones críticamente incompletas;
 - uso de archivos nativos en OpenAI Responses API desde backend, sin exponer `OPENAI_API_KEY`;
 - verificación determinística de cantidad × precio y recálculo de CBM;
 - estados `queued`, `extracting`, `review_required`, `confirmed` y `failed`;

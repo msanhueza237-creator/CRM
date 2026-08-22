@@ -8,6 +8,11 @@ import {
   missingExtractionRanges,
   prepareExtraction,
 } from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
+import {
+  FOREIGN_TRADE_PDF_SKILL_VERSION,
+  assessPdfExtractionQuality,
+  createForeignTradePdfReadingSkill,
+} from "../supabase/functions/foreign-trade-documents/pdf-reading-skill.ts";
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 
@@ -490,6 +495,8 @@ const preparedExtraction = prepareExtraction({
   general: { supplier_name: "Proveedor prueba", currency: "USD", confidence: 0.9, warnings: [] },
   lines: [{
     source_index: 1,
+    source_page: 1,
+    source_row_label: "1",
     product_name: "Herramienta documental",
     quantity: 10,
     unit_price: 8.4,
@@ -508,6 +515,7 @@ const preparedExtraction = prepareExtraction({
 assert.equal(preparedExtraction.extraction.lines[0].recalculated_cbm_total, 0.048);
 assert.equal(preparedExtraction.extraction.lines[0].cbm_per_box, 0.05);
 assert.equal(preparedExtraction.extraction.lines[0].cbm_per_unit, 0.01);
+assert.equal(preparedExtraction.extraction.lines[0].source_page, 1);
 assert.equal(preparedExtraction.extraction.extraction_version, FOREIGN_TRADE_EXTRACTION_VERSION);
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "line_total_mismatch"));
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "cbm_mismatch"));
@@ -534,6 +542,8 @@ const mergedExtraction = mergeExtractionPasses({
   data: {
     lines: Array.from({ length: range.end - range.start + 1 }, (_, offset) => ({
       source_index: range.start + offset,
+      source_page: Math.ceil((range.start + offset) / 30),
+      source_row_label: String(range.start + offset),
       product_name: `Producto ${range.start + offset}`,
       quantity: 10,
       unit_price: 2,
@@ -559,6 +569,24 @@ const incompleteProforma = prepareExtraction({
 });
 assert.ok(incompleteProforma.warnings.some((warning) => warning.code === "incomplete_line_extraction" && warning.severity === "error"));
 assert.deepEqual(missingExtractionRanges(6, mergedExtraction.lines.slice(0, 3)), [{ start: 4, end: 6 }]);
+
+const pdfSkill = createForeignTradePdfReadingSkill("proforma");
+assert.equal(pdfSkill.version, FOREIGN_TRADE_PDF_SKILL_VERSION);
+assert.match(pdfSkill.headerPrompt, /todas las páginas/i);
+assert.match(pdfSkill.linePrompt({ start: 31, end: 60 }, "verify"), /source_page/);
+const qualityExtraction = {
+  document_totals: { total: 40, boxes: 4, gross_weight_kg: 8, cbm_total: 0.2, line_count: 2 },
+  lines: [
+    { source_index: 1, source_page: 1, total_price: 20, box_count: 2, gross_weight_kg: 4, cbm_total: 0.1 },
+    { source_index: 2, source_page: 1, total_price: 20, box_count: 2, gross_weight_kg: 4, cbm_total: 0.1 },
+  ],
+};
+const goodPdfQuality = assessPdfExtractionQuality(qualityExtraction);
+assert.equal(goodPdfQuality.requiresVerification, false);
+assert.equal(goodPdfQuality.score, 100);
+const badPdfQuality = assessPdfExtractionQuality({ ...qualityExtraction, lines: qualityExtraction.lines.slice(0, 1) });
+assert.equal(badPdfQuality.requiresVerification, true);
+assert.equal(badPdfQuality.critical, true);
 
 const documentResult = await db.query(
   "select public.register_foreign_trade_document($1::jsonb) as id",
