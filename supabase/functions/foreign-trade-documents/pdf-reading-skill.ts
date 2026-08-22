@@ -162,6 +162,7 @@ Reglas obligatorias:
 - source_page es el número de página PDF donde comienza la fila; comienza en 1.
 - source_row_label conserva el número o etiqueta impresa de la fila, incluso si difiere de source_index.
 - Una fila sin número impreso también cuenta y desplaza las posiciones siguientes.
+- Si el rango solicitado supera la última fila real, devuelve solo las filas que existan; nunca inventes filas para llenar el rango.
 - Une descripciones partidas en varias líneas y asocia sus cifras con el producto correcto.
 - Ignora encabezados repetidos, subtotales, totales y pies de página como productos.
 - Conserva ceros impresos; no los conviertas en null.

@@ -2,6 +2,7 @@ import {
   FOREIGN_TRADE_EXTRACTION_VERSION,
   buildExtractionRanges,
   mergeExtractionPasses,
+  mergeCompactVerification,
   missingExtractionRanges,
   prepareExtraction,
   type ExtractionLineBatch,
@@ -142,7 +143,8 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     requestId,
     expectedLineCount,
   });
-  const ranges = buildExtractionRanges(expectedLineCount, lineChunkSize);
+  const extractionTarget = expectedLineCount > 0 ? Math.min(500, expectedLineCount + 2) : expectedLineCount;
+  const ranges = buildExtractionRanges(extractionTarget, lineChunkSize);
   let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRange(common, skill, range, maxTokens, "extract"));
   let requestBatches = [...batches];
   let merged = mergeExtractionPasses(headerResult.data, batches);
@@ -170,24 +172,33 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   }
 
   let quality = assessPdfExtractionQuality(merged, lineChunkSize);
-  if (quality.requiresVerification && quality.verificationRanges.length) {
+  if (quality.requiresVerification) {
     console.warn("[foreign-trade-documents] quality verification started", {
       requestId,
       score: quality.score,
       warnings: quality.warnings,
     });
-    const verifiedBatches = await mapWithConcurrency(
-      quality.verificationRanges,
-      rangeConcurrency,
-      async (range) => extractLineRange(common, skill, range, maxTokens, "verify"),
-    );
-    requestBatches = [...requestBatches, ...verifiedBatches];
-    const verifiedMerged = mergeExtractionPasses(headerResult.data, verifiedBatches);
+    const verificationResult = await callOpenAiStructuredExtraction({
+      ...common,
+      stage: "verify-compact",
+      prompt: `${skill.linePrompt({ start: 1, end: 500 }, "verify")}\n\nDevuelve todas las filas reales, incluidas las que no tengan número impreso. Para esta verificación compacta prioriza identidad, cantidad, cajas, precio, peso bruto y CBM total de cada fila. No inventes filas para completar una secuencia.`,
+      schemaName: "foreign_trade_document_compact_verification",
+      schema: compactVerificationSchema,
+      maxTokens: Math.min(maxTokens, 12_000),
+    });
+    requestBatches = [...requestBatches, { start: 1, end: 500, data: { _request_id: verificationResult.requestId } }];
+    const verifiedMerged = mergeCompactVerification(merged, verificationResult.data);
     const verifiedQuality = assessPdfExtractionQuality(verifiedMerged, lineChunkSize);
     if (verifiedMerged.lines.length >= merged.lines.length && verifiedQuality.score >= quality.score) {
       merged = verifiedMerged;
       quality = verifiedQuality;
     }
+    console.info("[foreign-trade-documents] compact verification ready", JSON.stringify({
+      requestId,
+      extractedLineCount: merged.lines.length,
+      score: quality.score,
+      warnings: quality.warnings,
+    }));
   }
 
   const extractionWithSkill = {
@@ -378,6 +389,33 @@ const lineExtractionSchema: JsonRecord = {
       maxItems: 80,
       items: extractedLineSchema,
     },
+    warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },
+  },
+};
+const compactVerifiedLineSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["source_index", "source_page", "source_row_label", "product_name", "quantity", "box_count", "unit_price", "total_price", "gross_weight_kg", "cbm_total", "confidence"],
+  properties: {
+    source_index: { type: "integer", minimum: 1, maximum: 500 },
+    source_page: nullableInteger,
+    source_row_label: nullableString,
+    product_name: nullableString,
+    quantity: nullableNumber,
+    box_count: nullableNumber,
+    unit_price: nullableNumber,
+    total_price: nullableNumber,
+    gross_weight_kg: nullableNumber,
+    cbm_total: nullableNumber,
+    confidence: nullableNumber,
+  },
+};
+const compactVerificationSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["lines", "warnings"],
+  properties: {
+    lines: { type: "array", maxItems: 500, items: compactVerifiedLineSchema },
     warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },
   },
 };

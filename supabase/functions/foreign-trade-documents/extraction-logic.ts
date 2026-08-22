@@ -1,6 +1,6 @@
 export type JsonRecord = Record<string, unknown>;
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v5";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v6";
 
 export type ExtractionWarning = {
   code: string;
@@ -96,6 +96,50 @@ export function mergeExtractionPasses(headerValue: unknown, batches: ExtractionL
     document_totals: { ...documentTotals, line_count: expectedLineCount },
     lines,
     warnings: [...new Set(warnings)].slice(0, 30),
+  };
+}
+
+export function mergeCompactVerification(baseValue: unknown, verificationValue: unknown) {
+  const base = asObject(baseValue);
+  const verification = asObject(verificationValue);
+  const linesByIndex = new Map<number, JsonRecord>();
+  const baseLines = Array.isArray(base.lines) ? base.lines : [];
+  const verifiedLines = Array.isArray(verification.lines) ? verification.lines : [];
+
+  baseLines.forEach((item, position) => {
+    const row = asObject(item);
+    const sourceIndex = integer(row.source_index) || position + 1;
+    linesByIndex.set(sourceIndex, { ...row, source_index: sourceIndex });
+  });
+  verifiedLines.forEach((item) => {
+    const row = asObject(item);
+    const sourceIndex = integer(row.source_index);
+    if (!sourceIndex || sourceIndex > 500) return;
+    const existing = linesByIndex.get(sourceIndex) || {};
+    const verifiedValues = Object.fromEntries(
+      Object.entries(row).filter(([key, value]) => key === "source_index" || (value !== null && value !== undefined && value !== "")),
+    );
+    linesByIndex.set(sourceIndex, { ...existing, ...verifiedValues, source_index: sourceIndex });
+  });
+
+  const lines = [...linesByIndex.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, row]) => row);
+  const documentTotals = asObject(base.document_totals);
+  const expectedLineCount = integer(documentTotals.line_count);
+  const verifiedLineCount = verifiedLines.length;
+  const effectiveLineCount = verifiedLineCount >= (expectedLineCount || 0)
+    ? Math.max(expectedLineCount || 0, verifiedLineCount)
+    : expectedLineCount;
+
+  return {
+    ...base,
+    document_totals: { ...documentTotals, line_count: effectiveLineCount },
+    lines,
+    warnings: [...new Set([
+      ...stringArray(base.warnings, 30),
+      ...stringArray(verification.warnings, 30),
+    ])].slice(0, 30),
   };
 }
 

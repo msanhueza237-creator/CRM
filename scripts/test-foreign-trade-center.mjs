@@ -4,6 +4,7 @@ import { PGlite } from "@electric-sql/pglite";
 import {
   FOREIGN_TRADE_EXTRACTION_VERSION,
   buildExtractionRanges,
+  mergeCompactVerification,
   mergeExtractionPasses,
   missingExtractionRanges,
   prepareExtraction,
@@ -558,6 +559,32 @@ const mergedExtraction = mergeExtractionPasses({
 })));
 assert.equal(mergedExtraction.lines.length, 89);
 assert.deepEqual(missingExtractionRanges(89, mergedExtraction.lines), []);
+
+const compactlyVerifiedExtraction = mergeCompactVerification(
+  {
+    general: { supplier_name: "Proveedor prueba", currency: "USD" },
+    document_totals: { line_count: 2, cbm_total: 0.6, gross_weight_kg: 6 },
+    lines: [
+      { source_index: 1, product_name: "Producto 1", quantity: 1, cbm_total: 0.1, gross_weight_kg: 1 },
+      { source_index: 2, product_name: "Producto 2", quantity: 1, cbm_total: 9, gross_weight_kg: 9 },
+    ],
+    warnings: [],
+  },
+  {
+    lines: [
+      { source_index: 1, source_page: 1, source_row_label: "1", product_name: "Producto 1", quantity: 1, cbm_total: 0.1, gross_weight_kg: 1 },
+      { source_index: 2, source_page: 1, source_row_label: "2", product_name: "Producto 2", quantity: 1, cbm_total: 0.2, gross_weight_kg: 2 },
+      { source_index: 3, source_page: 2, source_row_label: null, product_name: "Producto sin numero impreso", quantity: 1, cbm_total: 0.3, gross_weight_kg: 3 },
+    ],
+    warnings: [],
+  },
+);
+assert.equal(compactlyVerifiedExtraction.lines.length, 3);
+assert.equal(compactlyVerifiedExtraction.document_totals.line_count, 3);
+assert.equal(compactlyVerifiedExtraction.lines[1].cbm_total, 0.2);
+assert.equal(compactlyVerifiedExtraction.lines[1].gross_weight_kg, 2);
+assert.equal(compactlyVerifiedExtraction.lines[2].product_name, "Producto sin numero impreso");
+
 const completeProforma = prepareExtraction(mergedExtraction);
 assert.equal(completeProforma.extraction.general.proforma_number, "26TDC12");
 assert.equal(completeProforma.extraction.document_totals.line_count, 89);
