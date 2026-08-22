@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { useEffect, useRef } from "react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   Building2,
   BarChart3,
@@ -11,17 +12,19 @@ import {
   Palette,
   Radar,
   Settings,
+  Ship,
   Snowflake,
 } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 
-const navItems = [
+const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard; adminOnly?: boolean }> = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/empresas", label: "Empresas", icon: Building2 },
   { to: "/prospeccion", label: "Prospeccion", icon: Radar },
   { to: "/agentes", label: "Agentes", icon: Bot },
   { to: "/campanas", label: "Campanas", icon: Megaphone },
   { to: "/contenido", label: "Centro de Contenido", icon: Palette },
+  { to: "/comercio-exterior", label: "Comercio Exterior", icon: Ship, adminOnly: true },
   { to: "/copiloto", label: "Copiloto", icon: Bot },
   { to: "/informes", label: "Informes", icon: BarChart3 },
   { to: "/plantillas", label: "Plantillas", icon: FileText },
@@ -30,6 +33,17 @@ const navItems = [
 
 export function AppLayout() {
   const { user, signOut, isDemoMode } = useAuth();
+  const { pathname } = useLocation();
+  const navigationRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!window.matchMedia("(max-width: 1080px)").matches) return;
+    navigationRef.current?.querySelector<HTMLAnchorElement>("a.active")?.scrollIntoView({
+      behavior: "auto",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [pathname]);
 
   return (
     <div className="app-shell">
@@ -42,8 +56,8 @@ export function AppLayout() {
           </div>
         </div>
 
-        <nav aria-label="Navegacion principal">
-          {navItems.map((item) => (
+        <nav ref={navigationRef} aria-label="Navegacion principal">
+          {navItems.filter((item) => !item.adminOnly || user?.role === "administrador").map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

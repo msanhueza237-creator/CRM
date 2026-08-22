@@ -1,0 +1,410 @@
+import { getSupabaseFunctionUrl, isSupabaseConfigured, supabase } from "./supabase";
+import type {
+  CreateForeignTradeOperationInput,
+  ForeignTradeAuditEvent,
+  ForeignTradeCenterData,
+  ForeignTradeContainerType,
+  ForeignTradeCatalogProduct,
+  ForeignTradeCostLine,
+  ForeignTradeCostParameter,
+  ForeignTradeDashboardSummary,
+  ForeignTradeDocument,
+  ForeignTradeDocumentExtraction,
+  ForeignTradeDocumentType,
+  ForeignTradeOperation,
+  ForeignTradeOperationDetail,
+  ForeignTradeOperationLine,
+  ForeignTradeOperationStatus,
+  ForeignTradeSupplier,
+  UpsertForeignTradeCostLineInput,
+  UpsertForeignTradeOperationLineInput,
+  UpsertForeignTradeSupplierInput,
+  ConfirmForeignTradeDocumentResult,
+} from "../types/foreignTrade";
+
+const emptySummary: ForeignTradeDashboardSummary = {
+  operations_in_preparation: 0,
+  proformas: 0,
+  purchase_orders: 0,
+  active_shipments: 0,
+  suppliers: 0,
+  total_purchase_usd: 0,
+  projected_import_cost_clp: 0,
+  projected_profit_clp: 0,
+  total_cbm: 0,
+  product_lines: 0,
+  open_alerts: 0,
+  recent_simulations: [],
+};
+
+export const emptyForeignTradeCenterData: ForeignTradeCenterData = {
+  summary: emptySummary,
+  operations: [],
+  statuses: [],
+  suppliers: [],
+  containerTypes: [],
+  costParameters: [],
+  audit: [],
+};
+
+export async function getForeignTradeCenterData(): Promise<ForeignTradeCenterData> {
+  if (!isSupabaseConfigured || !supabase) return emptyForeignTradeCenterData;
+
+  const [summaryResult, operationResult, statusResult, supplierResult, containerResult, parameterResult, auditResult] = await Promise.all([
+    supabase.rpc("foreign_trade_dashboard_summary"),
+    supabase
+      .from("import_shipments")
+      .select("id,supplier_id,reference,title,operation_type,transport_type,origin_port,destination_port,status,value_usd,base_currency,exchange_rate_clp,exchange_rate_source,incoterm,target_container_cbm,order_date,estimated_departure,estimated_arrival,notes,created_at,updated_at")
+      .order("created_at", { ascending: false })
+      .limit(300),
+    supabase.from("foreign_trade_operation_statuses").select("*").order("sort_order"),
+    supabase
+      .from("suppliers")
+      .select("id,name,company_name,country_code,factory_city,contact_name,email,whatsapp,phone,currency,usual_incoterms,payment_terms,default_production_days,notes,active,created_at,updated_at")
+      .order("name"),
+    supabase.from("foreign_trade_container_types").select("*").eq("active", true).order("name"),
+    supabase.from("foreign_trade_cost_parameters").select("*").eq("active", true).order("category").order("name"),
+    supabase.from("foreign_trade_audit_log").select("*").order("created_at", { ascending: false }).limit(100),
+  ]);
+
+  const error = summaryResult.error || operationResult.error || statusResult.error || supplierResult.error ||
+    containerResult.error || parameterResult.error || auditResult.error;
+  if (error) throw error;
+
+  return {
+    summary: normalizeSummary(summaryResult.data),
+    operations: (operationResult.data ?? []) as unknown as ForeignTradeOperation[],
+    statuses: (statusResult.data ?? []) as unknown as ForeignTradeOperationStatus[],
+    suppliers: (supplierResult.data ?? []) as unknown as ForeignTradeSupplier[],
+    containerTypes: (containerResult.data ?? []) as unknown as ForeignTradeContainerType[],
+    costParameters: (parameterResult.data ?? []) as unknown as ForeignTradeCostParameter[],
+    audit: (auditResult.data ?? []) as unknown as ForeignTradeAuditEvent[],
+  };
+}
+
+export async function createForeignTradeOperation(input: CreateForeignTradeOperationInput) {
+  if (!isSupabaseConfigured || !supabase) {
+    throw new Error("Conecta Supabase para crear una simulacion privada.");
+  }
+  const payload = {
+    title: input.title.trim(),
+    reference: input.reference?.trim() || null,
+    operation_type: input.operationType,
+    supplier_id: input.supplierId || null,
+    status: input.status,
+    transport_type: input.transportType,
+    origin_port: input.originPort?.trim() || null,
+    destination_port: input.destinationPort?.trim() || null,
+    base_currency: input.baseCurrency.trim().toUpperCase() || "USD",
+    exchange_rate_clp: decimalOrNull(input.exchangeRateClp),
+    exchange_rate_source: input.exchangeRateSource,
+    incoterm: input.incoterm?.trim().toUpperCase() || null,
+    target_container_cbm: decimalOrNull(input.targetContainerCbm),
+    value_usd: decimalOrNull(input.valueUsd) || "0",
+    notes: input.notes?.trim() || null,
+  };
+  const { data, error } = await supabase.rpc("create_foreign_trade_operation", { p_payload: payload });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function getForeignTradeOperationDetail(operationId: string): Promise<ForeignTradeOperationDetail> {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("foreign_trade_operation_detail", { p_operation_id: operationId });
+  if (error) throw error;
+  return normalizeOperationDetail(data);
+}
+
+export async function searchForeignTradeCatalog(search = ""): Promise<ForeignTradeCatalogProduct[]> {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("foreign_trade_product_catalog", {
+    p_search: search.trim() || null,
+    p_limit: 60,
+  });
+  if (error) throw error;
+  return (Array.isArray(data) ? data : []) as ForeignTradeCatalogProduct[];
+}
+
+export async function upsertForeignTradeSupplier(input: UpsertForeignTradeSupplierInput) {
+  requireSupabase();
+  const payload = {
+    id: input.id || null,
+    name: input.name.trim(),
+    company_name: input.companyName?.trim() || null,
+    country_code: input.countryCode.trim().toUpperCase(),
+    factory_city: input.factoryCity?.trim() || null,
+    contact_name: input.contactName?.trim() || null,
+    email: input.email?.trim() || null,
+    whatsapp: input.whatsapp?.trim() || null,
+    phone: input.phone?.trim() || null,
+    currency: input.currency.trim().toUpperCase(),
+    usual_incoterms: input.usualIncoterms,
+    payment_terms: input.paymentTerms?.trim() || null,
+    default_production_days: integerString(input.defaultProductionDays, "días de producción"),
+    notes: input.notes?.trim() || null,
+    active: input.active,
+  };
+  const { data, error } = await supabase!.rpc("upsert_foreign_trade_supplier", { p_payload: payload });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function upsertForeignTradeOperationLine(input: UpsertForeignTradeOperationLineInput) {
+  requireSupabase();
+  const payload = {
+    id: input.id || null,
+    operation_id: input.operationId,
+    content_product_id: input.contentProductId || null,
+    supplier_product_id: input.supplierProductId || null,
+    product_name: input.productName.trim(),
+    sku: input.sku?.trim() || null,
+    supplier_sku: input.supplierSku?.trim() || null,
+    supplier_model: input.supplierModel?.trim() || null,
+    description: input.description?.trim() || null,
+    temporary_product: input.temporaryProduct,
+    remember_link: input.rememberLink,
+    quantity: decimal(input.quantity, "cantidad", true) || "0",
+    quantity_per_box: decimal(input.quantityPerBox, "unidades por caja"),
+    box_count: decimal(input.boxCount, "cantidad de cajas"),
+    currency: input.currency.trim().toUpperCase(),
+    unit_factory_cost: decimal(input.unitFactoryCost, "costo unitario"),
+    exw_total: decimal(input.exwTotal, "total EXW"),
+    fob_total: decimal(input.fobTotal, "total FOB"),
+    cif_total: decimal(input.cifTotal, "total CIF"),
+    discount_total: decimal(input.discountTotal, "descuento"),
+    supplier_charges_total: decimal(input.supplierChargesTotal, "cargos del proveedor"),
+    unit_weight_kg: decimal(input.unitWeightKg, "peso unitario"),
+    gross_weight_kg: decimal(input.grossWeightKg, "peso bruto"),
+    net_weight_kg: decimal(input.netWeightKg, "peso neto"),
+    box_length_cm: decimal(input.boxLengthCm, "largo de caja"),
+    box_width_cm: decimal(input.boxWidthCm, "ancho de caja"),
+    box_height_cm: decimal(input.boxHeightCm, "alto de caja"),
+    cbm_per_box: decimal(input.cbmPerBox, "CBM por caja"),
+    cbm_total: decimal(input.cbmTotal, "CBM total"),
+    hs_code: input.hsCode?.trim() || null,
+    country_of_origin: input.countryOfOrigin?.trim().toUpperCase() || null,
+    data_source: input.dataSource,
+  };
+  const { data, error } = await supabase!.rpc("upsert_foreign_trade_operation_line", { p_payload: payload });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function deleteForeignTradeOperationLine(lineId: string) {
+  requireSupabase();
+  const { error } = await supabase!.rpc("delete_foreign_trade_operation_line", { p_line_id: lineId });
+  if (error) throw error;
+}
+
+export async function upsertForeignTradeCostLine(input: UpsertForeignTradeCostLineInput) {
+  requireSupabase();
+  const payload = {
+    id: input.id || null,
+    operation_id: input.operationId,
+    scenario_id: input.scenarioId || null,
+    operation_line_id: input.operationLineId || null,
+    category: input.category,
+    name: input.name.trim(),
+    amount_original: decimal(input.amountOriginal, "monto", true) || "0",
+    currency: input.currency.trim().toUpperCase(),
+    exchange_rate_clp: decimal(input.exchangeRateClp, "tipo de cambio"),
+    allocation_method: input.allocationMethod,
+    source_type: input.sourceType,
+    recoverable_tax: input.recoverableTax,
+    notes: input.notes?.trim() || null,
+  };
+  const { data, error } = await supabase!.rpc("upsert_foreign_trade_cost_line", { p_payload: payload });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function deleteForeignTradeCostLine(costId: string) {
+  requireSupabase();
+  const { error } = await supabase!.rpc("delete_foreign_trade_cost_line", { p_cost_id: costId });
+  if (error) throw error;
+}
+
+export async function getForeignTradeDocuments(operationId: string): Promise<ForeignTradeDocument[]> {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("foreign_trade_document_list", { p_operation_id: operationId });
+  if (error) throw error;
+  return (Array.isArray(data) ? data : []) as ForeignTradeDocument[];
+}
+
+export async function uploadForeignTradeDocument(input: {
+  operationId: string;
+  supplierId?: string | null;
+  documentType: ForeignTradeDocumentType;
+  file: File;
+}) {
+  requireSupabase();
+  const extension = input.file.name.split(".").pop()?.toLowerCase() || "";
+  if (!["pdf", "xls", "xlsx"].includes(extension)) throw new Error("Selecciona un PDF o Excel (.xls o .xlsx).");
+  if (input.file.size <= 0 || input.file.size > 25 * 1024 * 1024) throw new Error("El archivo debe pesar entre 1 byte y 25 MB.");
+  const mimeType = input.file.type || ({
+    pdf: "application/pdf",
+    xls: "application/vnd.ms-excel",
+    xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  } as Record<string, string>)[extension];
+  const cleanName = input.file.name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(-180);
+  const storagePath = `${input.operationId}/${crypto.randomUUID()}-${cleanName}`;
+  const fileHash = await sha256(input.file);
+  const { error: uploadError } = await supabase!.storage
+    .from("foreign-trade-orders")
+    .upload(storagePath, input.file, { contentType: mimeType, upsert: false });
+  if (uploadError) throw uploadError;
+
+  try {
+    const { data, error } = await supabase!.rpc("register_foreign_trade_document", {
+      p_payload: {
+        operation_id: input.operationId,
+        supplier_id: input.supplierId || null,
+        document_type: input.documentType,
+        original_file_name: input.file.name,
+        storage_path: storagePath,
+        mime_type: mimeType,
+        file_size: String(input.file.size),
+        file_hash: fileHash,
+      },
+    });
+    if (error) throw error;
+    return String(data);
+  } catch (error) {
+    await supabase!.storage.from("foreign-trade-orders").remove([storagePath]);
+    throw error;
+  }
+}
+
+export async function extractForeignTradeDocument(documentId: string) {
+  return foreignTradeDocumentRequest<{
+    documentId: string;
+    status: "review_required";
+    extraction: ForeignTradeDocumentExtraction;
+    confidence: number | null;
+  }>("extract", { document_id: documentId });
+}
+
+export async function confirmForeignTradeDocument(documentId: string, review: ForeignTradeDocumentExtraction) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("confirm_foreign_trade_document", {
+    p_document_id: documentId,
+    p_review: review,
+  });
+  if (error) throw error;
+  return data as ConfirmForeignTradeDocumentResult;
+}
+
+export async function getForeignTradeDocumentUrl(document: ForeignTradeDocument) {
+  requireSupabase();
+  const { data, error } = await supabase!.storage
+    .from(document.storage_bucket)
+    .createSignedUrl(document.storage_path, 120);
+  if (error) throw error;
+  return data.signedUrl;
+}
+
+async function foreignTradeDocumentRequest<T>(route: string, body: Record<string, unknown>): Promise<T> {
+  requireSupabase();
+  const { data } = await supabase!.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+  let response: Response;
+  try {
+    response = await fetch(getSupabaseFunctionUrl("foreign-trade-documents", route), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error("No se pudo contactar el servicio de documentos.");
+  }
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || `El servicio respondió con error ${response.status}.`);
+  return result as T;
+}
+
+async function sha256(file: File) {
+  const bytes = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function decimalOrNull(value?: string) {
+  const normalized = String(value || "").trim().replace(",", ".");
+  if (!normalized) return null;
+  if (!/^\d+(?:\.\d{1,8})?$/.test(normalized)) {
+    throw new Error("Ingresa valores numericos positivos y usa hasta 8 decimales.");
+  }
+  return normalized;
+}
+
+function requireSupabase() {
+  if (!isSupabaseConfigured || !supabase) {
+    throw new Error("Conecta Supabase para administrar Comercio Exterior.");
+  }
+}
+
+function decimal(value: string | undefined, label: string, required = false) {
+  const normalized = String(value || "").trim().replace(",", ".");
+  if (!normalized && !required) return null;
+  if (!normalized || !/^\d+(?:\.\d{1,8})?$/.test(normalized)) {
+    throw new Error(`Revisa ${label}. Usa un valor positivo con hasta 8 decimales.`);
+  }
+  return normalized;
+}
+
+function integerString(value: string, label: string) {
+  const normalized = String(value || "").trim();
+  if (!/^\d{1,3}$/.test(normalized)) throw new Error(`Revisa ${label}.`);
+  return normalized;
+}
+
+function normalizeOperationDetail(value: unknown): ForeignTradeOperationDetail {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const totals = raw.totals && typeof raw.totals === "object" ? raw.totals as Record<string, unknown> : {};
+  return {
+    operation: raw.operation as ForeignTradeOperation,
+    supplier: (raw.supplier || null) as ForeignTradeSupplier | null,
+    lines: (Array.isArray(raw.lines) ? raw.lines : []) as ForeignTradeOperationLine[],
+    costs: (Array.isArray(raw.costs) ? raw.costs : []) as ForeignTradeCostLine[],
+    scenarios: (Array.isArray(raw.scenarios) ? raw.scenarios : []) as ForeignTradeOperationDetail["scenarios"],
+    totals: {
+      line_count: numberValue(totals.line_count),
+      units: numberValue(totals.units),
+      registered_merchandise: numberValue(totals.registered_merchandise),
+      total_cbm: numberValue(totals.total_cbm),
+      gross_weight_kg: numberValue(totals.gross_weight_kg),
+      costs_clp: numberValue(totals.costs_clp),
+      costs_without_clp: numberValue(totals.costs_without_clp),
+    },
+  };
+}
+
+function normalizeSummary(value: unknown): ForeignTradeDashboardSummary {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const recent = Array.isArray(raw.recent_simulations) ? raw.recent_simulations : [];
+  return {
+    operations_in_preparation: numberValue(raw.operations_in_preparation),
+    proformas: numberValue(raw.proformas),
+    purchase_orders: numberValue(raw.purchase_orders),
+    active_shipments: numberValue(raw.active_shipments),
+    suppliers: numberValue(raw.suppliers),
+    total_purchase_usd: numberValue(raw.total_purchase_usd),
+    projected_import_cost_clp: numberValue(raw.projected_import_cost_clp),
+    projected_profit_clp: numberValue(raw.projected_profit_clp),
+    total_cbm: numberValue(raw.total_cbm),
+    product_lines: numberValue(raw.product_lines),
+    open_alerts: numberValue(raw.open_alerts),
+    recent_simulations: recent as ForeignTradeDashboardSummary["recent_simulations"],
+  };
+}
+
+function numberValue(value: unknown) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) ? number : 0;
+}

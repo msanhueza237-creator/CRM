@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { ProtectedRoute } from "./modules/auth/ProtectedRoute";
+import { RoleProtectedRoute } from "./modules/auth/RoleProtectedRoute";
 import { LoginPage } from "./modules/auth/LoginPage";
 import { AppLayout } from "./modules/layout/AppLayout";
 import { AdminPage } from "./modules/admin/AdminPage";
@@ -15,6 +16,7 @@ import { AgentsPage } from "./modules/agents/AgentsPage";
 import { AgentDashboardPage } from "./modules/agents/AgentDashboardPage";
 import { ReportsPage } from "./modules/reports/ReportsPage";
 import { ContentCenterPage } from "./modules/content/ContentCenterPage";
+import { ForeignTradeCenterPage } from "./modules/foreign-trade/ForeignTradeCenterPage";
 
 export function App() {
   return (
@@ -35,6 +37,7 @@ export function App() {
         <Route path="/empresas/:companyId/editar" element={<CompanyFormPage />} />
         <Route path="/campanas" element={<CampaignsPage />} />
         <Route path="/contenido" element={<ContentCenterPage />} />
+        <Route path="/comercio-exterior" element={<RoleProtectedRoute roles={["administrador"]}><ForeignTradeCenterPage /></RoleProtectedRoute>} />
         <Route path="/copiloto" element={<CopilotPage />} />
         <Route path="/informes" element={<ReportsPage />} />
         <Route path="/prospeccion" element={<ProspectingPage />} />
