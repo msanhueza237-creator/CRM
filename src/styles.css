@@ -9018,6 +9018,13 @@ th {
   margin: 0;
 }
 
+.foreign-trade-derived-field input {
+  background: #eef5f6;
+  color: #31545a;
+  font-weight: 700;
+  cursor: default;
+}
+
 .foreign-trade-line-warnings {
   display: flex;
   flex-wrap: wrap;

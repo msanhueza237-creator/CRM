@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
-import { prepareExtraction } from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
+import {
+  buildExtractionRanges,
+  mergeExtractionPasses,
+  missingExtractionRanges,
+  prepareExtraction,
+} from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 
@@ -496,12 +501,62 @@ const preparedExtraction = prepareExtraction({
     confidence: 0.8,
     warnings: [],
   }],
-  document_totals: { cbm_total: 0.1 },
+  document_totals: { cbm_total: 0.1, line_count: 1 },
   warnings: [],
 });
 assert.equal(preparedExtraction.extraction.lines[0].recalculated_cbm_total, 0.048);
+assert.equal(preparedExtraction.extraction.lines[0].cbm_per_box, 0.05);
+assert.equal(preparedExtraction.extraction.lines[0].cbm_per_unit, 0.01);
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "line_total_mismatch"));
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "cbm_mismatch"));
+
+const extractionRanges = buildExtractionRanges(89, 40);
+assert.deepEqual(extractionRanges, [
+  { start: 1, end: 40 },
+  { start: 41, end: 80 },
+  { start: 81, end: 89 },
+]);
+const mergedExtraction = mergeExtractionPasses({
+  general: {
+    supplier_name: "CHINAFORE CORPORATION",
+    proforma_number: null,
+    order_number: "26TDC12",
+    document_date: "2026-03-03",
+    currency: "USD",
+    warnings: [],
+  },
+  document_totals: { total: 69452.33, boxes: 539.7, gross_weight_kg: 5599.55, cbm_total: 26.84, line_count: 89 },
+  warnings: [],
+}, extractionRanges.map((range) => ({
+  ...range,
+  data: {
+    lines: Array.from({ length: range.end - range.start + 1 }, (_, offset) => ({
+      source_index: range.start + offset,
+      product_name: `Producto ${range.start + offset}`,
+      quantity: 10,
+      unit_price: 2,
+      total_price: 20,
+      box_count: 2,
+      cbm_total: 0.1,
+      confidence: 0.9,
+      warnings: [],
+    })),
+    warnings: [],
+  },
+})));
+assert.equal(mergedExtraction.lines.length, 89);
+assert.deepEqual(missingExtractionRanges(89, mergedExtraction.lines), []);
+const completeProforma = prepareExtraction(mergedExtraction);
+assert.equal(completeProforma.extraction.general.proforma_number, "26TDC12");
+assert.equal(completeProforma.extraction.document_totals.line_count, 89);
+assert.ok(!completeProforma.warnings.some((warning) => warning.code === "incomplete_line_extraction"));
+
+const incompleteProforma = prepareExtraction({
+  ...mergedExtraction,
+  lines: mergedExtraction.lines.slice(0, 3),
+});
+assert.ok(incompleteProforma.warnings.some((warning) => warning.code === "incomplete_line_extraction" && warning.severity === "error"));
+assert.deepEqual(missingExtractionRanges(6, mergedExtraction.lines.slice(0, 3)), [{ start: 4, end: 6 }]);
 
 const documentResult = await db.query(
   "select public.register_foreign_trade_document($1::jsonb) as id",

@@ -424,8 +424,14 @@ function DocumentReviewDialog({ document, suppliers, onClose, onConfirmed }: { d
   function setGeneral(key: keyof ForeignTradeDocumentExtraction["general"], value: string | number | null) {
     setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
   }
+  function setDocumentTotal(key: keyof ForeignTradeDocumentExtraction["document_totals"], value: number | null) {
+    setReview((current) => ({ ...current, document_totals: { ...current.document_totals, [key]: value } }));
+  }
   function setLine(index: number, patch: Partial<ForeignTradeExtractedLine>) {
-    setReview((current) => ({ ...current, lines: current.lines.map((line, lineIndex) => lineIndex === index ? { ...line, ...patch } : line) }));
+    setReview((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => lineIndex === index ? withDerivedCbm(line, patch) : line),
+    }));
   }
   async function searchCatalog() {
     setCatalogBusy(true);
@@ -437,13 +443,23 @@ function DocumentReviewDialog({ document, suppliers, onClose, onConfirmed }: { d
     if (!window.confirm("¿Confirmar esta revisión e importar las líneas seleccionadas? El archivo original y la extracción se conservarán.")) return;
     setBusy(true); setError("");
     try {
-      const result = await confirmForeignTradeDocument(document.id, review);
+      const normalizedReview = {
+        ...review,
+        lines: review.lines.map((line) => withDerivedCbm(line, {})),
+        document_totals: {
+          ...review.document_totals,
+          line_count: review.document_totals.line_count || review.lines.length,
+        },
+      };
+      const result = await confirmForeignTradeDocument(document.id, normalizedReview);
       await onConfirmed(`${result.inserted_lines} producto(s) importados desde la revisión confirmada.`);
     } catch (confirmError) { setError(humanizeDocumentError(confirmError)); }
     finally { setBusy(false); }
   }
 
   const general = review.general;
+  const lineCbmTotal = review.lines.reduce((sum, line) => sum + (line.cbm_total || 0), 0);
+  const expectedLineCount = review.document_totals.line_count;
   return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-review-title">
     <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-review-title">Revisar proforma</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
     <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} líneas detectadas</span><span>{document.review_warnings.length} advertencias</span></div>
@@ -464,6 +480,15 @@ function DocumentReviewDialog({ document, suppliers, onClose, onConfirmed }: { d
       <ReviewField label="Número de orden" value={general.order_number} onChange={(value) => setGeneral("order_number", value)} />
       <label className="wide-field"><span>Observaciones</span><textarea value={general.observations || ""} onChange={(event) => setGeneral("observations", event.target.value || null)} /></label>
     </div></section>
+
+    <section className="foreign-trade-review-section"><div><h3>Totales del documento</h3><span>Contrasta estos valores con el pie de la proforma antes de confirmar.</span></div><div className="foreign-trade-form-grid">
+      <ReviewLineNumber label="Total mercadería" value={review.document_totals.total} onChange={(value) => setDocumentTotal("total", value)} />
+      <ReviewLineNumber label="Total cajas" value={review.document_totals.boxes} onChange={(value) => setDocumentTotal("boxes", value)} />
+      <ReviewLineNumber label="Peso bruto total kg" value={review.document_totals.gross_weight_kg} onChange={(value) => setDocumentTotal("gross_weight_kg", value)} />
+      <ReviewLineNumber label="Peso neto total kg" value={review.document_totals.net_weight_kg} onChange={(value) => setDocumentTotal("net_weight_kg", value)} />
+      <ReviewLineNumber label="CBM total documento" value={review.document_totals.cbm_total} onChange={(value) => setDocumentTotal("cbm_total", value)} />
+      <ReviewLineNumber label="Filas comerciales esperadas" value={expectedLineCount} onChange={(value) => setDocumentTotal("line_count", value)} />
+    </div><p className="foreign-trade-recalculation">Cobertura: <strong>{review.lines.length}{expectedLineCount ? ` de ${expectedLineCount}` : " filas"}</strong> · Suma CBM de productos: <strong>{formatNumber(lineCbmTotal)} m³</strong>{review.document_totals.cbm_total !== null && Math.abs(lineCbmTotal - review.document_totals.cbm_total) > Math.max(0.01, review.document_totals.cbm_total * 0.02) ? " · revisa la diferencia con el total documental" : ""}</p></section>
 
     <section className="foreign-trade-review-section"><div className="foreign-trade-review-products-heading"><div><h3>Productos reconocidos</h3><span>Desmarca cualquier fila que no deba importarse.</span></div><div><input value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar catálogo para vincular" /><button className="ghost-button" type="button" onClick={() => void searchCatalog()}>{catalogBusy ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} Buscar</button></div></div>
       <div className="foreign-trade-review-lines">{review.lines.map((line, index) => <ReviewLineCard key={`${line.source_index}-${index}`} line={line} catalog={catalog} onChange={(patch) => setLine(index, patch)} />)}</div>
@@ -489,6 +514,8 @@ function ReviewLineCard({ line, catalog, onChange }: { line: ForeignTradeExtract
       <ReviewLineNumber label="Precio unitario" value={line.unit_price} onChange={(value) => onChange({ unit_price: value })} />
       <ReviewLineNumber label="Total documento" value={line.total_price} onChange={(value) => onChange({ total_price: value })} />
       <ReviewLineNumber label="CBM total" value={line.cbm_total} onChange={(value) => onChange({ cbm_total: value })} />
+      <ReviewLineNumber label="CBM por caja" value={line.cbm_per_box} onChange={(value) => onChange({ cbm_per_box: value })} />
+      <ReviewLineReadonlyNumber label="CBM por unidad (calculado)" value={calculateCbmPerUnit(line.cbm_total, line.quantity)} />
       <ReviewLineNumber label="Peso bruto kg" value={line.gross_weight_kg} onChange={(value) => onChange({ gross_weight_kg: value })} />
       <ReviewLineField label="HS Code" value={line.hs_code} onChange={(value) => onChange({ hs_code: value })} />
       <ReviewLineField label="País de origen" value={line.country_of_origin} onChange={(value) => onChange({ country_of_origin: value?.toUpperCase() || null })} />
@@ -503,6 +530,27 @@ function ReviewLineCard({ line, catalog, onChange }: { line: ForeignTradeExtract
 function ReviewField({ label, value, onChange, type = "text", maxLength }: { label: string; value: string | number | null; onChange: (value: string) => void; type?: string; maxLength?: number }) { return <label><span>{label}</span><input type={type} maxLength={maxLength} value={value ?? ""} onChange={(event) => onChange(event.target.value)} /></label>; }
 function ReviewLineField({ label, value, onChange, maxLength }: { label: string; value: string | null; onChange: (value: string | null) => void; maxLength?: number }) { return <label><span>{label}</span><input maxLength={maxLength} value={value || ""} onChange={(event) => onChange(event.target.value || null)} /></label>; }
 function ReviewLineNumber({ label, value, onChange }: { label: string; value: number | null; onChange: (value: number | null) => void }) { return <label><span>{label}</span><input type="number" min="0" step="any" value={value ?? ""} onChange={(event) => onChange(nullableNumber(event.target.value))} /></label>; }
+function ReviewLineReadonlyNumber({ label, value }: { label: string; value: number | null }) { return <label className="foreign-trade-derived-field"><span>{label}</span><input type="number" readOnly value={value ?? ""} /></label>; }
+
+function withDerivedCbm(line: ForeignTradeExtractedLine, patch: Partial<ForeignTradeExtractedLine>): ForeignTradeExtractedLine {
+  const next = { ...line, ...patch };
+  if (!("cbm_per_box" in patch) && ("cbm_total" in patch || "box_count" in patch || !next.cbm_per_box)) {
+    next.cbm_per_box = next.cbm_total !== null && next.box_count !== null && next.box_count > 0
+      ? roundCbm(next.cbm_total / next.box_count)
+      : next.cbm_per_box;
+  }
+  next.cbm_per_unit = calculateCbmPerUnit(next.cbm_total, next.quantity);
+  return next;
+}
+
+function calculateCbmPerUnit(total: number | null, quantity: number | null) {
+  return total !== null && quantity !== null && quantity > 0 ? roundCbm(total / quantity, 9) : null;
+}
+
+function roundCbm(value: number, digits = 6) {
+  const factor = 10 ** digits;
+  return Math.round((value + Number.EPSILON) * factor) / factor;
+}
 
 function DocumentStatus({ document }: { document: ForeignTradeDocument }) {
   const content = ({ uploaded: "Cargado", queued: "En cola", extracting: "Analizando", review_required: "Revisión requerida", confirmed: "Confirmado", failed: "Error" })[document.parse_status];

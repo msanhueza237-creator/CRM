@@ -1,4 +1,12 @@
-import { prepareExtraction, type JsonRecord } from "./extraction-logic.ts";
+import {
+  buildExtractionRanges,
+  mergeExtractionPasses,
+  missingExtractionRanges,
+  prepareExtraction,
+  type ExtractionLineBatch,
+  type ExtractionRange,
+  type JsonRecord,
+} from "./extraction-logic.ts";
 
 type RestClient = { url: string; anonKey: string; serviceRoleKey: string };
 type Profile = { id: string; role: string; active: boolean };
@@ -95,12 +103,8 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     || "gpt-4.1-mini";
   const timeoutMs = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
   const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
-  const controller = new AbortController();
-  let timedOut = false;
-  const abortFromRequest = () => controller.abort();
-  if (requestSignal.aborted) controller.abort();
-  else requestSignal.addEventListener("abort", abortFromRequest, { once: true });
-  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  const fileData = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
+  const common = { apiKey, model, filename, mimeType, fileData, requestId, requestSignal, timeoutMs };
   console.info("[foreign-trade-documents] OpenAI extraction started", {
     requestId,
     filename,
@@ -108,34 +112,123 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     timeoutMs,
     model,
   });
+
+  const headerResult = await callOpenAiStructuredExtraction({
+    ...common,
+    stage: "header",
+    prompt: headerExtractionPrompt,
+    schemaName: "foreign_trade_document_header",
+    schema: headerExtractionSchema,
+    maxTokens: Math.min(maxTokens, 5_000),
+  });
+  const headerTotals = asObject(asObject(headerResult.data).document_totals);
+  const expectedLineCount = Number(headerTotals.line_count || 0);
+  const ranges = buildExtractionRanges(expectedLineCount);
+  let batches = await mapWithConcurrency(ranges, 2, async (range) => extractLineRange(common, range, maxTokens, false));
+  let merged = mergeExtractionPasses(headerResult.data, batches);
+  const recoveryRanges = missingExtractionRanges(expectedLineCount, merged.lines);
+  if (recoveryRanges.length) {
+    console.warn("[foreign-trade-documents] incomplete first pass, recovering ranges", {
+      requestId,
+      expectedLineCount,
+      extractedLineCount: merged.lines.length,
+      recoveryRanges,
+    });
+    const recovered = await mapWithConcurrency(
+      recoveryRanges,
+      2,
+      async (range) => extractLineRange(common, range, maxTokens, true),
+    );
+    batches = [...batches, ...recovered];
+    merged = mergeExtractionPasses(headerResult.data, batches);
+  }
+
+  if (expectedLineCount > 0 && merged.lines.length / expectedLineCount < 0.8) {
+    throw new HttpError(
+      502,
+      `La extracción quedó incompleta: se reconocieron ${merged.lines.length} de ${expectedLineCount} productos. Reintenta; el original permanece guardado.`,
+    );
+  }
+  return {
+    model,
+    requestId: [headerResult.requestId, ...batches.map((batch) => String(asObject(batch.data)._request_id || ""))]
+      .filter(Boolean)
+      .join(","),
+    data: merged,
+  };
+}
+
+type StructuredExtractionInput = {
+  apiKey: string;
+  model: string;
+  filename: string;
+  mimeType: string;
+  fileData: string;
+  requestId: string;
+  requestSignal: AbortSignal;
+  timeoutMs: number;
+  maxTokens: number;
+  stage: string;
+  prompt: string;
+  schemaName: string;
+  schema: JsonRecord;
+};
+
+async function extractLineRange(
+  common: Omit<StructuredExtractionInput, "maxTokens" | "stage" | "prompt" | "schemaName" | "schema">,
+  range: ExtractionRange,
+  maxTokens: number,
+  recovery: boolean,
+): Promise<ExtractionLineBatch> {
+  const result = await callOpenAiStructuredExtraction({
+    ...common,
+    stage: `${recovery ? "recovery" : "lines"}-${range.start}-${range.end}`,
+    prompt: lineExtractionPrompt(range, recovery),
+    schemaName: "foreign_trade_document_lines",
+    schema: lineExtractionSchema,
+    maxTokens,
+  });
+  return {
+    ...range,
+    data: { ...result.data, _request_id: result.requestId },
+  };
+}
+
+async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromRequest = () => controller.abort();
+  if (input.requestSignal.aborted) controller.abort();
+  else input.requestSignal.addEventListener("abort", abortFromRequest, { once: true });
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, input.timeoutMs);
   try {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${apiKey}`,
+        Authorization: `Bearer ${input.apiKey}`,
         "Content-Type": "application/json",
-        "X-Client-Request-Id": requestId,
+        "X-Client-Request-Id": crypto.randomUUID(),
       },
       body: JSON.stringify({
-        model,
+        model: input.model,
         store: false,
-        max_output_tokens: maxTokens,
+        max_output_tokens: input.maxTokens,
         input: [{
           role: "user",
           content: [
             {
               type: "input_file",
-              filename,
-              file_data: `data:${mimeType};base64,${bytesToBase64(bytes)}`,
-              ...(mimeType === "application/pdf" ? { detail: "high" } : {}),
+              filename: input.filename,
+              file_data: input.fileData,
+              ...(input.mimeType === "application/pdf" ? { detail: "high" } : {}),
             },
             {
               type: "input_text",
-              text: extractionPrompt,
+              text: input.prompt,
             },
           ],
         }],
-        text: { format: { type: "json_schema", name: "foreign_trade_proforma", strict: true, schema: extractionSchema } },
+        text: { format: { type: "json_schema", name: input.schemaName, strict: true, schema: input.schema } },
       }),
       signal: controller.signal,
     });
@@ -147,83 +240,129 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     const outputText = extractOutputText(payload);
     if (!outputText) throw new HttpError(502, "OpenAI no devolvió una extracción estructurada.");
     return {
-      model,
       requestId: response.headers.get("x-request-id") || String(payload.id || ""),
       data: JSON.parse(outputText) as JsonRecord,
     };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       if (!timedOut) throw new HttpError(499, "Análisis detenido por el usuario.");
-      throw new HttpError(504, `La extracción excedió ${Math.round(timeoutMs / 1000)} segundos. El original quedó guardado y puedes reintentar sin subirlo nuevamente.`);
+      throw new HttpError(504, `La extracción excedió ${Math.round(input.timeoutMs / 1000)} segundos durante ${input.stage}. El original quedó guardado y puedes reintentar sin subirlo nuevamente.`);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
-    requestSignal.removeEventListener("abort", abortFromRequest);
+    input.requestSignal.removeEventListener("abort", abortFromRequest);
   }
 }
 
-const extractionPrompt = `Analiza esta proforma u otro documento de comercio exterior.
-Extrae exclusivamente datos visibles en el archivo. Nunca inventes SKU, precios, cantidades,
-pesos, dimensiones, CBM, HS Code, fechas, condiciones ni puertos. Usa null cuando falte un dato.
-Los importes deben conservar la moneda del documento. Convierte fechas a YYYY-MM-DD solo cuando
-sean inequívocas. Cada fila comercial debe ser una línea separada. Si una cifra es dudosa, bájale
-la confianza y agrega una advertencia breve. No calcules impuestos ni costo puesto en Chile.`;
+const headerExtractionPrompt = `Analiza todas las páginas u hojas de este documento de comercio exterior.
+En esta primera pasada extrae solo el encabezado, las condiciones, los totales y el número EXACTO de
+filas comerciales físicas. Cuenta cada producto real una vez, aunque su descripción continúe en otra
+línea; incluye productos sin número impreso. No extraigas una muestra de productos.
+
+Usa exclusivamente datos visibles. Nunca inventes fechas, vigencias, puertos ni condiciones. Convierte
+fechas inequívocas a YYYY-MM-DD. El texto rotulado Date es la fecha documental; el nombre del archivo no
+la reemplaza. Si es una PROFORMA INVOICE sin un campo PI/Proforma No. pero contiene Order No., conserva
+ese valor en order_number y úsalo también como proforma_number, indicando la decisión en warnings.
+TOTAL CTNS, TOTAL G.W. y TOTAL CBM son totales documentales. Usa null cuando un dato no aparezca.`;
+
+function lineExtractionPrompt(range: ExtractionRange, recovery: boolean) {
+  const allRows = range.end >= 500;
+  const target = allRows
+    ? "todas las filas comerciales físicas del documento, desde la primera hasta la última"
+    : `las filas comerciales físicas ordinales ${range.start} a ${range.end}, ambas incluidas`;
+  return `Analiza todas las páginas u hojas del documento y extrae ${target}.
+${recovery ? "Esta es una pasada de recuperación: no omitas ninguna de las posiciones solicitadas.\n" : ""}
+source_index es la posición física global del producto comenzando en 1. No copies ciegamente el número
+impreso: una fila sin número también cuenta y desplaza las posiciones siguientes. Devuelve cada producto
+solicitado, en orden, sin muestras, resúmenes ni filas representativas. Une descripciones partidas en dos
+líneas visuales y asocia sus cifras con el producto correcto.
+
+Respeta el encabezado real de las columnas. En particular, una columna rotulada TOTAL CBM es el volumen
+TOTAL de esa fila y siempre va en cbm_total, nunca en cbm_per_box. Conserva 0 o 0.00 como dato válido.
+Solo usa cbm_per_box cuando el documento lo identifique expresamente como volumen por caja. No traslades
+un CBM impreso en una línea de continuación a otro producto. unit_price y total_price deben seguir la
+base comercial visible (FOB, EXW o CIF) sin calcular impuestos. Usa null para datos ausentes y no inventes.`;
+}
 
 const nullableString = { anyOf: [{ type: "string", maxLength: 2000 }, { type: "null" }] };
 const nullableNumber = { anyOf: [{ type: "number" }, { type: "null" }] };
 const nullableInteger = { anyOf: [{ type: "integer" }, { type: "null" }] };
 const warningsSchema = { type: "array", maxItems: 20, items: { type: "string", maxLength: 300 } };
-const extractionSchema: JsonRecord = {
+const generalSchema: JsonRecord = {
   type: "object",
   additionalProperties: false,
-  required: ["general", "lines", "document_totals", "warnings"],
+  required: ["supplier_name", "proforma_number", "document_date", "valid_until", "currency", "incoterm", "origin_port", "destination_port", "payment_terms", "production_days", "order_number", "observations", "confidence", "warnings"],
   properties: {
-    general: {
-      type: "object",
-      additionalProperties: false,
-      required: ["supplier_name", "proforma_number", "document_date", "valid_until", "currency", "incoterm", "origin_port", "destination_port", "payment_terms", "production_days", "order_number", "observations", "confidence", "warnings"],
-      properties: {
-        supplier_name: nullableString, proforma_number: nullableString, document_date: nullableString,
-        valid_until: nullableString, currency: nullableString, incoterm: nullableString,
-        origin_port: nullableString, destination_port: nullableString, payment_terms: nullableString,
-        production_days: nullableInteger, order_number: nullableString, observations: nullableString,
-        confidence: nullableNumber, warnings: warningsSchema,
-      },
-    },
+    supplier_name: nullableString, proforma_number: nullableString, document_date: nullableString,
+    valid_until: nullableString, currency: nullableString, incoterm: nullableString,
+    origin_port: nullableString, destination_port: nullableString, payment_terms: nullableString,
+    production_days: nullableInteger, order_number: nullableString, observations: nullableString,
+    confidence: nullableNumber, warnings: warningsSchema,
+  },
+};
+const documentTotalsSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["subtotal", "total", "cbm_total", "gross_weight_kg", "net_weight_kg", "boxes", "line_count"],
+  properties: {
+    subtotal: nullableNumber, total: nullableNumber, cbm_total: nullableNumber,
+    gross_weight_kg: nullableNumber, net_weight_kg: nullableNumber, boxes: nullableNumber,
+    line_count: { type: "integer", minimum: 0, maximum: 500 },
+  },
+};
+const headerExtractionSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["general", "document_totals", "warnings"],
+  properties: {
+    general: generalSchema,
+    document_totals: documentTotalsSchema,
+    warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },
+  },
+};
+const extractedLineSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["source_index", "supplier_sku", "sku", "product_name", "description", "model", "quantity", "quantity_per_box", "box_count", "currency", "unit_price", "total_price", "unit_weight_kg", "gross_weight_kg", "net_weight_kg", "box_length_cm", "box_width_cm", "box_height_cm", "cbm_per_box", "cbm_total", "country_of_origin", "hs_code", "confidence", "warnings"],
+  properties: {
+    source_index: { type: "integer", minimum: 1, maximum: 500 }, supplier_sku: nullableString, sku: nullableString,
+    product_name: nullableString, description: nullableString, model: nullableString,
+    quantity: nullableNumber, quantity_per_box: nullableNumber, box_count: nullableNumber,
+    currency: nullableString, unit_price: nullableNumber, total_price: nullableNumber,
+    unit_weight_kg: nullableNumber, gross_weight_kg: nullableNumber, net_weight_kg: nullableNumber,
+    box_length_cm: nullableNumber, box_width_cm: nullableNumber, box_height_cm: nullableNumber,
+    cbm_per_box: nullableNumber, cbm_total: nullableNumber, country_of_origin: nullableString,
+    hs_code: nullableString, confidence: nullableNumber, warnings: warningsSchema,
+  },
+};
+const lineExtractionSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["lines", "warnings"],
+  properties: {
     lines: {
       type: "array",
-      maxItems: 500,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["source_index", "supplier_sku", "sku", "product_name", "description", "model", "quantity", "quantity_per_box", "box_count", "currency", "unit_price", "total_price", "exw_total", "fob_total", "cif_total", "discount_total", "supplier_charges_total", "unit_weight_kg", "gross_weight_kg", "net_weight_kg", "box_length_cm", "box_width_cm", "box_height_cm", "cbm_per_box", "cbm_total", "country_of_origin", "hs_code", "confidence", "warnings"],
-        properties: {
-          source_index: { type: "integer" }, supplier_sku: nullableString, sku: nullableString,
-          product_name: nullableString, description: nullableString, model: nullableString,
-          quantity: nullableNumber, quantity_per_box: nullableNumber, box_count: nullableNumber,
-          currency: nullableString, unit_price: nullableNumber, total_price: nullableNumber,
-          exw_total: nullableNumber, fob_total: nullableNumber, cif_total: nullableNumber,
-          discount_total: nullableNumber, supplier_charges_total: nullableNumber,
-          unit_weight_kg: nullableNumber, gross_weight_kg: nullableNumber, net_weight_kg: nullableNumber,
-          box_length_cm: nullableNumber, box_width_cm: nullableNumber, box_height_cm: nullableNumber,
-          cbm_per_box: nullableNumber, cbm_total: nullableNumber, country_of_origin: nullableString,
-          hs_code: nullableString, confidence: nullableNumber, warnings: warningsSchema,
-        },
-      },
-    },
-    document_totals: {
-      type: "object",
-      additionalProperties: false,
-      required: ["subtotal", "total", "cbm_total", "gross_weight_kg", "net_weight_kg", "boxes"],
-      properties: {
-        subtotal: nullableNumber, total: nullableNumber, cbm_total: nullableNumber,
-        gross_weight_kg: nullableNumber, net_weight_kg: nullableNumber, boxes: nullableNumber,
-      },
+      maxItems: 80,
+      items: extractedLineSchema,
     },
     warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },
   },
 };
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>) {
+  if (!items.length) return [] as R[];
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(items[currentIndex]);
+    }
+  }));
+  return results;
+}
 
 async function setExtraction(rest: RestClient, documentId: string, status: string, payload: JsonRecord, confidence: number | null, warnings: unknown[], error: string | null, model: string | null, requestId: string) {
   await rpc(rest, "set_foreign_trade_document_extraction", {

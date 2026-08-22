@@ -7,6 +7,96 @@ export type ExtractionWarning = {
   line_index: number | null;
 };
 
+export type ExtractionRange = {
+  start: number;
+  end: number;
+};
+
+export type ExtractionLineBatch = ExtractionRange & {
+  data: unknown;
+};
+
+export function buildExtractionRanges(expectedLineCount: unknown, chunkSize = 40): ExtractionRange[] {
+  const expected = integer(expectedLineCount);
+  const safeChunkSize = Math.min(80, Math.max(10, Math.round(chunkSize)));
+  if (expected === 0) return [];
+  if (expected === null) return [{ start: 1, end: 500 }];
+  const capped = Math.min(expected, 500);
+  const ranges: ExtractionRange[] = [];
+  for (let start = 1; start <= capped; start += safeChunkSize) {
+    ranges.push({ start, end: Math.min(capped, start + safeChunkSize - 1) });
+  }
+  return ranges;
+}
+
+export function missingExtractionRanges(expectedLineCount: unknown, linesValue: unknown, chunkSize = 40): ExtractionRange[] {
+  const expected = integer(expectedLineCount);
+  if (!expected) return [];
+  const present = new Set(
+    (Array.isArray(linesValue) ? linesValue : [])
+      .map((item) => integer(asObject(item).source_index))
+      .filter((item): item is number => item !== null && item > 0 && item <= expected),
+  );
+  const missing = Array.from({ length: expected }, (_, index) => index + 1).filter((index) => !present.has(index));
+  if (!missing.length) return [];
+  const safeChunkSize = Math.min(80, Math.max(10, Math.round(chunkSize)));
+  const ranges: ExtractionRange[] = [];
+  let start = missing[0];
+  let previous = missing[0];
+  for (const index of missing.slice(1)) {
+    if (index === previous + 1 && index - start + 1 <= safeChunkSize) {
+      previous = index;
+      continue;
+    }
+    ranges.push({ start, end: previous });
+    start = index;
+    previous = index;
+  }
+  ranges.push({ start, end: previous });
+  return ranges;
+}
+
+export function mergeExtractionPasses(headerValue: unknown, batches: ExtractionLineBatch[]) {
+  const header = asObject(headerValue);
+  const documentTotals = asObject(header.document_totals);
+  const expectedLineCount = integer(documentTotals.line_count);
+  const linesByIndex = new Map<number, JsonRecord>();
+  const warnings = stringArray(header.warnings, 30);
+
+  for (const batch of batches) {
+    const data = asObject(batch.data);
+    const rows = Array.isArray(data.lines) ? data.lines : [];
+    rows.forEach((item, position) => {
+      const row = asObject(item);
+      const reportedIndex = integer(row.source_index);
+      const fallbackIndex = batch.start + position;
+      const sourceIndex = reportedIndex && reportedIndex >= batch.start && reportedIndex <= batch.end
+        ? reportedIndex
+        : fallbackIndex;
+      if (sourceIndex > batch.end || sourceIndex > 500) return;
+      if (linesByIndex.has(sourceIndex)) {
+        warnings.push(`La línea física ${sourceIndex} apareció duplicada durante la extracción por bloques.`);
+        return;
+      }
+      linesByIndex.set(sourceIndex, { ...row, source_index: sourceIndex });
+    });
+    stringArray(data.warnings, 20).forEach((message) => warnings.push(message));
+  }
+
+  const lines = [...linesByIndex.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, row]) => row);
+  if (expectedLineCount && lines.length !== expectedLineCount) {
+    warnings.push(`Se reconocieron ${lines.length} de ${expectedLineCount} filas comerciales físicas detectadas en el documento.`);
+  }
+  return {
+    general: asObject(header.general),
+    document_totals: { ...documentTotals, line_count: expectedLineCount },
+    lines,
+    warnings: [...new Set(warnings)].slice(0, 30),
+  };
+}
+
 export function prepareExtraction(value: unknown) {
   const source = asObject(value);
   const general = asObject(source.general);
@@ -14,9 +104,17 @@ export function prepareExtraction(value: unknown) {
   const sourceLines = Array.isArray(source.lines) ? source.lines.slice(0, 500) : [];
   const warnings: ExtractionWarning[] = [];
 
+  const orderNumber = nullableText(general.order_number);
+  const extractedProformaNumber = nullableText(general.proforma_number);
+  const proformaNumber = extractedProformaNumber || orderNumber;
+
   if (!text(general.supplier_name)) warnings.push(warning("missing_supplier", "No se reconoció el proveedor.", "warning"));
   if (!text(general.currency)) warnings.push(warning("missing_currency", "No se reconoció la moneda.", "warning"));
-  if (!text(general.proforma_number)) warnings.push(warning("missing_proforma_number", "No se reconoció el número de proforma.", "info"));
+  if (!proformaNumber) warnings.push(warning("missing_proforma_number", "No se reconoció el número de proforma.", "info"));
+  if (!extractedProformaNumber && orderNumber) {
+    warnings.push(warning("proforma_number_from_order", `Se usó el número de orden ${orderNumber} como identificador visible de la proforma.`, "info"));
+  }
+  if (!isoDate(general.document_date)) warnings.push(warning("missing_document_date", "No se reconoció una fecha documental inequívoca.", "warning"));
 
   const lines = sourceLines.map((item, index) => {
     const row = asObject(item);
@@ -53,11 +151,17 @@ export function prepareExtraction(value: unknown) {
       }
     }
 
+    const derivedCbmPerBox = cbmPerBox ?? (
+      cbmTotal !== null && boxCount !== null && boxCount > 0 ? round(cbmTotal / boxCount) : null
+    );
+    const cbmPerUnit = cbmTotal !== null && quantity !== null && quantity > 0
+      ? round(cbmTotal / quantity, 9)
+      : null;
     let recalculatedCbm: number | null = null;
     if (length !== null && width !== null && height !== null) {
       recalculatedCbm = (length * width * height) / 1_000_000;
       if (boxCount !== null) recalculatedCbm *= boxCount;
-      const documentCbm = boxCount !== null ? cbmTotal : cbmPerBox;
+      const documentCbm = boxCount !== null ? cbmTotal : derivedCbmPerBox;
       if (documentCbm !== null && !nearlyEqual(recalculatedCbm, documentCbm, 0.02)) {
         const message = `CBM documento ${round(documentCbm)} versus CBM recalculado ${round(recalculatedCbm)}.`;
         rowWarnings.push(message);
@@ -92,8 +196,9 @@ export function prepareExtraction(value: unknown) {
       box_length_cm: length,
       box_width_cm: width,
       box_height_cm: height,
-      cbm_per_box: cbmPerBox,
+      cbm_per_box: derivedCbmPerBox,
       cbm_total: cbmTotal,
+      cbm_per_unit: cbmPerUnit,
       recalculated_cbm_total: recalculatedCbm === null ? null : round(recalculatedCbm),
       country_of_origin: nullableText(row.country_of_origin),
       hs_code: nullableText(row.hs_code),
@@ -104,7 +209,16 @@ export function prepareExtraction(value: unknown) {
 
   const lineCbmTotal = lines.reduce((sum, row) => sum + (row.cbm_total || 0), 0);
   const documentCbmTotal = numeric(documentTotals.cbm_total);
-  if (documentCbmTotal !== null && lineCbmTotal > 0 && !nearlyEqual(documentCbmTotal, lineCbmTotal, 0.02)) {
+  const expectedLineCount = integer(documentTotals.line_count);
+  if (expectedLineCount && lines.length !== expectedLineCount) {
+    const coverage = lines.length / expectedLineCount;
+    warnings.push(warning(
+      "incomplete_line_extraction",
+      `Se extrajeron ${lines.length} de ${expectedLineCount} filas comerciales detectadas (${Math.round(coverage * 100)}% de cobertura).`,
+      coverage < 0.8 ? "error" : "warning",
+    ));
+  }
+  if (documentCbmTotal !== null && lines.length > 0 && !nearlyEqual(documentCbmTotal, lineCbmTotal, 0.02)) {
     warnings.push(warning(
       "document_cbm_mismatch",
       `CBM total del documento ${round(documentCbmTotal)} versus suma de líneas ${round(lineCbmTotal)}.`,
@@ -126,7 +240,7 @@ export function prepareExtraction(value: unknown) {
       general: {
         supplier_id: null,
         supplier_name: nullableText(general.supplier_name),
-        proforma_number: nullableText(general.proforma_number),
+        proforma_number: proformaNumber,
         document_date: isoDate(general.document_date),
         valid_until: isoDate(general.valid_until),
         currency: nullableText(general.currency)?.toUpperCase() || null,
@@ -135,7 +249,7 @@ export function prepareExtraction(value: unknown) {
         destination_port: nullableText(general.destination_port),
         payment_terms: nullableText(general.payment_terms),
         production_days: integer(general.production_days),
-        order_number: nullableText(general.order_number),
+        order_number: orderNumber,
         observations: nullableText(general.observations),
         confidence: clamp(numeric(general.confidence), 0, 1),
         warnings: stringArray(general.warnings, 20),
@@ -148,6 +262,7 @@ export function prepareExtraction(value: unknown) {
         gross_weight_kg: numeric(documentTotals.gross_weight_kg),
         net_weight_kg: numeric(documentTotals.net_weight_kg),
         boxes: numeric(documentTotals.boxes),
+        line_count: expectedLineCount,
       },
       warnings: stringArray(source.warnings, 30),
     },

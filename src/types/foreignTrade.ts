@@ -528,6 +528,7 @@ export interface ForeignTradeExtractedLine {
   box_height_cm: number | null;
   cbm_per_box: number | null;
   cbm_total: number | null;
+  cbm_per_unit: number | null;
   recalculated_cbm_total: number | null;
   country_of_origin: string | null;
   hs_code: string | null;
@@ -545,6 +546,7 @@ export interface ForeignTradeDocumentExtraction {
     gross_weight_kg: number | null;
     net_weight_kg: number | null;
     boxes: number | null;
+    line_count: number | null;
   };
   warnings: string[];
 }
