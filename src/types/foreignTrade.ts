@@ -247,6 +247,12 @@ export interface ForeignTradeCostLine {
   metadata: {
     amount_basis?: "net" | "gross";
     vat_rate_percent?: number | string;
+    vat_amount_clp?: number | string;
+    gross_amount_clp?: number | string;
+    excluded_from_costing?: boolean;
+    superseded_by_reconciliation_id?: string;
+    reconciliation_id?: string;
+    reconciliation_line_id?: string;
     [key: string]: unknown;
   };
   created_at: string;
@@ -312,6 +318,140 @@ export interface ForeignTradeOperationDetail {
   totals: ForeignTradeOperationTotals;
 }
 
+export type ForeignTradeReconciliationStatus = "draft" | "reviewed" | "applied" | "refund_pending" | "settled";
+export type ForeignTradeReconciliationLineType = "operating_expense" | "agency_fee" | "customs_duty" | "import_vat" | "adjustment";
+
+export interface ForeignTradeExpenseReconciliationLine {
+  id: string;
+  reconciliation_id: string;
+  operation_id: string;
+  position: number;
+  line_type: ForeignTradeReconciliationLineType;
+  cost_category: ForeignTradeCostCategory;
+  concept: string;
+  provider_name: string | null;
+  document_number: string | null;
+  document_date: string | null;
+  source_page: number | null;
+  provision_cost_line_id: string | null;
+  applied_cost_line_id: string | null;
+  provision_net_clp: number;
+  provision_vat_clp: number;
+  provision_total_clp: number;
+  provision_amount_original: number;
+  provision_currency: string;
+  provision_exchange_rate_clp: number | null;
+  actual_net_clp: number;
+  actual_vat_clp: number;
+  actual_total_clp: number;
+  actual_amount_original: number;
+  actual_currency: string;
+  actual_exchange_rate_clp: number | null;
+  recoverable_tax: boolean;
+  include_in_costing: boolean;
+  notes: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ForeignTradeExpenseReconciliationTotals {
+  provision_expenses_clp: number;
+  actual_expenses_clp: number;
+  provision_taxes_clp: number;
+  actual_taxes_clp: number;
+  provision_total_clp: number;
+  actual_total_clp: number;
+  balance_clp: number;
+  refund_due_clp: number;
+  additional_payment_clp: number;
+}
+
+export interface ForeignTradeExpenseReconciliation {
+  id: string;
+  operation_id: string;
+  title: string;
+  agency_name: string | null;
+  provision_document_id: string | null;
+  final_document_id: string | null;
+  general_estimate_cost_line_id: string | null;
+  provision_reference: string | null;
+  final_reference: string | null;
+  agency_invoice_number: string | null;
+  remittance_date: string | null;
+  final_invoice_date: string | null;
+  remittance_amount_clp: number;
+  refund_received_clp: number;
+  refund_received_at: string | null;
+  status: ForeignTradeReconciliationStatus;
+  identity_confirmed: boolean;
+  notes: string | null;
+  metadata: Record<string, unknown>;
+  applied_at: string | null;
+  created_at: string;
+  updated_at: string;
+  lines: ForeignTradeExpenseReconciliationLine[];
+  totals: ForeignTradeExpenseReconciliationTotals;
+}
+
+export interface SaveForeignTradeExpenseReconciliationInput {
+  id?: string;
+  operation_id: string;
+  title: string;
+  agency_name?: string | null;
+  provision_document_id?: string | null;
+  final_document_id?: string | null;
+  general_estimate_cost_line_id?: string | null;
+  provision_reference?: string | null;
+  final_reference?: string | null;
+  agency_invoice_number?: string | null;
+  remittance_date?: string | null;
+  final_invoice_date?: string | null;
+  remittance_amount_clp: string | number;
+  refund_received_clp: string | number;
+  refund_received_at?: string | null;
+  status: "draft" | "reviewed";
+  identity_confirmed: boolean;
+  notes?: string | null;
+  metadata?: Record<string, unknown>;
+  lines: Array<{
+    id?: string;
+    position: number;
+    line_type: ForeignTradeReconciliationLineType;
+    cost_category: ForeignTradeCostCategory;
+    concept: string;
+    provider_name?: string | null;
+    document_number?: string | null;
+    document_date?: string | null;
+    source_page?: string | number | null;
+    provision_cost_line_id?: string | null;
+    provision_net_clp: string | number;
+    provision_vat_clp: string | number;
+    provision_total_clp: string | number;
+    provision_amount_original: string | number;
+    provision_currency: string;
+    provision_exchange_rate_clp?: string | number | null;
+    actual_net_clp: string | number;
+    actual_vat_clp: string | number;
+    actual_total_clp: string | number;
+    actual_amount_original: string | number;
+    actual_currency: string;
+    actual_exchange_rate_clp?: string | number | null;
+    recoverable_tax: boolean;
+    include_in_costing: boolean;
+    notes?: string | null;
+    metadata?: Record<string, unknown>;
+  }>;
+}
+
+export interface ApplyForeignTradeExpenseReconciliationResult {
+  reconciliation_id: string;
+  applied_lines: number;
+  actual_total_clp: number;
+  balance_clp: number;
+  refund_due_clp: number;
+}
+
 export type ForeignTradeDocumentType =
   | "proforma"
   | "purchase_order"
@@ -322,6 +462,8 @@ export type ForeignTradeDocumentType =
   | "customs_document"
   | "payment_receipt"
   | "freight_quote"
+  | "fund_request"
+  | "agency_settlement"
   | "other";
 
 export type ForeignTradeDocumentParseStatus =

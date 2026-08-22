@@ -63,6 +63,9 @@ export interface ForeignTradeCostingResult {
 type CostMetadata = {
   amount_basis?: "net" | "gross";
   vat_rate_percent?: number | string;
+  vat_amount_clp?: number | string;
+  gross_amount_clp?: number | string;
+  excluded_from_costing?: boolean;
 };
 
 type CostBreakdown = {
@@ -85,6 +88,7 @@ export function calculateForeignTradeCosting(
 ): ForeignTradeCostingResult {
   const exchangeRate = positive(settings.exchangeRateClp);
   const missingInputs: string[] = [];
+  const activeCosts = costs.filter((cost) => !Boolean(cost.metadata?.excluded_from_costing));
 
   if (!exchangeRate.gt(0)) missingInputs.push("Falta un tipo de cambio válido.");
   if (!lines.length) missingInputs.push("Faltan productos para distribuir el costo.");
@@ -96,7 +100,7 @@ export function calculateForeignTradeCosting(
 
   const allLinesHaveCif = lines.length > 0 && lines.every((line) => positive(line.cif_total).gt(0));
   const lineCifValues = lines.map((line) => convertToClp(line.cif_total, line.currency, exchangeRate));
-  const cifComponents = costs
+  const cifComponents = activeCosts
     .filter((cost) => CIF_COMPONENT_CATEGORIES.has(cost.category))
     .reduce((sum, cost) => sum.plus(positive(cost.amount_clp)), ZERO);
   const configuredCif = positive(settings.cifOverrideOriginal).times(exchangeRate);
@@ -108,9 +112,9 @@ export function calculateForeignTradeCosting(
 
   if (!customsCif.gt(0)) missingInputs.push("Falta el CIF o los componentes necesarios para calcularlo.");
 
-  const documentedDuty = sumCostCategory(costs, "duties");
-  const documentedImportVat = sumCostCategory(costs, "taxes");
-  const operatingCosts = costs.filter((cost) => !NON_EXPENSE_CATEGORIES.has(cost.category));
+  const documentedDuty = sumCostCategory(activeCosts, "duties");
+  const documentedImportVat = sumCostCategory(activeCosts, "taxes");
+  const operatingCosts = activeCosts.filter((cost) => !NON_EXPENSE_CATEGORIES.has(cost.category));
   const operatingBreakdowns = operatingCosts.map(costBreakdown);
   const operatingNet = sumDecimals(operatingBreakdowns.map((item) => item.net));
   const operatingVat = sumDecimals(operatingBreakdowns.map((item) => item.vat));
@@ -218,9 +222,11 @@ function costBreakdown(cost: ForeignTradeCostLine): CostBreakdown {
   const amount = positive(cost.amount_clp);
   const vatRate = boundedPercent(metadata.vat_rate_percent ?? 0).div(HUNDRED);
   const grossBasis = metadata.amount_basis === "gross";
+  const explicitVat = positive(metadata.vat_amount_clp);
+  const explicitGross = positive(metadata.gross_amount_clp);
   const net = grossBasis && vatRate.gt(0) ? amount.div(vatRate.plus(1)) : amount;
-  const vat = grossBasis ? amount.minus(net) : net.times(vatRate);
-  const gross = net.plus(vat);
+  const vat = explicitVat.gt(0) ? explicitVat : grossBasis ? amount.minus(net) : net.times(vatRate);
+  const gross = explicitGross.gt(0) ? explicitGross : net.plus(vat);
   const recoverableVat = cost.recoverable_tax ? vat : ZERO;
   return {
     net,

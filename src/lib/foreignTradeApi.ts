@@ -21,6 +21,9 @@ import type {
   UpsertForeignTradeOperationLineInput,
   UpsertForeignTradeSupplierInput,
   ConfirmForeignTradeDocumentResult,
+  ApplyForeignTradeExpenseReconciliationResult,
+  ForeignTradeExpenseReconciliation,
+  SaveForeignTradeExpenseReconciliationInput,
 } from "../types/foreignTrade";
 
 const emptySummary: ForeignTradeDashboardSummary = {
@@ -264,6 +267,80 @@ export async function getForeignTradeDocuments(operationId: string): Promise<For
   return (Array.isArray(data) ? data : []) as ForeignTradeDocument[];
 }
 
+export async function getForeignTradeExpenseReconciliations(operationId: string): Promise<ForeignTradeExpenseReconciliation[]> {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("foreign_trade_expense_reconciliation_list", {
+    p_operation_id: operationId,
+  });
+  if (error) throw error;
+  return (Array.isArray(data) ? data : []) as ForeignTradeExpenseReconciliation[];
+}
+
+export async function saveForeignTradeExpenseReconciliation(input: SaveForeignTradeExpenseReconciliationInput) {
+  requireSupabase();
+  const payload = {
+    id: input.id || null,
+    operation_id: input.operation_id,
+    title: input.title.trim(),
+    agency_name: input.agency_name?.trim() || null,
+    provision_document_id: input.provision_document_id || null,
+    final_document_id: input.final_document_id || null,
+    general_estimate_cost_line_id: input.general_estimate_cost_line_id || null,
+    provision_reference: input.provision_reference?.trim() || null,
+    final_reference: input.final_reference?.trim() || null,
+    agency_invoice_number: input.agency_invoice_number?.trim() || null,
+    remittance_date: input.remittance_date || null,
+    final_invoice_date: input.final_invoice_date || null,
+    remittance_amount_clp: decimalInput(input.remittance_amount_clp, "monto depositado"),
+    refund_received_clp: decimalInput(input.refund_received_clp, "devolución recibida"),
+    refund_received_at: input.refund_received_at || null,
+    status: input.status,
+    identity_confirmed: input.identity_confirmed,
+    notes: input.notes?.trim() || null,
+    metadata: input.metadata || {},
+    lines: input.lines.map((line, index) => ({
+      id: line.id || null,
+      position: index,
+      line_type: line.line_type,
+      cost_category: line.cost_category,
+      concept: line.concept.trim(),
+      provider_name: line.provider_name?.trim() || null,
+      document_number: line.document_number?.trim() || null,
+      document_date: line.document_date || null,
+      source_page: integerOrNull(line.source_page, "página de respaldo"),
+      provision_cost_line_id: line.provision_cost_line_id || null,
+      provision_net_clp: decimalInput(line.provision_net_clp, "neto provisionado"),
+      provision_vat_clp: decimalInput(line.provision_vat_clp, "IVA provisionado"),
+      provision_total_clp: decimalInput(line.provision_total_clp, "total provisionado"),
+      provision_amount_original: decimalInputWithScale(line.provision_amount_original, "monto original provisionado", 6),
+      provision_currency: currencyInput(line.provision_currency, "moneda provisionada"),
+      provision_exchange_rate_clp: optionalDecimalInputWithScale(line.provision_exchange_rate_clp, "tipo de cambio provisionado", 6),
+      actual_net_clp: decimalInput(line.actual_net_clp, "neto real"),
+      actual_vat_clp: decimalInput(line.actual_vat_clp, "IVA real"),
+      actual_total_clp: decimalInput(line.actual_total_clp, "total real"),
+      actual_amount_original: decimalInputWithScale(line.actual_amount_original, "monto original real", 6),
+      actual_currency: currencyInput(line.actual_currency, "moneda real"),
+      actual_exchange_rate_clp: optionalDecimalInputWithScale(line.actual_exchange_rate_clp, "tipo de cambio real", 6),
+      recoverable_tax: line.recoverable_tax,
+      include_in_costing: line.include_in_costing,
+      notes: line.notes?.trim() || null,
+      metadata: line.metadata || {},
+    })),
+  };
+  const { data, error } = await supabase!.rpc("save_foreign_trade_expense_reconciliation", { p_payload: payload });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function applyForeignTradeExpenseReconciliation(reconciliationId: string) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("apply_foreign_trade_expense_reconciliation", {
+    p_reconciliation_id: reconciliationId,
+  });
+  if (error) throw error;
+  return data as ApplyForeignTradeExpenseReconciliationResult;
+}
+
 export async function uploadForeignTradeDocument(input: {
   operationId: string;
   supplierId?: string | null;
@@ -394,6 +471,41 @@ function decimal(value: string | undefined, label: string, required = false) {
 function integerString(value: string, label: string) {
   const normalized = String(value || "").trim();
   if (!/^\d{1,3}$/.test(normalized)) throw new Error(`Revisa ${label}.`);
+  return normalized;
+}
+
+function integerOrNull(value: string | number | null | undefined, label: string) {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^\d+$/.test(normalized) || Number(normalized) <= 0) throw new Error(`Revisa ${label}.`);
+  return normalized;
+}
+
+function decimalInput(value: string | number, label: string) {
+  const normalized = String(value ?? "").trim().replace(",", ".") || "0";
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) {
+    throw new Error(`Revisa ${label}. Usa un valor positivo con hasta 2 decimales.`);
+  }
+  return normalized;
+}
+
+function decimalInputWithScale(value: string | number, label: string, scale: number) {
+  const normalized = String(value ?? "").trim().replace(",", ".") || "0";
+  if (!new RegExp(`^\\d+(?:\\.\\d{1,${scale}})?$`).test(normalized)) {
+    throw new Error(`Revisa ${label}. Usa un valor positivo con hasta ${scale} decimales.`);
+  }
+  return normalized;
+}
+
+function optionalDecimalInputWithScale(value: string | number | null | undefined, label: string, scale: number) {
+  const normalized = String(value ?? "").trim().replace(",", ".");
+  if (!normalized) return null;
+  return decimalInputWithScale(normalized, label, scale);
+}
+
+function currencyInput(value: string, label: string) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(normalized)) throw new Error(`Revisa ${label}. Usa un código de tres letras, por ejemplo CLP o USD.`);
   return normalized;
 }
 

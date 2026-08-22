@@ -8974,3 +8974,290 @@ th {
 
 @media(max-width:980px){.foreign-trade-costing-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.foreign-trade-pricing-controls{grid-template-columns:1fr 160px}.foreign-trade-pricing-controls>.foreign-trade-checkbox-field{grid-column:1/-1}.foreign-trade-costing-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.foreign-trade-costing-reconciliation{grid-template-columns:repeat(2,minmax(0,1fr))}.foreign-trade-costing-reconciliation>div:nth-child(2){border-right:0}}
 @media(max-width:720px){.foreign-trade-costing-config{padding:.85rem}.foreign-trade-costing-controls,.foreign-trade-pricing-controls,.foreign-trade-costing-reconciliation{grid-template-columns:1fr}.foreign-trade-pricing-controls>.foreign-trade-checkbox-field{grid-column:auto}.foreign-trade-costing-reconciliation>div{border-bottom:1px solid #e0e8e9;border-right:0;padding-bottom:.6rem}.foreign-trade-costing-reconciliation>div:last-child{border-bottom:0;padding-bottom:0}.foreign-trade-costing-kpis{grid-template-columns:1fr 1fr}.foreign-trade-costing-kpis article{min-height:104px}.foreign-trade-costing-actions{position:sticky;bottom:78px;z-index:4}.foreign-trade-costing-actions .primary-button{box-shadow:0 5px 18px rgba(12,55,62,.25);width:100%}}
+
+/* Centro de Comercio Exterior: conciliacion de agencia */
+.foreign-trade-reconciliation-layout {
+  align-items: start;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 250px minmax(0, 1fr);
+}
+
+.foreign-trade-reconciliation-list {
+  display: grid;
+  gap: .75rem;
+  padding: .8rem;
+  position: sticky;
+  top: 74px;
+}
+
+.foreign-trade-reconciliation-list > header {
+  align-items: center;
+  display: flex;
+  justify-content: space-between;
+}
+
+.foreign-trade-reconciliation-list > header > div {
+  display: grid;
+  gap: .12rem;
+}
+
+.foreign-trade-reconciliation-list > header span {
+  color: #0b7f89;
+  font-size: .58rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.foreign-trade-reconciliation-list > header strong {
+  color: #274a51;
+  font-size: .75rem;
+}
+
+.foreign-trade-reconciliation-list > .primary-button {
+  justify-content: center;
+  width: 100%;
+}
+
+.foreign-trade-reconciliation-list > div {
+  display: grid;
+  gap: .4rem;
+}
+
+.foreign-trade-reconciliation-list > div > button {
+  background: #f5f8f8;
+  border: 1px solid #dce5e6;
+  border-radius: 6px;
+  color: #3e5d63;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: .4rem;
+  padding: .65rem;
+  text-align: left;
+}
+
+.foreign-trade-reconciliation-list > div > button.active {
+  background: #e7f4f3;
+  border-color: #63b4b5;
+}
+
+.foreign-trade-reconciliation-list button > span {
+  display: grid;
+  gap: .1rem;
+  min-width: 0;
+}
+
+.foreign-trade-reconciliation-list button strong,
+.foreign-trade-reconciliation-list button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.foreign-trade-reconciliation-list button strong { font-size: .68rem; }
+.foreign-trade-reconciliation-list button small { color: #74878b; font-size: .57rem; }
+.foreign-trade-reconciliation-list button b { color: #31585f; font-size: .61rem; }
+.foreign-trade-reconciliation-list > div > p { color: #6a7e83; font-size: .63rem; line-height: 1.45; margin: 0; }
+
+.foreign-trade-reconciliation-status {
+  border-radius: 999px;
+  font-size: .52rem;
+  font-style: normal;
+  font-weight: 900;
+  justify-self: start;
+  padding: .22rem .38rem;
+  text-transform: uppercase;
+}
+
+.foreign-trade-reconciliation-status.draft,
+.foreign-trade-reconciliation-status.reviewed { background: #fff0d5; color: #895b19; }
+.foreign-trade-reconciliation-status.applied { background: #e0edf5; color: #32647b; }
+.foreign-trade-reconciliation-status.refund_pending { background: #fbe4df; color: #9b4133; }
+.foreign-trade-reconciliation-status.settled { background: #e1f3e9; color: #287058; }
+
+.foreign-trade-reconciliation-main {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.foreign-trade-reconciliation-header {
+  display: grid;
+  gap: .9rem;
+  padding-bottom: 1rem;
+}
+
+.foreign-trade-reconciliation-form {
+  display: grid;
+  gap: .65rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 0 1rem;
+}
+
+.foreign-trade-reconciliation-form label {
+  display: grid;
+  gap: .32rem;
+  min-width: 0;
+}
+
+.foreign-trade-reconciliation-form label.wide { grid-column: span 2; }
+.foreign-trade-reconciliation-form label > span { color: #425e64; font-size: .64rem; font-weight: 850; }
+.foreign-trade-reconciliation-form input,
+.foreign-trade-reconciliation-form select,
+.foreign-trade-reconciliation-form textarea {
+  background: #fff;
+  border: 1px solid #cbd9dc;
+  border-radius: 6px;
+  box-sizing: border-box;
+  color: #294c53;
+  font: inherit;
+  font-size: .69rem;
+  min-height: 40px;
+  min-width: 0;
+  padding: .5rem .6rem;
+  width: 100%;
+}
+
+.foreign-trade-reconciliation-form textarea { min-height: 70px; resize: vertical; }
+.foreign-trade-reconciliation-header > .notice-banner { margin: 0 1rem; }
+.foreign-trade-reconciliation-header .notice-banner > div { display: grid; gap: .25rem; }
+.foreign-trade-reconciliation-header .notice-banner .foreign-trade-checkbox-field { min-height: 30px; }
+
+.foreign-trade-reconciliation-kpis {
+  display: grid;
+  gap: .7rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.foreign-trade-reconciliation-kpis article {
+  background: #fff;
+  border: 1px solid #d9e4e6;
+  border-top: 3px solid #17818a;
+  border-radius: 7px;
+  display: grid;
+  gap: .38rem;
+  min-height: 100px;
+  padding: .75rem;
+}
+
+.foreign-trade-reconciliation-kpis article.warning { border-top-color: #c27a20; }
+.foreign-trade-reconciliation-kpis article > div { align-items: center; color: #0b7f89; display: flex; gap: .38rem; }
+.foreign-trade-reconciliation-kpis article svg { height: 16px; width: 16px; }
+.foreign-trade-reconciliation-kpis span { color: #657b80; font-size: .59rem; font-weight: 900; text-transform: uppercase; }
+.foreign-trade-reconciliation-kpis strong { color: #173d44; font-size: .95rem; overflow-wrap: anywhere; }
+.foreign-trade-reconciliation-kpis small { color: #74878b; font-size: .58rem; line-height: 1.35; }
+
+.foreign-trade-reconciliation-table-panel {
+  display: grid;
+  gap: .75rem;
+  overflow: hidden;
+  padding: 0 0 .9rem;
+}
+
+.foreign-trade-reconciliation-table-panel .foreign-trade-detail-panel-heading > div:last-child {
+  display: flex;
+  gap: .4rem;
+}
+
+.foreign-trade-reconciliation-table {
+  border-collapse: collapse;
+  min-width: 1660px;
+  width: 100%;
+}
+
+.foreign-trade-reconciliation-table th {
+  background: #eaf1f2;
+  color: #587077;
+  font-size: .56rem;
+  padding: .58rem;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.foreign-trade-reconciliation-table td {
+  border-top: 1px solid #e1e9ea;
+  color: #3c5960;
+  font-size: .62rem;
+  padding: .55rem;
+  vertical-align: top;
+}
+
+.foreign-trade-reconciliation-table tr.tax td { background: #fffbf1; }
+.foreign-trade-reconciliation-table td:first-child { min-width: 290px; }
+.foreign-trade-reconciliation-table td:nth-child(2) { min-width: 175px; }
+.foreign-trade-reconciliation-table td:nth-child(n+3):nth-child(-n+7) { min-width: 135px; }
+.foreign-trade-reconciliation-table td:nth-child(3),
+.foreign-trade-reconciliation-table td:nth-child(6) { min-width: 275px; }
+
+.foreign-trade-reconciliation-table input,
+.foreign-trade-reconciliation-table select {
+  background: #fff;
+  border: 1px solid #cbd9dc;
+  border-radius: 5px;
+  box-sizing: border-box;
+  color: #294c53;
+  font: inherit;
+  font-size: .62rem;
+  min-height: 34px;
+  min-width: 0;
+  padding: .38rem .42rem;
+  width: 100%;
+}
+
+.foreign-trade-reconciliation-table input.strong { font-weight: 900; }
+.foreign-trade-reconciliation-table td:nth-child(2) select + select { margin-top: .3rem; }
+.foreign-trade-reconciliation-source { display: grid; gap: .28rem; grid-template-columns: 1fr .8fr 52px; margin-top: .3rem; }
+.foreign-trade-reconciliation-source input { min-height: 30px; }
+.foreign-trade-source-money-cell > label,
+.foreign-trade-source-money-grid label { display: grid; gap: .16rem; }
+.foreign-trade-source-money-cell label > span { color: #6b8085; font-size: .49rem; font-weight: 850; text-transform: uppercase; }
+.foreign-trade-source-money-grid { display: grid; gap: .28rem; grid-template-columns: minmax(90px, 1fr) 58px minmax(84px, .8fr); margin-top: .32rem; }
+.foreign-trade-source-money-grid input { min-height: 30px; }
+.foreign-trade-source-money-grid input:disabled { background: #edf2f3; color: #7c8d91; }
+.foreign-trade-source-money-cell small.conversion-ok { color: #287158; }
+.foreign-trade-source-money-cell small.conversion-warning { color: #a0522d; font-weight: 800; }
+.foreign-trade-reconciliation-table td.positive strong { color: #267158; }
+.foreign-trade-reconciliation-table td.negative strong { color: #a24737; }
+.foreign-trade-reconciliation-table td > small { color: #788a8e; display: block; font-size: .54rem; margin-top: .18rem; }
+.foreign-trade-mini-check { align-items: center; display: flex; font-size: .57rem; gap: .3rem; margin-bottom: .32rem; white-space: nowrap; }
+.foreign-trade-mini-check input { height: 15px; min-height: 0; width: 15px; }
+
+.foreign-trade-reconciliation-actions {
+  align-items: center;
+  border-top: 1px solid #e0e8e9;
+  display: grid;
+  gap: .55rem;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  margin: 0 .9rem;
+  padding-top: .8rem;
+}
+
+.foreign-trade-reconciliation-actions > div { display: grid; gap: .12rem; }
+.foreign-trade-reconciliation-actions strong { color: #244a51; font-size: .74rem; }
+.foreign-trade-reconciliation-actions span { color: #72868a; font-size: .59rem; }
+.foreign-trade-cost-excluded { opacity: .62; }
+.foreign-trade-cost-excluded td { background: #f5f6f6; }
+.foreign-trade-row-actions > small { color: #718489; font-size: .56rem; white-space: nowrap; }
+
+@media (max-width: 1100px) {
+  .foreign-trade-reconciliation-layout { grid-template-columns: minmax(0, 1fr); }
+  .foreign-trade-reconciliation-list { position: static; }
+  .foreign-trade-reconciliation-list > div { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 800px) {
+  .foreign-trade-reconciliation-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .foreign-trade-reconciliation-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .foreign-trade-reconciliation-list > div { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 720px) {
+  .foreign-trade-reconciliation-form { grid-template-columns: minmax(0, 1fr); }
+  .foreign-trade-reconciliation-form label.wide { grid-column: auto; }
+  .foreign-trade-reconciliation-list > div { grid-template-columns: minmax(0, 1fr); }
+  .foreign-trade-reconciliation-table-panel .foreign-trade-detail-panel-heading > div:last-child { display: grid; grid-template-columns: 1fr 1fr; }
+  .foreign-trade-reconciliation-actions { grid-template-columns: minmax(0, 1fr); }
+  .foreign-trade-reconciliation-actions button { justify-content: center; width: 100%; }
+  .foreign-trade-reconciliation-actions .primary-button { bottom: 78px; box-shadow: 0 5px 18px rgba(12,55,62,.25); position: sticky; z-index: 4; }
+}

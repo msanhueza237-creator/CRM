@@ -39,8 +39,19 @@ const documentTypes: Array<{ value: ForeignTradeDocumentType; label: string }> =
   { value: "freight_quote", label: "Cotización de transporte" },
   { value: "bill_of_lading", label: "Bill of lading" },
   { value: "certificate_of_origin", label: "Certificado de origen" },
+  { value: "customs_document", label: "Documento aduanero" },
+  { value: "payment_receipt", label: "Comprobante de pago" },
+  { value: "fund_request", label: "Solicitud / provisión de fondos" },
+  { value: "agency_settlement", label: "Rendición final de agencia" },
   { value: "other", label: "Otro" },
 ];
+
+const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
+  "proforma",
+  "purchase_order",
+  "commercial_invoice",
+  "packing_list",
+]);
 
 export function ForeignTradeDocumentsPanel({
   operationId,
@@ -93,6 +104,10 @@ export function ForeignTradeDocumentsPanel({
       const documentId = await uploadForeignTradeDocument({ operationId, supplierId, documentType, file });
       setFile(null);
       await load();
+      if (!extractableDocumentTypes.has(documentType)) {
+        setMessage("Original guardado. Puedes vincularlo en la conciliación de agencia; no se importaron productos desde este documento.");
+        return;
+      }
       setMessage("Original guardado. Analizando campos y productos...");
       await extractForeignTradeDocument(documentId);
       await load();
@@ -138,13 +153,13 @@ export function ForeignTradeDocumentsPanel({
         </div>
         <label className="foreign-trade-dropzone">
           <FileUp size={28} />
-          <strong>{file ? file.name : "Selecciona una proforma PDF o Excel"}</strong>
+          <strong>{file ? file.name : "Selecciona un documento PDF o Excel"}</strong>
           <span>{file ? formatFileSize(file.size) : "PDF, XLS o XLSX · máximo 25 MB"}</span>
           <input type="file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setFile(event.target.files?.[0] || null)} />
         </label>
         <div className="foreign-trade-upload-actions">
           <label><span>Tipo de documento</span><select value={documentType} onChange={(event) => setDocumentType(event.target.value as ForeignTradeDocumentType)}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-          <button className="primary-button" type="submit" disabled={!file || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : <ScanText size={17} />} {busyId === "upload" ? "Procesando..." : "Guardar y analizar"}</button>
+          <button className="primary-button" type="submit" disabled={!file || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : extractableDocumentTypes.has(documentType) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : extractableDocumentTypes.has(documentType) ? "Guardar y analizar" : "Guardar original"}</button>
         </div>
         {message ? <div className="notice-banner success"><CheckCircle2 size={17} /> {message}</div> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}

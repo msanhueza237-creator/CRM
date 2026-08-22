@@ -39,8 +39,9 @@ import type {
 import { useForeignTradeOperation } from "./useForeignTradeOperation";
 import { ForeignTradeDocumentsPanel } from "./ForeignTradeDocumentsPanel";
 import { ForeignTradeCostingPanel } from "./ForeignTradeCostingPanel";
+import { ForeignTradeExpenseReconciliationPanel } from "./ForeignTradeExpenseReconciliationPanel";
 
-type DetailTab = "summary" | "products" | "costs" | "costing" | "documents";
+type DetailTab = "summary" | "products" | "costs" | "reconciliation" | "costing" | "documents";
 
 const costCategories: Array<{ value: ForeignTradeCostCategory; label: string }> = [
   { value: "origin", label: "Gastos en origen" },
@@ -108,6 +109,7 @@ export function ForeignTradeOperationDetail({
         <button className={tab === "summary" ? "active" : ""} type="button" onClick={() => setTab("summary")}>Resumen</button>
         <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>Productos <span>{totals.line_count}</span></button>
         <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}>Costos base <span>{detail.costs.length}</span></button>
+        <button className={tab === "reconciliation" ? "active" : ""} type="button" onClick={() => setTab("reconciliation")}>Conciliación agencia</button>
         <button className={tab === "costing" ? "active" : ""} type="button" onClick={() => setTab("costing")}>Costeo y precio</button>
         <button className={tab === "documents" ? "active" : ""} type="button" onClick={() => setTab("documents")}>Documentos</button>
       </nav>
@@ -156,6 +158,8 @@ export function ForeignTradeOperationDetail({
           {taxRecords.length ? <div className="foreign-trade-tax-records"><div><strong>Tributos documentados</strong><span>No se tratan como gastos: sirven para conciliar el cálculo desde CIF.</span></div><CostTable costs={taxRecords} onEdit={setCostDialog} onChanged={changed} /></div> : null}
         </section>
       ) : null}
+
+      {tab === "reconciliation" ? <ForeignTradeExpenseReconciliationPanel operationId={operationId} costs={detail.costs} onChanged={changed} /> : null}
 
       {tab === "costing" ? <ForeignTradeCostingPanel detail={detail} costParameters={costParameters} onSaved={changed} /> : null}
 
@@ -336,7 +340,9 @@ function CostTable({ costs, onEdit, onChanged }: { costs: ForeignTradeCostLine[]
 
 function CostRow({ cost, onEdit, onDelete }: { cost: ForeignTradeCostLine; onEdit: () => void; onDelete: () => Promise<void> }) {
   const vatRate = Number(cost.metadata?.vat_rate_percent || 0);
-  return <tr><td><strong>{cost.name}</strong>{cost.notes ? <small>{cost.notes}</small> : null}</td><td>{costCategoryLabel(cost.category)}</td><td>{formatMoney(cost.amount_original, cost.currency)}<small>{cost.metadata?.amount_basis === "gross" ? "Monto bruto" : "Monto neto"}{vatRate ? ` · IVA ${formatDecimal(vatRate)}%${cost.recoverable_tax ? " recuperable" : ""}` : ""}</small></td><td>{cost.amount_clp === null ? "Falta tipo de cambio" : formatClp(cost.amount_clp)}</td><td>{allocationLabel(cost.allocation_method)}</td><td><SourceBadge source={cost.source_type} /></td><td><div className="foreign-trade-row-actions"><button className="icon-button" type="button" title="Editar registro" onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar registro" onClick={() => void onDelete()}><Trash2 size={16} /></button></div></td></tr>;
+  const reconciled = Boolean(cost.metadata?.reconciliation_id);
+  const excluded = Boolean(cost.metadata?.excluded_from_costing);
+  return <tr className={excluded ? "foreign-trade-cost-excluded" : ""}><td><strong>{cost.name}</strong>{excluded ? <small>Estimación reemplazada · conservada en historial</small> : cost.notes ? <small>{cost.notes}</small> : null}</td><td>{costCategoryLabel(cost.category)}</td><td>{formatMoney(cost.amount_original, cost.currency)}<small>{cost.metadata?.amount_basis === "gross" ? "Monto bruto" : "Monto neto"}{vatRate ? ` · IVA ${formatDecimal(vatRate)}%${cost.recoverable_tax ? " recuperable" : ""}` : ""}</small></td><td>{cost.amount_clp === null ? "Falta tipo de cambio" : formatClp(cost.amount_clp)}</td><td>{allocationLabel(cost.allocation_method)}</td><td>{excluded ? <span className="foreign-trade-source-badge estimated">Reemplazado</span> : <SourceBadge source={cost.source_type} />}</td><td><div className="foreign-trade-row-actions">{reconciled || excluded ? <small>Editar en conciliación</small> : <><button className="icon-button" type="button" title="Editar registro" onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar registro" onClick={() => void onDelete()}><Trash2 size={16} /></button></>}</div></td></tr>;
 }
 
 function DetailKpi({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail: string }) { return <article><div>{icon}<span>{label}</span></div><strong>{value}</strong><small>{detail}</small></article>; }
@@ -347,14 +353,15 @@ function SourceBadge({ source }: { source: ForeignTradeDataSource }) { return <s
 
 function getMissingInputs(lines: ForeignTradeOperationLine[], costs: ForeignTradeCostLine[], rate: number | null) {
   const missing: string[] = [];
+  const activeCosts = costs.filter((cost) => !cost.metadata?.excluded_from_costing);
   if (!rate) missing.push("tipo de cambio pendiente");
   if (!lines.length) missing.push("sin productos");
   else {
     if (lines.some((line) => line.unit_factory_cost === null && line.exw_total === null && line.fob_total === null && line.cif_total === null)) missing.push("hay productos sin costo");
     if (lines.some((line) => line.cbm_total === null)) missing.push("hay productos sin CBM");
   }
-  if (!costs.length) missing.push("sin gastos logísticos");
-  if (costs.some((cost) => cost.amount_clp === null)) missing.push("hay gastos sin conversión CLP");
+  if (!activeCosts.length) missing.push("sin gastos logísticos");
+  if (activeCosts.some((cost) => cost.amount_clp === null)) missing.push("hay gastos sin conversión CLP");
   return missing;
 }
 

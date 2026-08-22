@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { prepareExtraction } from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
+import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -225,6 +226,13 @@ const phase4Migration = await readFile(
 await db.exec(phase4Migration);
 await db.exec(phase4Migration);
 
+const phase5Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase5_reconciliation.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase5Migration);
+await db.exec(phase5Migration);
+
 const costingParameters = await db.query(
   "select code,numeric_value from public.foreign_trade_cost_parameters where code like 'cl_%' order by code",
 );
@@ -254,6 +262,28 @@ assert.ok(
   Math.abs(pdfCosting.lines[0].netSaleUnitClp - pdfCosting.lines[0].landedUnitClp * 1.45) < 0.02,
   "un objetivo de 45% como markup debe aplicarse sobre costo",
 );
+
+const invoiceReconciliation = calculateForeignTradeReconciliation(18220000, 0, [
+  { line_type: "agency_fee", provision_total_clp: 655322, actual_net_clp: 402233, actual_vat_clp: 76424, actual_total_clp: 478657 },
+  { line_type: "operating_expense", provision_total_clp: 528544, actual_net_clp: 444155, actual_vat_clp: 84389, actual_total_clp: 528544 },
+  { line_type: "operating_expense", provision_total_clp: 319142, actual_net_clp: 319142, actual_vat_clp: 0, actual_total_clp: 319142, actual_amount_original: 329.09, actual_currency: "USD", actual_exchange_rate_clp: null },
+  { line_type: "operating_expense", provision_total_clp: 416500, actual_net_clp: 350000, actual_vat_clp: 66500, actual_total_clp: 416500 },
+  { line_type: "operating_expense", provision_total_clp: 33534, actual_net_clp: 28180, actual_vat_clp: 5354, actual_total_clp: 33534 },
+  { line_type: "operating_expense", provision_total_clp: 155000, actual_net_clp: 155000, actual_vat_clp: 0, actual_total_clp: 155000, actual_amount_original: 155, actual_currency: "USD", actual_exchange_rate_clp: 1000 },
+  { line_type: "operating_expense", provision_total_clp: 95200, actual_net_clp: 80000, actual_vat_clp: 15200, actual_total_clp: 95200 },
+  { line_type: "customs_duty", provision_total_clp: 168708, actual_net_clp: 168708, actual_vat_clp: 0, actual_total_clp: 168708, actual_amount_original: 173.91, actual_currency: "USD", actual_exchange_rate_clp: 970.09 },
+  { line_type: "import_vat", provision_total_clp: 15848050, actual_net_clp: 15848050, actual_vat_clp: 0, actual_total_clp: 15848050, actual_amount_original: 16336.68, actual_currency: "USD", actual_exchange_rate_clp: 970.09 },
+]);
+assert.equal(invoiceReconciliation.actualExpensesClp, 2026577);
+assert.equal(invoiceReconciliation.actualTaxesClp, 16016758);
+assert.equal(invoiceReconciliation.actualTotalClp, 18043335);
+assert.equal(invoiceReconciliation.refundDueClp, 176665);
+assert.equal(invoiceReconciliation.lineConversions[2].actualConvertedClp, null, "sin TC explicito debe respetar el total CLP declarado");
+assert.equal(invoiceReconciliation.lineConversions[2].actualImpliedExchangeRateClp, 969.771187);
+assert.equal(invoiceReconciliation.lineConversions[5].actualConvertedClp, 155000);
+assert.equal(invoiceReconciliation.lineConversions[5].conversionVarianceClp, 0);
+assert.equal(invoiceReconciliation.lineConversions[7].conversionVarianceClp, -0.35);
+assert.equal(invoiceReconciliation.lineConversions[8].conversionVarianceClp, 0.1);
 
 const statuses = await db.query(
   "select count(*)::integer as count from public.foreign_trade_operation_statuses",
@@ -588,6 +618,139 @@ assert.equal(
   (await db.query("select count(*)::integer as count from public.foreign_trade_cost_lines where id=$1", [temporaryCost.rows[0].id])).rows[0].count,
   0,
 );
+
+const provisionDocument = await db.query("select public.register_foreign_trade_document($1::jsonb) as id", [JSON.stringify({
+  operation_id: operationId,
+  supplier_id: supplier.rows[0].id,
+  document_type: "fund_request",
+  original_file_name: "solicitud-fondos.pdf",
+  storage_path: `${operationId}/solicitud-fondos.pdf`,
+  mime_type: "application/pdf",
+  file_size: "4096",
+  file_hash: "b".repeat(64),
+})]);
+const settlementDocument = await db.query("select public.register_foreign_trade_document($1::jsonb) as id", [JSON.stringify({
+  operation_id: operationId,
+  supplier_id: supplier.rows[0].id,
+  document_type: "agency_settlement",
+  original_file_name: "rendicion-final.pdf",
+  storage_path: `${operationId}/rendicion-final.pdf`,
+  mime_type: "application/pdf",
+  file_size: "8192",
+  file_hash: "c".repeat(64),
+})]);
+
+const reconciliationLines = [
+  { line_type: "agency_fee", cost_category: "customs_agency", concept: "Factura agencia", provider_name: "Agencia de Aduana", document_number: "23177", source_page: 1, provision_total_clp: 655322, actual_net_clp: 402233, actual_vat_clp: 76424, actual_total_clp: 478657, recoverable_tax: true, include_in_costing: true },
+  { line_type: "operating_expense", cost_category: "chile_port", concept: "Servicios portuarios AGUNSA", provider_name: "AGUNSA", document_number: "2082486", source_page: 2, provision_total_clp: 528544, actual_net_clp: 444155, actual_vat_clp: 84389, actual_total_clp: 528544, recoverable_tax: true, include_in_costing: true },
+  { line_type: "operating_expense", cost_category: "insurance", concept: "Seguro de transporte", provider_name: "Equal Servicios", document_number: "13366", source_page: 3, provision_total_clp: 319142, actual_net_clp: 319142, actual_vat_clp: 0, actual_total_clp: 319142, actual_amount_original: 329.09, actual_currency: "USD", actual_exchange_rate_clp: null, recoverable_tax: false, include_in_costing: true },
+  { line_type: "operating_expense", cost_category: "national_transport", concept: "Transporte contenedor a bodega", provider_name: "Transportes Judith", document_number: "1935", source_page: 4, provision_total_clp: 416500, actual_net_clp: 350000, actual_vat_clp: 66500, actual_total_clp: 416500, recoverable_tax: true, include_in_costing: true },
+  { line_type: "operating_expense", cost_category: "chile_port", concept: "Seguridad y control documental", provider_name: "STI", document_number: "4105930", source_page: 5, provision_total_clp: 33534, actual_net_clp: 28180, actual_vat_clp: 5354, actual_total_clp: 33534, recoverable_tax: true, include_in_costing: true },
+  { line_type: "operating_expense", cost_category: "chile_port", concept: "DTHC", provider_name: "ADS", document_number: "980", source_page: 6, provision_total_clp: 155000, actual_net_clp: 155000, actual_vat_clp: 0, actual_total_clp: 155000, actual_amount_original: 155, actual_currency: "USD", actual_exchange_rate_clp: 1000, recoverable_tax: false, include_in_costing: true },
+  { line_type: "operating_expense", cost_category: "chile_port", concept: "Emisión BL", provider_name: "ADS", document_number: "289", source_page: 7, provision_total_clp: 95200, actual_net_clp: 80000, actual_vat_clp: 15200, actual_total_clp: 95200, recoverable_tax: true, include_in_costing: true },
+  { line_type: "customs_duty", cost_category: "duties", concept: "Derechos ad valorem", provider_name: "Tesorería General de la República", document_number: "4470046943-0", source_page: 1, provision_total_clp: 168708, actual_net_clp: 168708, actual_vat_clp: 0, actual_total_clp: 168708, actual_amount_original: 173.91, actual_currency: "USD", actual_exchange_rate_clp: 970.09, recoverable_tax: false, include_in_costing: true },
+  { line_type: "import_vat", cost_category: "taxes", concept: "IVA importación", provider_name: "Tesorería General de la República", document_number: "4470046943-0", source_page: 1, provision_total_clp: 15848050, actual_net_clp: 15848050, actual_vat_clp: 0, actual_total_clp: 15848050, actual_amount_original: 16336.68, actual_currency: "USD", actual_exchange_rate_clp: 970.09, recoverable_tax: true, include_in_costing: true },
+].map((line, position) => ({
+  position,
+  provision_net_clp: 0,
+  provision_vat_clp: 0,
+  provision_amount_original: line.provision_total_clp,
+  provision_currency: "CLP",
+  provision_exchange_rate_clp: 1,
+  actual_amount_original: line.actual_total_clp,
+  actual_currency: "CLP",
+  actual_exchange_rate_clp: 1,
+  notes: null,
+  metadata: {},
+  ...line,
+}));
+
+const mismatchedReconciliation = {
+  operation_id: operationId,
+  title: "Rendición factura 23177",
+  agency_name: "Agencia de Aduana",
+  provision_document_id: provisionDocument.rows[0].id,
+  final_document_id: settlementDocument.rows[0].id,
+  general_estimate_cost_line_id: costId,
+  provision_reference: "49194",
+  final_reference: "46943",
+  agency_invoice_number: "23177",
+  remittance_amount_clp: 18220000,
+  refund_received_clp: 0,
+  status: "reviewed",
+  identity_confirmed: false,
+  lines: reconciliationLines,
+};
+await assert.rejects(
+  db.query("select public.save_foreign_trade_expense_reconciliation($1::jsonb)", [JSON.stringify(mismatchedReconciliation)]),
+  /foreign_trade_reconciliation_identity_mismatch/,
+  "referencias distintas deben bloquear una conciliación silenciosa",
+);
+
+const savedReconciliation = await db.query(
+  "select public.save_foreign_trade_expense_reconciliation($1::jsonb) as id",
+  [JSON.stringify({ ...mismatchedReconciliation, identity_confirmed: true })],
+);
+const reconciliationId = savedReconciliation.rows[0].id;
+const reconciliationList = await db.query(
+  "select public.foreign_trade_expense_reconciliation_list($1) as items",
+  [operationId],
+);
+assert.equal(reconciliationList.rows[0].items[0].totals.actual_expenses_clp, 2026577);
+assert.equal(reconciliationList.rows[0].items[0].totals.actual_taxes_clp, 16016758);
+assert.equal(reconciliationList.rows[0].items[0].totals.actual_total_clp, 18043335);
+assert.equal(reconciliationList.rows[0].items[0].totals.refund_due_clp, 176665);
+const savedMixedCurrencyLines = reconciliationList.rows[0].items[0].lines;
+const savedInsuranceLine = savedMixedCurrencyLines.find((line) => line.document_number === "13366");
+const savedDthcLine = savedMixedCurrencyLines.find((line) => line.document_number === "980");
+assert.equal(Number(savedInsuranceLine.actual_amount_original), 329.09);
+assert.equal(savedInsuranceLine.actual_currency, "USD");
+assert.equal(savedInsuranceLine.actual_exchange_rate_clp, null);
+assert.equal(Number(savedDthcLine.actual_exchange_rate_clp), 1000);
+
+const appliedReconciliation = await db.query(
+  "select public.apply_foreign_trade_expense_reconciliation($1) as result",
+  [reconciliationId],
+);
+assert.equal(appliedReconciliation.rows[0].result.applied_lines, 9);
+assert.equal(appliedReconciliation.rows[0].result.refund_due_clp, 176665);
+const reconciliationState = await db.query(
+  "select status from public.foreign_trade_expense_reconciliations where id=$1",
+  [reconciliationId],
+);
+assert.equal(reconciliationState.rows[0].status, "refund_pending");
+const appliedCosts = await db.query(
+  "select count(*)::integer as count from public.foreign_trade_cost_lines where metadata->>'reconciliation_id'=$1",
+  [reconciliationId],
+);
+assert.equal(appliedCosts.rows[0].count, 9, "aplicar dos veces no debe duplicar costos");
+const mixedCurrencyCosts = await db.query(
+  "select name, amount_original, currency, exchange_rate_clp, amount_clp, metadata from public.foreign_trade_cost_lines where metadata->>'reconciliation_id'=$1 and name in ('Seguro de transporte','DTHC','Derechos ad valorem') order by name",
+  [reconciliationId],
+);
+const insuranceCost = mixedCurrencyCosts.rows.find((line) => line.name === "Seguro de transporte");
+const dthcCost = mixedCurrencyCosts.rows.find((line) => line.name === "DTHC");
+const dutiesCost = mixedCurrencyCosts.rows.find((line) => line.name === "Derechos ad valorem");
+assert.equal(Number(insuranceCost.amount_original), 329.09);
+assert.equal(insuranceCost.currency, "USD");
+assert.equal(insuranceCost.exchange_rate_clp, null);
+assert.equal(Number(insuranceCost.metadata.implied_exchange_rate_clp), 969.771187);
+assert.equal(Number(dthcCost.exchange_rate_clp), 1000);
+assert.equal(Number(dthcCost.amount_clp), 155000);
+assert.equal(Number(dutiesCost.metadata.conversion_variance_clp), -0.35);
+assert.equal(
+  (await db.query("select (metadata->>'excluded_from_costing')::boolean as excluded from public.foreign_trade_cost_lines where id=$1", [costId])).rows[0].excluded,
+  true,
+  "el gasto general queda como historial y sale del costeo activo",
+);
+await db.query("select public.apply_foreign_trade_expense_reconciliation($1)", [reconciliationId]);
+assert.equal(
+  (await db.query("select count(*)::integer as count from public.foreign_trade_cost_lines where metadata->>'reconciliation_id'=$1", [reconciliationId])).rows[0].count,
+  9,
+  "los reintentos de aplicación deben ser idempotentes",
+);
+const detailAfterReconciliation = await db.query("select public.foreign_trade_operation_detail($1) as detail", [operationId]);
+assert.equal(detailAfterReconciliation.rows[0].detail.totals.costs_clp, 17795468);
 
 const summary = await db.query("select public.foreign_trade_dashboard_summary() as summary");
 assert.equal(summary.rows[0].summary.operations_in_preparation, 1);
