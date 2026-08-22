@@ -8626,6 +8626,67 @@ th {
   width: 1px;
 }
 
+.foreign-trade-pending-documents {
+  display: grid;
+  gap: 7px;
+}
+
+.foreign-trade-pending-documents > article {
+  align-items: end;
+  background: #f4f8f8;
+  border: 1px solid #d8e5e6;
+  border-radius: 7px;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, .7fr) auto;
+  padding: 9px;
+}
+
+.foreign-trade-pending-documents > article > div {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.foreign-trade-pending-documents > article > div > svg {
+  color: #087d87;
+  flex: 0 0 auto;
+}
+
+.foreign-trade-pending-documents > article > div > span,
+.foreign-trade-pending-documents label {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.foreign-trade-pending-documents strong {
+  color: #284a51;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.foreign-trade-pending-documents small,
+.foreign-trade-pending-documents label > span {
+  color: #6d8287;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.foreign-trade-pending-documents select,
+.foreign-trade-document-type-editor select {
+  background: #fff;
+  border: 1px solid #cbdadd;
+  border-radius: 6px;
+  min-height: 36px;
+  min-width: 0;
+  padding: 6px 8px;
+  width: 100%;
+}
+
 .foreign-trade-upload-actions {
   align-items: end;
   display: grid;
@@ -8651,6 +8712,32 @@ th {
   border-radius: 6px;
   min-height: 40px;
   padding: 7px 9px;
+}
+
+.foreign-trade-document-type-help {
+  color: #627b80;
+  font-size: 10px;
+  line-height: 1.45;
+  margin: -3px 0 0;
+}
+
+.foreign-trade-document-type-editor {
+  align-items: center;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: auto minmax(130px, 190px);
+  margin-top: 4px;
+  max-width: 280px;
+}
+
+.foreign-trade-document-type-editor > span {
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.foreign-trade-document-type-editor select {
+  min-height: 32px;
+  padding: 4px 7px;
 }
 
 .foreign-trade-document-items {
@@ -8920,6 +9007,16 @@ th {
 }
 
 @media (max-width: 720px) {
+  .foreign-trade-pending-documents > article {
+    align-items: center;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .foreign-trade-pending-documents > article > label {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
   .foreign-trade-document-items > article {
     align-items: start;
     grid-template-columns: auto minmax(0, 1fr);

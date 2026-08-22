@@ -399,6 +399,15 @@ export async function extractForeignTradeDocument(documentId: string) {
   }>("extract", { document_id: documentId });
 }
 
+export async function updateForeignTradeDocumentType(documentId: string, documentType: ForeignTradeDocumentType) {
+  requireSupabase();
+  const { error } = await supabase!.rpc("update_foreign_trade_document_type", {
+    p_document_id: documentId,
+    p_document_type: documentType,
+  });
+  if (error) throw error;
+}
+
 export async function confirmForeignTradeDocument(documentId: string, review: ForeignTradeDocumentExtraction) {
   requireSupabase();
   const { data, error } = await supabase!.rpc("confirm_foreign_trade_document", {

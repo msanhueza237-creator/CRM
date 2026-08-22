@@ -20,6 +20,7 @@ import {
   getForeignTradeDocumentUrl,
   getForeignTradeDocuments,
   searchForeignTradeCatalog,
+  updateForeignTradeDocumentType,
   uploadForeignTradeDocument,
 } from "../../lib/foreignTradeApi";
 import type {
@@ -53,6 +54,12 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   "packing_list",
 ]);
 
+type PendingDocumentUpload = {
+  key: string;
+  file: File;
+  documentType: ForeignTradeDocumentType;
+};
+
 export function ForeignTradeDocumentsPanel({
   operationId,
   supplierId,
@@ -67,7 +74,7 @@ export function ForeignTradeDocumentsPanel({
   const [documents, setDocuments] = useState<ForeignTradeDocument[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState("");
-  const [file, setFile] = useState<File | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<PendingDocumentUpload[]>([]);
   const [documentType, setDocumentType] = useState<ForeignTradeDocumentType>("proforma");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -98,24 +105,71 @@ export function ForeignTradeDocumentsPanel({
 
   async function upload(event: FormEvent) {
     event.preventDefault();
-    if (!file) return;
+    if (!pendingFiles.length) return;
     setBusyId("upload"); setError(""); setMessage("Guardando el original en el repositorio privado...");
+    const uploadedKeys = new Set<string>();
+    const uploadErrors: string[] = [];
+    const extractionErrors: string[] = [];
+    let extracted = 0;
+    let originalsOnly = 0;
     try {
-      const documentId = await uploadForeignTradeDocument({ operationId, supplierId, documentType, file });
-      setFile(null);
-      await load();
-      if (!extractableDocumentTypes.has(documentType)) {
-        setMessage("Original guardado. Puedes vincularlo en la conciliación de agencia; no se importaron productos desde este documento.");
-        return;
+      for (let index = 0; index < pendingFiles.length; index += 1) {
+        const pending = pendingFiles[index];
+        setMessage(`Procesando documento ${index + 1} de ${pendingFiles.length}: ${pending.file.name}`);
+        let documentId = "";
+        try {
+          documentId = await uploadForeignTradeDocument({
+            operationId,
+            supplierId,
+            documentType: pending.documentType,
+            file: pending.file,
+          });
+          uploadedKeys.add(pending.key);
+        } catch (uploadError) {
+          uploadErrors.push(`${pending.file.name}: ${humanizeDocumentError(uploadError)}`);
+          continue;
+        }
+
+        if (!extractableDocumentTypes.has(pending.documentType)) {
+          originalsOnly += 1;
+          continue;
+        }
+        try {
+          await extractForeignTradeDocument(documentId);
+          extracted += 1;
+        } catch (extractionError) {
+          extractionErrors.push(`${pending.file.name}: ${humanizeDocumentError(extractionError)}`);
+        }
       }
-      setMessage("Original guardado. Analizando campos y productos...");
-      await extractForeignTradeDocument(documentId);
+      setPendingFiles((current) => current.filter((item) => !uploadedKeys.has(item.key)));
       await load();
-      setMessage("Extracción terminada. Revisa los datos antes de confirmarlos.");
-    } catch (uploadError) {
-      setError(humanizeDocumentError(uploadError));
-      await load();
+      const summary = [
+        uploadedKeys.size ? `${uploadedKeys.size} original(es) guardado(s)` : "",
+        extracted ? `${extracted} extracción(es) lista(s) para revisar` : "",
+        originalsOnly ? `${originalsOnly} documento(s) conservado(s) como respaldo` : "",
+      ].filter(Boolean).join(" · ");
+      setMessage(summary || "No se cargaron documentos.");
+      setError([...uploadErrors, ...extractionErrors].join(" "));
     } finally { setBusyId(""); }
+  }
+
+  function selectFiles(fileList: FileList | null) {
+    const selected = Array.from(fileList || []);
+    if (selected.length > 2) setError("Puedes seleccionar un máximo de 2 documentos por carga.");
+    else setError("");
+    setPendingFiles(selected.slice(0, 2).map((selectedFile) => ({
+      key: `${selectedFile.name}:${selectedFile.size}:${selectedFile.lastModified}`,
+      file: selectedFile,
+      documentType: inferDocumentType(selectedFile.name, documentType),
+    })));
+  }
+
+  function updatePendingType(key: string, nextType: ForeignTradeDocumentType) {
+    setPendingFiles((current) => current.map((item) => item.key === key ? { ...item, documentType: nextType } : item));
+  }
+
+  function removePendingFile(key: string) {
+    setPendingFiles((current) => current.filter((item) => item.key !== key));
   }
 
   async function retry(document: ForeignTradeDocument) {
@@ -125,8 +179,23 @@ export function ForeignTradeDocumentsPanel({
       await load();
       setMessage("Extracción lista para revisión.");
     } catch (retryError) {
-      setError(humanizeDocumentError(retryError));
       await load();
+      setError(humanizeDocumentError(retryError));
+    } finally { setBusyId(""); }
+  }
+
+  async function reclassify(document: ForeignTradeDocument, nextType: ForeignTradeDocumentType) {
+    if (nextType === document.document_type) return;
+    setBusyId(`type:${document.id}`); setError(""); setMessage("");
+    try {
+      await updateForeignTradeDocumentType(document.id, nextType);
+      await load();
+      setMessage(extractableDocumentTypes.has(nextType)
+        ? "Tipo actualizado. Usa Reintentar para iniciar el análisis con la clasificación correcta."
+        : "Tipo actualizado. El original quedó disponible como respaldo y no requiere extracción de productos.");
+    } catch (updateError) {
+      await load();
+      setError(humanizeDocumentError(updateError));
     } finally { setBusyId(""); }
   }
 
@@ -153,14 +222,20 @@ export function ForeignTradeDocumentsPanel({
         </div>
         <label className="foreign-trade-dropzone">
           <FileUp size={28} />
-          <strong>{file ? file.name : "Selecciona un documento PDF o Excel"}</strong>
-          <span>{file ? formatFileSize(file.size) : "PDF, XLS o XLSX · máximo 25 MB"}</span>
-          <input type="file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+          <strong>{pendingFiles.length ? `${pendingFiles.length} documento(s) seleccionado(s)` : "Selecciona uno o dos documentos"}</strong>
+          <span>PDF, XLS o XLSX · máximo 25 MB por archivo</span>
+          <input multiple disabled={Boolean(busyId)} type="file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { selectFiles(event.target.files); event.currentTarget.value = ""; }} />
         </label>
+        {pendingFiles.length ? <div className="foreign-trade-pending-documents">{pendingFiles.map((pending) => <article key={pending.key}>
+          <div><FileText size={17} /><span><strong>{pending.file.name}</strong><small>{formatFileSize(pending.file.size)}</small></span></div>
+          <label><span>Tipo</span><select value={pending.documentType} disabled={Boolean(busyId)} onChange={(event) => updatePendingType(pending.key, event.target.value as ForeignTradeDocumentType)}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+          <button className="icon-button danger" type="button" title="Quitar de la carga" disabled={Boolean(busyId)} onClick={() => removePendingFile(pending.key)}><X size={15} /></button>
+        </article>)}</div> : null}
         <div className="foreign-trade-upload-actions">
-          <label><span>Tipo de documento</span><select value={documentType} onChange={(event) => setDocumentType(event.target.value as ForeignTradeDocumentType)}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-          <button className="primary-button" type="submit" disabled={!file || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : extractableDocumentTypes.has(documentType) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : extractableDocumentTypes.has(documentType) ? "Guardar y analizar" : "Guardar original"}</button>
+          <label><span>Tipo predeterminado</span><select value={documentType} disabled={Boolean(busyId)} onChange={(event) => { const nextType = event.target.value as ForeignTradeDocumentType; setDocumentType(nextType); setPendingFiles((current) => current.map((item) => ({ ...item, documentType: nextType }))); }}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+          <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
         </div>
+        <p className="foreign-trade-document-type-help">Usa <strong>Rendición final de agencia</strong> para paquetes de facturas y gastos. Usa <strong>Proforma</strong> solo cuando el documento contiene productos que deben importarse al catálogo de la operación.</p>
         {message ? <div className="notice-banner success"><CheckCircle2 size={17} /> {message}</div> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
       </form>
@@ -176,13 +251,14 @@ export function ForeignTradeDocumentsPanel({
               <div className="foreign-trade-document-info">
                 <strong>{document.original_file_name}</strong>
                 <span>{documentTypeLabel(document.document_type)} · {formatFileSize(document.file_size)} · {formatDateTime(document.created_at)}</span>
+                {document.parse_status !== "confirmed" ? <label className="foreign-trade-document-type-editor"><span>Clasificación</span><select value={document.document_type} disabled={busyId === `type:${document.id}`} onChange={(event) => void reclassify(document, event.target.value as ForeignTradeDocumentType)}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label> : null}
                 {document.extraction_error ? <small>{document.extraction_error}</small> : null}
               </div>
               <DocumentStatus document={document} />
               <div className="foreign-trade-row-actions">
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
-                {document.parse_status === "failed" ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Reintentar</button> : null}
+                {document.parse_status === "failed" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Reintentar</button> : null}
               </div>
             </article>
           ))}
@@ -292,7 +368,25 @@ function DocumentStatus({ document }: { document: ForeignTradeDocument }) {
 function ConfidenceBadge({ value }: { value: number | null }) { const level = value === null ? "unknown" : value >= .85 ? "high" : value >= .6 ? "medium" : "low"; const label = value === null ? "Sin confianza" : `${Math.round(value * 100)}% confianza`; return <span className={`foreign-trade-confidence ${level}`}>{label}</span>; }
 function nullableNumber(value: string) { const number = Number(value); return value.trim() && Number.isFinite(number) ? number : null; }
 function documentTypeLabel(type: ForeignTradeDocumentType) { return documentTypes.find((item) => item.value === type)?.label || type; }
+function inferDocumentType(fileName: string, fallback: ForeignTradeDocumentType): ForeignTradeDocumentType {
+  const normalized = fileName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (/rendicion|liquidacion.*agencia|cuenta.*gasto/.test(normalized)) return "agency_settlement";
+  if (/solc|solicitud.*fond|provision.*fond/.test(normalized)) return "fund_request";
+  if (/packing|lista.*empaque/.test(normalized)) return "packing_list";
+  if (/purchase.*order|orden.*compra/.test(normalized)) return "purchase_order";
+  if (/commercial.*invoice|factura.*comercial/.test(normalized)) return "commercial_invoice";
+  if (/proforma|pro-forma/.test(normalized)) return "proforma";
+  return fallback;
+}
 function formatFileSize(bytes: number) { return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`; }
 function formatDateTime(value: string) { return new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
 function formatNumber(value: number) { return new Intl.NumberFormat("es-CL", { maximumFractionDigits: 6 }).format(value); }
-function humanizeDocumentError(error: unknown) { const message = error instanceof Error ? error.message : "No se pudo procesar el documento."; if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase."; if (message.includes("already") || message.includes("not_ready")) return "El documento ya fue confirmado o todavía no está listo para revisión."; if (message.includes("invalid_review") || message.includes("invalid_product")) return "Revisa los datos marcados antes de confirmar."; return message; }
+function humanizeDocumentError(error: unknown) {
+  const message = error instanceof Error ? error.message : "No se pudo procesar el documento.";
+  if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase.";
+  if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
+  if (/update_foreign_trade_document_type|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase5_reconciliation.sql.";
+  if (message.includes("already") || message.includes("not_ready")) return "El documento ya fue confirmado o todavía no está listo para revisión.";
+  if (message.includes("invalid_review") || message.includes("invalid_product")) return "Revisa los datos marcados antes de confirmar.";
+  return message;
+}

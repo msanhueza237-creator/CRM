@@ -640,6 +640,34 @@ const settlementDocument = await db.query("select public.register_foreign_trade_
   file_hash: "c".repeat(64),
 })]);
 
+const supportingDocumentStatuses = await db.query(
+  "select id,parse_status from public.foreign_trade_documents where id in ($1,$2) order by id",
+  [provisionDocument.rows[0].id, settlementDocument.rows[0].id],
+);
+assert.deepEqual(
+  supportingDocumentStatuses.rows.map((document) => document.parse_status),
+  ["uploaded", "uploaded"],
+  "provisiones y rendiciones deben quedar guardadas sin iniciar extracción de productos",
+);
+
+await db.query("select public.update_foreign_trade_document_type($1,$2)", [settlementDocument.rows[0].id, "proforma"]);
+const reclassifiedExtractable = await db.query(
+  "select document_type,parse_status,extraction_error from public.foreign_trade_documents where id=$1",
+  [settlementDocument.rows[0].id],
+);
+assert.equal(reclassifiedExtractable.rows[0].document_type, "proforma");
+assert.equal(reclassifiedExtractable.rows[0].parse_status, "failed");
+assert.match(reclassifiedExtractable.rows[0].extraction_error, /Inicia nuevamente/);
+
+await db.query("select public.update_foreign_trade_document_type($1,$2)", [settlementDocument.rows[0].id, "agency_settlement"]);
+const reclassifiedSupporting = await db.query(
+  "select document_type,parse_status,extraction_error from public.foreign_trade_documents where id=$1",
+  [settlementDocument.rows[0].id],
+);
+assert.equal(reclassifiedSupporting.rows[0].document_type, "agency_settlement");
+assert.equal(reclassifiedSupporting.rows[0].parse_status, "uploaded");
+assert.equal(reclassifiedSupporting.rows[0].extraction_error, null);
+
 const reconciliationLines = [
   { line_type: "agency_fee", cost_category: "customs_agency", concept: "Factura agencia", provider_name: "Agencia de Aduana", document_number: "23177", source_page: 1, provision_total_clp: 655322, actual_net_clp: 402233, actual_vat_clp: 76424, actual_total_clp: 478657, recoverable_tax: true, include_in_costing: true },
   { line_type: "operating_expense", cost_category: "chile_port", concept: "Servicios portuarios AGUNSA", provider_name: "AGUNSA", document_number: "2082486", source_page: 2, provision_total_clp: 528544, actual_net_clp: 444155, actual_vat_clp: 84389, actual_total_clp: 528544, recoverable_tax: true, include_in_costing: true },

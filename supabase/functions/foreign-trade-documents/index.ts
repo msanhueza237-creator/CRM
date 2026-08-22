@@ -91,10 +91,17 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   const model = Deno.env.get("OPENAI_DOCUMENT_MODEL")?.trim()
     || Deno.env.get("OPENAI_TEXT_MODEL")?.trim()
     || "gpt-4.1-mini";
-  const timeoutMs = clampNumber(Deno.env.get("OPENAI_REQUEST_TIMEOUT_MS"), 15_000, 180_000, 90_000);
+  const timeoutMs = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
   const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  console.info("[foreign-trade-documents] OpenAI extraction started", {
+    requestId,
+    filename,
+    fileSize: bytes.byteLength,
+    timeoutMs,
+    model,
+  });
   try {
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
@@ -140,7 +147,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     };
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new HttpError(504, "La extracción excedió el tiempo disponible.");
+      throw new HttpError(504, `La extracción excedió ${Math.round(timeoutMs / 1000)} segundos. El original quedó guardado y puedes reintentar sin subirlo nuevamente.`);
     }
     throw error;
   } finally {

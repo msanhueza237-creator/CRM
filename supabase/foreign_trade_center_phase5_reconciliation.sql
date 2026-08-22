@@ -89,9 +89,52 @@ begin
   ) values (
     v_id, v_operation_id, v_supplier_id, v_document_type, v_file_name,
     'foreign-trade-orders', v_storage_path, v_mime_type, v_file_size, v_file_hash,
-    'queued', auth.uid()
+    case when v_document_type in ('proforma','purchase_order','commercial_invoice','packing_list') then 'queued' else 'uploaded' end,
+    auth.uid()
   );
   return v_id;
+end
+$$;
+
+create or replace function public.update_foreign_trade_document_type(
+  p_document_id uuid,
+  p_document_type text
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_document_type text := lower(trim(coalesce(p_document_type, '')));
+  v_extractable boolean;
+begin
+  if not public.foreign_trade_has_permission('foreign_trade.documents.manage') then
+    raise exception 'foreign_trade_forbidden' using errcode = '42501';
+  end if;
+  if v_document_type not in (
+    'proforma','purchase_order','commercial_invoice','packing_list','bill_of_lading',
+    'certificate_of_origin','customs_document','payment_receipt','freight_quote',
+    'fund_request','agency_settlement','other'
+  ) then raise exception 'foreign_trade_invalid_document_type'; end if;
+
+  v_extractable := v_document_type in ('proforma','purchase_order','commercial_invoice','packing_list');
+  update public.foreign_trade_documents
+  set document_type = v_document_type,
+      parse_status = case when v_extractable then 'failed' else 'uploaded' end,
+      extraction_result = '{}'::jsonb,
+      review_result = '{}'::jsonb,
+      review_version = 1,
+      extraction_confidence = null,
+      review_warnings = '[]'::jsonb,
+      extraction_model = null,
+      extraction_request_id = null,
+      extraction_started_at = null,
+      extraction_completed_at = null,
+      extraction_error = case when v_extractable then 'Tipo actualizado. Inicia nuevamente el análisis.' else null end
+  where id = p_document_id and parse_status <> 'confirmed';
+
+  if not found then raise exception 'foreign_trade_document_not_found_or_confirmed'; end if;
 end
 $$;
 
@@ -738,10 +781,12 @@ revoke all on function public.foreign_trade_expense_reconciliation_list(uuid) fr
 revoke all on function public.save_foreign_trade_expense_reconciliation(jsonb) from public;
 revoke all on function public.apply_foreign_trade_expense_reconciliation(uuid) from public;
 revoke all on function public.register_foreign_trade_document(jsonb) from public;
+revoke all on function public.update_foreign_trade_document_type(uuid,text) from public;
 grant execute on function public.foreign_trade_expense_reconciliation_list(uuid) to authenticated, service_role;
 grant execute on function public.save_foreign_trade_expense_reconciliation(jsonb) to authenticated, service_role;
 grant execute on function public.apply_foreign_trade_expense_reconciliation(uuid) to authenticated, service_role;
 grant execute on function public.register_foreign_trade_document(jsonb) to authenticated, service_role;
+grant execute on function public.update_foreign_trade_document_type(uuid,text) to authenticated, service_role;
 
 grant select on public.foreign_trade_expense_reconciliations, public.foreign_trade_expense_reconciliation_lines to authenticated;
 grant select, insert, update, delete on public.foreign_trade_expense_reconciliations, public.foreign_trade_expense_reconciliation_lines to service_role;
