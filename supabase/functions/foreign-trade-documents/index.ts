@@ -145,7 +145,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   });
   const extractionTarget = expectedLineCount > 0 ? Math.min(500, expectedLineCount + 2) : expectedLineCount;
   const ranges = buildExtractionRanges(extractionTarget, lineChunkSize);
-  let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRange(common, skill, range, maxTokens, "extract"));
+  let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRangeSafely(common, skill, range, maxTokens, "extract"));
   let requestBatches = [...batches];
   let merged = mergeExtractionPasses(headerResult.data, batches);
   console.info("[foreign-trade-documents] first line pass ready", {
@@ -164,7 +164,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     const recovered = await mapWithConcurrency(
       recoveryRanges,
       rangeConcurrency,
-      async (range) => extractLineRange(common, skill, range, maxTokens, "recover"),
+      async (range) => extractLineRangeSafely(common, skill, range, maxTokens, "recover"),
     );
     batches = [...batches, ...recovered];
     requestBatches = [...requestBatches, ...recovered];
@@ -182,7 +182,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     const verifiedBatches = await mapWithConcurrency(
       verificationRanges,
       rangeConcurrency,
-      async (range) => extractCompactLineRange(common, skill, range, maxTokens),
+      async (range) => extractCompactLineRangeSafely(common, skill, range, maxTokens),
     );
     requestBatches = [...requestBatches, ...verifiedBatches];
     const compactVerification = {
@@ -243,6 +243,7 @@ async function extractCompactLineRange(
     schemaName: "foreign_trade_document_compact_verification",
     schema: compactVerificationSchema,
     maxTokens: Math.min(maxTokens, 3_500),
+    timeoutMs: Math.min(common.timeoutMs, 40_000),
   });
   console.info("[foreign-trade-documents] compact line range ready", {
     requestId: common.requestId,
@@ -251,6 +252,32 @@ async function extractCompactLineRange(
     extractedLineCount: Array.isArray(asObject(result.data).lines) ? (asObject(result.data).lines as unknown[]).length : 0,
   });
   return { ...range, data: { ...asObject(result.data), _request_id: result.requestId } };
+}
+
+async function extractCompactLineRangeSafely(
+  common: Omit<StructuredExtractionInput, "maxTokens" | "stage" | "prompt" | "schemaName" | "schema">,
+  skill: ForeignTradePdfReadingSkill,
+  range: ExtractionRange,
+  maxTokens: number,
+): Promise<ExtractionLineBatch> {
+  try {
+    return await extractCompactLineRange(common, skill, range, maxTokens);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error no identificado";
+    console.error("[foreign-trade-documents] compact line range failed", {
+      requestId: common.requestId,
+      start: range.start,
+      end: range.end,
+      message,
+    });
+    return {
+      ...range,
+      data: {
+        lines: [],
+        warnings: [`No se pudo verificar el bloque físico ${range.start}-${range.end}: ${message}`],
+      },
+    };
+  }
 }
 
 type StructuredExtractionInput = {
@@ -283,6 +310,7 @@ async function extractLineRange(
     schemaName: "foreign_trade_document_lines",
     schema: lineExtractionSchema,
     maxTokens: Math.min(maxTokens, 8_000),
+    timeoutMs: Math.min(common.timeoutMs, 40_000),
   });
   console.info("[foreign-trade-documents] line range ready", {
     requestId: common.requestId,
@@ -295,6 +323,34 @@ async function extractLineRange(
     ...range,
     data: { ...result.data, _request_id: result.requestId },
   };
+}
+
+async function extractLineRangeSafely(
+  common: Omit<StructuredExtractionInput, "maxTokens" | "stage" | "prompt" | "schemaName" | "schema">,
+  skill: ForeignTradePdfReadingSkill,
+  range: ExtractionRange,
+  maxTokens: number,
+  mode: "extract" | "recover" | "verify",
+): Promise<ExtractionLineBatch> {
+  try {
+    return await extractLineRange(common, skill, range, maxTokens, mode);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error no identificado";
+    console.error("[foreign-trade-documents] line range failed", {
+      requestId: common.requestId,
+      mode,
+      start: range.start,
+      end: range.end,
+      message,
+    });
+    return {
+      ...range,
+      data: {
+        lines: [],
+        warnings: [`No se pudo extraer el bloque físico ${range.start}-${range.end}: ${message}`],
+      },
+    };
+  }
 }
 
 async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) {
