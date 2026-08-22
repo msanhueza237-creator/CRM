@@ -111,7 +111,8 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     || "gpt-4.1-mini";
   const timeoutMs = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
   const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
-  const rangeConcurrency = Math.round(clampNumber(Deno.env.get("OPENAI_DOCUMENT_RANGE_CONCURRENCY"), 1, 6, 4));
+  const lineChunkSize = 15;
+  const rangeConcurrency = Math.round(clampNumber(Deno.env.get("OPENAI_DOCUMENT_RANGE_CONCURRENCY"), 1, 8, 6));
   const fileData = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
   const common = { apiKey, model, filename, mimeType, fileData, requestId, requestSignal, timeoutMs };
   const skill = createForeignTradePdfReadingSkill(documentType);
@@ -122,6 +123,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     timeoutMs,
     model,
     documentType,
+    lineChunkSize,
     rangeConcurrency,
     pdfSkillVersion: skill.version,
   });
@@ -136,11 +138,20 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   });
   const headerTotals = asObject(asObject(headerResult.data).document_totals);
   const expectedLineCount = Number(headerTotals.line_count || 0);
-  const ranges = buildExtractionRanges(expectedLineCount, 30);
+  console.info("[foreign-trade-documents] header extraction ready", {
+    requestId,
+    expectedLineCount,
+  });
+  const ranges = buildExtractionRanges(expectedLineCount, lineChunkSize);
   let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRange(common, skill, range, maxTokens, "extract"));
   let requestBatches = [...batches];
   let merged = mergeExtractionPasses(headerResult.data, batches);
-  const recoveryRanges = missingExtractionRanges(expectedLineCount, merged.lines, 30);
+  console.info("[foreign-trade-documents] first line pass ready", {
+    requestId,
+    expectedLineCount,
+    extractedLineCount: merged.lines.length,
+  });
+  const recoveryRanges = missingExtractionRanges(expectedLineCount, merged.lines, lineChunkSize);
   if (recoveryRanges.length) {
     console.warn("[foreign-trade-documents] incomplete first pass, recovering ranges", {
       requestId,
@@ -158,7 +169,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     merged = mergeExtractionPasses(headerResult.data, batches);
   }
 
-  let quality = assessPdfExtractionQuality(merged);
+  let quality = assessPdfExtractionQuality(merged, lineChunkSize);
   if (quality.requiresVerification && quality.verificationRanges.length) {
     console.warn("[foreign-trade-documents] quality verification started", {
       requestId,
@@ -172,7 +183,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     );
     requestBatches = [...requestBatches, ...verifiedBatches];
     const verifiedMerged = mergeExtractionPasses(headerResult.data, verifiedBatches);
-    const verifiedQuality = assessPdfExtractionQuality(verifiedMerged);
+    const verifiedQuality = assessPdfExtractionQuality(verifiedMerged, lineChunkSize);
     if (verifiedMerged.lines.length >= merged.lines.length && verifiedQuality.score >= quality.score) {
       merged = verifiedMerged;
       quality = verifiedQuality;
@@ -229,7 +240,14 @@ async function extractLineRange(
     prompt: skill.linePrompt(range, mode),
     schemaName: "foreign_trade_document_lines",
     schema: lineExtractionSchema,
-    maxTokens,
+    maxTokens: Math.min(maxTokens, 8_000),
+  });
+  console.info("[foreign-trade-documents] line range ready", {
+    requestId: common.requestId,
+    mode,
+    start: range.start,
+    end: range.end,
+    extractedLineCount: Array.isArray(asObject(result.data).lines) ? (asObject(result.data).lines as unknown[]).length : 0,
   });
   return {
     ...range,

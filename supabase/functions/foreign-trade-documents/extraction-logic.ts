@@ -1,6 +1,6 @@
 export type JsonRecord = Record<string, unknown>;
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v4";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v5";
 
 export type ExtractionWarning = {
   code: string;
