@@ -8918,6 +8918,25 @@ th {
   font-size: 11px;
 }
 
+.foreign-trade-stale-extraction {
+  align-items: flex-start;
+  background: #fff3dc;
+  border: 1px solid #e8c67f;
+  border-left: 4px solid #c88119;
+  border-radius: 7px;
+  color: #684912;
+  display: flex;
+  font-size: 12px;
+  gap: 9px;
+  line-height: 1.45;
+  padding: 11px 13px;
+}
+
+.foreign-trade-stale-extraction svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
 .foreign-trade-review-warnings {
   background: #fff8e8;
   border-left: 3px solid #e2a42d;

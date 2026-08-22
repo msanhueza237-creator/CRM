@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import {
+  FOREIGN_TRADE_EXTRACTION_VERSION,
   buildExtractionRanges,
   mergeExtractionPasses,
   missingExtractionRanges,
@@ -507,6 +508,7 @@ const preparedExtraction = prepareExtraction({
 assert.equal(preparedExtraction.extraction.lines[0].recalculated_cbm_total, 0.048);
 assert.equal(preparedExtraction.extraction.lines[0].cbm_per_box, 0.05);
 assert.equal(preparedExtraction.extraction.lines[0].cbm_per_unit, 0.01);
+assert.equal(preparedExtraction.extraction.extraction_version, FOREIGN_TRADE_EXTRACTION_VERSION);
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "line_total_mismatch"));
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "cbm_mismatch"));
 

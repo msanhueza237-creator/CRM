@@ -58,6 +58,8 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   "packing_list",
 ]);
 
+const currentExtractionVersion = "complete_lines_v2";
+
 type PendingDocumentUpload = {
   key: string;
   file: File;
@@ -238,13 +240,19 @@ export function ForeignTradeDocumentsPanel({
     setPendingFiles((current) => current.filter((item) => item.key !== key));
   }
 
-  async function retry(document: ForeignTradeDocument) {
+  async function retry(document: ForeignTradeDocument, openReview = false) {
     setBusyId(document.id); setError(""); setMessage("Reintentando la extracción...");
     setDocuments((current) => current.map((item) => item.id === document.id ? { ...item, parse_status: "extracting" } : item));
     try {
       await runExtraction(document.id);
-      await load();
-      setMessage("Extracción lista para revisión.");
+      const refreshedDocuments = await getForeignTradeDocuments(operationId);
+      setDocuments(refreshedDocuments);
+      const refreshedDocument = refreshedDocuments.find((item) => item.id === document.id);
+      if (openReview && refreshedDocument?.parse_status === "review_required") setReviewDocument(refreshedDocument);
+      const lineCount = extractionLines(refreshedDocument?.extraction_result).length;
+      setMessage(lineCount
+        ? `Extracción regenerada: ${lineCount} producto(s) listos para revisar.`
+        : "Extracción lista para revisión.");
     } catch (retryError) {
       await load();
       if (!isAbortError(retryError)) setError(humanizeDocumentError(retryError));
@@ -399,6 +407,7 @@ export function ForeignTradeDocumentsPanel({
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
                 {document.parse_status !== "confirmed" ? <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title="Cambiar el archivo conservando su clasificación"><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label> : null}
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
+                {!isExtracting && document.parse_status === "review_required" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document, true)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Regenerar</button> : null}
                 {isExtracting ? <button className="ghost-button danger" type="button" disabled={cancelling} onClick={() => void stopExtraction(document)}>{cancelling ? <LoaderCircle className="spin" size={16} /> : <CircleStop size={16} />} Detener</button> : null}
                 {!isExtracting && document.parse_status === "failed" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Reintentar</button> : null}
                 {document.parse_status !== "confirmed" ? <button className="icon-button danger" type="button" title="Eliminar documento" disabled={deleting || replacing} onClick={() => void removeDocument(document)}>{deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}</button> : null}
@@ -408,12 +417,12 @@ export function ForeignTradeDocumentsPanel({
         </div>
       </section>
 
-      {reviewDocument ? <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} /> : null}
+      {reviewDocument ? <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} /> : null}
     </section>
   );
 }
 
-function DocumentReviewDialog({ document, suppliers, onClose, onConfirmed }: { document: ForeignTradeDocument; suppliers: ForeignTradeSupplier[]; onClose: () => void; onConfirmed: (message: string) => Promise<void> }) {
+function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onConfirmed }: { document: ForeignTradeDocument; suppliers: ForeignTradeSupplier[]; onClose: () => void; onRegenerate: () => Promise<void>; onConfirmed: (message: string) => Promise<void> }) {
   const [review, setReview] = useState<ForeignTradeDocumentExtraction>(() => structuredClone(document.extraction_result) as ForeignTradeDocumentExtraction);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -460,9 +469,12 @@ function DocumentReviewDialog({ document, suppliers, onClose, onConfirmed }: { d
   const general = review.general;
   const lineCbmTotal = review.lines.reduce((sum, line) => sum + (line.cbm_total || 0), 0);
   const expectedLineCount = review.document_totals.line_count;
+  const incompleteCoverage = Boolean(expectedLineCount && review.lines.length / expectedLineCount < 0.8);
+  const needsRegeneration = review.extraction_version !== currentExtractionVersion || incompleteCoverage;
   return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-review-title">
     <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-review-title">Revisar proforma</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
     <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} líneas detectadas</span><span>{document.review_warnings.length} advertencias</span></div>
+    {needsRegeneration ? <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Extracción desactualizada o incompleta.</strong> Regenera el análisis para obtener todas las filas y recalcular el CBM por unidad antes de importar.</span></div> : null}
     {document.review_warnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{document.review_warnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
 
     <section className="foreign-trade-review-section"><div><h3>Datos generales</h3><span>Extraído del documento · editable antes de confirmar</span></div><div className="foreign-trade-form-grid">
@@ -494,7 +506,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onConfirmed }: { d
       <div className="foreign-trade-review-lines">{review.lines.map((line, index) => <ReviewLineCard key={`${line.source_index}-${index}`} line={line} catalog={catalog} onChange={(patch) => setLine(index, patch)} />)}</div>
     </section>
     {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
-    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="primary-button" type="button" disabled={busy || !review.lines.some((line) => line.include)} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : "Confirmar e importar"}</button></footer>
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || needsRegeneration || !review.lines.some((line) => line.include)} title={needsRegeneration ? "Regenera esta extracción antes de importar" : undefined} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : "Confirmar e importar"}</button></footer>
   </div></div>;
 }
 
@@ -550,6 +562,12 @@ function calculateCbmPerUnit(total: number | null, quantity: number | null) {
 function roundCbm(value: number, digits = 6) {
   const factor = 10 ** digits;
   return Math.round((value + Number.EPSILON) * factor) / factor;
+}
+
+function extractionLines(value: ForeignTradeDocumentExtraction | Record<string, never> | undefined) {
+  return value && Array.isArray((value as ForeignTradeDocumentExtraction).lines)
+    ? (value as ForeignTradeDocumentExtraction).lines
+    : [];
 }
 
 function DocumentStatus({ document }: { document: ForeignTradeDocument }) {

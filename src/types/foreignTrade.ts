@@ -537,6 +537,7 @@ export interface ForeignTradeExtractedLine {
 }
 
 export interface ForeignTradeDocumentExtraction {
+  extraction_version?: string;
   general: ForeignTradeExtractionGeneral;
   lines: ForeignTradeExtractedLine[];
   document_totals: {

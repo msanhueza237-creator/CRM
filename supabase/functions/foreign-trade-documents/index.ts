@@ -1,4 +1,5 @@
 import {
+  FOREIGN_TRADE_EXTRACTION_VERSION,
   buildExtractionRanges,
   mergeExtractionPasses,
   missingExtractionRanges,
@@ -23,7 +24,7 @@ Deno.serve(async (req) => {
   try {
     const rest = getRestClient();
     const route = getRoute(req.url);
-    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", requestId }, 200, req);
+    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, requestId }, 200, req);
 
     const user = await authenticateRequest(req, rest);
     const profile = await getProfile(rest, user.id);

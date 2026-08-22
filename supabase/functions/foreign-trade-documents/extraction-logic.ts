@@ -1,5 +1,7 @@
 export type JsonRecord = Record<string, unknown>;
 
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "complete_lines_v2";
+
 export type ExtractionWarning = {
   code: string;
   message: string;
@@ -237,6 +239,7 @@ export function prepareExtraction(value: unknown) {
 
   return {
     extraction: {
+      extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
       general: {
         supplier_id: null,
         supplier_name: nullableText(general.supplier_name),
