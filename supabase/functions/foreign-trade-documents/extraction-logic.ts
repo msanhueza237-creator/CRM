@@ -1,6 +1,6 @@
 export type JsonRecord = Record<string, unknown>;
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v8";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v9";
 
 export type ExtractionWarning = {
   code: string;
@@ -122,10 +122,12 @@ export function mergeCompactVerification(baseValue: unknown, verificationValue: 
     linesByIndex.set(sourceIndex, { ...existing, ...verifiedValues, source_index: sourceIndex });
   });
 
-  const lines = [...linesByIndex.entries()]
+  let lines = [...linesByIndex.entries()]
     .sort(([left], [right]) => left - right)
     .map(([, row]) => row);
   const documentTotals = asObject(base.document_totals);
+  const reconciledCbm = removeLikelyDuplicateAggregate(lines, documentTotals.cbm_total, "cbm_total", "CBM");
+  lines = reconciledCbm.lines;
   const expectedLineCount = integer(documentTotals.line_count);
   const verifiedLineCount = new Set(
     verifiedLines
@@ -143,7 +145,70 @@ export function mergeCompactVerification(baseValue: unknown, verificationValue: 
     warnings: [...new Set([
       ...stringArray(base.warnings, 30),
       ...stringArray(verification.warnings, 30),
+      ...reconciledCbm.warnings,
     ])].slice(0, 30),
+  };
+}
+
+export function mergeUnnumberedRows(baseValue: unknown, scanValue: unknown) {
+  const base = asObject(baseValue);
+  const scan = asObject(scanValue);
+  let lines = (Array.isArray(base.lines) ? base.lines : []).map(asObject);
+  const warnings = stringArray(base.warnings, 30);
+  const candidates = (Array.isArray(scan.lines) ? scan.lines : [])
+    .map(asObject)
+    .filter((row) => nullableText(row.source_row_label) === null && Boolean(nullableText(row.product_name) || nullableText(row.description)))
+    .sort((left, right) => (integer(left.source_index) || 500) - (integer(right.source_index) || 500));
+
+  for (const candidate of candidates) {
+    const candidateName = normalizedKey(candidate.product_name || candidate.description);
+    const duplicate = lines.some((row) => (
+      normalizedKey(row.product_name || row.description) === candidateName
+      && nearlyEqual(numeric(row.quantity) || 0, numeric(candidate.quantity) || 0, 0.001)
+      && nearlyEqual(numeric(row.unit_price) || 0, numeric(candidate.unit_price) || 0, 0.001)
+    ));
+    if (duplicate) continue;
+    const requestedIndex = integer(candidate.source_index) || lines.length + 1;
+    const insertIndex = Math.min(lines.length + 1, Math.max(1, requestedIndex));
+    lines = lines.map((row, position) => ({
+      ...row,
+      source_index: position + 1 >= insertIndex ? position + 2 : position + 1,
+    }));
+    lines.splice(insertIndex - 1, 0, { ...candidate, source_index: insertIndex, source_row_label: null });
+    warnings.push(`Se incorporó la fila física ${insertIndex} sin número impreso: ${nullableText(candidate.product_name) || nullableText(candidate.description)}.`);
+  }
+
+  const documentTotals = asObject(base.document_totals);
+  return {
+    ...base,
+    document_totals: {
+      ...documentTotals,
+      line_count: Math.max(integer(documentTotals.line_count) || 0, lines.length),
+    },
+    lines,
+    warnings: [...new Set([...warnings, ...stringArray(scan.warnings, 20)])].slice(0, 30),
+  };
+}
+
+function removeLikelyDuplicateAggregate(lines: JsonRecord[], documentTotalValue: unknown, key: string, label: string) {
+  const documentTotal = numeric(documentTotalValue);
+  if (documentTotal === null) return { lines, warnings: [] as string[] };
+  const present = lines
+    .map((row, index) => ({ index, value: numeric(row[key]), confidence: numeric(row.confidence) || 0 }))
+    .filter((item): item is { index: number; value: number; confidence: number } => item.value !== null && item.value > 0);
+  const sum = present.reduce((total, item) => total + item.value, 0);
+  if (sum <= documentTotal || nearlyEqual(sum, documentTotal, 0.015)) return { lines, warnings: [] as string[] };
+
+  const duplicateCandidates = present
+    .filter((item) => present.some((other) => other.index !== item.index && nearlyEqual(other.value, item.value, 0.001)))
+    .sort((left, right) => left.confidence - right.confidence || left.index - right.index);
+  const removable = duplicateCandidates.find((item) => nearlyEqual(sum - item.value, documentTotal, 0.015));
+  if (!removable) return { lines, warnings: [] as string[] };
+
+  const corrected = lines.map((row, index) => index === removable.index ? { ...row, [key]: null } : row);
+  return {
+    lines: corrected,
+    warnings: [`Se descartó un ${label} duplicado de ${removable.value} en la línea física ${removable.index + 1}; la suma corregida concilia con el total documental ${documentTotal}.`],
   };
 }
 
@@ -332,6 +397,10 @@ function warning(code: string, message: string, severity: ExtractionWarning["sev
 function nearlyEqual(a: number, b: number, tolerance: number) {
   const scale = Math.max(Math.abs(a), Math.abs(b), 1);
   return Math.abs(a - b) / scale <= tolerance;
+}
+
+function normalizedKey(value: unknown) {
+  return text(value).toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function asObject(value: unknown): JsonRecord {

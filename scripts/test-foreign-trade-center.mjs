@@ -6,6 +6,7 @@ import {
   buildExtractionRanges,
   mergeCompactVerification,
   mergeExtractionPasses,
+  mergeUnnumberedRows,
   missingExtractionRanges,
   prepareExtraction,
 } from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
@@ -584,6 +585,40 @@ assert.equal(compactlyVerifiedExtraction.document_totals.line_count, 3);
 assert.equal(compactlyVerifiedExtraction.lines[1].cbm_total, 0.2);
 assert.equal(compactlyVerifiedExtraction.lines[1].gross_weight_kg, 2);
 assert.equal(compactlyVerifiedExtraction.lines[2].product_name, "Producto sin numero impreso");
+
+const duplicateAggregateExtraction = mergeCompactVerification(
+  {
+    document_totals: { line_count: 2, cbm_total: 1.8 },
+    lines: [
+      { source_index: 1, product_name: "Producto 1", cbm_total: 1.8, confidence: 0.9 },
+      { source_index: 2, product_name: "Producto 2", cbm_total: 1.8, confidence: 0.95 },
+    ],
+    warnings: [],
+  },
+  { lines: [], warnings: [] },
+);
+assert.equal(duplicateAggregateExtraction.lines[0].cbm_total, null);
+assert.equal(duplicateAggregateExtraction.lines[1].cbm_total, 1.8);
+assert.ok(duplicateAggregateExtraction.warnings.some((message) => message.includes("CBM duplicado")));
+
+const extractionWithUnnumberedRow = mergeUnnumberedRows(
+  {
+    document_totals: { line_count: 2, total: 60 },
+    lines: [
+      { source_index: 1, source_row_label: "1", product_name: "Producto 1", quantity: 1, unit_price: 10 },
+      { source_index: 2, source_row_label: "2", product_name: "Producto 2", quantity: 1, unit_price: 20 },
+    ],
+    warnings: [],
+  },
+  {
+    lines: [{ source_index: 2, source_row_label: null, product_name: "Producto sin numero", quantity: 1, unit_price: 30 }],
+    warnings: [],
+  },
+);
+assert.equal(extractionWithUnnumberedRow.lines.length, 3);
+assert.equal(extractionWithUnnumberedRow.document_totals.line_count, 3);
+assert.equal(extractionWithUnnumberedRow.lines[1].product_name, "Producto sin numero");
+assert.equal(extractionWithUnnumberedRow.lines[2].source_index, 3);
 
 const completeProforma = prepareExtraction(mergedExtraction);
 assert.equal(completeProforma.extraction.general.proforma_number, "26TDC12");

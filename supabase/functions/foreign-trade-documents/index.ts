@@ -3,6 +3,7 @@ import {
   buildExtractionRanges,
   mergeExtractionPasses,
   mergeCompactVerification,
+  mergeUnnumberedRows,
   missingExtractionRanges,
   prepareExtraction,
   type ExtractionLineBatch,
@@ -209,6 +210,11 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     }));
   }
 
+  const unnumberedResult = await extractUnnumberedRowsSafely(common, skill, maxTokens);
+  requestBatches = [...requestBatches, { start: 1, end: 500, data: { _request_id: unnumberedResult.requestId } }];
+  merged = mergeUnnumberedRows(merged, unnumberedResult.data);
+  quality = assessPdfExtractionQuality(merged, lineChunkSize);
+
   const extractionWithSkill = {
     ...merged,
     pdf_skill_version: skill.version,
@@ -228,6 +234,36 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
       .join(","),
     data: extractionWithSkill,
   };
+}
+
+async function extractUnnumberedRowsSafely(
+  common: Omit<StructuredExtractionInput, "maxTokens" | "stage" | "prompt" | "schemaName" | "schema">,
+  skill: ForeignTradePdfReadingSkill,
+  maxTokens: number,
+) {
+  try {
+    const result = await callOpenAiStructuredExtraction({
+      ...common,
+      stage: "scan-unnumbered-rows",
+      prompt: `Actúa como segundo revisor de un documento ${skill.documentType}. Recorre visualmente todas las páginas y devuelve EXCLUSIVAMENTE productos comerciales que no tengan número o etiqueta de fila impresa en la primera columna. No devuelvas filas numeradas, encabezados, subtotales ni totales.\n\nPara cada producto sin número, source_index debe ser su posición física contando todas las filas comerciales anteriores, incluidas otras filas sin número; source_row_label debe ser null. Extrae nombre, cantidad, cajas, precio, importe, peso y CBM desde su propia línea. Presta especial atención a productos ubicados entre dos filas numeradas consecutivas. Si no existe ninguno, devuelve lines vacío. Nunca inventes una fila para explicar una diferencia de totales.`,
+      schemaName: "foreign_trade_document_unnumbered_rows",
+      schema: lineExtractionSchema,
+      maxTokens: Math.min(maxTokens, 3_000),
+      timeoutMs: Math.min(common.timeoutMs, 35_000),
+    });
+    console.info("[foreign-trade-documents] unnumbered row scan ready", {
+      requestId: common.requestId,
+      extractedLineCount: Array.isArray(asObject(result.data).lines) ? (asObject(result.data).lines as unknown[]).length : 0,
+    });
+    return { requestId: result.requestId, data: result.data };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Error no identificado";
+    console.error("[foreign-trade-documents] unnumbered row scan failed", { requestId: common.requestId, message });
+    return {
+      requestId: "",
+      data: { lines: [], warnings: [`No se pudo completar la búsqueda de filas sin número: ${message}`] },
+    };
+  }
 }
 
 async function extractCompactLineRange(
