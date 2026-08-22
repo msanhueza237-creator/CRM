@@ -1,6 +1,6 @@
 export type JsonRecord = Record<string, unknown>;
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v6";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v7";
 
 export type ExtractionWarning = {
   code: string;
@@ -127,7 +127,11 @@ export function mergeCompactVerification(baseValue: unknown, verificationValue: 
     .map(([, row]) => row);
   const documentTotals = asObject(base.document_totals);
   const expectedLineCount = integer(documentTotals.line_count);
-  const verifiedLineCount = verifiedLines.length;
+  const verifiedLineCount = new Set(
+    verifiedLines
+      .map((item) => integer(asObject(item).source_index))
+      .filter((item): item is number => item !== null && item > 0),
+  ).size;
   const effectiveLineCount = verifiedLineCount >= (expectedLineCount || 0)
     ? Math.max(expectedLineCount || 0, verifiedLineCount)
     : expectedLineCount;

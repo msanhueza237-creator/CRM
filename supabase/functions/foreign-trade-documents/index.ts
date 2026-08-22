@@ -178,16 +178,24 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
       score: quality.score,
       warnings: quality.warnings,
     });
-    const verificationResult = await callOpenAiStructuredExtraction({
-      ...common,
-      stage: "verify-compact",
-      prompt: `${skill.linePrompt({ start: 1, end: 500 }, "verify")}\n\nDevuelve todas las filas reales, incluidas las que no tengan número impreso. Para esta verificación compacta prioriza identidad, cantidad, cajas, precio, peso bruto y CBM total de cada fila. No inventes filas para completar una secuencia.`,
-      schemaName: "foreign_trade_document_compact_verification",
-      schema: compactVerificationSchema,
-      maxTokens: Math.min(maxTokens, 12_000),
-    });
-    requestBatches = [...requestBatches, { start: 1, end: 500, data: { _request_id: verificationResult.requestId } }];
-    const verifiedMerged = mergeCompactVerification(merged, verificationResult.data);
+    const verificationRanges = buildExtractionRanges(Math.max(extractionTarget, merged.lines.length), lineChunkSize);
+    const verifiedBatches = await mapWithConcurrency(
+      verificationRanges,
+      rangeConcurrency,
+      async (range) => extractCompactLineRange(common, skill, range, maxTokens),
+    );
+    requestBatches = [...requestBatches, ...verifiedBatches];
+    const compactVerification = {
+      lines: verifiedBatches.flatMap((batch) => {
+        const data = asObject(batch.data);
+        return Array.isArray(data.lines) ? data.lines : [];
+      }),
+      warnings: verifiedBatches.flatMap((batch) => {
+        const data = asObject(batch.data);
+        return Array.isArray(data.warnings) ? data.warnings : [];
+      }),
+    };
+    const verifiedMerged = mergeCompactVerification(merged, compactVerification);
     const verifiedQuality = assessPdfExtractionQuality(verifiedMerged, lineChunkSize);
     if (verifiedMerged.lines.length >= merged.lines.length && verifiedQuality.score >= quality.score) {
       merged = verifiedMerged;
@@ -220,6 +228,29 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
       .join(","),
     data: extractionWithSkill,
   };
+}
+
+async function extractCompactLineRange(
+  common: Omit<StructuredExtractionInput, "maxTokens" | "stage" | "prompt" | "schemaName" | "schema">,
+  skill: ForeignTradePdfReadingSkill,
+  range: ExtractionRange,
+  maxTokens: number,
+): Promise<ExtractionLineBatch> {
+  const result = await callOpenAiStructuredExtraction({
+    ...common,
+    stage: `verify-compact-${range.start}-${range.end}`,
+    prompt: `${skill.linePrompt(range, "verify")}\n\nDevuelve todas las filas físicas reales del rango, incluidas las que no tengan número impreso. Para esta verificación compacta prioriza identidad, cantidad, cajas, precio, peso bruto y CBM total de cada fila. No inventes filas para completar una secuencia ni omitas una fila por no tener número impreso.`,
+    schemaName: "foreign_trade_document_compact_verification",
+    schema: compactVerificationSchema,
+    maxTokens: Math.min(maxTokens, 3_500),
+  });
+  console.info("[foreign-trade-documents] compact line range ready", {
+    requestId: common.requestId,
+    start: range.start,
+    end: range.end,
+    extractedLineCount: Array.isArray(asObject(result.data).lines) ? (asObject(result.data).lines as unknown[]).length : 0,
+  });
+  return { ...range, data: { ...asObject(result.data), _request_id: result.requestId } };
 }
 
 type StructuredExtractionInput = {
