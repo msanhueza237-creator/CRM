@@ -452,9 +452,17 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
     if (!window.confirm("¿Confirmar esta revisión e importar las líneas seleccionadas? Tu revisión manual se considerará definitiva aunque la extracción tenga advertencias. El archivo original y la extracción se conservarán.")) return;
     setBusy(true); setError("");
     try {
+      const documentCurrency = normalizeCurrencyCode(review.general.currency, "USD");
       const normalizedReview = {
         ...review,
-        lines: review.lines.map((line) => withDerivedCbm(line, {})),
+        general: {
+          ...review.general,
+          currency: documentCurrency,
+        },
+        lines: review.lines.map((line) => ({
+          ...withDerivedCbm(line, {}),
+          currency: normalizeCurrencyCode(line.currency, documentCurrency),
+        })),
         document_totals: {
           ...review.document_totals,
           line_count: review.document_totals.line_count || review.lines.length,
@@ -591,6 +599,12 @@ function formatFileSize(bytes: number) { return bytes >= 1024 * 1024 ? `${(bytes
 function formatDateTime(value: string) { return new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
 function formatNumber(value: number) { return new Intl.NumberFormat("es-CL", { maximumFractionDigits: 6 }).format(value); }
 function isAbortError(error: unknown) { return error instanceof DOMException && error.name === "AbortError"; }
+function normalizeCurrencyCode(value: string | null | undefined, fallback: string) {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (/^[A-Z]{3}$/.test(normalized)) return normalized;
+  const normalizedFallback = String(fallback || "").trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(normalizedFallback) ? normalizedFallback : "USD";
+}
 function humanizeDocumentError(error: unknown) {
   const details = error && typeof error === "object" ? error as Record<string, unknown> : {};
   const message = error instanceof Error
@@ -602,6 +616,7 @@ function humanizeDocumentError(error: unknown) {
   if (/request_stale|detenido por el usuario/i.test(message)) return "El análisis fue detenido y su respuesta anterior quedó descartada.";
   if (message.includes("already") || message.includes("not_ready")) return "El documento ya fue confirmado o todavía no está listo para revisión.";
   if (message.includes("not_found_or_confirmed")) return "El documento ya no existe o fue confirmado y no puede modificarse.";
+  if (message.includes("invalid_currency")) return "La moneda debe expresarse con un código de tres letras, por ejemplo USD.";
   if (message.includes("invalid_review") || message.includes("invalid_product")) return "Revisa los datos marcados antes de confirmar.";
   return message;
 }
