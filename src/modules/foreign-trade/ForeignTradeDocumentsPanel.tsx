@@ -449,7 +449,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
     finally { setCatalogBusy(false); }
   }
   async function confirm() {
-    if (!window.confirm("¿Confirmar esta revisión e importar las líneas seleccionadas? El archivo original y la extracción se conservarán.")) return;
+    if (!window.confirm("¿Confirmar esta revisión e importar las líneas seleccionadas? Tu revisión manual se considerará definitiva aunque la extracción tenga advertencias. El archivo original y la extracción se conservarán.")) return;
     setBusy(true); setError("");
     try {
       const normalizedReview = {
@@ -474,7 +474,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
   return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-review-title">
     <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-review-title">Revisar proforma</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
     <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} líneas detectadas</span><span>{document.review_warnings.length} advertencias</span></div>
-    {needsRegeneration ? <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Extracción desactualizada o incompleta.</strong> Regenera el análisis para obtener todas las filas y recalcular el CBM por unidad antes de importar.</span></div> : null}
+    {needsRegeneration ? <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Extracción desactualizada o incompleta.</strong> Puedes regenerarla para intentar recuperar más datos o confirmar tu revisión manual e importarla tal como está.</span></div> : null}
     {document.review_warnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{document.review_warnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
 
     <section className="foreign-trade-review-section"><div><h3>Datos generales</h3><span>Extraído del documento · editable antes de confirmar</span></div><div className="foreign-trade-form-grid">
@@ -506,7 +506,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
       <div className="foreign-trade-review-lines">{review.lines.map((line, index) => <ReviewLineCard key={`${line.source_index}-${index}`} line={line} catalog={catalog} onChange={(patch) => setLine(index, patch)} />)}</div>
     </section>
     {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
-    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || needsRegeneration || !review.lines.some((line) => line.include)} title={needsRegeneration ? "Regenera esta extracción antes de importar" : undefined} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : "Confirmar e importar"}</button></footer>
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || !review.lines.some((line) => line.include)} title={needsRegeneration ? "Confirmar la revisión manual e importar pese a las advertencias" : undefined} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : "Confirmar e importar"}</button></footer>
   </div></div>;
 }
 
