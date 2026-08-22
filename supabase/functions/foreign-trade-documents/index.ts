@@ -111,6 +111,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     || "gpt-4.1-mini";
   const timeoutMs = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
   const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
+  const rangeConcurrency = Math.round(clampNumber(Deno.env.get("OPENAI_DOCUMENT_RANGE_CONCURRENCY"), 1, 6, 4));
   const fileData = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
   const common = { apiKey, model, filename, mimeType, fileData, requestId, requestSignal, timeoutMs };
   const skill = createForeignTradePdfReadingSkill(documentType);
@@ -121,6 +122,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     timeoutMs,
     model,
     documentType,
+    rangeConcurrency,
     pdfSkillVersion: skill.version,
   });
 
@@ -135,7 +137,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   const headerTotals = asObject(asObject(headerResult.data).document_totals);
   const expectedLineCount = Number(headerTotals.line_count || 0);
   const ranges = buildExtractionRanges(expectedLineCount, 30);
-  let batches = await mapWithConcurrency(ranges, 2, async (range) => extractLineRange(common, skill, range, maxTokens, "extract"));
+  let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRange(common, skill, range, maxTokens, "extract"));
   let requestBatches = [...batches];
   let merged = mergeExtractionPasses(headerResult.data, batches);
   const recoveryRanges = missingExtractionRanges(expectedLineCount, merged.lines, 30);
@@ -148,7 +150,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     });
     const recovered = await mapWithConcurrency(
       recoveryRanges,
-      2,
+      rangeConcurrency,
       async (range) => extractLineRange(common, skill, range, maxTokens, "recover"),
     );
     batches = [...batches, ...recovered];
@@ -165,7 +167,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     });
     const verifiedBatches = await mapWithConcurrency(
       quality.verificationRanges,
-      2,
+      rangeConcurrency,
       async (range) => extractLineRange(common, skill, range, maxTokens, "verify"),
     );
     requestBatches = [...requestBatches, ...verifiedBatches];
