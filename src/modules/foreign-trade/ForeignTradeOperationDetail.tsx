@@ -28,6 +28,7 @@ import type {
   ForeignTradeCatalogProduct,
   ForeignTradeCostCategory,
   ForeignTradeCostLine,
+  ForeignTradeCostParameter,
   ForeignTradeDataSource,
   ForeignTradeOperationLine,
   ForeignTradeOperationStatus,
@@ -37,8 +38,9 @@ import type {
 } from "../../types/foreignTrade";
 import { useForeignTradeOperation } from "./useForeignTradeOperation";
 import { ForeignTradeDocumentsPanel } from "./ForeignTradeDocumentsPanel";
+import { ForeignTradeCostingPanel } from "./ForeignTradeCostingPanel";
 
-type DetailTab = "summary" | "products" | "costs" | "documents";
+type DetailTab = "summary" | "products" | "costs" | "costing" | "documents";
 
 const costCategories: Array<{ value: ForeignTradeCostCategory; label: string }> = [
   { value: "origin", label: "Gastos en origen" },
@@ -60,12 +62,14 @@ export function ForeignTradeOperationDetail({
   operationId,
   statuses,
   suppliers,
+  costParameters,
   onBack,
   onChanged,
 }: {
   operationId: string;
   statuses: ForeignTradeOperationStatus[];
   suppliers: ForeignTradeSupplier[];
+  costParameters: ForeignTradeCostParameter[];
   onBack: () => void;
   onChanged: () => Promise<void>;
 }) {
@@ -86,6 +90,8 @@ export function ForeignTradeOperationDetail({
   const { operation, supplier, totals } = detail;
   const status = statuses.find((item) => item.code === operation.status);
   const missing = getMissingInputs(detail.lines, detail.costs, operation.exchange_rate_clp);
+  const taxRecords = detail.costs.filter((cost) => cost.category === "duties" || cost.category === "taxes");
+  const operatingCosts = detail.costs.filter((cost) => cost.category !== "duties" && cost.category !== "taxes");
 
   return (
     <div className="foreign-trade-view-stack">
@@ -101,7 +107,8 @@ export function ForeignTradeOperationDetail({
       <nav className="foreign-trade-detail-tabs" aria-label="Ficha de operación">
         <button className={tab === "summary" ? "active" : ""} type="button" onClick={() => setTab("summary")}>Resumen</button>
         <button className={tab === "products" ? "active" : ""} type="button" onClick={() => setTab("products")}>Productos <span>{totals.line_count}</span></button>
-        <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}>Gastos <span>{detail.costs.length}</span></button>
+        <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}>Costos base <span>{detail.costs.length}</span></button>
+        <button className={tab === "costing" ? "active" : ""} type="button" onClick={() => setTab("costing")}>Costeo y precio</button>
         <button className={tab === "documents" ? "active" : ""} type="button" onClick={() => setTab("documents")}>Documentos</button>
       </nav>
 
@@ -144,10 +151,13 @@ export function ForeignTradeOperationDetail({
 
       {tab === "costs" ? (
         <section className="panel foreign-trade-detail-panel">
-          <div className="foreign-trade-detail-panel-heading"><div><h2>Gastos registrados</h2><p>Los montos se conservan en su moneda original; esta fase no distribuye costos entre productos.</p></div><button className="primary-button" type="button" onClick={() => setCostDialog("new")}><Plus size={17} /> Agregar gasto</button></div>
-          {detail.costs.length ? <div className="table-scroll"><table className="foreign-trade-detail-table"><thead><tr><th>Concepto</th><th>Categoría</th><th>Monto original</th><th>Conversión CLP</th><th>Distribución futura</th><th>Fuente</th><th aria-label="Acciones" /></tr></thead><tbody>{detail.costs.map((cost) => <CostRow key={cost.id} cost={cost} onEdit={() => setCostDialog(cost)} onDelete={async () => { if (!window.confirm(`¿Eliminar el gasto ${cost.name}?`)) return; await deleteForeignTradeCostLine(cost.id); await changed("Gasto eliminado de la operación."); }} />)}</tbody></table></div> : <EmptyDetail title="No hay gastos registrados" detail="Agrega flete, seguro, costos en origen o Chile sin mezclar monedas ni asumir tasas." />}
+          <div className="foreign-trade-detail-panel-heading"><div><h2>Gastos operativos</h2><p>Registra montos netos o brutos. El IVA recuperable se separa del costo económico.</p></div><button className="primary-button" type="button" onClick={() => setCostDialog("new")}><Plus size={17} /> Agregar registro</button></div>
+          {operatingCosts.length ? <CostTable costs={operatingCosts} onEdit={setCostDialog} onChanged={changed} /> : <EmptyDetail title="No hay gastos operativos" detail="Agrega flete, seguro, costos en origen o Chile sin mezclar monedas." />}
+          {taxRecords.length ? <div className="foreign-trade-tax-records"><div><strong>Tributos documentados</strong><span>No se tratan como gastos: sirven para conciliar el cálculo desde CIF.</span></div><CostTable costs={taxRecords} onEdit={setCostDialog} onChanged={changed} /></div> : null}
         </section>
       ) : null}
+
+      {tab === "costing" ? <ForeignTradeCostingPanel detail={detail} costParameters={costParameters} onSaved={changed} /> : null}
 
       {tab === "documents" ? <ForeignTradeDocumentsPanel operationId={operationId} supplierId={operation.supplier_id} suppliers={suppliers} onChanged={changed} /> : null}
 
@@ -279,6 +289,8 @@ function CostLineDialog({ operationId, defaultRate, cost, lines, onClose, onSave
     allocationMethod: cost?.allocation_method || "operation",
     sourceType: cost?.source_type || "configured",
     recoverableTax: cost?.recoverable_tax ?? false,
+    amountBasis: cost?.metadata?.amount_basis || "net",
+    vatRatePercent: valueString(cost?.metadata?.vat_rate_percent as number | undefined, "0"),
     notes: cost?.notes || "",
   });
   const [busy, setBusy] = useState(false);
@@ -300,10 +312,12 @@ function CostLineDialog({ operationId, defaultRate, cost, lines, onClose, onSave
       <label><span>Producto asociado, opcional</span><select value={form.operationLineId} onChange={(event) => setForm({ ...form, operationLineId: event.target.value })}><option value="">Toda la operación</option>{lines.map((line) => <option value={line.id} key={line.id}>{line.product_name}</option>)}</select></label>
       <label><span>Monto original</span><div className="foreign-trade-money-input"><input required inputMode="decimal" value={form.amountOriginal} onChange={(event) => setForm({ ...form, amountOriginal: event.target.value })} /><input aria-label="Moneda" required maxLength={3} value={form.currency} onChange={(event) => setForm({ ...form, currency: event.target.value.toUpperCase() })} /></div></label>
       <label><span>Tipo de cambio a CLP</span><input inputMode="decimal" disabled={form.currency.toUpperCase() === "CLP"} value={form.exchangeRateClp} onChange={(event) => setForm({ ...form, exchangeRateClp: event.target.value })} /></label>
+      <label><span>Base del monto</span><select value={form.amountBasis} onChange={(event) => setForm({ ...form, amountBasis: event.target.value as "net" | "gross" })}><option value="net">Neto, sin IVA</option><option value="gross">Bruto, IVA incluido</option></select></label>
+      <label><span>IVA asociado al gasto</span><div className="foreign-trade-percent-input"><input inputMode="decimal" value={form.vatRatePercent} onChange={(event) => setForm({ ...form, vatRatePercent: event.target.value })} /><b>%</b></div></label>
       <label><span>Método de distribución</span><select value={form.allocationMethod} onChange={(event) => setForm({ ...form, allocationMethod: event.target.value as ForeignTradeCostLine["allocation_method"] })}><option value="operation">Sin distribuir todavía</option><option value="fob_value">Por valor FOB</option><option value="units">Por unidades</option><option value="weight">Por peso</option><option value="cbm">Por CBM</option><option value="manual">Manual</option><option value="combined">Combinado</option></select></label>
       <label><span>Origen del dato</span><SourceSelect value={form.sourceType} onChange={(sourceType) => setForm({ ...form, sourceType })} /></label>
       <label className="wide-field"><span>Notas</span><textarea value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} /></label>
-      <label className="foreign-trade-checkbox-field wide-field"><input type="checkbox" checked={form.recoverableTax} onChange={(event) => setForm({ ...form, recoverableTax: event.target.checked })} /><span>Impuesto recuperable según configuración contable</span></label>
+      <label className="foreign-trade-checkbox-field wide-field"><input type="checkbox" checked={form.recoverableTax} onChange={(event) => setForm({ ...form, recoverableTax: event.target.checked })} /><span>El IVA de este gasto es recuperable como crédito fiscal</span></label>
     </div>
     <div className="foreign-trade-cost-preview"><CircleDollarSign size={18} /><div><span>Conversión operativa</span><strong>{Number.isFinite(previewClp) && previewClp > 0 ? formatClp(previewClp) : "Pendiente de tipo de cambio"}</strong><small>No es costo puesto en bodega.</small></div></div>
     {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
@@ -316,8 +330,13 @@ function ProductRow({ line, onEdit, onDelete }: { line: ForeignTradeOperationLin
   return <tr><td><div className="foreign-trade-product-cell">{line.primary_image_url ? <img src={line.primary_image_url} alt="" /> : <span><Boxes size={18} /></span>}<div><strong>{line.product_name}</strong><small>{line.sku || "Sin SKU"} · {line.temporary_product ? "Temporal" : "Catálogo CRM"}</small></div></div></td><td>{formatDecimal(line.quantity)}</td><td>{line.unit_factory_cost === null ? "Pendiente" : formatMoney(line.unit_factory_cost, line.currency)}</td><td>{formatMoney(total, line.currency)}</td><td>{line.cbm_total === null ? "Pendiente" : `${formatDecimal(line.cbm_total)} m³`}</td><td><SourceBadge source={line.data_source} /></td><td><div className="foreign-trade-row-actions"><button className="icon-button" type="button" title="Editar producto" onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar producto" onClick={() => void onDelete()}><Trash2 size={16} /></button></div></td></tr>;
 }
 
+function CostTable({ costs, onEdit, onChanged }: { costs: ForeignTradeCostLine[]; onEdit: (cost: ForeignTradeCostLine) => void; onChanged: (message: string) => Promise<void> }) {
+  return <div className="table-scroll"><table className="foreign-trade-detail-table"><thead><tr><th>Concepto</th><th>Categoría</th><th>Monto original</th><th>Conversión CLP</th><th>Distribución</th><th>Fuente</th><th aria-label="Acciones" /></tr></thead><tbody>{costs.map((cost) => <CostRow key={cost.id} cost={cost} onEdit={() => onEdit(cost)} onDelete={async () => { if (!window.confirm(`¿Eliminar el registro ${cost.name}?`)) return; await deleteForeignTradeCostLine(cost.id); await onChanged("Registro eliminado de la operación."); }} />)}</tbody></table></div>;
+}
+
 function CostRow({ cost, onEdit, onDelete }: { cost: ForeignTradeCostLine; onEdit: () => void; onDelete: () => Promise<void> }) {
-  return <tr><td><strong>{cost.name}</strong>{cost.notes ? <small>{cost.notes}</small> : null}</td><td>{costCategoryLabel(cost.category)}</td><td>{formatMoney(cost.amount_original, cost.currency)}</td><td>{cost.amount_clp === null ? "Falta tipo de cambio" : formatClp(cost.amount_clp)}</td><td>{allocationLabel(cost.allocation_method)}</td><td><SourceBadge source={cost.source_type} /></td><td><div className="foreign-trade-row-actions"><button className="icon-button" type="button" title="Editar gasto" onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar gasto" onClick={() => void onDelete()}><Trash2 size={16} /></button></div></td></tr>;
+  const vatRate = Number(cost.metadata?.vat_rate_percent || 0);
+  return <tr><td><strong>{cost.name}</strong>{cost.notes ? <small>{cost.notes}</small> : null}</td><td>{costCategoryLabel(cost.category)}</td><td>{formatMoney(cost.amount_original, cost.currency)}<small>{cost.metadata?.amount_basis === "gross" ? "Monto bruto" : "Monto neto"}{vatRate ? ` · IVA ${formatDecimal(vatRate)}%${cost.recoverable_tax ? " recuperable" : ""}` : ""}</small></td><td>{cost.amount_clp === null ? "Falta tipo de cambio" : formatClp(cost.amount_clp)}</td><td>{allocationLabel(cost.allocation_method)}</td><td><SourceBadge source={cost.source_type} /></td><td><div className="foreign-trade-row-actions"><button className="icon-button" type="button" title="Editar registro" onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar registro" onClick={() => void onDelete()}><Trash2 size={16} /></button></div></td></tr>;
 }
 
 function DetailKpi({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail: string }) { return <article><div>{icon}<span>{label}</span></div><strong>{value}</strong><small>{detail}</small></article>; }

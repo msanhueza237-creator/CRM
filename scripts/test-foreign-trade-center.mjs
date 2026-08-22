@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import { prepareExtraction } from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
+import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -217,6 +218,43 @@ const phase3Migration = await readFile(
 await db.exec(phase3Migration);
 await db.exec(phase3Migration);
 
+const phase4Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase4_costing.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase4Migration);
+await db.exec(phase4Migration);
+
+const costingParameters = await db.query(
+  "select code,numeric_value from public.foreign_trade_cost_parameters where code like 'cl_%' order by code",
+);
+assert.equal(costingParameters.rows.length, 3, "la fase 4 debe versionar tres parametros legales base");
+
+const pdfCifClp = 54144.04 * 904.54;
+const effectiveDutyPercent = 255713 / pdfCifClp * 100;
+const pdfCosting = calculateForeignTradeCosting([
+  { id: "pdf-line", product_name: "Mercaderia despacho 49194", sku: null, quantity: 1, currency: "USD", fob_total: 51962.83 },
+], [], {
+  exchangeRateClp: 904.54,
+  cifOverrideOriginal: 54144.04,
+  generalDutyPercent: effectiveDutyPercent,
+  importVatPercent: 19,
+  salesVatPercent: 19,
+  importVatRecoverable: true,
+  pricingMethod: "markup_on_cost",
+  targetPercent: 45,
+  allocationMethod: "fob_value",
+  lineDutyPercent: {},
+  lineTargetPercent: {},
+});
+assert.equal(pdfCosting.cifClp, 48975449.94, "el CIF del despacho 49194 debe conservar centavos CLP");
+assert.equal(pdfCosting.dutyClp, 255713, "el derecho debe calcularse desde CIF y la tasa efectiva");
+assert.equal(pdfCosting.recoverableVatClp, pdfCosting.importVatClp, "el IVA recuperable se separa del costo economico");
+assert.ok(
+  Math.abs(pdfCosting.lines[0].netSaleUnitClp - pdfCosting.lines[0].landedUnitClp * 1.45) < 0.02,
+  "un objetivo de 45% como markup debe aplicarse sobre costo",
+);
+
 const statuses = await db.query(
   "select count(*)::integer as count from public.foreign_trade_operation_statuses",
 );
@@ -352,17 +390,57 @@ const costResult = await db.query(
     exchange_rate_clp: "980.250000",
     allocation_method: "cbm",
     source_type: "configured",
+    recoverable_tax: true,
+    metadata: { amount_basis: "gross", vat_rate_percent: 19 },
   })],
 );
 const costId = costResult.rows[0].id;
 const cost = await db.query(
-  "select amount_original,amount_clp,allocation_method from public.foreign_trade_cost_lines where id=$1",
+  "select amount_original,amount_clp,allocation_method,recoverable_tax,metadata from public.foreign_trade_cost_lines where id=$1",
   [costId],
 );
 assert.deepEqual(cost.rows[0], {
   amount_original: "100.000000",
   amount_clp: "98025.000000",
   allocation_method: "cbm",
+  recoverable_tax: true,
+  metadata: { amount_basis: "gross", vat_rate_percent: 19 },
+});
+
+const savedScenario = await db.query(
+  "select public.save_foreign_trade_costing_scenario($1::jsonb) as id",
+  [JSON.stringify({
+    id: operation.rows[0].active_scenario_id,
+    operation_id: operationId,
+    name: "Escenario base",
+    status: "baseline",
+    exchange_rate_clp: 980.25,
+    exchange_rate_source: "conservative",
+    allocation_method: "cbm",
+    assumptions: { costing: { general_duty_percent: 6, import_vat_percent: 19, sales_vat_percent: 19, import_vat_recoverable: true, pricing_method: "markup_on_cost", target_percent: 45 } },
+    merchandise_total_original: 84,
+    merchandise_total_clp: 82341,
+    logistics_total_clp: 82373.95,
+    duties_total_clp: 4940.46,
+    taxes_total_clp: 16583.48,
+    landed_total_clp: 169655.41,
+    projected_sales_clp: 246000.34,
+    projected_profit_clp: 76344.93,
+    projected_margin_percent: 31.0345,
+    missing_inputs: [],
+    calculation_version: "cl_import_cost_v1",
+  })],
+);
+assert.equal(savedScenario.rows[0].id, operation.rows[0].active_scenario_id);
+const costingScenario = await db.query(
+  "select allocation_method,target_margin_percent,calculation_version,assumptions->'costing'->>'pricing_method' as pricing_method from public.foreign_trade_scenarios where id=$1",
+  [savedScenario.rows[0].id],
+);
+assert.deepEqual(costingScenario.rows[0], {
+  allocation_method: "cbm",
+  target_margin_percent: "45.000000",
+  calculation_version: "cl_import_cost_v1",
+  pricing_method: "markup_on_cost",
 });
 
 const detail = await db.query("select public.foreign_trade_operation_detail($1) as detail", [operationId]);

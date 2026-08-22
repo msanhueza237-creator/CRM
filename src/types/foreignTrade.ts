@@ -244,8 +244,27 @@ export interface ForeignTradeCostLine {
   source_type: ForeignTradeDataSource;
   recoverable_tax: boolean;
   notes: string | null;
+  metadata: {
+    amount_basis?: "net" | "gross";
+    vat_rate_percent?: number | string;
+    [key: string]: unknown;
+  };
   created_at: string;
   updated_at: string;
+}
+
+export type ForeignTradePricingMethod = "markup_on_cost" | "margin_on_sale";
+
+export interface ForeignTradeCostingAssumptions {
+  cif_total_original?: number | null;
+  general_duty_percent?: number;
+  import_vat_percent?: number;
+  sales_vat_percent?: number;
+  import_vat_recoverable?: boolean;
+  pricing_method?: ForeignTradePricingMethod;
+  target_percent?: number;
+  line_duty_percent?: Record<string, number>;
+  line_target_percent?: Record<string, number>;
 }
 
 export interface ForeignTradeScenario {
@@ -255,6 +274,20 @@ export interface ForeignTradeScenario {
   status: "draft" | "baseline" | "archived";
   exchange_rate_clp: number;
   exchange_rate_source: ForeignTradeExchangeRateSource;
+  allocation_method: "fob_value" | "units" | "weight" | "cbm" | "manual" | "combined";
+  target_margin_percent: number | null;
+  minimum_margin_percent: number | null;
+  merchandise_total_original: number | null;
+  merchandise_total_clp: number | null;
+  logistics_total_clp: number | null;
+  duties_total_clp: number | null;
+  taxes_total_clp: number | null;
+  landed_total_clp: number | null;
+  projected_sales_clp: number | null;
+  projected_profit_clp: number | null;
+  projected_margin_percent: number | null;
+  assumptions: { costing?: ForeignTradeCostingAssumptions; [key: string]: unknown };
+  missing_inputs: string[];
   calculation_version: string;
   calculated_at: string | null;
   created_at: string;
@@ -477,5 +510,28 @@ export interface UpsertForeignTradeCostLineInput {
   allocationMethod: ForeignTradeCostLine["allocation_method"];
   sourceType: ForeignTradeDataSource;
   recoverableTax: boolean;
+  amountBasis?: "net" | "gross";
+  vatRatePercent?: string;
   notes?: string;
+}
+
+export interface SaveForeignTradeCostingScenarioInput {
+  id?: string;
+  operationId: string;
+  name: string;
+  status: "draft" | "baseline";
+  exchangeRateClp: number;
+  exchangeRateSource: ForeignTradeExchangeRateSource;
+  allocationMethod: Exclude<ForeignTradeScenario["allocation_method"], "manual">;
+  assumptions: ForeignTradeCostingAssumptions;
+  merchandiseTotalOriginal: number;
+  merchandiseTotalClp: number;
+  logisticsTotalClp: number;
+  dutiesTotalClp: number;
+  taxesTotalClp: number;
+  landedTotalClp: number;
+  projectedSalesClp: number;
+  projectedProfitClp: number;
+  projectedMarginPercent: number;
+  missingInputs: string[];
 }

@@ -112,7 +112,7 @@ export function ForeignTradeCenterPage() {
       {!error ? (
         <>
           {activeView === "dashboard" ? <ForeignTradeOverview data={data} onNavigate={navigate} onNew={openOperation} onOpen={openOperationDetail} /> : null}
-          {activeView === "operations" && selectedOperationId ? <ForeignTradeOperationDetail operationId={selectedOperationId} statuses={data.statuses} suppliers={data.suppliers} onBack={() => navigate("operations")} onChanged={refresh} /> : null}
+          {activeView === "operations" && selectedOperationId ? <ForeignTradeOperationDetail operationId={selectedOperationId} statuses={data.statuses} suppliers={data.suppliers} costParameters={data.costParameters} onBack={() => navigate("operations")} onChanged={refresh} /> : null}
           {activeView === "operations" && !selectedOperationId ? <ForeignTradeOperations data={data} onNew={openOperation} onOpen={openOperationDetail} /> : null}
           {activeView === "suppliers" ? <ForeignTradeSuppliers suppliers={data.suppliers} onNew={() => setSupplierDialog("new")} onEdit={setSupplierDialog} /> : null}
           {activeView === "settings" ? <ForeignTradeSettings data={data} /> : null}

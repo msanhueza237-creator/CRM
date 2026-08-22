@@ -16,6 +16,7 @@ import type {
   ForeignTradeOperationLine,
   ForeignTradeOperationStatus,
   ForeignTradeSupplier,
+  SaveForeignTradeCostingScenarioInput,
   UpsertForeignTradeCostLineInput,
   UpsertForeignTradeOperationLineInput,
   UpsertForeignTradeSupplierInput,
@@ -211,6 +212,10 @@ export async function upsertForeignTradeCostLine(input: UpsertForeignTradeCostLi
     allocation_method: input.allocationMethod,
     source_type: input.sourceType,
     recoverable_tax: input.recoverableTax,
+    metadata: {
+      amount_basis: input.amountBasis || "net",
+      vat_rate_percent: decimal(input.vatRatePercent, "IVA del gasto") || "0",
+    },
     notes: input.notes?.trim() || null,
   };
   const { data, error } = await supabase!.rpc("upsert_foreign_trade_cost_line", { p_payload: payload });
@@ -222,6 +227,34 @@ export async function deleteForeignTradeCostLine(costId: string) {
   requireSupabase();
   const { error } = await supabase!.rpc("delete_foreign_trade_cost_line", { p_cost_id: costId });
   if (error) throw error;
+}
+
+export async function saveForeignTradeCostingScenario(input: SaveForeignTradeCostingScenarioInput) {
+  requireSupabase();
+  const payload = {
+    id: input.id || null,
+    operation_id: input.operationId,
+    name: input.name.trim(),
+    status: input.status,
+    exchange_rate_clp: input.exchangeRateClp,
+    exchange_rate_source: input.exchangeRateSource,
+    allocation_method: input.allocationMethod,
+    assumptions: { costing: input.assumptions },
+    merchandise_total_original: input.merchandiseTotalOriginal,
+    merchandise_total_clp: input.merchandiseTotalClp,
+    logistics_total_clp: input.logisticsTotalClp,
+    duties_total_clp: input.dutiesTotalClp,
+    taxes_total_clp: input.taxesTotalClp,
+    landed_total_clp: input.landedTotalClp,
+    projected_sales_clp: input.projectedSalesClp,
+    projected_profit_clp: input.projectedProfitClp,
+    projected_margin_percent: input.projectedMarginPercent,
+    missing_inputs: input.missingInputs,
+    calculation_version: "cl_import_cost_v1",
+  };
+  const { data, error } = await supabase!.rpc("save_foreign_trade_costing_scenario", { p_payload: payload });
+  if (error) throw error;
+  return String(data);
 }
 
 export async function getForeignTradeDocuments(operationId: string): Promise<ForeignTradeDocument[]> {
