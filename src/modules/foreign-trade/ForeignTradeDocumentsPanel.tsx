@@ -41,6 +41,7 @@ import type {
   ForeignTradeReconciliationLineType,
   ForeignTradeSupplier,
 } from "../../types/foreignTrade";
+import { normalizeForeignTradeFundRequestReview } from "./foreignTradeFundRequestReview";
 
 const documentTypes: Array<{ value: ForeignTradeDocumentType; label: string }> = [
   { value: "proforma", label: "Proforma" },
@@ -560,9 +561,20 @@ const reconciliationCategoryOptions: Array<{ value: Exclude<ForeignTradeCostCate
 ];
 
 function FundRequestReviewDialog({ document, onClose, onRegenerate, onConfirmed }: { document: ForeignTradeDocument; onClose: () => void; onRegenerate: () => Promise<void>; onConfirmed: (message: string) => Promise<void> }) {
-  const [review, setReview] = useState<ForeignTradeFundRequestExtraction>(() => structuredClone(document.extraction_result) as ForeignTradeFundRequestExtraction);
+  const [initialReview] = useState(() => normalizeForeignTradeFundRequestReview(document.extraction_result));
+  const [review, setReview] = useState<ForeignTradeFundRequestExtraction>(initialReview.review);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const documentWarnings = Array.isArray(document.review_warnings) ? document.review_warnings : [];
+
+  if (!initialReview.isCompatible) {
+    return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-fund-review-title">
+      <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-fund-review-title">Revisar provisión de fondos</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
+      <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>La extracción guardada pertenece a una versión anterior o quedó incompleta.</strong> El documento original está seguro. Regenera el análisis para obtener los gastos y tributos con el lector especializado de provisiones.</span></div>
+      {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+      <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cerrar</button><button className="primary-button" type="button" disabled={busy} onClick={() => { setBusy(true); setError(""); void onRegenerate().catch((regenerateError) => { setBusy(false); setError(humanizeDocumentError(regenerateError)); }); }}><RefreshCw className={busy ? "spin" : ""} size={17} /> {busy ? "Regenerando..." : "Regenerar extracción"}</button></footer>
+    </div></div>;
+  }
 
   function setGeneral(key: keyof ForeignTradeFundRequestExtraction["general"], value: string | number | null) {
     setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
@@ -614,9 +626,9 @@ function FundRequestReviewDialog({ document, onClose, onRegenerate, onConfirmed 
 
   return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-fund-review-title">
     <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-fund-review-title">Revisar provisión de fondos</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
-    <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} conceptos detectados</span><span>{document.review_warnings.length} advertencias</span></div>
+    <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} conceptos detectados</span><span>{documentWarnings.length} advertencias</span></div>
     {needsRegeneration ? <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Extracción desactualizada.</strong> Regenera el análisis antes de confirmar para utilizar el lector especializado de provisiones.</span></div> : null}
-    {document.review_warnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{document.review_warnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
+    {documentWarnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{documentWarnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
 
     <section className="foreign-trade-review-section"><div><h3>Identificación de la provisión</h3><span>Verifica la solicitud, agencia, fecha y monto antes de crear la conciliación.</span></div><div className="foreign-trade-form-grid">
       <ReviewField label="Referencia / solicitud" value={review.general.reference} onChange={(value) => setGeneral("reference", value || null)} />

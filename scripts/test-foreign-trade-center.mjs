@@ -19,6 +19,7 @@ import {
 } from "../supabase/functions/foreign-trade-documents/pdf-reading-skill.ts";
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
+import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -555,6 +556,22 @@ assert.equal(preparedFundRequest.extraction.lines[2].recoverable_tax, true);
 assert.equal(preparedFundRequest.extraction.lines[2].include_in_costing, false);
 assert.equal(preparedFundRequest.extraction.totals.expenses_clp, 476000);
 assert.equal(preparedFundRequest.extraction.totals.taxes_clp, 16377872);
+
+const normalizedFundRequestReview = normalizeForeignTradeFundRequestReview(preparedFundRequest.extraction);
+assert.equal(normalizedFundRequestReview.isCompatible, true);
+assert.equal(normalizedFundRequestReview.review.lines.length, 3);
+assert.equal(normalizedFundRequestReview.review.lines[2].include_in_costing, false);
+assert.deepEqual(normalizedFundRequestReview.review.lines[0].warnings, []);
+
+const legacyFundRequestReview = normalizeForeignTradeFundRequestReview({
+  extraction_version: "pdf_skill_v10",
+  general: { supplier_name: "Agencia de Aduanas", currency: "CLP" },
+  lines: [{ source_index: 1, product_name: "Derechos aduaneros", total_price: 529822 }],
+  document_totals: { total: 529822, line_count: 1 },
+});
+assert.equal(legacyFundRequestReview.isCompatible, false);
+assert.equal(legacyFundRequestReview.review.lines.length, 0);
+assert.equal(legacyFundRequestReview.review.general.currency, "CLP");
 
 const extractionRanges = buildExtractionRanges(89, 40);
 assert.deepEqual(extractionRanges, [
