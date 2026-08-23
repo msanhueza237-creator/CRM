@@ -603,9 +603,60 @@ export interface ForeignTradeFundRequestExtraction {
   warnings: string[];
 }
 
+export interface ForeignTradeAgencySettlementGeneral {
+  reference: string | null;
+  agency_name: string | null;
+  invoice_number: string | null;
+  document_date: string | null;
+  currency: string | null;
+  declared_total_clp: number | null;
+  observations: string | null;
+  confidence: number | null;
+  warnings: string[];
+}
+
+export interface ForeignTradeAgencySettlementLine {
+  source_index: number;
+  source_page: number | null;
+  include: boolean;
+  reconciliation_line_id: string | null;
+  line_type: ForeignTradeReconciliationLineType;
+  cost_category: ForeignTradeCostCategory;
+  concept: string;
+  provider_name: string | null;
+  document_number: string | null;
+  document_date: string | null;
+  actual_net_clp: number | null;
+  actual_vat_clp: number | null;
+  actual_total_clp: number | null;
+  amount_original: number | null;
+  currency: string;
+  exchange_rate_clp: number | null;
+  recoverable_tax: boolean;
+  include_in_costing: boolean;
+  confidence: number | null;
+  warnings: string[];
+}
+
+export interface ForeignTradeAgencySettlementExtraction {
+  extraction_version: string;
+  document_kind: "agency_settlement";
+  identity_confirmed: boolean;
+  general: ForeignTradeAgencySettlementGeneral;
+  lines: ForeignTradeAgencySettlementLine[];
+  totals: {
+    expenses_clp: number | null;
+    taxes_clp: number | null;
+    document_total_clp: number | null;
+    line_count: number;
+  };
+  warnings: string[];
+}
+
 export type ForeignTradeAnyDocumentExtraction =
   | ForeignTradeDocumentExtraction
-  | ForeignTradeFundRequestExtraction;
+  | ForeignTradeFundRequestExtraction
+  | ForeignTradeAgencySettlementExtraction;
 
 export interface ForeignTradeDocument {
   id: string;
@@ -649,6 +700,16 @@ export interface ConfirmForeignTradeFundRequestResult {
   operation_id: string;
   reconciliation_id: string;
   inserted_lines: number;
+  skipped_lines: number;
+  status: "confirmed";
+}
+
+export interface ConfirmForeignTradeAgencySettlementResult {
+  document_id: string;
+  operation_id: string;
+  reconciliation_id: string;
+  inserted_lines: number;
+  updated_lines: number;
   skipped_lines: number;
   status: "confirmed";
 }

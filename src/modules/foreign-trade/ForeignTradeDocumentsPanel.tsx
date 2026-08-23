@@ -19,22 +19,27 @@ import {
 import {
   cancelForeignTradeDocumentExtraction,
   confirmForeignTradeDocument,
+  confirmForeignTradeAgencySettlementDocument,
   confirmForeignTradeFundRequestDocument,
   deleteForeignTradeDocument,
   extractForeignTradeDocument,
   getForeignTradeDocumentUrl,
   getForeignTradeDocuments,
+  getForeignTradeExpenseReconciliations,
   searchForeignTradeCatalog,
   updateForeignTradeDocumentType,
   uploadForeignTradeDocument,
 } from "../../lib/foreignTradeApi";
 import type {
   ForeignTradeCatalogProduct,
+  ForeignTradeAgencySettlementExtraction,
+  ForeignTradeAgencySettlementLine,
   ForeignTradeAnyDocumentExtraction,
   ForeignTradeCostCategory,
   ForeignTradeDocument,
   ForeignTradeDocumentExtraction,
   ForeignTradeDocumentType,
+  ForeignTradeExpenseReconciliation,
   ForeignTradeExtractedLine,
   ForeignTradeFundRequestExtraction,
   ForeignTradeFundRequestLine,
@@ -42,6 +47,7 @@ import type {
   ForeignTradeSupplier,
 } from "../../types/foreignTrade";
 import { normalizeForeignTradeFundRequestReview } from "./foreignTradeFundRequestReview";
+import { normalizeForeignTradeAgencySettlementReview } from "./foreignTradeAgencySettlementReview";
 
 const documentTypes: Array<{ value: ForeignTradeDocumentType; label: string }> = [
   { value: "proforma", label: "Proforma" },
@@ -64,7 +70,7 @@ const productExtractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   "commercial_invoice",
   "packing_list",
 ]);
-const expenseExtractableDocumentTypes = new Set<ForeignTradeDocumentType>(["fund_request"]);
+const expenseExtractableDocumentTypes = new Set<ForeignTradeDocumentType>(["fund_request", "agency_settlement"]);
 const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   ...productExtractableDocumentTypes,
   ...expenseExtractableDocumentTypes,
@@ -72,6 +78,7 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
 
 const currentExtractionVersion = "pdf_skill_v10";
 const currentFundRequestExtractionVersion = "fund_request_v1";
+const currentAgencySettlementExtractionVersion = "agency_settlement_v1";
 
 type PendingDocumentUpload = {
   key: string;
@@ -435,7 +442,9 @@ export function ForeignTradeDocumentsPanel({
 
       {reviewDocument ? reviewDocument.document_type === "fund_request"
         ? <FundRequestReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
-        : <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
+        : reviewDocument.document_type === "agency_settlement"
+          ? <AgencySettlementReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
+          : <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
         : null}
     </section>
   );
@@ -653,6 +662,197 @@ function FundRequestReviewDialog({ document, onClose, onRegenerate, onConfirmed 
   </div></div>;
 }
 
+function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfirmed }: { document: ForeignTradeDocument; onClose: () => void; onRegenerate: () => Promise<void>; onConfirmed: (message: string) => Promise<void> }) {
+  const [initialReview] = useState(() => normalizeForeignTradeAgencySettlementReview(document.extraction_result));
+  const [review, setReview] = useState<ForeignTradeAgencySettlementExtraction>(initialReview.review);
+  const [reconciliations, setReconciliations] = useState<ForeignTradeExpenseReconciliation[]>([]);
+  const [reconciliationId, setReconciliationId] = useState("");
+  const [loadingReconciliations, setLoadingReconciliations] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const documentWarnings = Array.isArray(document.review_warnings) ? document.review_warnings : [];
+
+  useEffect(() => {
+    let active = true;
+    void getForeignTradeExpenseReconciliations(document.operation_id)
+      .then((items) => {
+        if (!active) return;
+        const editable = items.filter((item) => !["applied", "settled"].includes(item.status));
+        setReconciliations(editable);
+        const preferred = editable.find((item) => item.final_document_id === document.id)
+          || editable.find((item) => item.provision_document_id)
+          || editable[0];
+        if (preferred) {
+          setReconciliationId(preferred.id);
+          setReview((current) => ({ ...current, lines: autoMatchSettlementLines(current.lines, preferred.lines) }));
+        }
+      })
+      .catch((loadError) => setError(humanizeDocumentError(loadError)))
+      .finally(() => { if (active) setLoadingReconciliations(false); });
+    return () => { active = false; };
+  }, [document.id, document.operation_id]);
+
+  if (!initialReview.isCompatible) {
+    return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-settlement-review-title">
+      <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-settlement-review-title">Revisar rendición final</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
+      <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>La extracción guardada no corresponde al lector de rendiciones finales.</strong> Regenera el documento para obtener facturas, monedas, tipos de cambio y costos reales.</span></div>
+      {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+      <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cerrar</button><button className="primary-button" type="button" disabled={busy} onClick={() => { setBusy(true); setError(""); void onRegenerate().catch((regenerateError) => { setBusy(false); setError(humanizeDocumentError(regenerateError)); }); }}><RefreshCw className={busy ? "spin" : ""} size={17} /> {busy ? "Regenerando..." : "Regenerar extracción"}</button></footer>
+    </div></div>;
+  }
+
+  const selectedReconciliation = reconciliations.find((item) => item.id === reconciliationId) || null;
+  const selectedLines = review.lines.filter((line) => line.include);
+  const expenses = selectedLines.filter((line) => !["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
+  const taxes = selectedLines.filter((line) => ["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
+  const calculatedTotal = roundMoney(expenses + taxes);
+  const needsRegeneration = review.extraction_version !== currentAgencySettlementExtractionVersion;
+  const referencesDiffer = Boolean(selectedReconciliation?.provision_reference && review.general.reference
+    && normalizeReference(selectedReconciliation.provision_reference) !== normalizeReference(review.general.reference));
+
+  function setGeneral(key: keyof ForeignTradeAgencySettlementExtraction["general"], value: string | number | null) {
+    setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
+  }
+  function setLine(index: number, patch: Partial<ForeignTradeAgencySettlementLine>) {
+    setReview((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => lineIndex === index ? normalizeAgencySettlementLine({ ...line, ...patch }, patch) : line),
+    }));
+  }
+  function selectReconciliation(nextId: string) {
+    setReconciliationId(nextId);
+    const next = reconciliations.find((item) => item.id === nextId);
+    if (next) setReview((current) => ({ ...current, identity_confirmed: false, lines: autoMatchSettlementLines(current.lines, next.lines) }));
+  }
+  async function confirm() {
+    if (!reconciliationId) { setError("Selecciona la conciliación creada desde la provisión de fondos."); return; }
+    if (referencesDiffer && !review.identity_confirmed) { setError("Las referencias no coinciden. Confirma manualmente que ambos documentos pertenecen al mismo despacho."); return; }
+    if (!window.confirm("¿Cargar estos costos reales en la conciliación seleccionada? Podrás revisarla antes de aplicarla al costeo oficial.")) return;
+    setBusy(true); setError("");
+    try {
+      const normalizedLines = review.lines.map((line) => normalizeAgencySettlementLine({ ...line, currency: normalizeCurrencyCode(line.currency, "CLP") }, {}));
+      const normalizedReview: ForeignTradeAgencySettlementExtraction = {
+        ...review,
+        extraction_version: review.extraction_version || currentAgencySettlementExtractionVersion,
+        document_kind: "agency_settlement",
+        general: { ...review.general, currency: normalizeCurrencyCode(review.general.currency, "CLP") },
+        lines: normalizedLines,
+        totals: {
+          expenses_clp: roundMoney(expenses),
+          taxes_clp: roundMoney(taxes),
+          document_total_clp: review.totals.document_total_clp ?? calculatedTotal,
+          line_count: normalizedLines.length,
+        },
+      };
+      const result = await confirmForeignTradeAgencySettlementDocument(document.id, reconciliationId, normalizedReview);
+      await onConfirmed(`${result.updated_lines} concepto(s) conciliados y ${result.inserted_lines} gasto(s) real(es) nuevos. Revisa el resultado antes de aplicarlo al costeo.`);
+    } catch (confirmError) { setError(humanizeDocumentError(confirmError)); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-settlement-review-title">
+    <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-settlement-review-title">Revisar rendición final de agencia</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
+    <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} costos reales detectados</span><span>{documentWarnings.length} advertencias</span></div>
+    {needsRegeneration ? <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Extracción desactualizada.</strong> Regenera el análisis antes de confirmar.</span></div> : null}
+    {documentWarnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{documentWarnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
+
+    <section className="foreign-trade-review-section"><div><h3>Conciliación de destino</h3><span>La factura real se compara con una provisión ya confirmada.</span></div><div className="foreign-trade-form-grid">
+      <label className="wide-field"><span>Conciliación</span><select disabled={loadingReconciliations} value={reconciliationId} onChange={(event) => selectReconciliation(event.target.value)}><option value="">{loadingReconciliations ? "Cargando conciliaciones..." : "Selecciona una conciliación"}</option>{reconciliations.map((item) => <option key={item.id} value={item.id}>{item.title} · provisión {item.provision_reference || "sin referencia"} · {formatClp(item.remittance_amount_clp)}</option>)}</select></label>
+      {!loadingReconciliations && !reconciliations.length ? <div className="notice-banner error wide-field"><AlertTriangle size={17} /> Primero confirma una provisión de fondos para crear la conciliación.</div> : null}
+    </div></section>
+
+    <section className="foreign-trade-review-section"><div><h3>Identificación de la rendición</h3><span>Verifica factura, referencia y fecha antes de cargar costos reales.</span></div><div className="foreign-trade-form-grid">
+      <ReviewField label="Referencia del despacho" value={review.general.reference} onChange={(value) => setGeneral("reference", value || null)} />
+      <ReviewField label="Agencia de aduanas" value={review.general.agency_name} onChange={(value) => setGeneral("agency_name", value || null)} />
+      <ReviewField label="N.º factura principal" value={review.general.invoice_number} onChange={(value) => setGeneral("invoice_number", value || null)} />
+      <ReviewField label="Fecha" type="date" value={review.general.document_date} onChange={(value) => setGeneral("document_date", value || null)} />
+      <ReviewField label="Moneda principal" value={review.general.currency} maxLength={3} onChange={(value) => setGeneral("currency", value.toUpperCase() || null)} />
+      <ReviewLineNumber label="Total declarado CLP" value={review.general.declared_total_clp} onChange={(value) => setGeneral("declared_total_clp", value)} />
+      <label className="wide-field"><span>Observaciones</span><textarea value={review.general.observations || ""} onChange={(event) => setGeneral("observations", event.target.value || null)} /></label>
+      {referencesDiffer ? <label className="foreign-trade-checkbox-field wide-field"><input type="checkbox" checked={review.identity_confirmed} onChange={(event) => setReview((current) => ({ ...current, identity_confirmed: event.target.checked }))} /><span>Confirmo que esta rendición corresponde a la provisión seleccionada aunque las referencias sean diferentes.</span></label> : null}
+    </div></section>
+
+    <section className="foreign-trade-review-section"><div><h3>Control de valores reales</h3><span>Los tributos se mantienen separados de los gastos operacionales.</span></div><div className="foreign-trade-form-grid">
+      <ReviewLineReadonlyNumber label="Gastos reales CLP" value={roundMoney(expenses)} />
+      <ReviewLineReadonlyNumber label="Tributos reales CLP" value={roundMoney(taxes)} />
+      <ReviewLineReadonlyNumber label="Suma reconocida CLP" value={calculatedTotal} />
+      <ReviewLineReadonlyNumber label="Total documento CLP" value={review.totals.document_total_clp} />
+    </div>{review.totals.document_total_clp !== null && Math.abs(calculatedTotal - review.totals.document_total_clp) > Math.max(1, review.totals.document_total_clp * 0.01) ? <p className="foreign-trade-recalculation">La suma difiere del total documental en <strong>{formatClp(Math.abs(calculatedTotal - review.totals.document_total_clp))}</strong>. Revisa líneas faltantes, notas de crédito o subtotales duplicados.</p> : null}</section>
+
+    <section className="foreign-trade-review-section"><div><h3>Costos reales reconocidos</h3><span>Relaciona cada costo con su provisión. Usa “Nuevo costo real” cuando no existía en la estimación.</span></div><div className="foreign-trade-review-lines">{review.lines.map((line, index) => <AgencySettlementLineCard key={`${line.source_index}-${index}`} line={line} provisionLines={selectedReconciliation?.lines || []} onChange={(patch) => setLine(index, patch)} />)}</div></section>
+    {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || needsRegeneration || !reconciliationId || !selectedLines.length} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Conciliando..." : "Confirmar costos reales"}</button></footer>
+  </div></div>;
+}
+
+function AgencySettlementLineCard({ line, provisionLines, onChange }: { line: ForeignTradeAgencySettlementLine; provisionLines: ForeignTradeExpenseReconciliation["lines"]; onChange: (patch: Partial<ForeignTradeAgencySettlementLine>) => void }) {
+  return <article className={!line.include ? "excluded" : ""}>
+    <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Costo real {line.source_index}{line.source_page ? ` · pág. ${line.source_page}` : ""}</span></label><ConfidenceBadge value={line.confidence} /></header>
+    <div className="foreign-trade-form-grid">
+      <label className="wide-field"><span>Relacionar con provisión</span><select value={line.reconciliation_line_id || ""} onChange={(event) => onChange({ reconciliation_line_id: event.target.value || null })}><option value="">Nuevo costo real sin provisión equivalente</option>{provisionLines.map((item) => <option key={item.id} value={item.id}>{item.concept} · {formatClp(item.provision_total_clp)}</option>)}</select></label>
+      <label className="wide-field"><span>Concepto real</span><input value={line.concept} onChange={(event) => onChange({ concept: event.target.value })} /></label>
+      <label><span>Tipo</span><select value={line.line_type} onChange={(event) => onChange({ line_type: event.target.value as ForeignTradeReconciliationLineType })}>{reconciliationLineTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      <label><span>Categoría</span><select value={line.cost_category} onChange={(event) => onChange({ cost_category: event.target.value as ForeignTradeCostCategory })}>{reconciliationCategoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      <ReviewLineNumber label="Página" value={line.source_page} onChange={(value) => onChange({ source_page: value === null ? null : Math.max(1, Math.round(value)) })} />
+      <ReviewLineField label="Proveedor" value={line.provider_name} onChange={(value) => onChange({ provider_name: value })} />
+      <ReviewLineField label="N.º documento" value={line.document_number} onChange={(value) => onChange({ document_number: value })} />
+      <ReviewLineField label="Fecha respaldo" value={line.document_date} onChange={(value) => onChange({ document_date: value })} />
+      <ReviewLineNumber label="Neto real CLP" value={line.actual_net_clp} onChange={(value) => onChange({ actual_net_clp: value })} />
+      <ReviewLineNumber label="IVA real CLP" value={line.actual_vat_clp} onChange={(value) => onChange({ actual_vat_clp: value })} />
+      <ReviewLineNumber label="Total real CLP" value={line.actual_total_clp} onChange={(value) => onChange({ actual_total_clp: value })} />
+      <ReviewLineNumber label="Monto original" value={line.amount_original} onChange={(value) => onChange({ amount_original: value })} />
+      <ReviewLineField label="Moneda original" value={line.currency} maxLength={3} onChange={(value) => onChange({ currency: (value || "").toUpperCase() })} />
+      <ReviewLineNumber label="Tipo cambio a CLP" value={line.exchange_rate_clp} onChange={(value) => onChange({ exchange_rate_clp: value })} />
+      <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => onChange({ recoverable_tax: event.target.checked })} /><span>Impuesto recuperable</span></label>
+      <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => onChange({ include_in_costing: event.target.checked })} /><span>Incluir en costeo</span></label>
+    </div>
+    {line.currency !== "CLP" && line.amount_original !== null && line.exchange_rate_clp === null && line.actual_total_clp === null ? <div className="foreign-trade-line-warnings"><span><AlertTriangle size={13} /> Falta tipo de cambio o equivalente CLP.</span></div> : null}
+    {line.warnings.length ? <div className="foreign-trade-line-warnings">{line.warnings.map((warning) => <span key={warning}><AlertTriangle size={13} /> {warning}</span>)}</div> : null}
+  </article>;
+}
+
+function normalizeAgencySettlementLine(line: ForeignTradeAgencySettlementLine, patch: Partial<ForeignTradeAgencySettlementLine>): ForeignTradeAgencySettlementLine {
+  const next = { ...line };
+  if ("line_type" in patch) {
+    if (next.line_type === "customs_duty") { next.cost_category = "duties"; next.include_in_costing = true; }
+    if (next.line_type === "import_vat") { next.cost_category = "taxes"; next.recoverable_tax = true; next.include_in_costing = false; }
+    if (next.line_type === "agency_fee") next.cost_category = "customs_agency";
+  }
+  next.currency = String(next.currency || "").trim().toUpperCase();
+  if (next.currency === "CLP") next.exchange_rate_clp = 1;
+  if (("actual_net_clp" in patch || "actual_vat_clp" in patch) && !("actual_total_clp" in patch)) {
+    next.actual_total_clp = next.actual_net_clp !== null || next.actual_vat_clp !== null
+      ? roundMoney((next.actual_net_clp || 0) + (next.actual_vat_clp || 0))
+      : null;
+  } else if (("amount_original" in patch || "exchange_rate_clp" in patch || "currency" in patch) && !("actual_total_clp" in patch) && next.amount_original !== null && next.exchange_rate_clp !== null) {
+    next.actual_total_clp = roundMoney(next.amount_original * next.exchange_rate_clp);
+  }
+  return next;
+}
+
+function autoMatchSettlementLines(lines: ForeignTradeAgencySettlementLine[], provisionLines: ForeignTradeExpenseReconciliation["lines"]) {
+  const used = new Set<string>();
+  return lines.map((line) => {
+    if (line.reconciliation_line_id && provisionLines.some((candidate) => candidate.id === line.reconciliation_line_id) && !used.has(line.reconciliation_line_id)) {
+      used.add(line.reconciliation_line_id);
+      return line;
+    }
+    const available = provisionLines.filter((candidate) => !used.has(candidate.id));
+    const concept = normalizeReference(line.concept);
+    const documentNumber = normalizeReference(line.document_number || "");
+    const match = available.find((candidate) => documentNumber && normalizeReference(candidate.document_number || "") === documentNumber)
+      || available.find((candidate) => concept && normalizeReference(candidate.concept) === concept)
+      || available.find((candidate) => candidate.line_type === line.line_type && candidate.cost_category === line.cost_category)
+      || null;
+    if (match) used.add(match.id);
+    return { ...line, reconciliation_line_id: match?.id || null };
+  });
+}
+
+function normalizeReference(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
 function FundRequestLineCard({ line, onChange }: { line: ForeignTradeFundRequestLine; onChange: (patch: Partial<ForeignTradeFundRequestLine>) => void }) {
   return <article className={!line.include ? "excluded" : ""}>
     <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Concepto {line.source_index}{line.source_page ? ` · pág. ${line.source_page}` : ""}</span></label><ConfidenceBadge value={line.confidence} /></header>
@@ -798,6 +998,9 @@ function humanizeDocumentError(error: unknown) {
   if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase.";
   if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
   if (/confirm_foreign_trade_fund_request_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase6_fund_requests.sql.";
+  if (/confirm_foreign_trade_agency_settlement_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase7_agency_settlements.sql.";
+  if (message.includes("foreign_trade_reconciliation_identity_mismatch")) return "Las referencias no coinciden. Confirma manualmente que la provisión y la rendición pertenecen al mismo despacho.";
+  if (message.includes("foreign_trade_reconciliation_already_applied")) return "Esta conciliación ya fue aplicada al costeo y no puede recibir otra rendición final.";
   if (/update_foreign_trade_document_type|cancel_foreign_trade_document_extraction|delete_foreign_trade_document|schema cache|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos de Comercio Exterior en Supabase.";
   if (/request_stale|detenido por el usuario/i.test(message)) return "El análisis fue detenido y su respuesta anterior quedó descartada.";
   if (message.includes("already") || message.includes("not_ready")) return "El documento ya fue confirmado o todavía no está listo para revisión.";

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import {
+  FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION,
   FOREIGN_TRADE_EXTRACTION_VERSION,
   FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
   buildExtractionRanges,
@@ -10,6 +11,7 @@ import {
   mergeUnnumberedRows,
   missingExtractionRanges,
   prepareExtraction,
+  prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
 } from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
 import {
@@ -20,6 +22,7 @@ import {
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
+import { normalizeForeignTradeAgencySettlementReview } from "../src/modules/foreign-trade/foreignTradeAgencySettlementReview.ts";
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -255,6 +258,13 @@ const phase6Migration = await readFile(
 );
 await db.exec(phase6Migration);
 await db.exec(phase6Migration);
+
+const phase7Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase7_agency_settlements.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase7Migration);
+await db.exec(phase7Migration);
 
 const costingParameters = await db.query(
   "select code,numeric_value from public.foreign_trade_cost_parameters where code like 'cl_%' order by code",
@@ -573,6 +583,33 @@ assert.equal(legacyFundRequestReview.isCompatible, false);
 assert.equal(legacyFundRequestReview.review.lines.length, 0);
 assert.equal(legacyFundRequestReview.review.general.currency, "CLP");
 
+const preparedAgencySettlement = prepareAgencySettlementExtraction({
+  general: {
+    reference: "49194",
+    agency_name: "Agencia de Aduanas",
+    invoice_number: "23177",
+    document_date: "2026-08-22",
+    currency: "CLP",
+    declared_total_clp: 900000,
+    confidence: 0.96,
+    warnings: [],
+  },
+  lines: [
+    { source_index: 1, source_page: 1, include: true, line_type: "agency_fee", cost_category: "customs_agency", concept: "Honorarios agencia", provider_name: "Agencia de Aduanas", document_number: "23177", document_date: "2026-08-22", actual_net_clp: 402233, actual_vat_clp: 76424, actual_total_clp: 478657, amount_original: 478657, currency: "CLP", exchange_rate_clp: 1, recoverable_tax: true, include_in_costing: true, confidence: 0.97, warnings: [] },
+    { source_index: 2, source_page: 2, include: true, line_type: "operating_expense", cost_category: "chile_port", concept: "Servicios portuarios", provider_name: "AGUNSA", document_number: "2082486", document_date: "2026-08-20", actual_net_clp: 444155, actual_vat_clp: 84389, actual_total_clp: 528544, amount_original: 528544, currency: "CLP", exchange_rate_clp: 1, recoverable_tax: true, include_in_costing: true, confidence: 0.94, warnings: [] },
+  ],
+  totals: { expenses_clp: 1007201, taxes_clp: 0, document_total_clp: 900000, line_count: 2 },
+  warnings: [],
+});
+assert.equal(preparedAgencySettlement.extraction.extraction_version, FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION);
+assert.equal(preparedAgencySettlement.extraction.document_kind, "agency_settlement");
+assert.equal(preparedAgencySettlement.extraction.lines[0].actual_total_clp, 478657);
+assert.ok(preparedAgencySettlement.warnings.some((warning) => warning.code === "agency_settlement_total_mismatch"));
+const normalizedAgencySettlement = normalizeForeignTradeAgencySettlementReview(preparedAgencySettlement.extraction);
+assert.equal(normalizedAgencySettlement.isCompatible, true);
+assert.equal(normalizedAgencySettlement.review.lines.length, 2);
+assert.equal(normalizedAgencySettlement.review.identity_confirmed, false);
+
 const extractionRanges = buildExtractionRanges(89, 40);
 assert.deepEqual(extractionRanges, [
   { start: 1, end: 40 },
@@ -886,6 +923,57 @@ const extractedReconciliation = await db.query(
 assert.equal(extractedReconciliation.rows[0].remittance_amount_clp, "16853872.00");
 assert.equal(extractedReconciliation.rows[0].lines, 3);
 assert.equal(extractedReconciliation.rows[0].taxes, "16377872.00");
+
+const extractedSettlementDocument = await db.query("select public.register_foreign_trade_document($1::jsonb) as id", [JSON.stringify({
+  operation_id: operationId,
+  supplier_id: supplier.rows[0].id,
+  document_type: "agency_settlement",
+  original_file_name: "rendicion-final-extraida.pdf",
+  storage_path: `${operationId}/rendicion-final-extraida.pdf`,
+  mime_type: "application/pdf",
+  file_size: "8192",
+  file_hash: "f".repeat(64),
+})]);
+await db.exec("set role service_role");
+await db.query(
+  "select public.set_foreign_trade_document_extraction($1,'extracting','{}'::jsonb,null,'[]'::jsonb,null,null,$2)",
+  [extractedSettlementDocument.rows[0].id, "agency-settlement-test"],
+);
+await db.query(
+  "select public.set_foreign_trade_document_extraction($1,'review_required',$2::jsonb,$3,$4::jsonb,null,'gpt-test',$5)",
+  [extractedSettlementDocument.rows[0].id, JSON.stringify(preparedAgencySettlement.extraction), preparedAgencySettlement.confidence, JSON.stringify(preparedAgencySettlement.warnings), "agency-settlement-test"],
+);
+await db.exec("reset role");
+const provisionLinesForSettlement = await db.query(
+  "select id,concept from public.foreign_trade_expense_reconciliation_lines where reconciliation_id=$1 order by position",
+  [confirmedFundRequest.rows[0].result.reconciliation_id],
+);
+const reviewedSettlement = structuredClone(preparedAgencySettlement.extraction);
+reviewedSettlement.lines[0].reconciliation_line_id = provisionLinesForSettlement.rows[0].id;
+const confirmedSettlement = await db.query(
+  "select public.confirm_foreign_trade_agency_settlement_document($1,$2,$3::jsonb) as result",
+  [extractedSettlementDocument.rows[0].id, confirmedFundRequest.rows[0].result.reconciliation_id, JSON.stringify(reviewedSettlement)],
+);
+assert.equal(confirmedSettlement.rows[0].result.updated_lines, 1);
+assert.equal(confirmedSettlement.rows[0].result.inserted_lines, 1);
+assert.equal(
+  (await db.query("select parse_status from public.foreign_trade_documents where id=$1", [extractedSettlementDocument.rows[0].id])).rows[0].parse_status,
+  "confirmed",
+);
+const settlementReconciliation = await db.query(
+  "select final_document_id,agency_invoice_number,status from public.foreign_trade_expense_reconciliations where id=$1",
+  [confirmedFundRequest.rows[0].result.reconciliation_id],
+);
+assert.deepEqual(settlementReconciliation.rows[0], {
+  final_document_id: extractedSettlementDocument.rows[0].id,
+  agency_invoice_number: "23177",
+  status: "reviewed",
+});
+assert.equal(
+  (await db.query("select count(*)::integer as count from public.foreign_trade_expense_reconciliation_lines where reconciliation_id=$1 and actual_total_clp > 0", [confirmedFundRequest.rows[0].result.reconciliation_id])).rows[0].count,
+  2,
+  "la rendición debe actualizar una provisión coincidente y agregar el costo real no provisionado",
+);
 
 await db.query("select public.update_foreign_trade_document_type($1,$2)", [settlementDocument.rows[0].id, "proforma"]);
 const reclassifiedExtractable = await db.query(

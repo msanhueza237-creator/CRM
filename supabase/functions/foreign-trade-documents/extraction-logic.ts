@@ -2,6 +2,7 @@ export type JsonRecord = Record<string, unknown>;
 
 export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v10";
 export const FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION = "fund_request_v1";
+export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v1";
 
 export type ExtractionWarning = {
   code: string;
@@ -523,6 +524,131 @@ export function prepareFundRequestExtraction(value: unknown) {
         currency: nullableText(sourceGeneral.currency)?.toUpperCase() || "CLP",
         declared_total_clp: declaredTotal,
         remittance_amount_clp: numeric(sourceGeneral.remittance_amount_clp) ?? declaredTotal ?? calculatedTotal,
+        observations: nullableText(sourceGeneral.observations),
+        confidence: clamp(numeric(sourceGeneral.confidence), 0, 1),
+        warnings: generalWarnings,
+      },
+      lines,
+      totals: {
+        expenses_clp: numeric(sourceTotals.expenses_clp) ?? expensesClp,
+        taxes_clp: numeric(sourceTotals.taxes_clp) ?? taxesClp,
+        document_total_clp: declaredTotal ?? calculatedTotal,
+        line_count: lines.length,
+      },
+      warnings: stringArray(source.warnings, 30),
+    },
+    confidence,
+    warnings,
+  };
+}
+
+export function prepareAgencySettlementExtraction(value: unknown) {
+  const source = asObject(value);
+  const sourceGeneral = asObject(source.general);
+  const sourceTotals = asObject(source.totals);
+  const sourceLines = Array.isArray(source.lines) ? source.lines.slice(0, 300) : [];
+  const warnings: ExtractionWarning[] = [];
+  const generalWarnings = stringArray(sourceGeneral.warnings, 20);
+
+  const lines = sourceLines.map((item, index) => {
+    const row = asObject(item);
+    const sourceIndex = integer(row.source_index) || index + 1;
+    const lineWarnings = stringArray(row.warnings, 20);
+    const rawLineType = text(row.line_type);
+    const lineType = reconciliationLineTypes.has(rawLineType) ? rawLineType : "operating_expense";
+    const rawCategory = text(row.cost_category);
+    const costCategory = reconciliationCostCategories.has(rawCategory) ? rawCategory : "other";
+    const concept = nullableText(row.concept) || "";
+    const currency = /^[A-Z]{3}$/.test(text(row.currency).toUpperCase()) ? text(row.currency).toUpperCase() : "CLP";
+    const amountOriginal = numeric(row.amount_original);
+    const exchangeRate = currency === "CLP" ? 1 : numeric(row.exchange_rate_clp);
+    const netClp = numeric(row.actual_net_clp);
+    const vatClp = numeric(row.actual_vat_clp);
+    const declaredTotalClp = numeric(row.actual_total_clp);
+    const convertedTotal = amountOriginal !== null && exchangeRate !== null
+      ? round(amountOriginal * exchangeRate, 2)
+      : null;
+    const totalClp = declaredTotalClp ?? (
+      netClp !== null || vatClp !== null ? round((netClp || 0) + (vatClp || 0), 2) : convertedTotal
+    );
+
+    if (!concept) {
+      lineWarnings.push("No se reconoció el concepto del cargo real.");
+      warnings.push(warning("missing_actual_expense_concept", `La línea ${sourceIndex} no tiene un concepto identificable.`, "error", sourceIndex));
+    }
+    if (amountOriginal === null && totalClp === null) {
+      lineWarnings.push("No se reconoció un monto real.");
+      warnings.push(warning("missing_actual_expense_amount", `Falta el monto real en la línea ${sourceIndex}.`, "error", sourceIndex));
+    }
+    if (currency !== "CLP" && amountOriginal !== null && exchangeRate === null && totalClp === null) {
+      lineWarnings.push(`Falta el tipo de cambio para convertir ${currency} a CLP.`);
+      warnings.push(warning("missing_actual_exchange_rate", `Línea ${sourceIndex}: falta tipo de cambio ${currency}/CLP.`, "warning", sourceIndex));
+    }
+
+    const isImportVat = lineType === "import_vat";
+    return {
+      source_index: sourceIndex,
+      source_page: integer(row.source_page),
+      include: row.include !== false,
+      reconciliation_line_id: null,
+      line_type: lineType,
+      cost_category: lineType === "customs_duty" ? "duties" : isImportVat ? "taxes" : costCategory,
+      concept,
+      provider_name: nullableText(row.provider_name),
+      document_number: nullableText(row.document_number),
+      document_date: isoDate(row.document_date),
+      actual_net_clp: netClp,
+      actual_vat_clp: vatClp,
+      actual_total_clp: totalClp,
+      amount_original: amountOriginal ?? (currency === "CLP" ? totalClp : null),
+      currency,
+      exchange_rate_clp: exchangeRate,
+      recoverable_tax: isImportVat ? true : row.recoverable_tax === true,
+      include_in_costing: isImportVat ? false : row.include_in_costing !== false,
+      confidence: clamp(numeric(row.confidence), 0, 1),
+      warnings: [...new Set(lineWarnings)].slice(0, 20),
+    };
+  });
+
+  const expensesClp = round(lines
+    .filter((line) => !["customs_duty", "import_vat"].includes(line.line_type))
+    .reduce((sum, line) => sum + (line.actual_total_clp || 0), 0), 2);
+  const taxesClp = round(lines
+    .filter((line) => ["customs_duty", "import_vat"].includes(line.line_type))
+    .reduce((sum, line) => sum + (line.actual_total_clp || 0), 0), 2);
+  const calculatedTotal = round(expensesClp + taxesClp, 2);
+  const declaredTotal = numeric(sourceTotals.document_total_clp) ?? numeric(sourceGeneral.declared_total_clp);
+  if (declaredTotal !== null && calculatedTotal > 0 && !nearlyEqual(declaredTotal, calculatedTotal, 0.01)) {
+    warnings.push(warning(
+      "agency_settlement_total_mismatch",
+      `Total declarado ${round(declaredTotal, 2)} CLP versus suma de conceptos reales ${calculatedTotal} CLP.`,
+      "warning",
+    ));
+  }
+  if (!nullableText(sourceGeneral.reference)) warnings.push(warning("missing_agency_settlement_reference", "No se reconoció la referencia del despacho.", "warning"));
+  if (!isoDate(sourceGeneral.document_date)) warnings.push(warning("missing_agency_settlement_date", "No se reconoció una fecha documental inequívoca.", "warning"));
+  stringArray(source.warnings, 30).forEach((message) => warnings.push(warning("model_warning", message, "info")));
+
+  const confidenceValues = [
+    clamp(numeric(sourceGeneral.confidence), 0, 1),
+    ...lines.map((line) => line.confidence),
+  ].filter((item): item is number => item !== null);
+  const confidence = confidenceValues.length
+    ? round(confidenceValues.reduce((sum, item) => sum + item, 0) / confidenceValues.length, 6)
+    : null;
+
+  return {
+    extraction: {
+      extraction_version: FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION,
+      document_kind: "agency_settlement",
+      identity_confirmed: false,
+      general: {
+        reference: nullableText(sourceGeneral.reference),
+        agency_name: nullableText(sourceGeneral.agency_name),
+        invoice_number: nullableText(sourceGeneral.invoice_number),
+        document_date: isoDate(sourceGeneral.document_date),
+        currency: nullableText(sourceGeneral.currency)?.toUpperCase() || "CLP",
+        declared_total_clp: declaredTotal,
         observations: nullableText(sourceGeneral.observations),
         confidence: clamp(numeric(sourceGeneral.confidence), 0, 1),
         warnings: generalWarnings,
