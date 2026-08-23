@@ -19,8 +19,10 @@ import {
 import {
   cancelForeignTradeDocumentExtraction,
   autoFinalizeForeignTradeExpenseReconciliation,
+  autoFinalizeForeignTradeOperation,
   confirmForeignTradeDocument,
   confirmForeignTradeAgencySettlementDocument,
+  confirmForeignTradeFreightDocument,
   confirmForeignTradeFundRequestDocument,
   deleteForeignTradeDocument,
   extractForeignTradeDocument,
@@ -44,18 +46,21 @@ import type {
   ForeignTradeExtractedLine,
   ForeignTradeFundRequestExtraction,
   ForeignTradeFundRequestLine,
+  ForeignTradeFreightDocumentExtraction,
+  ForeignTradeFreightDocumentLine,
   ForeignTradeReconciliationLineType,
   ForeignTradeSupplier,
 } from "../../types/foreignTrade";
 import { normalizeForeignTradeFundRequestReview } from "./foreignTradeFundRequestReview";
 import { normalizeForeignTradeAgencySettlementReview } from "./foreignTradeAgencySettlementReview";
+import { normalizeForeignTradeFreightDocumentReview } from "./foreignTradeFreightDocumentReview";
 
 const documentTypes: Array<{ value: ForeignTradeDocumentType; label: string }> = [
   { value: "proforma", label: "Proforma" },
   { value: "purchase_order", label: "Orden de compra" },
   { value: "commercial_invoice", label: "Commercial invoice" },
   { value: "packing_list", label: "Packing list" },
-  { value: "freight_quote", label: "Cotización de transporte" },
+  { value: "freight_quote", label: "Factura / cotización de transporte" },
   { value: "bill_of_lading", label: "Bill of lading" },
   { value: "certificate_of_origin", label: "Certificado de origen" },
   { value: "customs_document", label: "Documento aduanero" },
@@ -71,7 +76,7 @@ const productExtractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   "commercial_invoice",
   "packing_list",
 ]);
-const expenseExtractableDocumentTypes = new Set<ForeignTradeDocumentType>(["fund_request", "agency_settlement"]);
+const expenseExtractableDocumentTypes = new Set<ForeignTradeDocumentType>(["fund_request", "agency_settlement", "freight_quote"]);
 const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   ...productExtractableDocumentTypes,
   ...expenseExtractableDocumentTypes,
@@ -80,6 +85,7 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
 const currentExtractionVersion = "pdf_skill_v10";
 const currentFundRequestExtractionVersion = "fund_request_v1";
 const currentAgencySettlementExtractionVersion = "agency_settlement_v1";
+const currentFreightDocumentExtractionVersion = "freight_document_v1";
 
 type PendingDocumentUpload = {
   key: string;
@@ -272,7 +278,9 @@ export function ForeignTradeDocumentsPanel({
       if (openReview && refreshedDocument?.parse_status === "review_required") setReviewDocument(refreshedDocument);
       const lineCount = extractionLines(refreshedDocument?.extraction_result).length;
       setMessage(lineCount
-        ? expenseExtractableDocumentTypes.has(document.document_type)
+        ? document.document_type === "freight_quote"
+          ? `Extracción lista: ${lineCount} cargo(s) logístico(s) para revisar y costear.`
+          : expenseExtractableDocumentTypes.has(document.document_type)
           ? `Extracción lista: ${lineCount} concepto(s) de gastos y tributos para revisar.`
           : `Extracción regenerada: ${lineCount} producto(s) listos para revisar.`
         : "Extracción lista para revisión.");
@@ -402,7 +410,7 @@ export function ForeignTradeDocumentsPanel({
             <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
           </div>
         </div>
-        <p className="foreign-trade-document-type-help">Usa <strong>Rendición final de agencia</strong> para paquetes de facturas y gastos. Usa <strong>Proforma</strong> solo cuando el documento contiene productos que deben importarse al catálogo de la operación.</p>
+        <p className="foreign-trade-document-type-help">Usa <strong>Factura / cotización de transporte</strong> para flete marítimo, aéreo o terrestre; al confirmar se incorporará a Costos base y Costeo y precio. Usa <strong>Rendición final de agencia</strong> para paquetes de facturas aduaneras y <strong>Proforma</strong> para productos.</p>
         {message ? <div className="notice-banner success"><CheckCircle2 size={17} /> {message}</div> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
       </form>
@@ -445,7 +453,9 @@ export function ForeignTradeDocumentsPanel({
         ? <FundRequestReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
         : reviewDocument.document_type === "agency_settlement"
           ? <AgencySettlementReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
-          : <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
+          : reviewDocument.document_type === "freight_quote"
+            ? <FreightDocumentReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
+            : <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
         : null}
     </section>
   );
@@ -569,6 +579,144 @@ const reconciliationCategoryOptions: Array<{ value: Exclude<ForeignTradeCostCate
   { value: "supplier_charge", label: "Cargo de proveedor" },
   { value: "other", label: "Otro" },
 ];
+const freightCategoryOptions = reconciliationCategoryOptions.filter((item) => !["duties", "taxes"].includes(item.value));
+
+function FreightDocumentReviewDialog({ document, onClose, onRegenerate, onConfirmed }: { document: ForeignTradeDocument; onClose: () => void; onRegenerate: () => Promise<void>; onConfirmed: (message: string) => Promise<void> }) {
+  const [initialReview] = useState(() => normalizeForeignTradeFreightDocumentReview(document.extraction_result));
+  const [review, setReview] = useState<ForeignTradeFreightDocumentExtraction>(initialReview.review);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const documentWarnings = Array.isArray(document.review_warnings) ? document.review_warnings : [];
+
+  if (!initialReview.isCompatible) {
+    return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-freight-review-title">
+      <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-freight-review-title">Revisar transporte internacional</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
+      <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Este archivo todavía no tiene una extracción logística compatible.</strong> Regenera el análisis para reconocer transportista, ruta, factura, moneda, tipo de cambio y cargos de flete.</span></div>
+      {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+      <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cerrar</button><button className="primary-button" type="button" disabled={busy} onClick={() => { setBusy(true); setError(""); void onRegenerate().catch((regenerateError) => { setBusy(false); setError(humanizeDocumentError(regenerateError)); }); }}><RefreshCw className={busy ? "spin" : ""} size={17} /> {busy ? "Regenerando..." : "Regenerar extracción"}</button></footer>
+    </div></div>;
+  }
+
+  function setGeneral(key: keyof ForeignTradeFreightDocumentExtraction["general"], value: string | number | null) {
+    setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
+  }
+  function setLine(index: number, patch: Partial<ForeignTradeFreightDocumentLine>) {
+    setReview((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => lineIndex === index ? normalizeFreightDocumentLine({ ...line, ...patch }, patch) : line),
+    }));
+  }
+
+  const selectedLines = review.lines.filter((line) => line.include && line.include_in_costing);
+  const calculatedNet = roundMoney(selectedLines.reduce((sum, line) => sum + (line.net_clp || 0), 0));
+  const calculatedVat = roundMoney(selectedLines.reduce((sum, line) => sum + (line.vat_clp || 0), 0));
+  const calculatedTotal = roundMoney(selectedLines.reduce((sum, line) => sum + (line.total_clp || 0), 0));
+  const needsRegeneration = review.extraction_version !== currentFreightDocumentExtractionVersion;
+
+  async function confirm() {
+    if (!window.confirm("¿Confirmar este transporte e incorporarlo al costeo? Se creará o vinculará un costo real con trazabilidad al documento y se recalcularán los precios.")) return;
+    setBusy(true); setError("");
+    try {
+      const normalizedLines = review.lines.map((line) => normalizeFreightDocumentLine({
+        ...line,
+        currency: normalizeCurrencyCode(line.currency, "CLP"),
+      }, {}));
+      const normalizedReview: ForeignTradeFreightDocumentExtraction = {
+        ...review,
+        extraction_version: currentFreightDocumentExtractionVersion,
+        document_kind: "freight_document",
+        general: { ...review.general, currency: normalizeCurrencyCode(review.general.currency, "CLP") },
+        lines: normalizedLines,
+        totals: {
+          net_clp: calculatedNet,
+          vat_clp: calculatedVat,
+          document_total_clp: review.totals.document_total_clp ?? calculatedTotal,
+          line_count: normalizedLines.length,
+        },
+      };
+      const result = await confirmForeignTradeFreightDocument(document.id, normalizedReview);
+      const reconciliation = await autoFinalizeForeignTradeOperation(document.operation_id);
+      const duplicateText = result.linked_existing_costs
+        ? ` ${result.linked_existing_costs} costo(s) ya existente(s) fueron vinculados sin duplicarlos.`
+        : "";
+      const reconciliationText = reconciliation.processed_reconciliations
+        ? ` Se actualizaron ${reconciliation.processed_reconciliations} conciliación(es) de agencia.`
+        : "";
+      await onConfirmed(`${result.inserted_costs} costo(s) marítimo(s) incorporados por ${formatClp(result.total_cost_clp)}.${duplicateText}${reconciliationText} Costos base y Costeo y precio quedaron actualizados.`);
+    } catch (confirmError) { setError(humanizeDocumentError(confirmError)); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-freight-review-title">
+    <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-freight-review-title">Revisar transporte internacional</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
+    <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} cargo(s) detectado(s)</span><span>{documentWarnings.length} advertencias</span></div>
+    {needsRegeneration ? <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Extracción desactualizada.</strong> Regenera el análisis antes de confirmar.</span></div> : null}
+    {documentWarnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{documentWarnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
+
+    <section className="foreign-trade-review-section"><div><h3>Identificación del transporte</h3><span>Comprueba documento, proveedor, ruta y B/L antes de costear.</span></div><div className="foreign-trade-form-grid">
+      <ReviewField label="Referencia del embarque" value={review.general.reference} onChange={(value) => setGeneral("reference", value || null)} />
+      <ReviewField label="Transportista / forwarder" value={review.general.carrier_name} onChange={(value) => setGeneral("carrier_name", value || null)} />
+      <ReviewField label="N.º factura / cotización" value={review.general.document_number} onChange={(value) => setGeneral("document_number", value || null)} />
+      <ReviewField label="Fecha" type="date" value={review.general.document_date} onChange={(value) => setGeneral("document_date", value || null)} />
+      <ReviewField label="Moneda principal" value={review.general.currency} maxLength={3} onChange={(value) => setGeneral("currency", value.toUpperCase() || null)} />
+      <ReviewLineNumber label="Total declarado CLP" value={review.general.declared_total_clp} onChange={(value) => setGeneral("declared_total_clp", value)} />
+      <ReviewField label="Puerto de origen" value={review.general.origin_port} onChange={(value) => setGeneral("origin_port", value || null)} />
+      <ReviewField label="Puerto de destino" value={review.general.destination_port} onChange={(value) => setGeneral("destination_port", value || null)} />
+      <ReviewField label="Bill of lading (B/L)" value={review.general.bill_of_lading} onChange={(value) => setGeneral("bill_of_lading", value || null)} />
+      <label className="wide-field"><span>Observaciones</span><textarea value={review.general.observations || ""} onChange={(event) => setGeneral("observations", event.target.value || null)} /></label>
+    </div></section>
+
+    <section className="foreign-trade-review-section"><div><h3>Control del costo</h3><span>El valor original y su conversión se conservan para auditoría.</span></div><div className="foreign-trade-form-grid">
+      <ReviewLineReadonlyNumber label="Neto reconocido CLP" value={calculatedNet} />
+      <ReviewLineReadonlyNumber label="IVA reconocido CLP" value={calculatedVat} />
+      <ReviewLineReadonlyNumber label="Total reconocido CLP" value={calculatedTotal} />
+      <ReviewLineReadonlyNumber label="Total documento CLP" value={review.totals.document_total_clp} />
+    </div>{review.totals.document_total_clp !== null && Math.abs(calculatedTotal - review.totals.document_total_clp) > Math.max(1, review.totals.document_total_clp * 0.01) ? <p className="foreign-trade-recalculation">La suma difiere del total documental en <strong>{formatClp(Math.abs(calculatedTotal - review.totals.document_total_clp))}</strong>. Revisa cargos o subtotales antes de confirmar.</p> : null}</section>
+
+    <section className="foreign-trade-review-section"><div><h3>Cargos logísticos reconocidos</h3><span>Desmarca cualquier subtotal duplicado. El sistema evita duplicar un costo real coincidente.</span></div><div className="foreign-trade-review-lines">{review.lines.map((line, index) => <FreightDocumentLineCard key={`${line.source_index}-${index}`} line={line} onChange={(patch) => setLine(index, patch)} />)}</div></section>
+    {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || needsRegeneration || !selectedLines.length} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Costeando..." : "Confirmar e incorporar al costeo"}</button></footer>
+  </div></div>;
+}
+
+function FreightDocumentLineCard({ line, onChange }: { line: ForeignTradeFreightDocumentLine; onChange: (patch: Partial<ForeignTradeFreightDocumentLine>) => void }) {
+  return <article className={!line.include ? "excluded" : ""}>
+    <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Cargo {line.source_index}{line.source_page ? ` · pág. ${line.source_page}` : ""}</span></label><ConfidenceBadge value={line.confidence} /></header>
+    <div className="foreign-trade-form-grid">
+      <label className="wide-field"><span>Concepto</span><input value={line.concept} onChange={(event) => onChange({ concept: event.target.value })} /></label>
+      <label><span>Categoría</span><select value={line.cost_category} onChange={(event) => onChange({ cost_category: event.target.value as Exclude<ForeignTradeCostCategory, "merchandise"> })}>{freightCategoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      <ReviewLineNumber label="Página" value={line.source_page} onChange={(value) => onChange({ source_page: value === null ? null : Math.max(1, Math.round(value)) })} />
+      <ReviewLineField label="Proveedor" value={line.provider_name} onChange={(value) => onChange({ provider_name: value })} />
+      <ReviewLineField label="N.º documento" value={line.document_number} onChange={(value) => onChange({ document_number: value })} />
+      <ReviewLineField label="Fecha" value={line.document_date} onChange={(value) => onChange({ document_date: value })} />
+      <ReviewLineNumber label="Neto CLP" value={line.net_clp} onChange={(value) => onChange({ net_clp: value })} />
+      <ReviewLineNumber label="IVA CLP" value={line.vat_clp} onChange={(value) => onChange({ vat_clp: value })} />
+      <ReviewLineNumber label="Total CLP" value={line.total_clp} onChange={(value) => onChange({ total_clp: value })} />
+      <ReviewLineNumber label="Monto original" value={line.amount_original} onChange={(value) => onChange({ amount_original: value })} />
+      <ReviewLineField label="Moneda original" value={line.currency} maxLength={3} onChange={(value) => onChange({ currency: (value || "").toUpperCase() })} />
+      <ReviewLineNumber label="Tipo cambio a CLP" value={line.exchange_rate_clp} onChange={(value) => onChange({ exchange_rate_clp: value })} />
+      <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => onChange({ recoverable_tax: event.target.checked })} /><span>IVA recuperable</span></label>
+      <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => onChange({ include_in_costing: event.target.checked })} /><span>Incluir en costeo</span></label>
+    </div>
+    {line.currency !== "CLP" && line.amount_original !== null && line.exchange_rate_clp === null && line.total_clp === null ? <div className="foreign-trade-line-warnings"><span><AlertTriangle size={13} /> Falta tipo de cambio o equivalente CLP.</span></div> : null}
+    {line.warnings.length ? <div className="foreign-trade-line-warnings">{line.warnings.map((warning) => <span key={warning}><AlertTriangle size={13} /> {warning}</span>)}</div> : null}
+  </article>;
+}
+
+function normalizeFreightDocumentLine(line: ForeignTradeFreightDocumentLine, patch: Partial<ForeignTradeFreightDocumentLine>): ForeignTradeFreightDocumentLine {
+  const next = { ...line };
+  next.currency = String(next.currency || "").trim().toUpperCase();
+  if (next.currency === "CLP") next.exchange_rate_clp = 1;
+  if (("net_clp" in patch || "vat_clp" in patch) && !("total_clp" in patch)) {
+    next.total_clp = next.net_clp !== null || next.vat_clp !== null
+      ? roundMoney((next.net_clp || 0) + (next.vat_clp || 0))
+      : null;
+  } else if (("amount_original" in patch || "exchange_rate_clp" in patch || "currency" in patch) && !("total_clp" in patch) && next.amount_original !== null && next.exchange_rate_clp !== null) {
+    next.total_clp = roundMoney(next.amount_original * next.exchange_rate_clp);
+    if (next.vat_clp === null || next.vat_clp === 0) next.net_clp = next.total_clp;
+  }
+  return next;
+}
 
 function FundRequestReviewDialog({ document, onClose, onRegenerate, onConfirmed }: { document: ForeignTradeDocument; onClose: () => void; onRegenerate: () => Promise<void>; onConfirmed: (message: string) => Promise<void> }) {
   const [initialReview] = useState(() => normalizeForeignTradeFundRequestReview(document.extraction_result));
@@ -979,6 +1127,7 @@ function inferDocumentType(fileName: string, fallback: ForeignTradeDocumentType)
   if (/packing|lista.*empaque/.test(normalized)) return "packing_list";
   if (/purchase.*order|orden.*compra/.test(normalized)) return "purchase_order";
   if (/commercial.*invoice|factura.*comercial/.test(normalized)) return "commercial_invoice";
+  if (/flete|freight|maritim|naviera|transport|forwarder/.test(normalized)) return "freight_quote";
   if (/proforma|pro-forma/.test(normalized)) return "proforma";
   return fallback;
 }
@@ -1001,6 +1150,7 @@ function humanizeDocumentError(error: unknown) {
   if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
   if (/confirm_foreign_trade_fund_request_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase6_fund_requests.sql.";
   if (/confirm_foreign_trade_agency_settlement_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase7_agency_settlements.sql.";
+  if (/confirm_foreign_trade_freight_document/i.test(message)) return "Falta actualizar la base de datos con la migración de documentos de transporte.";
   if (message.includes("foreign_trade_reconciliation_identity_mismatch")) return "Las referencias no coinciden. Confirma manualmente que la provisión y la rendición pertenecen al mismo despacho.";
   if (message.includes("foreign_trade_reconciliation_already_applied")) return "Esta conciliación ya fue aplicada al costeo y no puede recibir otra rendición final.";
   if (/update_foreign_trade_document_type|cancel_foreign_trade_document_extraction|delete_foreign_trade_document|schema cache|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos de Comercio Exterior en Supabase.";

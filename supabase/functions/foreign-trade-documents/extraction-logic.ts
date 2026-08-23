@@ -3,6 +3,7 @@ export type JsonRecord = Record<string, unknown>;
 export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v10";
 export const FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION = "fund_request_v1";
 export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v1";
+export const FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION = "freight_document_v1";
 
 export type ExtractionWarning = {
   code: string;
@@ -532,6 +533,125 @@ export function prepareFundRequestExtraction(value: unknown) {
       totals: {
         expenses_clp: numeric(sourceTotals.expenses_clp) ?? expensesClp,
         taxes_clp: numeric(sourceTotals.taxes_clp) ?? taxesClp,
+        document_total_clp: declaredTotal ?? calculatedTotal,
+        line_count: lines.length,
+      },
+      warnings: stringArray(source.warnings, 30),
+    },
+    confidence,
+    warnings,
+  };
+}
+
+export function prepareFreightDocumentExtraction(value: unknown) {
+  const source = asObject(value);
+  const sourceGeneral = asObject(source.general);
+  const sourceTotals = asObject(source.totals);
+  const sourceLines = Array.isArray(source.lines) ? source.lines.slice(0, 100) : [];
+  const warnings: ExtractionWarning[] = [];
+
+  const lines = sourceLines.map((item, index) => {
+    const row = asObject(item);
+    const sourceIndex = integer(row.source_index) || index + 1;
+    const lineWarnings = stringArray(row.warnings, 20);
+    const rawCategory = text(row.cost_category);
+    const costCategory = reconciliationCostCategories.has(rawCategory) && rawCategory !== "duties" && rawCategory !== "taxes"
+      ? rawCategory
+      : "international_freight";
+    const concept = nullableText(row.concept) || "";
+    const currency = /^[A-Z]{3}$/.test(text(row.currency).toUpperCase()) ? text(row.currency).toUpperCase() : "CLP";
+    const amountOriginal = numeric(row.amount_original);
+    const exchangeRate = currency === "CLP" ? 1 : numeric(row.exchange_rate_clp);
+    const netClp = numeric(row.net_clp);
+    const vatClp = numeric(row.vat_clp);
+    const declaredTotal = numeric(row.total_clp);
+    const convertedTotal = amountOriginal !== null && exchangeRate !== null
+      ? round(amountOriginal * exchangeRate, 2)
+      : null;
+    const totalClp = declaredTotal ?? (
+      netClp !== null || vatClp !== null ? round((netClp || 0) + (vatClp || 0), 2) : convertedTotal
+    );
+
+    if (!concept) {
+      lineWarnings.push("No se reconoció el concepto del transporte.");
+      warnings.push(warning("missing_freight_concept", `La línea ${sourceIndex} no tiene un concepto identificable.`, "error", sourceIndex));
+    }
+    if (amountOriginal === null && totalClp === null) {
+      lineWarnings.push("No se reconoció un monto para el cargo.");
+      warnings.push(warning("missing_freight_amount", `Falta el monto en la línea ${sourceIndex}.`, "error", sourceIndex));
+    }
+    if (currency !== "CLP" && amountOriginal !== null && exchangeRate === null && totalClp === null) {
+      lineWarnings.push(`Falta el tipo de cambio para convertir ${currency} a CLP.`);
+      warnings.push(warning("missing_freight_exchange_rate", `Línea ${sourceIndex}: falta tipo de cambio ${currency}/CLP.`, "warning", sourceIndex));
+    }
+
+    return {
+      source_index: sourceIndex,
+      source_page: integer(row.source_page),
+      include: row.include !== false,
+      cost_category: costCategory,
+      concept,
+      provider_name: nullableText(row.provider_name),
+      document_number: nullableText(row.document_number),
+      document_date: isoDate(row.document_date),
+      net_clp: netClp,
+      vat_clp: vatClp,
+      total_clp: totalClp,
+      amount_original: amountOriginal ?? (currency === "CLP" ? totalClp : null),
+      currency,
+      exchange_rate_clp: exchangeRate,
+      recoverable_tax: row.recoverable_tax === true,
+      include_in_costing: row.include_in_costing !== false,
+      confidence: clamp(numeric(row.confidence), 0, 1),
+      warnings: [...new Set(lineWarnings)].slice(0, 20),
+    };
+  });
+
+  const calculatedNet = round(lines.reduce((sum, line) => sum + (line.net_clp || 0), 0), 2);
+  const calculatedVat = round(lines.reduce((sum, line) => sum + (line.vat_clp || 0), 0), 2);
+  const calculatedTotal = round(lines.reduce((sum, line) => sum + (line.total_clp || 0), 0), 2);
+  const declaredTotal = numeric(sourceTotals.document_total_clp) ?? numeric(sourceGeneral.declared_total_clp);
+  if (declaredTotal !== null && calculatedTotal > 0 && !nearlyEqual(declaredTotal, calculatedTotal, 0.01)) {
+    warnings.push(warning(
+      "freight_total_mismatch",
+      `Total declarado ${round(declaredTotal, 2)} CLP versus suma de cargos ${calculatedTotal} CLP.`,
+      "warning",
+    ));
+  }
+  if (!nullableText(sourceGeneral.document_number)) warnings.push(warning("missing_freight_document_number", "No se reconoció el número de factura o cotización.", "warning"));
+  if (!isoDate(sourceGeneral.document_date)) warnings.push(warning("missing_freight_document_date", "No se reconoció una fecha documental inequívoca.", "warning"));
+  stringArray(source.warnings, 30).forEach((message) => warnings.push(warning("model_warning", message, "info")));
+
+  const confidenceValues = [
+    clamp(numeric(sourceGeneral.confidence), 0, 1),
+    ...lines.map((line) => line.confidence),
+  ].filter((item): item is number => item !== null);
+  const confidence = confidenceValues.length
+    ? round(confidenceValues.reduce((sum, item) => sum + item, 0) / confidenceValues.length, 4)
+    : null;
+
+  return {
+    extraction: {
+      extraction_version: FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION,
+      document_kind: "freight_document",
+      general: {
+        reference: nullableText(sourceGeneral.reference),
+        carrier_name: nullableText(sourceGeneral.carrier_name),
+        document_number: nullableText(sourceGeneral.document_number),
+        document_date: isoDate(sourceGeneral.document_date),
+        currency: nullableText(sourceGeneral.currency)?.toUpperCase() || null,
+        declared_total_clp: numeric(sourceGeneral.declared_total_clp) ?? declaredTotal,
+        origin_port: nullableText(sourceGeneral.origin_port),
+        destination_port: nullableText(sourceGeneral.destination_port),
+        bill_of_lading: nullableText(sourceGeneral.bill_of_lading),
+        observations: nullableText(sourceGeneral.observations),
+        confidence: clamp(numeric(sourceGeneral.confidence), 0, 1),
+        warnings: stringArray(sourceGeneral.warnings, 20),
+      },
+      lines,
+      totals: {
+        net_clp: numeric(sourceTotals.net_clp) ?? calculatedNet,
+        vat_clp: numeric(sourceTotals.vat_clp) ?? calculatedVat,
         document_total_clp: declaredTotal ?? calculatedTotal,
         line_count: lines.length,
       },

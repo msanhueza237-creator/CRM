@@ -5,6 +5,7 @@ import {
   FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION,
   FOREIGN_TRADE_EXTRACTION_VERSION,
   FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
+  FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION,
   buildExtractionRanges,
   mergeCompactVerification,
   mergeExtractionPasses,
@@ -13,6 +14,7 @@ import {
   prepareExtraction,
   prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
+  prepareFreightDocumentExtraction,
 } from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
 import {
   FOREIGN_TRADE_PDF_SKILL_VERSION,
@@ -23,6 +25,7 @@ import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/forei
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
 import { normalizeForeignTradeAgencySettlementReview } from "../src/modules/foreign-trade/foreignTradeAgencySettlementReview.ts";
+import { normalizeForeignTradeFreightDocumentReview } from "../src/modules/foreign-trade/foreignTradeFreightDocumentReview.ts";
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -272,6 +275,58 @@ const phase8Migration = await readFile(
 );
 await db.exec(phase8Migration);
 await db.exec(phase8Migration);
+
+const phase9Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase9_freight_documents.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase9Migration);
+await db.exec(phase9Migration);
+
+const freightExtraction = prepareFreightDocumentExtraction({
+  general: {
+    reference: "ROECHN25062759",
+    carrier_name: "ADS INTERNACIONAL CARGO SPA",
+    document_number: "979",
+    document_date: "2025-07-31",
+    currency: "USD",
+    declared_total_clp: 4690000,
+    origin_port: "Shanghai, China",
+    destination_port: "San Antonio, Chile",
+    bill_of_lading: "ROECHN25062759",
+    observations: "Factura exenta",
+    confidence: 0.99,
+    warnings: [],
+  },
+  lines: [{
+    source_index: 1,
+    source_page: 1,
+    include: true,
+    cost_category: "international_freight",
+    concept: "Flete maritimo resto del mundo",
+    provider_name: "ADS INTERNACIONAL CARGO SPA",
+    document_number: "979",
+    document_date: "2025-07-31",
+    net_clp: 4690000,
+    vat_clp: 0,
+    total_clp: 4690000,
+    amount_original: 4690,
+    currency: "USD",
+    exchange_rate_clp: 1000,
+    recoverable_tax: false,
+    include_in_costing: true,
+    confidence: 0.99,
+    warnings: [],
+  }],
+  totals: { net_clp: 4690000, vat_clp: 0, document_total_clp: 4690000, line_count: 1 },
+  warnings: [],
+});
+assert.equal(freightExtraction.extraction.extraction_version, FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION);
+assert.equal(freightExtraction.extraction.lines[0].amount_original, 4690);
+assert.equal(freightExtraction.extraction.lines[0].exchange_rate_clp, 1000);
+const normalizedFreight = normalizeForeignTradeFreightDocumentReview(freightExtraction.extraction);
+assert.equal(normalizedFreight.isCompatible, true);
+assert.equal(normalizedFreight.review.totals.document_total_clp, 4690000);
 
 const costingParameters = await db.query(
   "select code,numeric_value from public.foreign_trade_cost_parameters where code like 'cl_%' order by code",
@@ -1194,6 +1249,61 @@ assert.equal(
 );
 const detailAfterReconciliation = await db.query("select public.foreign_trade_operation_detail($1) as detail", [operationId]);
 assert.equal(detailAfterReconciliation.rows[0].detail.totals.costs_clp, 18641856);
+
+const freightOperation = await db.query(
+  "select public.create_foreign_trade_operation($1::jsonb) as id",
+  [JSON.stringify({
+    title: "Prueba flete maritimo",
+    operation_type: "simulation",
+    status: "quotation",
+    supplier_id: supplier.rows[0].id,
+    exchange_rate_clp: "1000",
+    exchange_rate_source: "manual",
+  })],
+);
+const freightOperationId = freightOperation.rows[0].id;
+async function insertFreightDocument(suffix) {
+  const result = await db.query(`
+    insert into public.foreign_trade_documents(
+      operation_id,supplier_id,document_type,original_file_name,storage_path,mime_type,
+      file_size,parse_status,extraction_result,extraction_confidence,extraction_model,uploaded_by
+    ) values ($1,$2,'freight_quote',$3,$4,'application/pdf',637806,'review_required',$5::jsonb,0.99,'gpt-4.1-mini',$6)
+    returning id
+  `, [
+    freightOperationId,
+    supplier.rows[0].id,
+    `F979-${suffix}.pdf`,
+    `${freightOperationId}/F979-${suffix}.pdf`,
+    JSON.stringify(freightExtraction.extraction),
+    adminId,
+  ]);
+  return result.rows[0].id;
+}
+const firstFreightDocumentId = await insertFreightDocument("a");
+const firstFreightConfirmation = await db.query(
+  "select public.confirm_foreign_trade_freight_document($1,$2::jsonb) as result",
+  [firstFreightDocumentId, JSON.stringify(freightExtraction.extraction)],
+);
+assert.equal(firstFreightConfirmation.rows[0].result.inserted_costs, 1);
+assert.equal(firstFreightConfirmation.rows[0].result.total_cost_clp, 4690000);
+const secondFreightDocumentId = await insertFreightDocument("b");
+const secondFreightConfirmation = await db.query(
+  "select public.confirm_foreign_trade_freight_document($1,$2::jsonb) as result",
+  [secondFreightDocumentId, JSON.stringify(freightExtraction.extraction)],
+);
+assert.equal(secondFreightConfirmation.rows[0].result.inserted_costs, 0);
+assert.equal(secondFreightConfirmation.rows[0].result.linked_existing_costs, 1, "un respaldo repetido no debe duplicar el flete real");
+const freightCosts = await db.query(
+  "select amount_original,currency,exchange_rate_clp,amount_clp,allocation_method,metadata from public.foreign_trade_cost_lines where operation_id=$1",
+  [freightOperationId],
+);
+assert.equal(freightCosts.rows.length, 1);
+assert.equal(Number(freightCosts.rows[0].amount_original), 4690);
+assert.equal(freightCosts.rows[0].currency, "USD");
+assert.equal(Number(freightCosts.rows[0].exchange_rate_clp), 1000);
+assert.equal(freightCosts.rows[0].allocation_method, "cbm");
+assert.equal(freightCosts.rows[0].metadata.document_number, "979");
+await db.query("delete from public.import_shipments where id=$1", [freightOperationId]);
 
 const summary = await db.query("select public.foreign_trade_dashboard_summary() as summary");
 assert.equal(summary.rows[0].summary.operations_in_preparation, 1);

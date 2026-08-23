@@ -620,9 +620,12 @@ a {
 }
 
 .sidebar {
+  align-self: start;
   position: sticky;
   top: 0;
-  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   gap: 22px;
@@ -650,7 +653,13 @@ a {
 
 .sidebar nav {
   display: grid;
+  flex: 1 1 auto;
   gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
 }
 
 .sidebar a {
@@ -2272,6 +2281,7 @@ th {
     display: flex;
     gap: 4px;
     overflow-x: auto;
+    overflow-y: hidden;
     scrollbar-width: none;
   }
 
@@ -8688,10 +8698,9 @@ th {
 }
 
 .foreign-trade-upload-actions {
-  align-items: end;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .foreign-trade-upload-action-buttons {
@@ -8700,6 +8709,7 @@ th {
   flex-wrap: wrap;
   gap: 7px;
   justify-content: flex-end;
+  min-width: 0;
 }
 
 .ghost-button.danger {
@@ -8716,6 +8726,7 @@ th {
 .foreign-trade-upload-actions label {
   display: grid;
   gap: 5px;
+  min-width: 0;
 }
 
 .foreign-trade-upload-actions label span {
@@ -8731,6 +8742,7 @@ th {
   border-radius: 6px;
   min-height: 40px;
   padding: 7px 9px;
+  width: 100%;
 }
 
 .foreign-trade-document-type-help {

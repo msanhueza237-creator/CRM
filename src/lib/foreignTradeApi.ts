@@ -13,6 +13,7 @@ import type {
   ForeignTradeDocumentExtraction,
   ForeignTradeAgencySettlementExtraction,
   ForeignTradeFundRequestExtraction,
+  ForeignTradeFreightDocumentExtraction,
   ForeignTradeDocumentType,
   ForeignTradeOperation,
   ForeignTradeOperationDetail,
@@ -26,6 +27,7 @@ import type {
   ConfirmForeignTradeDocumentResult,
   ConfirmForeignTradeFundRequestResult,
   ConfirmForeignTradeAgencySettlementResult,
+  ConfirmForeignTradeFreightDocumentResult,
   ApplyForeignTradeExpenseReconciliationResult,
   AutoFinalizeForeignTradeOperationResult,
   AutoFinalizeForeignTradeReconciliationResult,
@@ -491,6 +493,19 @@ export async function confirmForeignTradeAgencySettlementDocument(
   });
   if (error) throw error;
   return data as ConfirmForeignTradeAgencySettlementResult;
+}
+
+export async function confirmForeignTradeFreightDocument(
+  documentId: string,
+  review: ForeignTradeFreightDocumentExtraction,
+) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("confirm_foreign_trade_freight_document", {
+    p_document_id: documentId,
+    p_review: review,
+  });
+  if (error) throw error;
+  return data as ConfirmForeignTradeFreightDocumentResult;
 }
 
 export async function getForeignTradeDocumentUrl(document: ForeignTradeDocument) {

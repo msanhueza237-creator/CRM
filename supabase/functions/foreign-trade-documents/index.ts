@@ -2,6 +2,7 @@ import {
   FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION,
   FOREIGN_TRADE_EXTRACTION_VERSION,
   FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
+  FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION,
   buildExtractionRanges,
   mergeExtractionPasses,
   mergeCompactVerification,
@@ -10,6 +11,7 @@ import {
   prepareExtraction,
   prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
+  prepareFreightDocumentExtraction,
   type ExtractionLineBatch,
   type ExtractionRange,
   type JsonRecord,
@@ -36,7 +38,7 @@ Deno.serve(async (req) => {
   try {
     const rest = getRestClient();
     const route = getRoute(req.url);
-    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, fundRequestExtractionVersion: FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION, agencySettlementExtractionVersion: FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
+    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, fundRequestExtractionVersion: FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION, agencySettlementExtractionVersion: FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION, freightDocumentExtractionVersion: FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
 
     const user = await authenticateRequest(req, rest);
     const profile = await getProfile(rest, user.id);
@@ -79,12 +81,16 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
       ? await callOpenAiFundRequestExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
       : documentType === "agency_settlement"
         ? await callOpenAiAgencySettlementExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
-        : await callOpenAiExtraction(bytes, String(document.original_file_name), mimeType, documentType, requestId, requestSignal);
+        : documentType === "freight_quote"
+          ? await callOpenAiFreightDocumentExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
+          : await callOpenAiExtraction(bytes, String(document.original_file_name), mimeType, documentType, requestId, requestSignal);
     const prepared = documentType === "fund_request"
       ? prepareFundRequestExtraction(openAiResult.data)
       : documentType === "agency_settlement"
         ? prepareAgencySettlementExtraction(openAiResult.data)
-        : prepareExtraction(openAiResult.data);
+        : documentType === "freight_quote"
+          ? prepareFreightDocumentExtraction(openAiResult.data)
+          : prepareExtraction(openAiResult.data);
     await setExtraction(
       rest,
       documentId,
@@ -151,6 +157,51 @@ REGLAS:
 La salida debe corresponder exactamente al esquema solicitado.`,
   });
   console.info("[foreign-trade-documents] fund request extraction ready", {
+    requestId,
+    filename,
+    lines: Array.isArray(asObject(result.data).lines) ? (asObject(result.data).lines as unknown[]).length : 0,
+    openAiRequestId: result.requestId || null,
+  });
+  return { model, requestId: result.requestId, data: result.data };
+}
+
+async function callOpenAiFreightDocumentExtraction(bytes: Uint8Array, filename: string, mimeType: string, requestId: string, requestSignal: AbortSignal) {
+  const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
+  if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
+  const model = Deno.env.get("OPENAI_DOCUMENT_MODEL")?.trim()
+    || Deno.env.get("OPENAI_TEXT_MODEL")?.trim()
+    || "gpt-4.1-mini";
+  const timeoutMs = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
+  const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
+  const result = await callOpenAiStructuredExtraction({
+    apiKey,
+    model,
+    filename,
+    mimeType,
+    fileData: `data:${mimeType};base64,${bytesToBase64(bytes)}`,
+    requestId,
+    requestSignal,
+    timeoutMs,
+    maxTokens,
+    stage: "freight-document",
+    schemaName: "foreign_trade_freight_document",
+    schema: freightDocumentExtractionSchema,
+    prompt: `Lee visualmente y con máxima precisión todas las páginas de esta factura, cotización o liquidación de transporte marítimo, aéreo o terrestre.
+
+OBJETIVO: extraer cada cargo logístico real o cotizado para incorporarlo al costo de importación. No es una proforma de productos ni una rendición de agencia. No inventes conceptos, rutas, montos, monedas, fechas, números de factura, B/L ni tipos de cambio.
+
+REGLAS:
+1. Identifica transportista o forwarder, número de factura/cotización, fecha, ruta, puerto de origen, puerto de destino, B/L y referencia de embarque cuando estén impresos.
+2. Devuelve una línea por cargo monetario sin duplicar totales o subtotales. Clasifica flete oceánico/aéreo como international_freight; seguro como insurance; cargos de origen como origin; THC/DTHC y terminal Chile como chile_port; almacenaje como storage; transporte terrestre en Chile como national_transport; otros como other.
+3. Si un documento expresa un cargo en USD y también su equivalente CLP, conserva ambos: amount_original, currency, exchange_rate_clp y total_clp. Extrae el tipo de cambio solo si está impreso o es aritméticamente inequívoco por ambos montos.
+4. net_clp, vat_clp y total_clp solo contienen importes en CLP mostrados o inequívocamente convertidos en el documento. Para factura exenta, vat_clp es 0 y net_clp coincide con total_clp.
+5. recoverable_tax true solo para IVA recuperable explícito. include_in_costing true para costos logísticos; no conviertas IVA recuperable en costo económico.
+6. Conserva una línea incluso si el documento solo contiene un único flete. Usa fechas YYYY-MM-DD cuando sean inequívocas.
+7. Si un dato es dudoso, déjalo null y explica la duda en warnings. confidence entre 0 y 1 refleja confianza de lectura.
+
+La salida debe corresponder exactamente al esquema solicitado.`,
+  });
+  console.info("[foreign-trade-documents] freight document extraction ready", {
     requestId,
     filename,
     lines: Array.isArray(asObject(result.data).lines) ? (asObject(result.data).lines as unknown[]).length : 0,
@@ -707,6 +758,77 @@ const fundRequestExtractionSchema: JsonRecord = {
         taxes_clp: nullableNumber,
         document_total_clp: nullableNumber,
         line_count: { type: "integer", minimum: 0, maximum: 300 },
+      },
+    },
+    warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },
+  },
+};
+
+const freightDocumentGeneralSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["reference", "carrier_name", "document_number", "document_date", "currency", "declared_total_clp", "origin_port", "destination_port", "bill_of_lading", "observations", "confidence", "warnings"],
+  properties: {
+    reference: nullableString,
+    carrier_name: nullableString,
+    document_number: nullableString,
+    document_date: nullableString,
+    currency: nullableString,
+    declared_total_clp: nullableNumber,
+    origin_port: nullableString,
+    destination_port: nullableString,
+    bill_of_lading: nullableString,
+    observations: nullableString,
+    confidence: nullableNumber,
+    warnings: warningsSchema,
+  },
+};
+const freightDocumentLineSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "source_index", "source_page", "include", "cost_category", "concept",
+    "provider_name", "document_number", "document_date", "net_clp", "vat_clp",
+    "total_clp", "amount_original", "currency", "exchange_rate_clp",
+    "recoverable_tax", "include_in_costing", "confidence", "warnings",
+  ],
+  properties: {
+    source_index: { type: "integer", minimum: 1, maximum: 100 },
+    source_page: nullableInteger,
+    include: { type: "boolean" },
+    cost_category: { type: "string", enum: ["origin", "international_freight", "insurance", "chile_port", "storage", "customs_agency", "national_transport", "inspection", "certificate", "supplier_charge", "other"] },
+    concept: nullableString,
+    provider_name: nullableString,
+    document_number: nullableString,
+    document_date: nullableString,
+    net_clp: nullableNumber,
+    vat_clp: nullableNumber,
+    total_clp: nullableNumber,
+    amount_original: nullableNumber,
+    currency: nullableString,
+    exchange_rate_clp: nullableNumber,
+    recoverable_tax: { type: "boolean" },
+    include_in_costing: { type: "boolean" },
+    confidence: nullableNumber,
+    warnings: warningsSchema,
+  },
+};
+const freightDocumentExtractionSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["general", "lines", "totals", "warnings"],
+  properties: {
+    general: freightDocumentGeneralSchema,
+    lines: { type: "array", maxItems: 100, items: freightDocumentLineSchema },
+    totals: {
+      type: "object",
+      additionalProperties: false,
+      required: ["net_clp", "vat_clp", "document_total_clp", "line_count"],
+      properties: {
+        net_clp: nullableNumber,
+        vat_clp: nullableNumber,
+        document_total_clp: nullableNumber,
+        line_count: { type: "integer", minimum: 0, maximum: 100 },
       },
     },
     warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },

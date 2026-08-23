@@ -670,10 +670,61 @@ export interface ForeignTradeAgencySettlementExtraction {
   warnings: string[];
 }
 
+export interface ForeignTradeFreightDocumentGeneral {
+  reference: string | null;
+  carrier_name: string | null;
+  document_number: string | null;
+  document_date: string | null;
+  currency: string | null;
+  declared_total_clp: number | null;
+  origin_port: string | null;
+  destination_port: string | null;
+  bill_of_lading: string | null;
+  observations: string | null;
+  confidence: number | null;
+  warnings: string[];
+}
+
+export interface ForeignTradeFreightDocumentLine {
+  source_index: number;
+  source_page: number | null;
+  include: boolean;
+  cost_category: Exclude<ForeignTradeCostCategory, "merchandise">;
+  concept: string;
+  provider_name: string | null;
+  document_number: string | null;
+  document_date: string | null;
+  net_clp: number | null;
+  vat_clp: number | null;
+  total_clp: number | null;
+  amount_original: number | null;
+  currency: string;
+  exchange_rate_clp: number | null;
+  recoverable_tax: boolean;
+  include_in_costing: boolean;
+  confidence: number | null;
+  warnings: string[];
+}
+
+export interface ForeignTradeFreightDocumentExtraction {
+  extraction_version: string;
+  document_kind: "freight_document";
+  general: ForeignTradeFreightDocumentGeneral;
+  lines: ForeignTradeFreightDocumentLine[];
+  totals: {
+    net_clp: number | null;
+    vat_clp: number | null;
+    document_total_clp: number | null;
+    line_count: number;
+  };
+  warnings: string[];
+}
+
 export type ForeignTradeAnyDocumentExtraction =
   | ForeignTradeDocumentExtraction
   | ForeignTradeFundRequestExtraction
-  | ForeignTradeAgencySettlementExtraction;
+  | ForeignTradeAgencySettlementExtraction
+  | ForeignTradeFreightDocumentExtraction;
 
 export interface ForeignTradeDocument {
   id: string;
@@ -728,6 +779,16 @@ export interface ConfirmForeignTradeAgencySettlementResult {
   inserted_lines: number;
   updated_lines: number;
   skipped_lines: number;
+  status: "confirmed";
+}
+
+export interface ConfirmForeignTradeFreightDocumentResult {
+  document_id: string;
+  operation_id: string;
+  inserted_costs: number;
+  linked_existing_costs: number;
+  skipped_lines: number;
+  total_cost_clp: number;
   status: "confirmed";
 }
 
