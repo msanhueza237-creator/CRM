@@ -555,6 +555,58 @@ export interface ForeignTradeDocumentExtraction {
   warnings: string[];
 }
 
+export interface ForeignTradeFundRequestGeneral {
+  reference: string | null;
+  agency_name: string | null;
+  document_date: string | null;
+  currency: string | null;
+  declared_total_clp: number | null;
+  remittance_amount_clp: number | null;
+  observations: string | null;
+  confidence: number | null;
+  warnings: string[];
+}
+
+export interface ForeignTradeFundRequestLine {
+  source_index: number;
+  source_page: number | null;
+  include: boolean;
+  line_type: ForeignTradeReconciliationLineType;
+  cost_category: ForeignTradeCostCategory;
+  concept: string;
+  provider_name: string | null;
+  document_number: string | null;
+  document_date: string | null;
+  provision_net_clp: number | null;
+  provision_vat_clp: number | null;
+  provision_total_clp: number | null;
+  amount_original: number | null;
+  currency: string;
+  exchange_rate_clp: number | null;
+  recoverable_tax: boolean;
+  include_in_costing: boolean;
+  confidence: number | null;
+  warnings: string[];
+}
+
+export interface ForeignTradeFundRequestExtraction {
+  extraction_version: string;
+  document_kind: "fund_request";
+  general: ForeignTradeFundRequestGeneral;
+  lines: ForeignTradeFundRequestLine[];
+  totals: {
+    expenses_clp: number | null;
+    taxes_clp: number | null;
+    document_total_clp: number | null;
+    line_count: number;
+  };
+  warnings: string[];
+}
+
+export type ForeignTradeAnyDocumentExtraction =
+  | ForeignTradeDocumentExtraction
+  | ForeignTradeFundRequestExtraction;
+
 export interface ForeignTradeDocument {
   id: string;
   operation_id: string;
@@ -567,10 +619,10 @@ export interface ForeignTradeDocument {
   file_size: number;
   file_hash: string | null;
   parse_status: ForeignTradeDocumentParseStatus;
-  extraction_result: ForeignTradeDocumentExtraction | Record<string, never>;
+  extraction_result: ForeignTradeAnyDocumentExtraction | Record<string, never>;
   extraction_confidence: number | null;
   review_warnings: ForeignTradeExtractionWarning[];
-  review_result: ForeignTradeDocumentExtraction | Record<string, never>;
+  review_result: ForeignTradeAnyDocumentExtraction | Record<string, never>;
   review_version: number;
   extraction_model: string | null;
   extraction_request_id: string | null;
@@ -587,6 +639,15 @@ export interface ForeignTradeDocument {
 export interface ConfirmForeignTradeDocumentResult {
   document_id: string;
   operation_id: string;
+  inserted_lines: number;
+  skipped_lines: number;
+  status: "confirmed";
+}
+
+export interface ConfirmForeignTradeFundRequestResult {
+  document_id: string;
+  operation_id: string;
+  reconciliation_id: string;
   inserted_lines: number;
   skipped_lines: number;
   status: "confirmed";

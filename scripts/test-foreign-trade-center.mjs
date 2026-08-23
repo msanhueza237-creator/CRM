@@ -3,12 +3,14 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import {
   FOREIGN_TRADE_EXTRACTION_VERSION,
+  FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
   buildExtractionRanges,
   mergeCompactVerification,
   mergeExtractionPasses,
   mergeUnnumberedRows,
   missingExtractionRanges,
   prepareExtraction,
+  prepareFundRequestExtraction,
 } from "../supabase/functions/foreign-trade-documents/extraction-logic.ts";
 import {
   FOREIGN_TRADE_PDF_SKILL_VERSION,
@@ -245,6 +247,13 @@ const phase5Migration = await readFile(
 );
 await db.exec(phase5Migration);
 await db.exec(phase5Migration);
+
+const phase6Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase6_fund_requests.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase6Migration);
+await db.exec(phase6Migration);
 
 const costingParameters = await db.query(
   "select code,numeric_value from public.foreign_trade_cost_parameters where code like 'cl_%' order by code",
@@ -522,6 +531,31 @@ assert.equal(preparedExtraction.extraction.extraction_version, FOREIGN_TRADE_EXT
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "line_total_mismatch"));
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "cbm_mismatch"));
 
+const preparedFundRequest = prepareFundRequestExtraction({
+  general: {
+    reference: "49194",
+    agency_name: "Agencia de Aduanas",
+    document_date: "2026-08-20",
+    currency: "CLP",
+    declared_total_clp: 16853872,
+    remittance_amount_clp: 16853872,
+    confidence: 0.94,
+    warnings: [],
+  },
+  lines: [
+    { source_index: 1, source_page: 1, include: true, line_type: "agency_fee", cost_category: "customs_agency", concept: "Honorarios agencia", provision_net_clp: 400000, provision_vat_clp: 76000, provision_total_clp: 476000, amount_original: 476000, currency: "CLP", exchange_rate_clp: 1, recoverable_tax: true, include_in_costing: true, confidence: 0.95, warnings: [] },
+    { source_index: 2, source_page: 1, include: true, line_type: "customs_duty", cost_category: "duties", concept: "Derechos ad valorem", provision_total_clp: 529822, amount_original: 546.16, currency: "USD", exchange_rate_clp: 970.09, recoverable_tax: false, include_in_costing: true, confidence: 0.9, warnings: [] },
+    { source_index: 3, source_page: 1, include: true, line_type: "import_vat", cost_category: "taxes", concept: "IVA importación", provision_total_clp: 15848050, amount_original: 16336.68, currency: "USD", exchange_rate_clp: 970.09, recoverable_tax: false, include_in_costing: true, confidence: 0.9, warnings: [] },
+  ],
+  totals: { expenses_clp: 476000, taxes_clp: 16377872, document_total_clp: 16853872, line_count: 3 },
+  warnings: [],
+});
+assert.equal(preparedFundRequest.extraction.extraction_version, FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION);
+assert.equal(preparedFundRequest.extraction.lines[2].recoverable_tax, true);
+assert.equal(preparedFundRequest.extraction.lines[2].include_in_costing, false);
+assert.equal(preparedFundRequest.extraction.totals.expenses_clp, 476000);
+assert.equal(preparedFundRequest.extraction.totals.taxes_clp, 16377872);
+
 const extractionRanges = buildExtractionRanges(89, 40);
 assert.deepEqual(extractionRanges, [
   { start: 1, end: 40 },
@@ -588,18 +622,20 @@ assert.equal(compactlyVerifiedExtraction.lines[2].product_name, "Producto sin nu
 
 const duplicateAggregateExtraction = mergeCompactVerification(
   {
-    document_totals: { line_count: 2, cbm_total: 1.8 },
+    document_totals: { line_count: 3, cbm_total: 1.8 },
     lines: [
-      { source_index: 1, product_name: "Producto 1", cbm_total: 1.8, confidence: 0.9 },
-      { source_index: 2, product_name: "Producto 2", cbm_total: 1.8, confidence: 0.95 },
+      { source_index: 1, product_name: "Producto 1", cbm_total: 1.8, confidence: 0.8 },
+      { source_index: 2, product_name: "Producto 2", cbm_total: 1.8, confidence: 0.9 },
+      { source_index: 3, product_name: "Producto 3", cbm_total: 1.8, confidence: 0.95 },
     ],
     warnings: [],
   },
   { lines: [], warnings: [] },
 );
 assert.equal(duplicateAggregateExtraction.lines[0].cbm_total, null);
-assert.equal(duplicateAggregateExtraction.lines[1].cbm_total, 1.8);
-assert.ok(duplicateAggregateExtraction.warnings.some((message) => message.includes("CBM duplicado")));
+assert.equal(duplicateAggregateExtraction.lines[1].cbm_total, null);
+assert.equal(duplicateAggregateExtraction.lines[2].cbm_total, 1.8);
+assert.ok(duplicateAggregateExtraction.warnings.some((message) => message.includes("CBM duplicados")));
 
 const extractionWithUnnumberedRow = mergeUnnumberedRows(
   {
@@ -796,6 +832,43 @@ assert.deepEqual(
   ["uploaded", "uploaded"],
   "provisiones y rendiciones deben quedar guardadas sin iniciar extracción de productos",
 );
+
+const extractedProvisionDocument = await db.query("select public.register_foreign_trade_document($1::jsonb) as id", [JSON.stringify({
+  operation_id: operationId,
+  supplier_id: supplier.rows[0].id,
+  document_type: "fund_request",
+  original_file_name: "solicitud-fondos-extraida.pdf",
+  storage_path: `${operationId}/solicitud-fondos-extraida.pdf`,
+  mime_type: "application/pdf",
+  file_size: "4096",
+  file_hash: "e".repeat(64),
+})]);
+await db.exec("set role service_role");
+await db.query(
+  "select public.set_foreign_trade_document_extraction($1,'extracting','{}'::jsonb,null,'[]'::jsonb,null,null,$2)",
+  [extractedProvisionDocument.rows[0].id, "fund-request-test"],
+);
+await db.query(
+  "select public.set_foreign_trade_document_extraction($1,'review_required',$2::jsonb,$3,$4::jsonb,null,'gpt-test',$5)",
+  [extractedProvisionDocument.rows[0].id, JSON.stringify(preparedFundRequest.extraction), preparedFundRequest.confidence, JSON.stringify(preparedFundRequest.warnings), "fund-request-test"],
+);
+await db.exec("reset role");
+const confirmedFundRequest = await db.query(
+  "select public.confirm_foreign_trade_fund_request_document($1,$2::jsonb) as result",
+  [extractedProvisionDocument.rows[0].id, JSON.stringify(preparedFundRequest.extraction)],
+);
+assert.equal(confirmedFundRequest.rows[0].result.inserted_lines, 3);
+assert.equal(
+  (await db.query("select parse_status from public.foreign_trade_documents where id=$1", [extractedProvisionDocument.rows[0].id])).rows[0].parse_status,
+  "confirmed",
+);
+const extractedReconciliation = await db.query(
+  "select r.remittance_amount_clp,count(l.id)::integer as lines,sum(case when l.line_type in ('customs_duty','import_vat') then l.provision_total_clp else 0 end) as taxes from public.foreign_trade_expense_reconciliations r join public.foreign_trade_expense_reconciliation_lines l on l.reconciliation_id=r.id where r.id=$1 group by r.id",
+  [confirmedFundRequest.rows[0].result.reconciliation_id],
+);
+assert.equal(extractedReconciliation.rows[0].remittance_amount_clp, "16853872.00");
+assert.equal(extractedReconciliation.rows[0].lines, 3);
+assert.equal(extractedReconciliation.rows[0].taxes, "16377872.00");
 
 await db.query("select public.update_foreign_trade_document_type($1,$2)", [settlementDocument.rows[0].id, "proforma"]);
 const reclassifiedExtractable = await db.query(

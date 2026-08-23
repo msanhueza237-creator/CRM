@@ -9,7 +9,9 @@ import type {
   ForeignTradeCostParameter,
   ForeignTradeDashboardSummary,
   ForeignTradeDocument,
+  ForeignTradeAnyDocumentExtraction,
   ForeignTradeDocumentExtraction,
+  ForeignTradeFundRequestExtraction,
   ForeignTradeDocumentType,
   ForeignTradeOperation,
   ForeignTradeOperationDetail,
@@ -21,6 +23,7 @@ import type {
   UpsertForeignTradeOperationLineInput,
   UpsertForeignTradeSupplierInput,
   ConfirmForeignTradeDocumentResult,
+  ConfirmForeignTradeFundRequestResult,
   ApplyForeignTradeExpenseReconciliationResult,
   ForeignTradeExpenseReconciliation,
   SaveForeignTradeExpenseReconciliationInput,
@@ -394,7 +397,7 @@ export async function extractForeignTradeDocument(documentId: string, signal?: A
   return foreignTradeDocumentRequest<{
     documentId: string;
     status: "review_required";
-    extraction: ForeignTradeDocumentExtraction;
+    extraction: ForeignTradeAnyDocumentExtraction;
     confidence: number | null;
   }>("extract", { document_id: documentId }, signal);
 }
@@ -440,6 +443,16 @@ export async function confirmForeignTradeDocument(documentId: string, review: Fo
   });
   if (error) throw error;
   return data as ConfirmForeignTradeDocumentResult;
+}
+
+export async function confirmForeignTradeFundRequestDocument(documentId: string, review: ForeignTradeFundRequestExtraction) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("confirm_foreign_trade_fund_request_document", {
+    p_document_id: documentId,
+    p_review: review,
+  });
+  if (error) throw error;
+  return data as ConfirmForeignTradeFundRequestResult;
 }
 
 export async function getForeignTradeDocumentUrl(document: ForeignTradeDocument) {

@@ -1,11 +1,13 @@
 import {
   FOREIGN_TRADE_EXTRACTION_VERSION,
+  FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
   buildExtractionRanges,
   mergeExtractionPasses,
   mergeCompactVerification,
   mergeUnnumberedRows,
   missingExtractionRanges,
   prepareExtraction,
+  prepareFundRequestExtraction,
   type ExtractionLineBatch,
   type ExtractionRange,
   type JsonRecord,
@@ -32,7 +34,7 @@ Deno.serve(async (req) => {
   try {
     const rest = getRestClient();
     const route = getRoute(req.url);
-    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
+    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, fundRequestExtractionVersion: FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
 
     const user = await authenticateRequest(req, rest);
     const profile = await getProfile(rest, user.id);
@@ -70,15 +72,13 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
   try {
     const bytes = await downloadPrivateFile(rest, String(document.storage_bucket), String(document.storage_path));
     if (bytes.byteLength !== fileSize) console.warn("[foreign-trade-documents] file size differs", { requestId, documentId });
-    const openAiResult = await callOpenAiExtraction(
-      bytes,
-      String(document.original_file_name),
-      mimeType,
-      String(document.document_type || "other"),
-      requestId,
-      requestSignal,
-    );
-    const prepared = prepareExtraction(openAiResult.data);
+    const documentType = String(document.document_type || "other");
+    const openAiResult = documentType === "fund_request"
+      ? await callOpenAiFundRequestExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
+      : await callOpenAiExtraction(bytes, String(document.original_file_name), mimeType, documentType, requestId, requestSignal);
+    const prepared = documentType === "fund_request"
+      ? prepareFundRequestExtraction(openAiResult.data)
+      : prepareExtraction(openAiResult.data);
     await setExtraction(
       rest,
       documentId,
@@ -93,6 +93,7 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
     console.info("[foreign-trade-documents] extraction ready", {
       requestId,
       documentId,
+      documentType,
       lines: prepared.extraction.lines.length,
       warnings: prepared.warnings.length,
       openAiRequestId: openAiResult.requestId || null,
@@ -103,6 +104,53 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
     await setExtraction(rest, documentId, "failed", {}, null, [], message, null, requestId).catch(() => undefined);
     throw error;
   }
+}
+
+async function callOpenAiFundRequestExtraction(bytes: Uint8Array, filename: string, mimeType: string, requestId: string, requestSignal: AbortSignal) {
+  const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
+  if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
+  const model = Deno.env.get("OPENAI_DOCUMENT_MODEL")?.trim()
+    || Deno.env.get("OPENAI_TEXT_MODEL")?.trim()
+    || "gpt-4.1-mini";
+  const timeoutMs = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
+  const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
+  const result = await callOpenAiStructuredExtraction({
+    apiKey,
+    model,
+    filename,
+    mimeType,
+    fileData: `data:${mimeType};base64,${bytesToBase64(bytes)}`,
+    requestId,
+    requestSignal,
+    timeoutMs,
+    maxTokens,
+    stage: "fund-request",
+    schemaName: "foreign_trade_fund_request",
+    schema: fundRequestExtractionSchema,
+    prompt: `Lee visualmente y con máxima precisión todas las páginas de esta solicitud o provisión de fondos de una agencia de aduanas chilena.
+
+OBJETIVO: extraer cada concepto monetario para una conciliación posterior. No es una proforma de productos. No inventes conceptos, montos, monedas, fechas, números de documento ni tipos de cambio.
+
+REGLAS:
+1. Devuelve una línea por cada gasto, honorario, derecho, impuesto o ajuste visible. Conserva el orden físico y la página.
+2. Separa tributos de los gastos operacionales. Derechos aduaneros => line_type customs_duty y categoría duties. IVA de importación => line_type import_vat y categoría taxes. Honorarios de agencia => agency_fee/customs_agency. Los demás cargos => operating_expense y la categoría más precisa.
+3. El IVA de importación es un tributo potencialmente recuperable: recoverable_tax true e include_in_costing false. Los derechos aduaneros se incluyen en costeo. Para IVA de facturas de servicios usa recoverable_tax true, pero conserva el total provisionado.
+4. Si un monto está en USD u otra moneda, conserva amount_original y currency. Extrae exchange_rate_clp solo si el documento lo muestra. provision_total_clp debe ser el total en CLP declarado o inequívocamente convertido en el propio documento; si no existe conversión, usa null.
+5. provision_net_clp y provision_vat_clp solo deben contener valores expresados en CLP en el documento. No calcules IVA ni tipos de cambio que no estén impresos.
+6. Identifica referencia de solicitud, agencia, fecha, total declarado y monto solicitado/depositado. Fechas en YYYY-MM-DD cuando sean inequívocas.
+7. Si un dato es dudoso, déjalo null y explica la duda en warnings. No combines dos conceptos distintos en una sola línea.
+8. Revisa pies, subtotales y cuadros de tributos, pero no los dupliques como líneas si ya están desglosados.
+9. confidence entre 0 y 1 refleja confianza de lectura, no importancia.
+
+La salida debe corresponder exactamente al esquema solicitado.`,
+  });
+  console.info("[foreign-trade-documents] fund request extraction ready", {
+    requestId,
+    filename,
+    lines: Array.isArray(asObject(result.data).lines) ? (asObject(result.data).lines as unknown[]).length : 0,
+    openAiRequestId: result.requestId || null,
+  });
+  return { model, requestId: result.requestId, data: result.data };
 }
 
 async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeType: string, documentType: string, requestId: string, requestSignal: AbortSignal) {
@@ -118,6 +166,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   const fileData = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
   const common = { apiKey, model, filename, mimeType, fileData, requestId, requestSignal, timeoutMs };
   const skill = createForeignTradePdfReadingSkill(documentType);
+  const unnumberedPromise = extractUnnumberedRowsSafely(common, skill, maxTokens);
   console.info("[foreign-trade-documents] OpenAI extraction started", {
     requestId,
     filename,
@@ -210,7 +259,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     }));
   }
 
-  const unnumberedResult = await extractUnnumberedRowsSafely(common, skill, maxTokens);
+  const unnumberedResult = await unnumberedPromise;
   requestBatches = [...requestBatches, { start: 1, end: 500, data: { _request_id: unnumberedResult.requestId } }];
   merged = mergeUnnumberedRows(merged, unnumberedResult.data);
   quality = assessPdfExtractionQuality(merged, lineChunkSize);
@@ -539,6 +588,75 @@ const compactVerificationSchema: JsonRecord = {
   required: ["lines", "warnings"],
   properties: {
     lines: { type: "array", maxItems: 500, items: compactVerifiedLineSchema },
+    warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },
+  },
+};
+
+const fundRequestGeneralSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["reference", "agency_name", "document_date", "currency", "declared_total_clp", "remittance_amount_clp", "observations", "confidence", "warnings"],
+  properties: {
+    reference: nullableString,
+    agency_name: nullableString,
+    document_date: nullableString,
+    currency: nullableString,
+    declared_total_clp: nullableNumber,
+    remittance_amount_clp: nullableNumber,
+    observations: nullableString,
+    confidence: nullableNumber,
+    warnings: warningsSchema,
+  },
+};
+const fundRequestLineSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "source_index", "source_page", "include", "line_type", "cost_category", "concept",
+    "provider_name", "document_number", "document_date", "provision_net_clp",
+    "provision_vat_clp", "provision_total_clp", "amount_original", "currency",
+    "exchange_rate_clp", "recoverable_tax", "include_in_costing", "confidence", "warnings",
+  ],
+  properties: {
+    source_index: { type: "integer", minimum: 1, maximum: 300 },
+    source_page: nullableInteger,
+    include: { type: "boolean" },
+    line_type: { type: "string", enum: ["operating_expense", "agency_fee", "customs_duty", "import_vat", "adjustment"] },
+    cost_category: { type: "string", enum: ["origin", "international_freight", "insurance", "chile_port", "storage", "customs_agency", "national_transport", "inspection", "certificate", "duties", "taxes", "supplier_charge", "other"] },
+    concept: nullableString,
+    provider_name: nullableString,
+    document_number: nullableString,
+    document_date: nullableString,
+    provision_net_clp: nullableNumber,
+    provision_vat_clp: nullableNumber,
+    provision_total_clp: nullableNumber,
+    amount_original: nullableNumber,
+    currency: nullableString,
+    exchange_rate_clp: nullableNumber,
+    recoverable_tax: { type: "boolean" },
+    include_in_costing: { type: "boolean" },
+    confidence: nullableNumber,
+    warnings: warningsSchema,
+  },
+};
+const fundRequestExtractionSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["general", "lines", "totals", "warnings"],
+  properties: {
+    general: fundRequestGeneralSchema,
+    lines: { type: "array", maxItems: 300, items: fundRequestLineSchema },
+    totals: {
+      type: "object",
+      additionalProperties: false,
+      required: ["expenses_clp", "taxes_clp", "document_total_clp", "line_count"],
+      properties: {
+        expenses_clp: nullableNumber,
+        taxes_clp: nullableNumber,
+        document_total_clp: nullableNumber,
+        line_count: { type: "integer", minimum: 0, maximum: 300 },
+      },
+    },
     warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },
   },
 };

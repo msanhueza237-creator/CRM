@@ -19,6 +19,7 @@ import {
 import {
   cancelForeignTradeDocumentExtraction,
   confirmForeignTradeDocument,
+  confirmForeignTradeFundRequestDocument,
   deleteForeignTradeDocument,
   extractForeignTradeDocument,
   getForeignTradeDocumentUrl,
@@ -29,10 +30,15 @@ import {
 } from "../../lib/foreignTradeApi";
 import type {
   ForeignTradeCatalogProduct,
+  ForeignTradeAnyDocumentExtraction,
+  ForeignTradeCostCategory,
   ForeignTradeDocument,
   ForeignTradeDocumentExtraction,
   ForeignTradeDocumentType,
   ForeignTradeExtractedLine,
+  ForeignTradeFundRequestExtraction,
+  ForeignTradeFundRequestLine,
+  ForeignTradeReconciliationLineType,
   ForeignTradeSupplier,
 } from "../../types/foreignTrade";
 
@@ -51,14 +57,20 @@ const documentTypes: Array<{ value: ForeignTradeDocumentType; label: string }> =
   { value: "other", label: "Otro" },
 ];
 
-const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
+const productExtractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   "proforma",
   "purchase_order",
   "commercial_invoice",
   "packing_list",
 ]);
+const expenseExtractableDocumentTypes = new Set<ForeignTradeDocumentType>(["fund_request"]);
+const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
+  ...productExtractableDocumentTypes,
+  ...expenseExtractableDocumentTypes,
+]);
 
-const currentExtractionVersion = "pdf_skill_v3";
+const currentExtractionVersion = "pdf_skill_v10";
+const currentFundRequestExtractionVersion = "fund_request_v1";
 
 type PendingDocumentUpload = {
   key: string;
@@ -251,7 +263,9 @@ export function ForeignTradeDocumentsPanel({
       if (openReview && refreshedDocument?.parse_status === "review_required") setReviewDocument(refreshedDocument);
       const lineCount = extractionLines(refreshedDocument?.extraction_result).length;
       setMessage(lineCount
-        ? `Extracción regenerada: ${lineCount} producto(s) listos para revisar.`
+        ? expenseExtractableDocumentTypes.has(document.document_type)
+          ? `Extracción lista: ${lineCount} concepto(s) de gastos y tributos para revisar.`
+          : `Extracción regenerada: ${lineCount} producto(s) listos para revisar.`
         : "Extracción lista para revisión.");
     } catch (retryError) {
       await load();
@@ -283,7 +297,7 @@ export function ForeignTradeDocumentsPanel({
       await updateForeignTradeDocumentType(document.id, nextType);
       await load();
       setMessage(extractableDocumentTypes.has(nextType)
-        ? "Tipo actualizado. Usa Reintentar para iniciar el análisis con la clasificación correcta."
+        ? "Tipo actualizado. Usa Analizar para iniciar la lectura con la clasificación correcta."
         : "Tipo actualizado. El original quedó disponible como respaldo y no requiere extracción de productos.");
     } catch (updateError) {
       await load();
@@ -407,6 +421,7 @@ export function ForeignTradeDocumentsPanel({
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
                 {document.parse_status !== "confirmed" ? <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title="Cambiar el archivo conservando su clasificación"><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label> : null}
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
+                {!isExtracting && document.parse_status === "uploaded" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document, true)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <ScanText size={16} />} Analizar</button> : null}
                 {!isExtracting && document.parse_status === "review_required" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document, true)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Regenerar</button> : null}
                 {isExtracting ? <button className="ghost-button danger" type="button" disabled={cancelling} onClick={() => void stopExtraction(document)}>{cancelling ? <LoaderCircle className="spin" size={16} /> : <CircleStop size={16} />} Detener</button> : null}
                 {!isExtracting && document.parse_status === "failed" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Reintentar</button> : null}
@@ -417,7 +432,10 @@ export function ForeignTradeDocumentsPanel({
         </div>
       </section>
 
-      {reviewDocument ? <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} /> : null}
+      {reviewDocument ? reviewDocument.document_type === "fund_request"
+        ? <FundRequestReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
+        : <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
+        : null}
     </section>
   );
 }
@@ -518,6 +536,161 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
   </div></div>;
 }
 
+const reconciliationLineTypeOptions: Array<{ value: ForeignTradeReconciliationLineType; label: string }> = [
+  { value: "operating_expense", label: "Gasto operacional" },
+  { value: "agency_fee", label: "Honorario de agencia" },
+  { value: "customs_duty", label: "Derecho aduanero" },
+  { value: "import_vat", label: "IVA importación" },
+  { value: "adjustment", label: "Ajuste" },
+];
+const reconciliationCategoryOptions: Array<{ value: Exclude<ForeignTradeCostCategory, "merchandise">; label: string }> = [
+  { value: "origin", label: "Gastos en origen" },
+  { value: "international_freight", label: "Flete internacional" },
+  { value: "insurance", label: "Seguro" },
+  { value: "chile_port", label: "Puerto / terminal Chile" },
+  { value: "storage", label: "Almacenaje" },
+  { value: "customs_agency", label: "Agencia de aduana" },
+  { value: "national_transport", label: "Transporte nacional" },
+  { value: "inspection", label: "Inspección" },
+  { value: "certificate", label: "Certificados" },
+  { value: "duties", label: "Derechos aduaneros" },
+  { value: "taxes", label: "Impuestos" },
+  { value: "supplier_charge", label: "Cargo de proveedor" },
+  { value: "other", label: "Otro" },
+];
+
+function FundRequestReviewDialog({ document, onClose, onRegenerate, onConfirmed }: { document: ForeignTradeDocument; onClose: () => void; onRegenerate: () => Promise<void>; onConfirmed: (message: string) => Promise<void> }) {
+  const [review, setReview] = useState<ForeignTradeFundRequestExtraction>(() => structuredClone(document.extraction_result) as ForeignTradeFundRequestExtraction);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  function setGeneral(key: keyof ForeignTradeFundRequestExtraction["general"], value: string | number | null) {
+    setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
+  }
+  function setLine(index: number, patch: Partial<ForeignTradeFundRequestLine>) {
+    setReview((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => lineIndex === index ? normalizeFundRequestLine({ ...line, ...patch }, patch) : line),
+    }));
+  }
+  async function confirm() {
+    if (!window.confirm("¿Confirmar esta provisión y crear una conciliación editable? Los gastos y tributos quedarán separados; todavía no se aplicarán al costeo oficial.")) return;
+    setBusy(true); setError("");
+    try {
+      const normalizedLines = review.lines.map((line) => normalizeFundRequestLine({
+        ...line,
+        currency: normalizeCurrencyCode(line.currency, "CLP"),
+      }, {}));
+      const selectedLines = normalizedLines.filter((line) => line.include);
+      const expenses = selectedLines.filter((line) => !["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.provision_total_clp || 0), 0);
+      const taxes = selectedLines.filter((line) => ["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.provision_total_clp || 0), 0);
+      const normalizedReview: ForeignTradeFundRequestExtraction = {
+        ...review,
+        extraction_version: review.extraction_version || currentFundRequestExtractionVersion,
+        document_kind: "fund_request",
+        general: {
+          ...review.general,
+          currency: normalizeCurrencyCode(review.general.currency, "CLP"),
+        },
+        lines: normalizedLines,
+        totals: {
+          expenses_clp: roundMoney(expenses),
+          taxes_clp: roundMoney(taxes),
+          document_total_clp: review.totals.document_total_clp ?? roundMoney(expenses + taxes),
+          line_count: normalizedLines.length,
+        },
+      };
+      const result = await confirmForeignTradeFundRequestDocument(document.id, normalizedReview);
+      await onConfirmed(`${result.inserted_lines} concepto(s) importados a una nueva conciliación de agencia.`);
+    } catch (confirmError) { setError(humanizeDocumentError(confirmError)); }
+    finally { setBusy(false); }
+  }
+
+  const selectedLines = review.lines.filter((line) => line.include);
+  const expenses = selectedLines.filter((line) => !["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.provision_total_clp || 0), 0);
+  const taxes = selectedLines.filter((line) => ["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.provision_total_clp || 0), 0);
+  const calculatedTotal = expenses + taxes;
+  const needsRegeneration = review.extraction_version !== currentFundRequestExtractionVersion;
+
+  return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-fund-review-title">
+    <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-fund-review-title">Revisar provisión de fondos</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
+    <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} conceptos detectados</span><span>{document.review_warnings.length} advertencias</span></div>
+    {needsRegeneration ? <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Extracción desactualizada.</strong> Regenera el análisis antes de confirmar para utilizar el lector especializado de provisiones.</span></div> : null}
+    {document.review_warnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{document.review_warnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
+
+    <section className="foreign-trade-review-section"><div><h3>Identificación de la provisión</h3><span>Verifica la solicitud, agencia, fecha y monto antes de crear la conciliación.</span></div><div className="foreign-trade-form-grid">
+      <ReviewField label="Referencia / solicitud" value={review.general.reference} onChange={(value) => setGeneral("reference", value || null)} />
+      <ReviewField label="Agencia de aduanas" value={review.general.agency_name} onChange={(value) => setGeneral("agency_name", value || null)} />
+      <ReviewField label="Fecha" type="date" value={review.general.document_date} onChange={(value) => setGeneral("document_date", value || null)} />
+      <ReviewField label="Moneda principal" value={review.general.currency} maxLength={3} onChange={(value) => setGeneral("currency", value.toUpperCase() || null)} />
+      <ReviewLineNumber label="Total declarado CLP" value={review.general.declared_total_clp} onChange={(value) => setGeneral("declared_total_clp", value)} />
+      <ReviewLineNumber label="Monto solicitado / depositado CLP" value={review.general.remittance_amount_clp} onChange={(value) => setGeneral("remittance_amount_clp", value)} />
+      <label className="wide-field"><span>Observaciones</span><textarea value={review.general.observations || ""} onChange={(event) => setGeneral("observations", event.target.value || null)} /></label>
+    </div></section>
+
+    <section className="foreign-trade-review-section"><div><h3>Control de totales</h3><span>Los tributos se muestran separados y no se confunden con gastos operacionales.</span></div><div className="foreign-trade-form-grid">
+      <ReviewLineReadonlyNumber label="Gastos provisionados CLP" value={roundMoney(expenses)} />
+      <ReviewLineReadonlyNumber label="Tributos provisionados CLP" value={roundMoney(taxes)} />
+      <ReviewLineReadonlyNumber label="Suma de conceptos CLP" value={roundMoney(calculatedTotal)} />
+      <ReviewLineReadonlyNumber label="Total del documento CLP" value={review.totals.document_total_clp} />
+    </div>{review.totals.document_total_clp !== null && Math.abs(calculatedTotal - review.totals.document_total_clp) > Math.max(1, review.totals.document_total_clp * 0.01) ? <p className="foreign-trade-recalculation">La suma difiere del total documental en <strong>{formatClp(Math.abs(calculatedTotal - review.totals.document_total_clp))}</strong>. Revisa conceptos duplicados o faltantes.</p> : null}</section>
+
+    <section className="foreign-trade-review-section"><div><h3>Gastos y tributos reconocidos</h3><span>Edita clasificación, moneda y conversión. Desmarca conceptos que no correspondan.</span></div><div className="foreign-trade-review-lines">{review.lines.map((line, index) => <FundRequestLineCard key={`${line.source_index}-${index}`} line={line} onChange={(patch) => setLine(index, patch)} />)}</div></section>
+    {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || needsRegeneration || !selectedLines.length} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : "Confirmar y crear conciliación"}</button></footer>
+  </div></div>;
+}
+
+function FundRequestLineCard({ line, onChange }: { line: ForeignTradeFundRequestLine; onChange: (patch: Partial<ForeignTradeFundRequestLine>) => void }) {
+  return <article className={!line.include ? "excluded" : ""}>
+    <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Concepto {line.source_index}{line.source_page ? ` · pág. ${line.source_page}` : ""}</span></label><ConfidenceBadge value={line.confidence} /></header>
+    <div className="foreign-trade-form-grid">
+      <label className="wide-field"><span>Concepto</span><input value={line.concept} onChange={(event) => onChange({ concept: event.target.value })} /></label>
+      <label><span>Tipo</span><select value={line.line_type} onChange={(event) => onChange({ line_type: event.target.value as ForeignTradeReconciliationLineType })}>{reconciliationLineTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      <label><span>Categoría</span><select value={line.cost_category} onChange={(event) => onChange({ cost_category: event.target.value as ForeignTradeCostCategory })}>{reconciliationCategoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      <ReviewLineNumber label="Página" value={line.source_page} onChange={(value) => onChange({ source_page: value === null ? null : Math.max(1, Math.round(value)) })} />
+      <ReviewLineField label="Proveedor" value={line.provider_name} onChange={(value) => onChange({ provider_name: value })} />
+      <ReviewLineField label="N.º documento" value={line.document_number} onChange={(value) => onChange({ document_number: value })} />
+      <ReviewLineField label="Fecha respaldo" value={line.document_date} onChange={(value) => onChange({ document_date: value })} />
+      <ReviewLineNumber label="Neto CLP" value={line.provision_net_clp} onChange={(value) => onChange({ provision_net_clp: value })} />
+      <ReviewLineNumber label="IVA CLP" value={line.provision_vat_clp} onChange={(value) => onChange({ provision_vat_clp: value })} />
+      <ReviewLineNumber label="Total CLP" value={line.provision_total_clp} onChange={(value) => onChange({ provision_total_clp: value })} />
+      <ReviewLineNumber label="Monto original" value={line.amount_original} onChange={(value) => onChange({ amount_original: value })} />
+      <ReviewLineField label="Moneda original" value={line.currency} maxLength={3} onChange={(value) => onChange({ currency: (value || "").toUpperCase() })} />
+      <ReviewLineNumber label="Tipo cambio a CLP" value={line.exchange_rate_clp} onChange={(value) => onChange({ exchange_rate_clp: value })} />
+      <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => onChange({ recoverable_tax: event.target.checked })} /><span>Impuesto recuperable</span></label>
+      <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => onChange({ include_in_costing: event.target.checked })} /><span>Incluir en costeo</span></label>
+    </div>
+    {line.currency !== "CLP" && line.amount_original !== null && line.exchange_rate_clp === null && line.provision_total_clp === null ? <div className="foreign-trade-line-warnings"><span><AlertTriangle size={13} /> Falta tipo de cambio para convertir a CLP.</span></div> : null}
+    {line.warnings.length ? <div className="foreign-trade-line-warnings">{line.warnings.map((warning) => <span key={warning}><AlertTriangle size={13} /> {warning}</span>)}</div> : null}
+  </article>;
+}
+
+function normalizeFundRequestLine(line: ForeignTradeFundRequestLine, patch: Partial<ForeignTradeFundRequestLine>): ForeignTradeFundRequestLine {
+  const next = { ...line };
+  if ("line_type" in patch) {
+    if (next.line_type === "customs_duty") { next.cost_category = "duties"; next.include_in_costing = true; }
+    if (next.line_type === "import_vat") { next.cost_category = "taxes"; next.recoverable_tax = true; next.include_in_costing = false; }
+    if (next.line_type === "agency_fee") next.cost_category = "customs_agency";
+  }
+  next.currency = String(next.currency || "").trim().toUpperCase();
+  if (next.currency === "CLP") next.exchange_rate_clp = 1;
+  if (("provision_net_clp" in patch || "provision_vat_clp" in patch) && !("provision_total_clp" in patch)) {
+    next.provision_total_clp = next.provision_net_clp !== null || next.provision_vat_clp !== null
+      ? roundMoney((next.provision_net_clp || 0) + (next.provision_vat_clp || 0))
+      : null;
+  } else if (("amount_original" in patch || "exchange_rate_clp" in patch || "currency" in patch) && !("provision_total_clp" in patch) && next.amount_original !== null && next.exchange_rate_clp !== null) {
+    next.provision_total_clp = roundMoney(next.amount_original * next.exchange_rate_clp);
+  } else if (next.provision_total_clp === null) {
+    if (next.provision_net_clp !== null || next.provision_vat_clp !== null) next.provision_total_clp = roundMoney((next.provision_net_clp || 0) + (next.provision_vat_clp || 0));
+    else if (next.amount_original !== null && next.exchange_rate_clp !== null) next.provision_total_clp = roundMoney(next.amount_original * next.exchange_rate_clp);
+  }
+  return next;
+}
+
+function roundMoney(value: number) { return Math.round((value + Number.EPSILON) * 100) / 100; }
+function formatClp(value: number) { return new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(value); }
+
 function ReviewLineCard({ line, catalog, onChange }: { line: ForeignTradeExtractedLine; catalog: ForeignTradeCatalogProduct[]; onChange: (patch: Partial<ForeignTradeExtractedLine>) => void }) {
   return <article className={!line.include ? "excluded" : ""}>
     <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Línea {line.source_index}{line.source_row_label ? ` · ref. ${line.source_row_label}` : ""}{line.source_page ? ` · pág. ${line.source_page}` : ""}</span></label><ConfidenceBadge value={line.confidence} /></header>
@@ -572,9 +745,9 @@ function roundCbm(value: number, digits = 6) {
   return Math.round((value + Number.EPSILON) * factor) / factor;
 }
 
-function extractionLines(value: ForeignTradeDocumentExtraction | Record<string, never> | undefined) {
-  return value && Array.isArray((value as ForeignTradeDocumentExtraction).lines)
-    ? (value as ForeignTradeDocumentExtraction).lines
+function extractionLines(value: ForeignTradeAnyDocumentExtraction | Record<string, never> | undefined) {
+  return value && Array.isArray((value as ForeignTradeAnyDocumentExtraction).lines)
+    ? (value as ForeignTradeAnyDocumentExtraction).lines
     : [];
 }
 
@@ -612,11 +785,12 @@ function humanizeDocumentError(error: unknown) {
     : String(details.message || details.details || details.hint || "No se pudo procesar el documento.");
   if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase.";
   if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
-  if (/update_foreign_trade_document_type|cancel_foreign_trade_document_extraction|delete_foreign_trade_document|schema cache|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase5_reconciliation.sql.";
+  if (/confirm_foreign_trade_fund_request_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase6_fund_requests.sql.";
+  if (/update_foreign_trade_document_type|cancel_foreign_trade_document_extraction|delete_foreign_trade_document|schema cache|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos de Comercio Exterior en Supabase.";
   if (/request_stale|detenido por el usuario/i.test(message)) return "El análisis fue detenido y su respuesta anterior quedó descartada.";
   if (message.includes("already") || message.includes("not_ready")) return "El documento ya fue confirmado o todavía no está listo para revisión.";
   if (message.includes("not_found_or_confirmed")) return "El documento ya no existe o fue confirmado y no puede modificarse.";
   if (message.includes("invalid_currency")) return "La moneda debe expresarse con un código de tres letras, por ejemplo USD.";
-  if (message.includes("invalid_review") || message.includes("invalid_product")) return "Revisa los datos marcados antes de confirmar.";
+  if (message.includes("invalid_review") || message.includes("invalid_product") || message.includes("invalid_fund_request") || message.includes("without_lines")) return "Revisa los datos marcados antes de confirmar.";
   return message;
 }
