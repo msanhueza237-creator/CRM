@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import {
   applyForeignTradeExpenseReconciliation,
+  autoFinalizeForeignTradeOperation,
   getForeignTradeDocuments,
   getForeignTradeExpenseReconciliations,
   saveForeignTradeExpenseReconciliation,
@@ -69,9 +70,10 @@ export function ForeignTradeExpenseReconciliationPanel({
   const [draft, setDraft] = useState<Draft>(() => emptyDraft(operationId, costs));
   const [selectedId, setSelectedId] = useState("");
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<"save" | "apply" | "">("");
+  const [busy, setBusy] = useState<"save" | "apply" | "sync" | "">("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const automaticSyncAttempt = useRef("");
 
   const load = useCallback(async (preferredId?: string) => {
     setLoading(true);
@@ -99,6 +101,12 @@ export function ForeignTradeExpenseReconciliationPanel({
   }, [operationId, selectedId]);
 
   useEffect(() => { void load(); }, [operationId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (automaticSyncAttempt.current === operationId) return;
+    automaticSyncAttempt.current = operationId;
+    void synchronizeDocuments(true);
+  }, [operationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const calculation = useMemo(() => calculateForeignTradeReconciliation(
     draft.remittance_amount_clp,
@@ -215,6 +223,30 @@ export function ForeignTradeExpenseReconciliationPanel({
     finally { setBusy(""); }
   }
 
+  async function synchronizeDocuments(silent = false) {
+    if (!silent) { setBusy("sync"); setError(""); setMessage(""); }
+    try {
+      const result = await autoFinalizeForeignTradeOperation(operationId);
+      const next = await load(selectedId);
+      if (result.applied_reconciliations > 0) {
+        const targetId = result.results[result.results.length - 1]?.reconciliation_id;
+        const target = next.find((item) => item.id === targetId) || next[0];
+        if (target) { setSelectedId(target.id); setDraft(draftFromReconciliation(target)); }
+        await onChanged(`Conciliación automática completada: ${result.applied_lines} costo(s) real(es) incorporados al costeo y precios recalculados.`);
+      }
+      if (!silent || result.processed_reconciliations > 0) {
+        setMessage(result.processed_reconciliations > 0
+          ? `${result.processed_reconciliations} conciliación(es) actualizadas desde sus documentos confirmados.`
+          : "Las conciliaciones ya están sincronizadas con sus documentos.");
+      }
+    } catch (syncError) {
+      const text = humanizeError(syncError);
+      if (!silent || !text.includes("Fase 8")) setError(text);
+    } finally {
+      if (!silent) setBusy("");
+    }
+  }
+
   if (loading && !reconciliations.length) {
     return <div className="panel foreign-trade-loading"><LoaderCircle className="spin" size={25} /><strong>Cargando conciliación</strong><span>Provisiones, respaldos y valores reales.</span></div>;
   }
@@ -235,7 +267,7 @@ export function ForeignTradeExpenseReconciliationPanel({
 
     <section className="foreign-trade-reconciliation-main">
       <article className="panel foreign-trade-reconciliation-header">
-        <div className="foreign-trade-detail-panel-heading"><div><h2>Provisión versus rendición final</h2><p>Los gastos operativos y los tributos se concilian por separado.</p></div><span className="foreign-trade-private-badge"><FileCheck2 size={15} /> Auditable</span></div>
+        <div className="foreign-trade-detail-panel-heading"><div><h2>Provisión versus rendición final</h2><p>Los gastos operativos y los tributos se concilian por separado.</p></div><div><button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void synchronizeDocuments()}>{busy === "sync" ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} Actualizar desde documentos</button><span className="foreign-trade-private-badge"><FileCheck2 size={15} /> Auditable</span></div></div>
         <div className="foreign-trade-reconciliation-form">
           <label className="wide"><span>Nombre</span><input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
           <label><span>Agencia</span><input value={draft.agency_name || ""} onChange={(event) => setDraft({ ...draft, agency_name: event.target.value })} /></label>
@@ -497,7 +529,7 @@ function requiresExchangeRateOrDeclaredTotal(line: DraftLine, side: "provision" 
   return currency !== "CLP" && amount > 0 && rate <= 0 && total <= 0;
 }
 function statusLabel(status: ForeignTradeExpenseReconciliation["status"]) { return ({ draft: "Borrador", reviewed: "Revisada", applied: "Aplicada", refund_pending: "Devolución pendiente", settled: "Cerrada" })[status]; }
-function humanizeError(error: unknown) { const message = error instanceof Error ? error.message : "No se pudo completar la conciliación."; if (message.includes("identity_mismatch")) return "Las referencias no coinciden. Verifica que la provisión y la factura final sean del mismo despacho."; if (message.includes("foreign_trade_forbidden")) return "Tu usuario no tiene permisos para modificar costos de Comercio Exterior."; if (message.includes("phase5") || message.includes("does not exist") || message.includes("404")) return "Falta ejecutar supabase/foreign_trade_center_phase5_reconciliation.sql en Supabase."; if (message.includes("foreign_trade_invalid")) return "Revisa los documentos vinculados, conceptos y montos ingresados."; return message; }
+function humanizeError(error: unknown) { const message = error instanceof Error ? error.message : "No se pudo completar la conciliación."; if (message.includes("identity_mismatch")) return "Las referencias no coinciden. Verifica que la provisión y la factura final sean del mismo despacho."; if (message.includes("foreign_trade_forbidden")) return "Tu usuario no tiene permisos para modificar costos de Comercio Exterior."; if (message.includes("auto_finalize_foreign_trade") || message.includes("phase8")) return "Falta ejecutar la Fase 8 de conciliación automática en Supabase."; if (message.includes("phase5") || message.includes("does not exist") || message.includes("404")) return "Falta ejecutar supabase/foreign_trade_center_phase5_reconciliation.sql en Supabase."; if (message.includes("foreign_trade_invalid")) return "Revisa los documentos vinculados, conceptos y montos ingresados."; return message; }
 
 const clpFormatter = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 function formatClp(value: number) { return clpFormatter.format(Number(value || 0)); }

@@ -452,6 +452,23 @@ export interface ApplyForeignTradeExpenseReconciliationResult {
   refund_due_clp: number;
 }
 
+export interface AutoFinalizeForeignTradeReconciliationResult extends ApplyForeignTradeExpenseReconciliationResult {
+  operation_id: string;
+  header_completed: boolean;
+  ready_for_costing: boolean;
+  costing_applied: boolean;
+  provision_total_clp: number;
+  status: ForeignTradeReconciliationStatus;
+}
+
+export interface AutoFinalizeForeignTradeOperationResult {
+  operation_id: string;
+  processed_reconciliations: number;
+  applied_reconciliations: number;
+  applied_lines: number;
+  results: AutoFinalizeForeignTradeReconciliationResult[];
+}
+
 export type ForeignTradeDocumentType =
   | "proforma"
   | "purchase_order"

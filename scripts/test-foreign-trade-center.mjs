@@ -266,6 +266,13 @@ const phase7Migration = await readFile(
 await db.exec(phase7Migration);
 await db.exec(phase7Migration);
 
+const phase8Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase8_automatic_reconciliation.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase8Migration);
+await db.exec(phase8Migration);
+
 const costingParameters = await db.query(
   "select code,numeric_value from public.foreign_trade_cost_parameters where code like 'cl_%' order by code",
 );
@@ -924,6 +931,15 @@ assert.equal(extractedReconciliation.rows[0].remittance_amount_clp, "16853872.00
 assert.equal(extractedReconciliation.rows[0].lines, 3);
 assert.equal(extractedReconciliation.rows[0].taxes, "16377872.00");
 
+await db.query(
+  "update public.foreign_trade_expense_reconciliations set remittance_amount_clp=0 where id=$1",
+  [confirmedFundRequest.rows[0].result.reconciliation_id],
+);
+await db.query(
+  "update public.foreign_trade_documents set review_result=jsonb_set(review_result,'{general,remittance_amount_clp}','0'::jsonb,true) where id=$1",
+  [extractedProvisionDocument.rows[0].id],
+);
+
 const extractedSettlementDocument = await db.query("select public.register_foreign_trade_document($1::jsonb) as id", [JSON.stringify({
   operation_id: operationId,
   supplier_id: supplier.rows[0].id,
@@ -961,18 +977,40 @@ assert.equal(
   "confirmed",
 );
 const settlementReconciliation = await db.query(
-  "select final_document_id,agency_invoice_number,status from public.foreign_trade_expense_reconciliations where id=$1",
+  "select final_document_id,provision_reference,final_reference,agency_name,agency_invoice_number,remittance_date::text,final_invoice_date::text,remittance_amount_clp,status,metadata->>'automatic_reconciliation_version' as automation_version from public.foreign_trade_expense_reconciliations where id=$1",
   [confirmedFundRequest.rows[0].result.reconciliation_id],
 );
 assert.deepEqual(settlementReconciliation.rows[0], {
+  provision_reference: "49194",
+  final_reference: "49194",
+  agency_name: "Agencia de Aduanas",
+  remittance_date: "2026-08-20",
+  final_invoice_date: "2026-08-22",
+  remittance_amount_clp: "16853872.00",
   final_document_id: extractedSettlementDocument.rows[0].id,
   agency_invoice_number: "23177",
-  status: "reviewed",
+  status: "refund_pending",
+  automation_version: "document_refs_v1",
 });
 assert.equal(
   (await db.query("select count(*)::integer as count from public.foreign_trade_expense_reconciliation_lines where reconciliation_id=$1 and actual_total_clp > 0", [confirmedFundRequest.rows[0].result.reconciliation_id])).rows[0].count,
   2,
   "la rendición debe actualizar una provisión coincidente y agregar el costo real no provisionado",
+);
+const automaticCosts = await db.query(
+  "select count(*)::integer as count,sum(amount_clp) as amount from public.foreign_trade_cost_lines where metadata->>'reconciliation_id'=$1 and coalesce((metadata->>'excluded_from_costing')::boolean,false)=false",
+  [confirmedFundRequest.rows[0].result.reconciliation_id],
+);
+assert.deepEqual(automaticCosts.rows[0], { count: 2, amount: "846388.000000" });
+const repeatedAutomaticReconciliation = await db.query(
+  "select public.auto_finalize_foreign_trade_expense_reconciliation($1,true) as result",
+  [confirmedFundRequest.rows[0].result.reconciliation_id],
+);
+assert.equal(repeatedAutomaticReconciliation.rows[0].result.applied_lines, 2);
+assert.equal(
+  (await db.query("select count(*)::integer as count from public.foreign_trade_cost_lines where metadata->>'reconciliation_id'=$1", [confirmedFundRequest.rows[0].result.reconciliation_id])).rows[0].count,
+  2,
+  "la resincronización automática debe ser idempotente",
 );
 
 await db.query("select public.update_foreign_trade_document_type($1,$2)", [settlementDocument.rows[0].id, "proforma"]);
@@ -1155,7 +1193,7 @@ assert.equal(
   "los reintentos de aplicación deben ser idempotentes",
 );
 const detailAfterReconciliation = await db.query("select public.foreign_trade_operation_detail($1) as detail", [operationId]);
-assert.equal(detailAfterReconciliation.rows[0].detail.totals.costs_clp, 17795468);
+assert.equal(detailAfterReconciliation.rows[0].detail.totals.costs_clp, 18641856);
 
 const summary = await db.query("select public.foreign_trade_dashboard_summary() as summary");
 assert.equal(summary.rows[0].summary.operations_in_preparation, 1);

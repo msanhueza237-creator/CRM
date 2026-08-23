@@ -27,6 +27,8 @@ import type {
   ConfirmForeignTradeFundRequestResult,
   ConfirmForeignTradeAgencySettlementResult,
   ApplyForeignTradeExpenseReconciliationResult,
+  AutoFinalizeForeignTradeOperationResult,
+  AutoFinalizeForeignTradeReconciliationResult,
   ForeignTradeExpenseReconciliation,
   SaveForeignTradeExpenseReconciliationInput,
 } from "../types/foreignTrade";
@@ -344,6 +346,25 @@ export async function applyForeignTradeExpenseReconciliation(reconciliationId: s
   });
   if (error) throw error;
   return data as ApplyForeignTradeExpenseReconciliationResult;
+}
+
+export async function autoFinalizeForeignTradeExpenseReconciliation(reconciliationId: string) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("auto_finalize_foreign_trade_expense_reconciliation", {
+    p_reconciliation_id: reconciliationId,
+    p_apply_costs: true,
+  });
+  if (error) throw error;
+  return data as AutoFinalizeForeignTradeReconciliationResult;
+}
+
+export async function autoFinalizeForeignTradeOperation(operationId: string) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("auto_finalize_foreign_trade_operation", {
+    p_operation_id: operationId,
+  });
+  if (error) throw error;
+  return data as AutoFinalizeForeignTradeOperationResult;
 }
 
 export async function uploadForeignTradeDocument(input: {

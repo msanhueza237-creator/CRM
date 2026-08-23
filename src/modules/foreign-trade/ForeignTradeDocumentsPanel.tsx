@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import {
   cancelForeignTradeDocumentExtraction,
+  autoFinalizeForeignTradeExpenseReconciliation,
   confirmForeignTradeDocument,
   confirmForeignTradeAgencySettlementDocument,
   confirmForeignTradeFundRequestDocument,
@@ -677,7 +678,7 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
     void getForeignTradeExpenseReconciliations(document.operation_id)
       .then((items) => {
         if (!active) return;
-        const editable = items.filter((item) => !["applied", "settled"].includes(item.status));
+        const editable = items.filter((item) => ["draft", "reviewed"].includes(item.status));
         setReconciliations(editable);
         const preferred = editable.find((item) => item.final_document_id === document.id)
           || editable.find((item) => item.provision_document_id)
@@ -727,7 +728,7 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
   async function confirm() {
     if (!reconciliationId) { setError("Selecciona la conciliación creada desde la provisión de fondos."); return; }
     if (referencesDiffer && !review.identity_confirmed) { setError("Las referencias no coinciden. Confirma manualmente que ambos documentos pertenecen al mismo despacho."); return; }
-    if (!window.confirm("¿Cargar estos costos reales en la conciliación seleccionada? Podrás revisarla antes de aplicarla al costeo oficial.")) return;
+    if (!window.confirm("¿Confirmar, conciliar y aplicar estos costos reales? El sistema completará las referencias, calculará el saldo y actualizará el costeo automáticamente.")) return;
     setBusy(true); setError("");
     try {
       const normalizedLines = review.lines.map((line) => normalizeAgencySettlementLine({ ...line, currency: normalizeCurrencyCode(line.currency, "CLP") }, {}));
@@ -745,7 +746,8 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
         },
       };
       const result = await confirmForeignTradeAgencySettlementDocument(document.id, reconciliationId, normalizedReview);
-      await onConfirmed(`${result.updated_lines} concepto(s) conciliados y ${result.inserted_lines} gasto(s) real(es) nuevos. Revisa el resultado antes de aplicarlo al costeo.`);
+      const automatic = await autoFinalizeForeignTradeExpenseReconciliation(reconciliationId);
+      await onConfirmed(`${result.updated_lines} concepto(s) conciliados y ${result.inserted_lines} gasto(s) real(es) nuevos. ${automatic.applied_lines} costo(s) aplicados; saldo por devolver ${formatClp(automatic.refund_due_clp)}. Los precios quedaron recalculados.`);
     } catch (confirmError) { setError(humanizeDocumentError(confirmError)); }
     finally { setBusy(false); }
   }
@@ -781,7 +783,7 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
 
     <section className="foreign-trade-review-section"><div><h3>Costos reales reconocidos</h3><span>Relaciona cada costo con su provisión. Usa “Nuevo costo real” cuando no existía en la estimación.</span></div><div className="foreign-trade-review-lines">{review.lines.map((line, index) => <AgencySettlementLineCard key={`${line.source_index}-${index}`} line={line} provisionLines={selectedReconciliation?.lines || []} onChange={(patch) => setLine(index, patch)} />)}</div></section>
     {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
-    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || needsRegeneration || !reconciliationId || !selectedLines.length} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Conciliando..." : "Confirmar costos reales"}</button></footer>
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || needsRegeneration || !reconciliationId || !selectedLines.length} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Conciliando y costeando..." : "Confirmar, conciliar y costear"}</button></footer>
   </div></div>;
 }
 
