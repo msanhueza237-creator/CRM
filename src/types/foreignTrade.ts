@@ -523,11 +523,18 @@ export interface ForeignTradeExtractedLine {
   include: boolean;
   content_product_id: string | null;
   remember_link: boolean;
+  supplier_product_code: string | null;
   supplier_sku: string | null;
+  supplier_reference: string | null;
   sku: string | null;
   product_name: string;
   description: string | null;
+  description_original: string | null;
+  description_translated: string | null;
+  description_normalized: string | null;
   model: string | null;
+  brand: string | null;
+  technical_attributes: string[];
   quantity: number | null;
   quantity_per_box: number | null;
   box_count: number | null;
@@ -761,6 +768,68 @@ export interface ConfirmForeignTradeDocumentResult {
   inserted_lines: number;
   skipped_lines: number;
   status: "confirmed";
+  reconciliation_confirmed?: number;
+  reconciliation_unmatched?: number;
+}
+
+export type ForeignTradeProductMatchStatus =
+  | "auto_matched"
+  | "suggested"
+  | "review"
+  | "unmatched"
+  | "confirmed"
+  | "rejected";
+
+export type ForeignTradeProductMatchMethod =
+  | "manual"
+  | "learned_mapping"
+  | "exact_internal_sku"
+  | "exact_model"
+  | "technical_text"
+  | "semantic_fallback";
+
+export interface ForeignTradeProductMatchCandidate {
+  mapping_id?: string | null;
+  product_id: string;
+  sku: string | null;
+  name: string;
+  category: string | null;
+  brand: string | null;
+  score: number;
+  method: ForeignTradeProductMatchMethod;
+  reasons: Array<string | null>;
+}
+
+export interface ForeignTradeProductReconciliationLine {
+  id: string;
+  document_id: string;
+  operation_id: string;
+  supplier_id: string | null;
+  source_index: number;
+  source_page: number | null;
+  source_row_label: string | null;
+  supplier_product_code: string | null;
+  supplier_sku: string | null;
+  supplier_model: string | null;
+  supplier_reference: string | null;
+  original_description: string | null;
+  translated_description: string | null;
+  normalized_description: string | null;
+  suggested_product_id: string | null;
+  selected_product_id: string | null;
+  status: ForeignTradeProductMatchStatus;
+  confidence: number | null;
+  matching_method: ForeignTradeProductMatchMethod | null;
+  match_reasons: Array<string | null>;
+  candidates: ForeignTradeProductMatchCandidate[];
+  remember_mapping: boolean;
+}
+
+export interface ForeignTradeProductReconciliationResult {
+  document_id: string;
+  supplier_id: string | null;
+  summary: Record<ForeignTradeProductMatchStatus | "total", number>;
+  lines: ForeignTradeProductReconciliationLine[];
 }
 
 export interface ConfirmForeignTradeFundRequestResult {

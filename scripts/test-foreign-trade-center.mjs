@@ -75,6 +75,7 @@ await db.exec(`
     external_id text not null unique,
     sku text,
     name text not null,
+    description_text text,
     category text,
     brand text,
     price numeric(14,2),
@@ -282,6 +283,13 @@ const phase9Migration = await readFile(
 );
 await db.exec(phase9Migration);
 await db.exec(phase9Migration);
+
+const phase10Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase10_product_reconciliation.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase10Migration);
+await db.exec(phase10Migration);
 
 const freightExtraction = prepareFreightDocumentExtraction({
   general: {
@@ -1347,5 +1355,227 @@ assert.equal(
 );
 await db.exec("reset role");
 await db.exec("select set_config('app.test_role','administrador',false)");
+
+// Conciliacion de productos: equivalencias por proveedor sin tocar el catalogo maestro.
+async function createMatchProduct(sku, name, externalId = crypto.randomUUID()) {
+  const result = await db.query(
+    "insert into public.content_products(external_id,sku,name,category,brand) values ($1,$2,$3,'Herramientas','Clima Activa') returning id",
+    [externalId, sku, name],
+  );
+  return result.rows[0].id;
+}
+async function createMatchSupplier(name) {
+  const result = await db.query(
+    "insert into public.suppliers(name,country_code) values ($1,'CN') returning id",
+    [name],
+  );
+  return result.rows[0].id;
+}
+async function createMatchDocument(supplierId, line) {
+  const operation = await db.query(
+    "insert into public.import_shipments(supplier_id,reference,title,status) values ($1,$2,$3,'quotation') returning id",
+    [supplierId, `MATCH-${crypto.randomUUID()}`, `Conciliacion ${line.product_name}`],
+  );
+  const operationId = operation.rows[0].id;
+  const extraction = {
+    extraction_version: "pdf_skill_v11_product_reconciliation",
+    general: { supplier_id: supplierId, currency: "USD" },
+    lines: [{ source_index: 1, source_page: 1, source_row_label: "1", include: true, remember_link: false, ...line }],
+    document_totals: { line_count: 1 },
+    warnings: [],
+  };
+  const document = await db.query(`
+    insert into public.foreign_trade_documents(
+      operation_id,supplier_id,document_type,original_file_name,storage_path,mime_type,
+      file_size,parse_status,extraction_result,uploaded_by
+    ) values ($1,$2,'proforma',$3,$4,'application/pdf',1024,'review_required',$5::jsonb,$6)
+    returning id
+  `, [operationId, supplierId, `match-${crypto.randomUUID()}.pdf`, `${operationId}/${crypto.randomUUID()}.pdf`, JSON.stringify(extraction), adminId]);
+  return { operationId, documentId: document.rows[0].id, extraction };
+}
+async function reconcileMatchDocument(documentId, supplierId) {
+  const result = await db.query(
+    "select public.reconcile_foreign_trade_document($1,$2) as result",
+    [documentId, supplierId],
+  );
+  return result.rows[0].result;
+}
+async function confirmMatchDocument(document, productId, remember = true) {
+  const line = {
+    ...document.extraction.lines[0],
+    content_product_id: productId,
+    remember_link: remember,
+    sku: null,
+    quantity: 1,
+    unit_price: 1,
+    currency: "USD",
+    warnings: [],
+  };
+  return db.query(
+    "select public.confirm_foreign_trade_document_with_reconciliation($1,$2::jsonb) as result",
+    [document.documentId, JSON.stringify({ ...document.extraction, lines: [line] })],
+  );
+}
+
+const matchSupplierA = await createMatchSupplier("Proveedor conciliacion A");
+const matchSupplierB = await createMatchSupplier("Proveedor conciliacion B");
+const exactProductId = await createMatchProduct("RCM-100", "Recuperadora RCM 100 220V");
+const voltage110ProductId = await createMatchProduct("MOTOR-110", "Motor condensador industrial 110V");
+const voltage220ProductId = await createMatchProduct("MOTOR-220", "Motor condensador industrial 220V");
+const vacuumProductId = await createMatchProduct("VAC-9", "Bomba de vacio compacta 9CFM");
+await db.query(`
+  insert into public.supplier_products(
+    supplier_id,sku,supplier_sku,content_product_id,supplier_model,supplier_description,source
+  ) values ($1,'VAC-9','MODEL-VAC-9',$2,'VAC-9','Bomba de vacio compacta','document')
+`, [matchSupplierA, vacuumProductId]);
+
+assert.equal(
+  (await db.query("select public.normalize_foreign_trade_product_text('Bomba 4 CFM 220 V / 50 HZ') as value")).rows[0].value,
+  "bomba 4cfm 220v 50hz",
+  "las unidades separadas deben normalizarse como atributos técnicos comparables",
+);
+
+// 1. Un codigo no se asume como SKU interno: se sugiere y no altera el maestro.
+const catalogCountBefore = Number((await db.query("select count(*) as count from public.content_products")).rows[0].count);
+const exactDocument = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: "RCM-100",
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  sku: "RCM-100",
+  product_name: "Recuperadora RCM 100 220V",
+  description: "Recuperadora RCM 100 220V",
+});
+const exactMatch = await reconcileMatchDocument(exactDocument.documentId, matchSupplierA);
+assert.equal(exactMatch.lines[0].status, "suggested");
+assert.equal(exactMatch.lines[0].selected_product_id, null);
+const firstConfirmation = await confirmMatchDocument(exactDocument, exactProductId);
+assert.equal(firstConfirmation.rows[0].result.inserted_lines, 1);
+assert.equal(Number((await db.query("select count(*) as count from public.content_products")).rows[0].count), catalogCountBefore);
+const reopenedConfirmation = await confirmMatchDocument(exactDocument, exactProductId);
+assert.equal(reopenedConfirmation.rows[0].result.inserted_lines, 0, "reabrir la conciliacion no debe duplicar lineas importadas");
+
+// 2. Codigo diferente y descripcion similar: sugiere, pero no confirma solo.
+const similarDocument = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: "OTRO-999",
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Recuperadora RCM 100 220V",
+  description: "Recuperadora RCM 100 220V",
+});
+const similarMatch = await reconcileMatchDocument(similarDocument.documentId, matchSupplierA);
+assert.equal(similarMatch.lines[0].status, "suggested");
+assert.equal(similarMatch.lines[0].selected_product_id, null);
+
+// 3. Modelo sin columna SKU: el modelo exacto puede actuar como codigo fuerte.
+const modelDocument = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: null,
+  supplier_sku: null,
+  supplier_reference: null,
+  model: "VAC-9",
+  product_name: "Bomba de vacio",
+  description: "Bomba de vacio compacta",
+});
+const modelMatch = await reconcileMatchDocument(modelDocument.documentId, matchSupplierA);
+assert.equal(modelMatch.lines[0].status, "auto_matched");
+assert.equal(modelMatch.lines[0].selected_product_id, vacuumProductId);
+
+// 4. Dos productos parecidos: el atributo tecnico evita elegir el voltaje incorrecto.
+const voltageDocument = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: "SIN-CODIGO-220",
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Motor condensador industrial 220V",
+  description: "Motor condensador industrial para equipo 220V",
+});
+const voltageMatch = await reconcileMatchDocument(voltageDocument.documentId, matchSupplierA);
+assert.equal(voltageMatch.lines[0].candidates[0].product_id, voltage220ProductId);
+assert.notEqual(voltageMatch.lines[0].candidates[0].product_id, voltage110ProductId);
+
+// 5. El mismo codigo repetido reutiliza la equivalencia confirmada.
+const repeatedDocument = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: "RCM-100",
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Nombre abreviado por proveedor",
+  description: "Nombre abreviado por proveedor",
+});
+const repeatedMatch = await reconcileMatchDocument(repeatedDocument.documentId, matchSupplierA);
+assert.equal(repeatedMatch.lines[0].matching_method, "learned_mapping");
+assert.equal(repeatedMatch.lines[0].selected_product_id, exactProductId);
+
+// 6. Una equivalencia nunca se comparte entre proveedores distintos.
+const isolatedDocument = await createMatchDocument(matchSupplierB, {
+  supplier_product_code: "RCM-100",
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Nombre abreviado por otro proveedor",
+  description: "Nombre abreviado por otro proveedor",
+});
+const isolatedMatch = await reconcileMatchDocument(isolatedDocument.documentId, matchSupplierB);
+assert.notEqual(isolatedMatch.lines[0].matching_method, "learned_mapping");
+
+// 7. Sin codigo: una descripcion confirmada puede aprenderse de forma especifica por proveedor.
+const descriptionOnly = {
+  supplier_product_code: null,
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Bomba vacio compacta exclusiva 9CFM",
+  description: "Bomba vacio compacta exclusiva 9CFM",
+};
+const descriptionDocument = await createMatchDocument(matchSupplierA, descriptionOnly);
+await confirmMatchDocument(descriptionDocument, vacuumProductId);
+const descriptionRepeatedDocument = await createMatchDocument(matchSupplierA, descriptionOnly);
+const descriptionRepeatedMatch = await reconcileMatchDocument(descriptionRepeatedDocument.documentId, matchSupplierA);
+assert.equal(descriptionRepeatedMatch.lines[0].matching_method, "learned_mapping");
+assert.equal(descriptionRepeatedMatch.lines[0].selected_product_id, vacuumProductId);
+
+// 8. Una correccion manual queda como la fuente prioritaria en documentos futuros.
+const correctionDocument = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: "CORR-77",
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Motor condensador",
+  description: "Motor condensador",
+});
+await confirmMatchDocument(correctionDocument, voltage110ProductId);
+const correctionRepeated = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: "CORR-77",
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Texto diferente del mismo codigo",
+  description: "Texto diferente del mismo codigo",
+});
+const correctedMatch = await reconcileMatchDocument(correctionRepeated.documentId, matchSupplierA);
+assert.equal(correctedMatch.lines[0].matching_method, "learned_mapping");
+assert.equal(correctedMatch.lines[0].selected_product_id, voltage110ProductId);
+
+const correctionMapping = await db.query(
+  "select id from public.product_supplier_mappings where supplier_id=$1 and normalized_key='CORR77'",
+  [matchSupplierA],
+);
+await db.query("select public.delete_product_supplier_mapping($1)", [correctionMapping.rows[0].id]);
+const afterForgetDocument = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: "CORR-77",
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Texto sin identidad suficiente",
+  description: "Texto sin identidad suficiente",
+});
+const afterForgetMatch = await reconcileMatchDocument(afterForgetDocument.documentId, matchSupplierA);
+assert.notEqual(afterForgetMatch.lines[0].matching_method, "learned_mapping", "una equivalencia eliminada no debe reutilizarse");
+
+await db.query("delete from public.import_shipments where supplier_id in ($1,$2)", [matchSupplierA, matchSupplierB]);
+await db.query("delete from public.supplier_products where supplier_id in ($1,$2)", [matchSupplierA, matchSupplierB]);
+await db.query("delete from public.suppliers where id in ($1,$2)", [matchSupplierA, matchSupplierB]);
+await db.query("delete from public.content_products where id in ($1,$2,$3,$4)", [exactProductId, voltage110ProductId, voltage220ProductId, vacuumProductId]);
 
 console.log("Centro de Comercio Exterior: migracion, permisos, RPC y auditoria OK");

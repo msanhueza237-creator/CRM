@@ -164,6 +164,13 @@ Reglas obligatorias:
 - Una fila sin número impreso también cuenta y desplaza las posiciones siguientes.
 - Si el rango solicitado supera la última fila real, devuelve solo las filas que existan; nunca inventes filas para llenar el rango.
 - Une descripciones partidas en varias líneas y asocia sus cifras con el producto correcto.
+- Conserva la descripción original literalmente en description_original. Si no está en español,
+  tradúcela fielmente en description_translated sin agregar prestaciones ni corregir el producto.
+- Busca la identidad comercial en Item No., Product Code, Supplier Code, Reference, Model y dentro de
+  la descripción. supplier_product_code es el código principal del proveedor; supplier_reference y
+  model conservan sus campos propios. No asumas que una columna SKU contiene el SKU interno del CRM.
+- No interpretes voltajes, frecuencias, potencias, capacidades o dimensiones aisladas como códigos.
+  Conserva esos datos visibles en technical_attributes para validar compatibilidad entre productos.
 - Ignora encabezados repetidos, subtotales, totales y pies de página como productos.
 - Conserva ceros impresos; no los conviertas en null.
 - Mantén puntos decimales y no interpretes separadores de millares como decimales.

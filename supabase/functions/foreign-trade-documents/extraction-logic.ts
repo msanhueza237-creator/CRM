@@ -1,6 +1,6 @@
 export type JsonRecord = Record<string, unknown>;
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v10";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v11_product_reconciliation";
 export const FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION = "fund_request_v1";
 export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v1";
 export const FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION = "freight_document_v1";
@@ -303,6 +303,19 @@ export function prepareExtraction(value: unknown) {
       }
     }
 
+    const descriptionOriginal = nullableText(row.description_original)
+      || nullableText(row.description)
+      || nullableText(row.product_name);
+    const descriptionTranslated = nullableText(row.description_translated);
+    const supplierProductCode = nullableText(row.supplier_product_code)
+      || inferSupplierProductCode(
+        row.supplier_sku,
+        row.supplier_reference,
+        row.model,
+        row.sku,
+        descriptionOriginal,
+      );
+
     return {
       source_index: sourceIndex,
       source_page: integer(row.source_page),
@@ -310,11 +323,18 @@ export function prepareExtraction(value: unknown) {
       include: true,
       content_product_id: null,
       remember_link: false,
+      supplier_product_code: supplierProductCode,
       supplier_sku: nullableText(row.supplier_sku),
+      supplier_reference: nullableText(row.supplier_reference),
       sku: nullableText(row.sku),
       product_name: nullableText(row.product_name) || nullableText(row.description) || "",
       description: nullableText(row.description),
+      description_original: descriptionOriginal,
+      description_translated: descriptionTranslated,
+      description_normalized: normalizeProductDescription(descriptionTranslated || descriptionOriginal),
       model: nullableText(row.model),
+      brand: nullableText(row.brand),
+      technical_attributes: stringArray(row.technical_attributes, 30),
       quantity,
       quantity_per_box: numeric(row.quantity_per_box),
       box_count: boxCount,
@@ -407,6 +427,33 @@ export function prepareExtraction(value: unknown) {
     confidence,
     warnings,
   };
+}
+
+function inferSupplierProductCode(...values: unknown[]) {
+  for (const value of values.slice(0, 4)) {
+    const explicit = nullableText(value);
+    if (explicit && isUsefulSupplierCode(explicit)) return explicit;
+  }
+  const description = nullableText(values[4]);
+  if (!description) return null;
+  const candidates = description.toUpperCase().match(/[A-Z0-9][A-Z0-9._/-]{2,39}/g) || [];
+  return candidates.find(isUsefulSupplierCode) || null;
+}
+
+function isUsefulSupplierCode(value: string) {
+  const compact = value.trim().toUpperCase();
+  if (!/[A-Z]/.test(compact) || !/[0-9]/.test(compact)) return false;
+  if (/^\d+(?:\.\d+)?(?:V|VAC|VDC|HZ|W|KW|A|MM|CM|M|KG|G|L|ML|CFM|BTU)$/.test(compact)) return false;
+  return compact.length >= 3 && compact.length <= 40;
+}
+
+function normalizeProductDescription(value: string | null) {
+  if (!value) return null;
+  return value.normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim() || null;
 }
 
 const reconciliationLineTypes = new Set([

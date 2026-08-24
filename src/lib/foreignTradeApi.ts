@@ -32,6 +32,7 @@ import type {
   AutoFinalizeForeignTradeOperationResult,
   AutoFinalizeForeignTradeReconciliationResult,
   ForeignTradeExpenseReconciliation,
+  ForeignTradeProductReconciliationResult,
   SaveForeignTradeExpenseReconciliationInput,
 } from "../types/foreignTrade";
 
@@ -377,12 +378,13 @@ export async function uploadForeignTradeDocument(input: {
 }) {
   requireSupabase();
   const extension = input.file.name.split(".").pop()?.toLowerCase() || "";
-  if (!["pdf", "xls", "xlsx"].includes(extension)) throw new Error("Selecciona un PDF o Excel (.xls o .xlsx).");
+  if (!["pdf", "xls", "xlsx", "csv"].includes(extension)) throw new Error("Selecciona un PDF, Excel o CSV.");
   if (input.file.size <= 0 || input.file.size > 25 * 1024 * 1024) throw new Error("El archivo debe pesar entre 1 byte y 25 MB.");
   const mimeType = input.file.type || ({
     pdf: "application/pdf",
     xls: "application/vnd.ms-excel",
     xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    csv: "text/csv",
   } as Record<string, string>)[extension];
   const cleanName = input.file.name
     .normalize("NFKD")
@@ -462,12 +464,30 @@ export async function deleteForeignTradeDocument(documentId: string) {
 
 export async function confirmForeignTradeDocument(documentId: string, review: ForeignTradeDocumentExtraction) {
   requireSupabase();
-  const { data, error } = await supabase!.rpc("confirm_foreign_trade_document", {
+  const { data, error } = await supabase!.rpc("confirm_foreign_trade_document_with_reconciliation", {
     p_document_id: documentId,
     p_review: review,
   });
   if (error) throw error;
   return data as ConfirmForeignTradeDocumentResult;
+}
+
+export async function reconcileForeignTradeDocument(documentId: string, supplierId?: string | null) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("reconcile_foreign_trade_document", {
+    p_document_id: documentId,
+    p_supplier_id: supplierId || null,
+  });
+  if (error) throw error;
+  return data as ForeignTradeProductReconciliationResult;
+}
+
+export async function deleteForeignTradeProductSupplierMapping(mappingId: string) {
+  requireSupabase();
+  const { error } = await supabase!.rpc("delete_product_supplier_mapping", {
+    p_mapping_id: mappingId,
+  });
+  if (error) throw error;
 }
 
 export async function confirmForeignTradeFundRequestDocument(documentId: string, review: ForeignTradeFundRequestExtraction) {

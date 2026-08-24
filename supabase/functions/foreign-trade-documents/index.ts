@@ -30,6 +30,8 @@ const allowedMimeTypes = new Set([
   "application/pdf",
   "application/vnd.ms-excel",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/csv",
+  "application/csv",
 ]);
 
 Deno.serve(async (req) => {
@@ -641,11 +643,15 @@ const headerExtractionSchema: JsonRecord = {
 const extractedLineSchema: JsonRecord = {
   type: "object",
   additionalProperties: false,
-  required: ["source_index", "source_page", "source_row_label", "supplier_sku", "sku", "product_name", "description", "model", "quantity", "quantity_per_box", "box_count", "currency", "unit_price", "total_price", "unit_weight_kg", "gross_weight_kg", "net_weight_kg", "box_length_cm", "box_width_cm", "box_height_cm", "cbm_per_box", "cbm_total", "country_of_origin", "hs_code", "confidence", "warnings"],
+  required: ["source_index", "source_page", "source_row_label", "supplier_product_code", "supplier_sku", "supplier_reference", "sku", "product_name", "description", "description_original", "description_translated", "model", "brand", "technical_attributes", "quantity", "quantity_per_box", "box_count", "currency", "unit_price", "total_price", "unit_weight_kg", "gross_weight_kg", "net_weight_kg", "box_length_cm", "box_width_cm", "box_height_cm", "cbm_per_box", "cbm_total", "country_of_origin", "hs_code", "confidence", "warnings"],
   properties: {
     source_index: { type: "integer", minimum: 1, maximum: 500 }, source_page: nullableInteger,
-    source_row_label: nullableString, supplier_sku: nullableString, sku: nullableString,
-    product_name: nullableString, description: nullableString, model: nullableString,
+    source_row_label: nullableString, supplier_product_code: nullableString,
+    supplier_sku: nullableString, supplier_reference: nullableString, sku: nullableString,
+    product_name: nullableString, description: nullableString,
+    description_original: nullableString, description_translated: nullableString,
+    model: nullableString, brand: nullableString,
+    technical_attributes: { type: "array", maxItems: 30, items: { type: "string", maxLength: 120 } },
     quantity: nullableNumber, quantity_per_box: nullableNumber, box_count: nullableNumber,
     currency: nullableString, unit_price: nullableNumber, total_price: nullableNumber,
     unit_weight_kg: nullableNumber, gross_weight_kg: nullableNumber, net_weight_kg: nullableNumber,

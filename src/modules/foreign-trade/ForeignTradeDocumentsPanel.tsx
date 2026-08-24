@@ -24,11 +24,13 @@ import {
   confirmForeignTradeAgencySettlementDocument,
   confirmForeignTradeFreightDocument,
   confirmForeignTradeFundRequestDocument,
+  deleteForeignTradeProductSupplierMapping,
   deleteForeignTradeDocument,
   extractForeignTradeDocument,
   getForeignTradeDocumentUrl,
   getForeignTradeDocuments,
   getForeignTradeExpenseReconciliations,
+  reconcileForeignTradeDocument,
   searchForeignTradeCatalog,
   updateForeignTradeDocumentType,
   uploadForeignTradeDocument,
@@ -48,6 +50,8 @@ import type {
   ForeignTradeFundRequestLine,
   ForeignTradeFreightDocumentExtraction,
   ForeignTradeFreightDocumentLine,
+  ForeignTradeProductReconciliationLine,
+  ForeignTradeProductReconciliationResult,
   ForeignTradeReconciliationLineType,
   ForeignTradeSupplier,
 } from "../../types/foreignTrade";
@@ -82,7 +86,7 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   ...expenseExtractableDocumentTypes,
 ]);
 
-const currentExtractionVersion = "pdf_skill_v10";
+const currentExtractionVersion = "pdf_skill_v11_product_reconciliation";
 const currentFundRequestExtractionVersion = "fund_request_v1";
 const currentAgencySettlementExtractionVersion = "agency_settlement_v1";
 const currentFreightDocumentExtractionVersion = "freight_document_v1";
@@ -395,8 +399,8 @@ export function ForeignTradeDocumentsPanel({
         <label className="foreign-trade-dropzone">
           <FileUp size={28} />
           <strong>{pendingFiles.length ? `${pendingFiles.length} documento(s) seleccionado(s)` : "Selecciona uno o dos documentos"}</strong>
-          <span>PDF, XLS o XLSX · máximo 25 MB por archivo</span>
-          <input multiple disabled={Boolean(busyId)} type="file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { selectFiles(event.target.files); event.currentTarget.value = ""; }} />
+          <span>PDF, XLS, XLSX o CSV · máximo 25 MB por archivo</span>
+          <input multiple disabled={Boolean(busyId)} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { selectFiles(event.target.files); event.currentTarget.value = ""; }} />
         </label>
         {pendingFiles.length ? <div className="foreign-trade-pending-documents">{pendingFiles.map((pending) => <article key={pending.key}>
           <div><FileText size={17} /><span><strong>{pending.file.name}</strong><small>{formatFileSize(pending.file.size)}</small></span></div>
@@ -436,8 +440,9 @@ export function ForeignTradeDocumentsPanel({
               <DocumentStatus document={isExtracting ? { ...document, parse_status: "extracting" } : document} />
               <div className="foreign-trade-row-actions">
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
-                {document.parse_status !== "confirmed" ? <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title="Cambiar el archivo conservando su clasificación"><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label> : null}
+                {document.parse_status !== "confirmed" ? <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title="Cambiar el archivo conservando su clasificación"><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label> : null}
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
+                {document.parse_status === "confirmed" && productExtractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Link2 size={16} /> Conciliar productos</button> : null}
                 {!isExtracting && document.parse_status === "uploaded" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document, true)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <ScanText size={16} />} Analizar</button> : null}
                 {!isExtracting && document.parse_status === "review_required" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document, true)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Regenerar</button> : null}
                 {isExtracting ? <button className="ghost-button danger" type="button" disabled={cancelling} onClick={() => void stopExtraction(document)}>{cancelling ? <LoaderCircle className="spin" size={16} /> : <CircleStop size={16} />} Detener</button> : null}
@@ -468,6 +473,40 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
   const [catalogSearch, setCatalogSearch] = useState("");
   const [catalog, setCatalog] = useState<ForeignTradeCatalogProduct[]>([]);
   const [catalogBusy, setCatalogBusy] = useState(false);
+  const [reconciliation, setReconciliation] = useState<ForeignTradeProductReconciliationResult | null>(null);
+  const [reconciliationBusy, setReconciliationBusy] = useState(true);
+  const [reconciliationError, setReconciliationError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    setReconciliationBusy(true);
+    setReconciliationError("");
+    void reconcileForeignTradeDocument(document.id, review.general.supplier_id)
+      .then((result) => {
+        if (!active) return;
+        setReconciliation(result);
+        const bySourceIndex = new Map(result.lines.map((item) => [item.source_index, item]));
+        setReview((current) => ({
+          ...current,
+          lines: current.lines.map((line) => {
+            const match = bySourceIndex.get(line.source_index);
+            if (!match?.selected_product_id || line.content_product_id) return line;
+            const candidate = match.candidates.find((item) => item.product_id === match.selected_product_id);
+            return {
+              ...line,
+              content_product_id: match.selected_product_id,
+              sku: candidate?.sku || line.sku,
+            };
+          }),
+        }));
+      })
+      .catch((matchError) => {
+        if (!active) return;
+        setReconciliationError(humanizeDocumentError(matchError));
+      })
+      .finally(() => { if (active) setReconciliationBusy(false); });
+    return () => { active = false; };
+  }, [document.id, review.general.supplier_id]);
 
   function setGeneral(key: keyof ForeignTradeDocumentExtraction["general"], value: string | number | null) {
     setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
@@ -488,7 +527,10 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
     finally { setCatalogBusy(false); }
   }
   async function confirm() {
-    if (!window.confirm("¿Confirmar esta revisión e importar las líneas seleccionadas? Tu revisión manual se considerará definitiva aunque la extracción tenga advertencias. El archivo original y la extracción se conservarán.")) return;
+    const reconciliationOnly = document.parse_status === "confirmed";
+    if (!window.confirm(reconciliationOnly
+      ? "¿Guardar estas equivalencias de productos? No se duplicarán las líneas ya importadas ni se modificará el catálogo maestro."
+      : "¿Confirmar esta revisión e importar las líneas seleccionadas? Tu revisión manual se considerará definitiva aunque la extracción tenga advertencias. El archivo original y la extracción se conservarán.")) return;
     setBusy(true); setError("");
     try {
       const documentCurrency = normalizeCurrencyCode(review.general.currency, "USD");
@@ -508,7 +550,9 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
         },
       };
       const result = await confirmForeignTradeDocument(document.id, normalizedReview);
-      await onConfirmed(`${result.inserted_lines} producto(s) importados desde la revisión confirmada.`);
+      await onConfirmed(reconciliationOnly
+        ? `${result.reconciliation_confirmed || 0} equivalencia(s) guardada(s); no se duplicaron productos ni líneas.`
+        : `${result.inserted_lines} producto(s) importados desde la revisión confirmada.`);
     } catch (confirmError) { setError(humanizeDocumentError(confirmError)); }
     finally { setBusy(false); }
   }
@@ -518,6 +562,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
   const expectedLineCount = review.document_totals.line_count;
   const incompleteCoverage = Boolean(expectedLineCount && review.lines.length / expectedLineCount < 0.8);
   const needsRegeneration = review.extraction_version !== currentExtractionVersion || incompleteCoverage;
+  const reconciliationBySourceIndex = new Map((reconciliation?.lines || []).map((item) => [item.source_index, item]));
   return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-review-title">
     <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-review-title">Revisar proforma</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
     <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} líneas detectadas</span><span>{document.review_warnings.length} advertencias</span></div>
@@ -549,11 +594,24 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
       <ReviewLineNumber label="Filas comerciales esperadas" value={expectedLineCount} onChange={(value) => setDocumentTotal("line_count", value)} />
     </div><p className="foreign-trade-recalculation">Cobertura: <strong>{review.lines.length}{expectedLineCount ? ` de ${expectedLineCount}` : " filas"}</strong> · Suma CBM de productos: <strong>{formatNumber(lineCbmTotal)} m³</strong>{review.document_totals.cbm_total !== null && Math.abs(lineCbmTotal - review.document_totals.cbm_total) > Math.max(0.01, review.document_totals.cbm_total * 0.02) ? " · revisa la diferencia con el total documental" : ""}</p></section>
 
-    <section className="foreign-trade-review-section"><div className="foreign-trade-review-products-heading"><div><h3>Productos reconocidos</h3><span>Desmarca cualquier fila que no deba importarse.</span></div><div><input value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar catálogo para vincular" /><button className="ghost-button" type="button" onClick={() => void searchCatalog()}>{catalogBusy ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} Buscar</button></div></div>
-      <div className="foreign-trade-review-lines">{review.lines.map((line, index) => <ReviewLineCard key={`${line.source_index}-${index}`} line={line} catalog={catalog} onChange={(patch) => setLine(index, patch)} />)}</div>
+    <section className="foreign-trade-review-section"><div className="foreign-trade-review-products-heading"><div><h3>Conciliación de productos</h3><span>El catálogo maestro permanece protegido; aquí solo se confirma una equivalencia por proveedor.</span></div><div><input value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar catálogo para vincular" /><button className="ghost-button" type="button" onClick={() => void searchCatalog()}>{catalogBusy ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} Buscar</button></div></div>
+      <div className="foreign-trade-match-summary">
+        {reconciliationBusy ? <span><LoaderCircle className="spin" size={14} /> Comparando con el catálogo...</span> : null}
+        {reconciliation ? <><span className="success">{reconciliation.summary.auto_matched || 0} encontrados automáticamente</span><span>{reconciliation.summary.suggested || 0} sugeridos</span><span className="warning">{reconciliation.summary.review || 0} requieren confirmación</span><span className="warning">{reconciliation.summary.unmatched || 0} sin coincidencia</span></> : null}
+      </div>
+      {reconciliationError ? <div className="notice-banner error"><AlertTriangle size={16} /> {reconciliationError}</div> : null}
+      <div className="foreign-trade-review-lines">{review.lines.map((line, index) => <ReviewLineCard key={`${line.source_index}-${index}`} line={line} reconciliation={reconciliationBySourceIndex.get(line.source_index) || null} catalog={catalog} onChange={(patch) => setLine(index, patch)} onForgetMapping={async (mappingId) => {
+        if (!window.confirm("¿Olvidar esta equivalencia aprendida? Los documentos futuros volverán a requerir conciliación.")) return;
+        setBusy(true); setError("");
+        try {
+          await deleteForeignTradeProductSupplierMapping(mappingId);
+          setReconciliation(await reconcileForeignTradeDocument(document.id, review.general.supplier_id));
+        } catch (mappingError) { setError(humanizeDocumentError(mappingError)); }
+        finally { setBusy(false); }
+      }} />)}</div>
     </section>
     {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
-    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button><button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button><button className="primary-button" type="button" disabled={busy || !review.lines.some((line) => line.include)} title={needsRegeneration ? "Confirmar la revisión manual e importar pese a las advertencias" : undefined} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : "Confirmar e importar"}</button></footer>
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button>{document.parse_status !== "confirmed" ? <button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button> : null}<button className="primary-button" type="button" disabled={busy || !review.lines.some((line) => line.include)} title={needsRegeneration ? "Confirmar la revisión manual e importar pese a las advertencias" : undefined} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : document.parse_status === "confirmed" ? "Guardar conciliación" : "Confirmar e importar"}</button></footer>
   </div></div>;
 }
 
@@ -1053,15 +1111,39 @@ function normalizeFundRequestLine(line: ForeignTradeFundRequestLine, patch: Part
 function roundMoney(value: number) { return Math.round((value + Number.EPSILON) * 100) / 100; }
 function formatClp(value: number) { return new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(value); }
 
-function ReviewLineCard({ line, catalog, onChange }: { line: ForeignTradeExtractedLine; catalog: ForeignTradeCatalogProduct[]; onChange: (patch: Partial<ForeignTradeExtractedLine>) => void }) {
+function ReviewLineCard({ line, reconciliation, catalog, onChange, onForgetMapping }: { line: ForeignTradeExtractedLine; reconciliation: ForeignTradeProductReconciliationLine | null; catalog: ForeignTradeCatalogProduct[]; onChange: (patch: Partial<ForeignTradeExtractedLine>) => void; onForgetMapping: (mappingId: string) => Promise<void> }) {
+  const candidates = reconciliation?.candidates || [];
+  const candidateProducts = candidates.map((candidate) => ({ id: candidate.product_id, sku: candidate.sku, name: candidate.name }));
+  const choices = [...candidateProducts, ...catalog.map((product) => ({ id: product.id, sku: product.sku, name: product.name }))]
+    .filter((product, index, products) => products.findIndex((candidate) => candidate.id === product.id) === index);
+  const suggested = candidates.find((candidate) => candidate.product_id === reconciliation?.suggested_product_id) || candidates[0];
+  function selectProduct(productId: string) {
+    const selected = choices.find((product) => product.id === productId);
+    onChange({
+      content_product_id: productId || null,
+      sku: selected?.sku || line.sku,
+      remember_link: Boolean(productId),
+    });
+  }
   return <article className={!line.include ? "excluded" : ""}>
     <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Línea {line.source_index}{line.source_row_label ? ` · ref. ${line.source_row_label}` : ""}{line.source_page ? ` · pág. ${line.source_page}` : ""}</span></label><ConfidenceBadge value={line.confidence} /></header>
+    {reconciliation ? <div className={`foreign-trade-product-match ${reconciliation.status}`}>
+      <div><strong>{productMatchStatusLabel(reconciliation.status)}</strong><span>{reconciliation.confidence === null ? "Sin puntaje" : `${Math.round(reconciliation.confidence * 100)}% de coincidencia`}</span></div>
+      {suggested ? <p><strong>Sugerencia:</strong> {suggested.sku ? `${suggested.sku} · ` : ""}{suggested.name}</p> : <p>No se encontró una coincidencia suficientemente segura.</p>}
+      {reconciliation.match_reasons.filter(Boolean).map((reason) => <span className="foreign-trade-match-reason" key={reason}>{reason}</span>)}
+      {suggested && !line.content_product_id ? <button className="ghost-button" type="button" onClick={() => selectProduct(suggested.product_id)}><Link2 size={14} /> Usar sugerencia</button> : null}
+      {line.content_product_id ? <button className="ghost-button" type="button" onClick={() => onChange({ content_product_id: null, remember_link: false })}><X size={14} /> Dejar pendiente</button> : null}
+      {suggested?.mapping_id ? <button className="ghost-button danger" type="button" onClick={() => void onForgetMapping(suggested.mapping_id!)}><Trash2 size={14} /> Olvidar equivalencia aprendida</button> : null}
+    </div> : null}
     <div className="foreign-trade-form-grid">
       <label className="wide-field"><span>Producto</span><input value={line.product_name} onChange={(event) => onChange({ product_name: event.target.value })} /></label>
-      <label className="wide-field"><span>Vincular catálogo CRM</span><select value={line.content_product_id || ""} onChange={(event) => { const selected = catalog.find((product) => product.id === event.target.value); onChange({ content_product_id: event.target.value || null, sku: selected?.sku || line.sku, product_name: selected?.name || line.product_name }); }}><option value="">Producto temporal / coincidencia automática por SKU</option>{catalog.map((product) => <option key={product.id} value={product.id}>{product.sku ? `${product.sku} · ` : ""}{product.name}</option>)}</select></label>
+      <label className="wide-field"><span>Producto interno vinculado</span><select value={line.content_product_id || ""} onChange={(event) => selectProduct(event.target.value)}><option value="">Sin vincular · requiere revisión</option>{choices.map((product) => <option key={product.id} value={product.id}>{product.sku ? `${product.sku} · ` : ""}{product.name}</option>)}</select></label>
+      <ReviewLineField label="Código proveedor" value={line.supplier_product_code} onChange={(value) => onChange({ supplier_product_code: value })} />
       <ReviewLineField label="SKU proveedor" value={line.supplier_sku} onChange={(value) => onChange({ supplier_sku: value })} />
+      <ReviewLineField label="Referencia proveedor" value={line.supplier_reference} onChange={(value) => onChange({ supplier_reference: value })} />
       <ReviewLineField label="SKU CRM" value={line.sku} onChange={(value) => onChange({ sku: value })} />
       <ReviewLineField label="Modelo" value={line.model} onChange={(value) => onChange({ model: value })} />
+      <ReviewLineField label="Marca" value={line.brand} onChange={(value) => onChange({ brand: value })} />
       <ReviewLineNumber label="Cantidad" value={line.quantity} onChange={(value) => onChange({ quantity: value })} />
       <ReviewLineNumber label="Unidades por caja" value={line.quantity_per_box} onChange={(value) => onChange({ quantity_per_box: value })} />
       <ReviewLineNumber label="Cajas" value={line.box_count} onChange={(value) => onChange({ box_count: value })} />
@@ -1074,12 +1156,25 @@ function ReviewLineCard({ line, catalog, onChange }: { line: ForeignTradeExtract
       <ReviewLineNumber label="Peso bruto kg" value={line.gross_weight_kg} onChange={(value) => onChange({ gross_weight_kg: value })} />
       <ReviewLineField label="HS Code" value={line.hs_code} onChange={(value) => onChange({ hs_code: value })} />
       <ReviewLineField label="País de origen" value={line.country_of_origin} onChange={(value) => onChange({ country_of_origin: value?.toUpperCase() || null })} />
-      <label className="wide-field"><span>Descripción</span><textarea value={line.description || ""} onChange={(event) => onChange({ description: event.target.value || null })} /></label>
-      {line.content_product_id ? <label className="foreign-trade-checkbox-field wide-field"><input type="checkbox" checked={line.remember_link} onChange={(event) => onChange({ remember_link: event.target.checked })} /><span>Recordar la relación con este proveedor</span></label> : null}
+      <label className="wide-field"><span>Descripción original</span><textarea value={line.description_original || line.description || ""} onChange={(event) => onChange({ description_original: event.target.value || null, description: event.target.value || null })} /></label>
+      <label className="wide-field"><span>Traducción para conciliación</span><textarea value={line.description_translated || ""} onChange={(event) => onChange({ description_translated: event.target.value || null })} /></label>
+      {(line.technical_attributes || []).length ? <div className="foreign-trade-technical-attributes wide-field"><span>Atributos técnicos detectados</span><div>{(line.technical_attributes || []).map((attribute) => <small key={attribute}>{attribute}</small>)}</div></div> : null}
+      {line.content_product_id ? <label className="foreign-trade-checkbox-field wide-field"><input type="checkbox" checked={line.remember_link} onChange={(event) => onChange({ remember_link: event.target.checked })} /><span>Confirmar permanentemente para este proveedor</span></label> : null}
     </div>
     {line.recalculated_cbm_total !== null ? <p className="foreign-trade-recalculation">CBM recalculado: <strong>{formatNumber(line.recalculated_cbm_total)} m³</strong>{line.cbm_total !== null && line.cbm_total !== line.recalculated_cbm_total ? " · revisa la diferencia" : ""}</p> : null}
     {line.warnings.length ? <div className="foreign-trade-line-warnings">{line.warnings.map((warning) => <span key={warning}><AlertTriangle size={13} /> {warning}</span>)}</div> : null}
   </article>;
+}
+
+function productMatchStatusLabel(status: ForeignTradeProductReconciliationLine["status"]) {
+  return ({
+    auto_matched: "Coincidencia automática segura",
+    suggested: "Coincidencia sugerida",
+    review: "Revisión necesaria",
+    unmatched: "Sin coincidencia",
+    confirmed: "Equivalencia confirmada",
+    rejected: "Sugerencia rechazada",
+  })[status];
 }
 
 function ReviewField({ label, value, onChange, type = "text", maxLength }: { label: string; value: string | number | null; onChange: (value: string) => void; type?: string; maxLength?: number }) { return <label><span>{label}</span><input type={type} maxLength={maxLength} value={value ?? ""} onChange={(event) => onChange(event.target.value)} /></label>; }
