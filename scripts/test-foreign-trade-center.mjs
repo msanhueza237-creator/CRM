@@ -26,6 +26,7 @@ import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trad
 import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
 import { normalizeForeignTradeAgencySettlementReview } from "../src/modules/foreign-trade/foreignTradeAgencySettlementReview.ts";
 import { normalizeForeignTradeFreightDocumentReview } from "../src/modules/foreign-trade/foreignTradeFreightDocumentReview.ts";
+import { hydrateActualAmountsFromCosts } from "../src/modules/foreign-trade/foreignTradeReconciliationHydration.ts";
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -61,6 +62,9 @@ await db.exec(`
       nullif(current_setting('app.test_role', true), ''),
       'administrador'
     )::public.app_role
+  $$;
+  create or replace function auth.role() returns text language sql stable as $$
+    select coalesce(nullif(current_setting('app.test_auth_role', true), ''), 'authenticated')
   $$;
   create or replace function public.set_updated_at() returns trigger language plpgsql as $$
   begin
@@ -290,6 +294,59 @@ const phase10Migration = await readFile(
 );
 await db.exec(phase10Migration);
 await db.exec(phase10Migration);
+
+const phase11Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase11_intelligent_normalization.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase11Migration);
+await db.exec(phase11Migration);
+
+const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
+  id: "00000000-0000-4000-8000-000000000101",
+  applied_cost_line_id: "00000000-0000-4000-8000-000000000102",
+  actual_net_clp: 0,
+  actual_vat_clp: 0,
+  actual_total_clp: 0,
+  actual_amount_original: 0,
+  actual_currency: "CLP",
+  actual_exchange_rate_clp: 1,
+}, [{
+  id: "00000000-0000-4000-8000-000000000102",
+  amount_original: 329.09,
+  currency: "USD",
+  exchange_rate_clp: 970,
+  amount_clp: 319217.3,
+  metadata: {
+    amount_basis: "net",
+    vat_amount_clp: 0,
+    gross_amount_clp: 319217.3,
+    source_original_amount: 329.09,
+    source_currency: "USD",
+    source_exchange_rate_clp: 970,
+  },
+}]);
+assert.deepEqual(hydratedInvoiceAmounts, {
+  netClp: 319217.3,
+  vatClp: 0,
+  totalClp: 319217.3,
+  amountOriginal: 329.09,
+  currency: "USD",
+  exchangeRateClp: 970,
+  sourceCostLineId: "00000000-0000-4000-8000-000000000102",
+});
+
+const preservedInvoiceAmounts = hydrateActualAmountsFromCosts({
+  id: "00000000-0000-4000-8000-000000000103",
+  applied_cost_line_id: "00000000-0000-4000-8000-000000000102",
+  actual_net_clp: 100,
+  actual_vat_clp: 19,
+  actual_total_clp: 119,
+  actual_amount_original: 119,
+  actual_currency: "CLP",
+  actual_exchange_rate_clp: 1,
+}, []);
+assert.equal(preservedInvoiceAmounts.totalClp, 119, "los valores explícitos nunca deben reemplazarse con una inferencia");
 
 const freightExtraction = prepareFreightDocumentExtraction({
   general: {
@@ -1577,5 +1634,110 @@ await db.query("delete from public.import_shipments where supplier_id in ($1,$2)
 await db.query("delete from public.supplier_products where supplier_id in ($1,$2)", [matchSupplierA, matchSupplierB]);
 await db.query("delete from public.suppliers where id in ($1,$2)", [matchSupplierA, matchSupplierB]);
 await db.query("delete from public.content_products where id in ($1,$2,$3,$4)", [exactProductId, voltage110ProductId, voltage220ProductId, vacuumProductId]);
+
+const lifecycleOperation = await db.query(
+  "select public.create_foreign_trade_operation($1::jsonb) as id",
+  [JSON.stringify({
+    title: "Operacion eliminable con documentos",
+    operation_type: "shipment",
+    status: "quotation",
+    exchange_rate_clp: "980",
+    exchange_rate_source: "manual",
+  })],
+);
+const lifecycleOperationId = lifecycleOperation.rows[0].id;
+const lifecycleReference = (await db.query(
+  "select reference from public.import_shipments where id=$1",
+  [lifecycleOperationId],
+)).rows[0].reference;
+const confirmedLifecycleDocument = await db.query(
+  "select public.register_foreign_trade_document($1::jsonb) as id",
+  [JSON.stringify({
+    operation_id: lifecycleOperationId,
+    document_type: "other",
+    original_file_name: "factura-confirmada.pdf",
+    storage_path: `${lifecycleOperationId}/factura-confirmada.pdf`,
+    mime_type: "application/pdf",
+    file_size: "2048",
+    file_hash: "e".repeat(64),
+  })],
+);
+const confirmedLifecycleDocumentId = confirmedLifecycleDocument.rows[0].id;
+await db.query(
+  "update public.foreign_trade_documents set parse_status='confirmed',confirmed_at=now() where id=$1",
+  [confirmedLifecycleDocumentId],
+);
+const lifecycleLine = await db.query(
+  "select public.upsert_foreign_trade_operation_line($1::jsonb) as id",
+  [JSON.stringify({
+    operation_id: lifecycleOperationId,
+    product_name: "Producto temporal del documento",
+    temporary_product: true,
+    quantity: "2",
+    currency: "USD",
+    unit_factory_cost: "10",
+    fob_total: "20",
+    cbm_total: "0.04",
+    data_source: "document",
+  })],
+);
+await db.query(
+  "update public.foreign_trade_operation_lines set source_document_id=$1 where id=$2",
+  [confirmedLifecycleDocumentId, lifecycleLine.rows[0].id],
+);
+await db.query(
+  `insert into public.foreign_trade_cost_lines(operation_id,category,name,amount_original,currency,amount_clp,source_type,metadata)
+   values ($1,'other','Costo respaldado',1000,'CLP',1000,'real',jsonb_build_object('source_document_id',$2::text))`,
+  [lifecycleOperationId, confirmedLifecycleDocumentId],
+);
+
+const adminDeletedDocument = await db.query(
+  "select public.delete_foreign_trade_document_admin($1) as result",
+  [confirmedLifecycleDocumentId],
+);
+assert.equal(adminDeletedDocument.rows[0].result.was_confirmed, true);
+assert.equal(
+  Number((await db.query("select count(*) as count from public.foreign_trade_operation_lines where operation_id=$1", [lifecycleOperationId])).rows[0].count),
+  0,
+  "eliminar un documento confirmado debe retirar sus productos derivados",
+);
+assert.equal(
+  Number((await db.query("select count(*) as count from public.foreign_trade_cost_lines where operation_id=$1 and metadata->>'source_document_id'=$2", [lifecycleOperationId, confirmedLifecycleDocumentId])).rows[0].count),
+  0,
+  "eliminar un documento confirmado debe retirar sus costos derivados",
+);
+
+await db.query(
+  "select public.register_foreign_trade_document($1::jsonb)",
+  [JSON.stringify({
+    operation_id: lifecycleOperationId,
+    document_type: "other",
+    original_file_name: "respaldo-operacion.pdf",
+    storage_path: `${lifecycleOperationId}/respaldo-operacion.pdf`,
+    mime_type: "application/pdf",
+    file_size: "1024",
+    file_hash: "f".repeat(64),
+  })],
+);
+await assert.rejects(
+  db.query("select public.delete_foreign_trade_operation($1,$2)", [lifecycleOperationId, "REFERENCIA INCORRECTA"]),
+  /foreign_trade_operation_confirmation_mismatch/,
+  "la eliminación total exige escribir la referencia exacta",
+);
+const deletedLifecycleOperation = await db.query(
+  "select public.delete_foreign_trade_operation($1,$2) as result",
+  [lifecycleOperationId, lifecycleReference],
+);
+assert.equal(deletedLifecycleOperation.rows[0].result.reference, lifecycleReference);
+assert.equal(deletedLifecycleOperation.rows[0].result.documents.length, 1);
+assert.equal(
+  Number((await db.query("select count(*) as count from public.import_shipments where id=$1", [lifecycleOperationId])).rows[0].count),
+  0,
+);
+assert.equal(
+  Number((await db.query("select count(*) as count from public.foreign_trade_audit_log where origin='crm_admin_delete' and old_values->>'reference'=$1", [lifecycleReference])).rows[0].count),
+  1,
+  "la eliminación debe conservar una auditoría sin secretos",
+);
 
 console.log("Centro de Comercio Exterior: migracion, permisos, RPC y auditoria OK");

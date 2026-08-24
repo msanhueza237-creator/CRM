@@ -21,10 +21,11 @@ import {
   Settings2,
   ShieldCheck,
   Ship,
+  Trash2,
   UsersRound,
   X,
 } from "lucide-react";
-import { createForeignTradeOperation } from "../../lib/foreignTradeApi";
+import { createForeignTradeOperation, deleteForeignTradeOperation } from "../../lib/foreignTradeApi";
 import type {
   CreateForeignTradeOperationInput,
   ForeignTradeAuditEvent,
@@ -72,6 +73,30 @@ export function ForeignTradeCenterPage() {
     setDialogType(type);
   }
 
+  async function removeOperation(operation: ForeignTradeOperation) {
+    const confirmation = window.prompt(
+      `Esta acción eliminará la operación, sus productos, costos, conciliaciones y documentos privados.\n\nEscribe exactamente ${operation.reference} para confirmar:`,
+    );
+    if (confirmation === null) return;
+    if (confirmation.trim().toLocaleUpperCase("es") !== operation.reference.trim().toLocaleUpperCase("es")) {
+      window.alert("La referencia no coincide. No se eliminó la operación.");
+      return;
+    }
+    try {
+      const result = await deleteForeignTradeOperation(operation.id, confirmation);
+      navigate("operations");
+      await refresh();
+      const counts = result.deleted_counts || {};
+      const storageNotice = result.storage_cleanup_failed
+        ? " Algunos archivos privados quedaron pendientes de limpieza en Storage."
+        : "";
+      setNotice(`Operación ${operation.reference} eliminada con ${counts.documents || 0} documento(s), ${counts.products || 0} producto(s) y ${counts.costs || 0} costo(s) relacionados.${storageNotice}`);
+    } catch (deleteError) {
+      const message = deleteError instanceof Error ? deleteError.message : "No se pudo eliminar la operación.";
+      window.alert(humanizeOperationError(message));
+    }
+  }
+
   return (
     <section className="page-stack foreign-trade-center-page">
       <div className="page-heading foreign-trade-page-heading">
@@ -112,8 +137,8 @@ export function ForeignTradeCenterPage() {
       {!error ? (
         <>
           {activeView === "dashboard" ? <ForeignTradeOverview data={data} onNavigate={navigate} onNew={openOperation} onOpen={openOperationDetail} /> : null}
-          {activeView === "operations" && selectedOperationId ? <ForeignTradeOperationDetail operationId={selectedOperationId} statuses={data.statuses} suppliers={data.suppliers} costParameters={data.costParameters} onBack={() => navigate("operations")} onChanged={refresh} /> : null}
-          {activeView === "operations" && !selectedOperationId ? <ForeignTradeOperations data={data} onNew={openOperation} onOpen={openOperationDetail} /> : null}
+          {activeView === "operations" && selectedOperationId ? <ForeignTradeOperationDetail operationId={selectedOperationId} statuses={data.statuses} suppliers={data.suppliers} costParameters={data.costParameters} onBack={() => navigate("operations")} onDelete={removeOperation} onChanged={refresh} /> : null}
+          {activeView === "operations" && !selectedOperationId ? <ForeignTradeOperations data={data} onNew={openOperation} onOpen={openOperationDetail} onDelete={removeOperation} /> : null}
           {activeView === "suppliers" ? <ForeignTradeSuppliers suppliers={data.suppliers} onNew={() => setSupplierDialog("new")} onEdit={setSupplierDialog} /> : null}
           {activeView === "settings" ? <ForeignTradeSettings data={data} /> : null}
           {activeView === "audit" ? <ForeignTradeAudit events={data.audit} /> : null}
@@ -211,7 +236,7 @@ function ForeignTradeOverview({
   );
 }
 
-function ForeignTradeOperations({ data, onNew, onOpen }: { data: ForeignTradeCenterData; onNew: (type: ForeignTradeOperationType) => void; onOpen: (operationId: string) => void }) {
+function ForeignTradeOperations({ data, onNew, onOpen, onDelete }: { data: ForeignTradeCenterData; onNew: (type: ForeignTradeOperationType) => void; onOpen: (operationId: string) => void; onDelete: (operation: ForeignTradeOperation) => Promise<void> }) {
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
   const filtered = useMemo(() => data.operations.filter((operation) => {
@@ -234,7 +259,7 @@ function ForeignTradeOperations({ data, onNew, onOpen }: { data: ForeignTradeCen
           {filtered.map((operation) => {
             const supplier = data.suppliers.find((item) => item.id === operation.supplier_id);
             const operationStatus = data.statuses.find((item) => item.code === operation.status);
-            return <tr key={operation.id}><td><strong>{operation.title}</strong><span>{operation.reference}</span></td><td>{operationTypeLabel(operation.operation_type)}</td><td>{supplier?.name || "Sin proveedor"}</td><td><span className={`foreign-trade-status ${operationStatus?.color || "neutral"}`}>{operationStatus?.name || operation.status}</span></td><td>{formatUsd(operation.value_usd)}</td><td>{operation.exchange_rate_clp ? `$${formatDecimal(operation.exchange_rate_clp)} CLP` : "Falta configurar"}</td><td>{formatDate(operation.updated_at)}</td><td><button className="icon-button" type="button" title="Abrir ficha" onClick={() => onOpen(operation.id)}><Eye size={17} /></button></td></tr>;
+            return <tr key={operation.id}><td><strong>{operation.title}</strong><span>{operation.reference}</span></td><td>{operationTypeLabel(operation.operation_type)}</td><td>{supplier?.name || "Sin proveedor"}</td><td><span className={`foreign-trade-status ${operationStatus?.color || "neutral"}`}>{operationStatus?.name || operation.status}</span></td><td>{formatUsd(operation.value_usd)}</td><td>{operation.exchange_rate_clp ? `$${formatDecimal(operation.exchange_rate_clp)} CLP` : "Falta configurar"}</td><td>{formatDate(operation.updated_at)}</td><td><div className="foreign-trade-row-actions"><button className="icon-button" type="button" title="Abrir ficha" onClick={() => onOpen(operation.id)}><Eye size={17} /></button><button className="icon-button danger" type="button" title="Eliminar operación y datos relacionados" onClick={() => void onDelete(operation)}><Trash2 size={17} /></button></div></td></tr>;
           })}
         </tbody></table></div>
         {!filtered.length ? <EmptyState icon={<ClipboardList size={28} />} title="Sin operaciones para este filtro" detail="Crea una simulación o cambia los criterios de búsqueda." /> : null}
@@ -396,6 +421,8 @@ function humanizeOperationError(message: string) {
   if (message.includes("duplicate key")) return "La referencia ya existe. Usa otra o déjala vacía para generarla automáticamente.";
   if (message.includes("foreign_trade_forbidden")) return "Tu usuario no tiene permiso para administrar Comercio Exterior.";
   if (message.includes("foreign_trade_invalid")) return "Revisa el nombre, estado, moneda y tipo de cambio ingresados.";
+  if (message.includes("foreign_trade_operation_confirmation_mismatch")) return "La referencia escrita no coincide con la operación.";
+  if (message.includes("delete_foreign_trade_operation") || message.includes("phase11")) return "Falta ejecutar supabase/foreign_trade_center_phase11_intelligent_normalization.sql en Supabase.";
   return message;
 }
 

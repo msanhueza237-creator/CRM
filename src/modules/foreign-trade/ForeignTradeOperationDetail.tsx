@@ -30,6 +30,7 @@ import type {
   ForeignTradeCostLine,
   ForeignTradeCostParameter,
   ForeignTradeDataSource,
+  ForeignTradeOperation,
   ForeignTradeOperationLine,
   ForeignTradeOperationStatus,
   ForeignTradeSupplier,
@@ -65,6 +66,7 @@ export function ForeignTradeOperationDetail({
   suppliers,
   costParameters,
   onBack,
+  onDelete,
   onChanged,
 }: {
   operationId: string;
@@ -72,6 +74,7 @@ export function ForeignTradeOperationDetail({
   suppliers: ForeignTradeSupplier[];
   costParameters: ForeignTradeCostParameter[];
   onBack: () => void;
+  onDelete: (operation: ForeignTradeOperation) => Promise<void>;
   onChanged: () => Promise<void>;
 }) {
   const { detail, error, loading, refresh } = useForeignTradeOperation(operationId);
@@ -99,7 +102,7 @@ export function ForeignTradeOperationDetail({
       <header className="foreign-trade-detail-header">
         <button className="icon-button" type="button" title="Volver a operaciones" onClick={onBack}><ArrowLeft size={19} /></button>
         <div><span>{operation.reference}</span><h2>{operation.title}</h2><p>{supplier?.name || "Sin proveedor asignado"} · {operation.incoterm || "Incoterm pendiente"}</p></div>
-        <div><span className={`foreign-trade-status ${status?.color || "neutral"}`}>{status?.name || operation.status}</span><button className="ghost-button" type="button" disabled={loading} onClick={() => void refresh()}><RefreshCw className={loading ? "spin" : ""} size={16} /> Actualizar</button></div>
+        <div><span className={`foreign-trade-status ${status?.color || "neutral"}`}>{status?.name || operation.status}</span><button className="ghost-button" type="button" disabled={loading} onClick={() => void refresh()}><RefreshCw className={loading ? "spin" : ""} size={16} /> Actualizar</button><button className="icon-button danger" type="button" title="Eliminar operación y todos sus datos relacionados" onClick={() => void onDelete(operation)}><Trash2 size={17} /></button></div>
       </header>
 
       {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}

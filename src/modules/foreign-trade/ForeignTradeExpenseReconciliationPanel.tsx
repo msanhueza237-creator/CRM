@@ -28,6 +28,7 @@ import type {
   SaveForeignTradeExpenseReconciliationInput,
 } from "../../types/foreignTrade";
 import { calculateForeignTradeReconciliation } from "./foreignTradeReconciliationEngine";
+import { hydrateActualAmountsFromCosts } from "./foreignTradeReconciliationHydration";
 
 type DraftLine = SaveForeignTradeExpenseReconciliationInput["lines"][number];
 type Draft = Omit<SaveForeignTradeExpenseReconciliationInput, "lines"> & { lines: DraftLine[] };
@@ -88,7 +89,7 @@ export function ForeignTradeExpenseReconciliationPanel({
       const target = nextReconciliations.find((item) => item.id === targetId);
       if (target) {
         setSelectedId(target.id);
-        setDraft(draftFromReconciliation(target));
+        setDraft(draftFromReconciliation(target, costs));
       }
       setError("");
       return nextReconciliations;
@@ -98,7 +99,7 @@ export function ForeignTradeExpenseReconciliationPanel({
     } finally {
       setLoading(false);
     }
-  }, [operationId, selectedId]);
+  }, [costs, operationId, selectedId]);
 
   useEffect(() => { void load(); }, [operationId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -133,7 +134,7 @@ export function ForeignTradeExpenseReconciliationPanel({
 
   function selectReconciliation(item: ForeignTradeExpenseReconciliation) {
     setSelectedId(item.id);
-    setDraft(draftFromReconciliation(item));
+    setDraft(draftFromReconciliation(item, costs));
     setError("");
     setMessage("");
   }
@@ -231,7 +232,7 @@ export function ForeignTradeExpenseReconciliationPanel({
       if (result.applied_reconciliations > 0) {
         const targetId = result.results[result.results.length - 1]?.reconciliation_id;
         const target = next.find((item) => item.id === targetId) || next[0];
-        if (target) { setSelectedId(target.id); setDraft(draftFromReconciliation(target)); }
+        if (target) { setSelectedId(target.id); setDraft(draftFromReconciliation(target, costs)); }
         await onChanged(`Conciliación automática completada: ${result.applied_lines} costo(s) real(es) incorporados al costeo y precios recalculados.`);
       }
       if (!silent || result.processed_reconciliations > 0) {
@@ -456,7 +457,7 @@ function emptyLine(type: ForeignTradeReconciliationLineType, position: number): 
   };
 }
 
-function draftFromReconciliation(item: ForeignTradeExpenseReconciliation): Draft {
+function draftFromReconciliation(item: ForeignTradeExpenseReconciliation, costs: ForeignTradeCostLine[]): Draft {
   return {
     id: item.id,
     operation_id: item.operation_id,
@@ -477,34 +478,39 @@ function draftFromReconciliation(item: ForeignTradeExpenseReconciliation): Draft
     identity_confirmed: item.identity_confirmed,
     notes: item.notes || "",
     metadata: item.metadata || {},
-    lines: item.lines.map((line) => ({
-      id: line.id,
-      position: line.position,
-      line_type: line.line_type,
-      cost_category: line.cost_category,
-      concept: line.concept,
-      provider_name: line.provider_name || "",
-      document_number: line.document_number || "",
-      document_date: line.document_date,
-      source_page: line.source_page,
-      provision_cost_line_id: line.provision_cost_line_id,
-      provision_net_clp: String(line.provision_net_clp),
-      provision_vat_clp: String(line.provision_vat_clp),
-      provision_total_clp: String(line.provision_total_clp),
-      provision_amount_original: String(line.provision_amount_original),
-      provision_currency: line.provision_currency || "CLP",
-      provision_exchange_rate_clp: line.provision_exchange_rate_clp === null ? "" : String(line.provision_exchange_rate_clp),
-      actual_net_clp: String(line.actual_net_clp),
-      actual_vat_clp: String(line.actual_vat_clp),
-      actual_total_clp: String(line.actual_total_clp),
-      actual_amount_original: String(line.actual_amount_original),
-      actual_currency: line.actual_currency || "CLP",
-      actual_exchange_rate_clp: line.actual_exchange_rate_clp === null ? "" : String(line.actual_exchange_rate_clp),
-      recoverable_tax: line.recoverable_tax,
-      include_in_costing: line.include_in_costing,
-      notes: line.notes || "",
-      metadata: line.metadata || {},
-    })),
+    lines: item.lines.map((line) => {
+      const hydrated = hydrateActualAmountsFromCosts(line, costs);
+      return {
+        id: line.id,
+        position: line.position,
+        line_type: line.line_type,
+        cost_category: line.cost_category,
+        concept: line.concept,
+        provider_name: line.provider_name || "",
+        document_number: line.document_number || "",
+        document_date: line.document_date,
+        source_page: line.source_page,
+        provision_cost_line_id: line.provision_cost_line_id,
+        provision_net_clp: String(line.provision_net_clp),
+        provision_vat_clp: String(line.provision_vat_clp),
+        provision_total_clp: String(line.provision_total_clp),
+        provision_amount_original: String(line.provision_amount_original),
+        provision_currency: line.provision_currency || "CLP",
+        provision_exchange_rate_clp: line.provision_exchange_rate_clp === null ? "" : String(line.provision_exchange_rate_clp),
+        actual_net_clp: String(hydrated.netClp),
+        actual_vat_clp: String(hydrated.vatClp),
+        actual_total_clp: String(hydrated.totalClp),
+        actual_amount_original: String(hydrated.amountOriginal),
+        actual_currency: hydrated.currency,
+        actual_exchange_rate_clp: hydrated.exchangeRateClp === null ? "" : String(hydrated.exchangeRateClp),
+        recoverable_tax: line.recoverable_tax,
+        include_in_costing: line.include_in_costing,
+        notes: line.notes || "",
+        metadata: hydrated.sourceCostLineId
+          ? { ...(line.metadata || {}), autofilled_from_cost_line_id: hydrated.sourceCostLineId }
+          : line.metadata || {},
+      };
+    }),
   };
 }
 

@@ -327,13 +327,18 @@ export function ForeignTradeDocumentsPanel({
   }
 
   async function removeDocument(document: ForeignTradeDocument) {
-    if (!window.confirm(`¿Eliminar definitivamente ${document.original_file_name}? Esta acción no se puede deshacer.`)) return;
+    const confirmedWarning = document.parse_status === "confirmed"
+      ? " También se retirarán los productos, costos y valores conciliados que provengan exclusivamente de este documento."
+      : "";
+    if (!window.confirm(`¿Eliminar definitivamente ${document.original_file_name}?${confirmedWarning} Esta acción no se puede deshacer.`)) return;
     extractionControllers.current.get(document.id)?.abort();
     setBusyId(`delete:${document.id}`); setError(""); setMessage("");
     try {
-      await deleteForeignTradeDocument(document.id);
+      await deleteForeignTradeDocument(document.id, document.parse_status === "confirmed");
       await load();
-      setMessage("Documento eliminado junto con su archivo privado.");
+      await onChanged(document.parse_status === "confirmed"
+        ? "Documento confirmado eliminado y datos derivados retirados para recalcular la operación."
+        : "Documento eliminado junto con su archivo privado.");
     } catch (deleteError) {
       await load();
       setError(humanizeDocumentError(deleteError));
@@ -342,7 +347,10 @@ export function ForeignTradeDocumentsPanel({
 
   async function replaceDocument(document: ForeignTradeDocument, replacement: File | null) {
     if (!replacement) return;
-    if (!window.confirm(`¿Reemplazar ${document.original_file_name} por ${replacement.name}? El original anterior se eliminará cuando el nuevo quede guardado.`)) return;
+    const confirmedWarning = document.parse_status === "confirmed"
+      ? " Los datos derivados del original anterior se retirarán y el archivo nuevo deberá revisarse nuevamente."
+      : "";
+    if (!window.confirm(`¿Reemplazar ${document.original_file_name} por ${replacement.name}?${confirmedWarning} El original anterior se eliminará cuando el nuevo quede guardado.`)) return;
     extractionControllers.current.get(document.id)?.abort();
     setBusyId(`replace:${document.id}`); setError(""); setMessage("Guardando el archivo de reemplazo...");
     let replacementId = "";
@@ -356,7 +364,7 @@ export function ForeignTradeDocumentsPanel({
         documentType: document.document_type,
         file: replacement,
       });
-      await deleteForeignTradeDocument(document.id);
+      await deleteForeignTradeDocument(document.id, document.parse_status === "confirmed");
       await load();
       if (extractableDocumentTypes.has(document.document_type)) {
         setMessage("Archivo reemplazado. Analizando el nuevo original...");
@@ -440,14 +448,14 @@ export function ForeignTradeDocumentsPanel({
               <DocumentStatus document={isExtracting ? { ...document, parse_status: "extracting" } : document} />
               <div className="foreign-trade-row-actions">
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
-                {document.parse_status !== "confirmed" ? <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title="Cambiar el archivo conservando su clasificación"><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label> : null}
+                <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title={document.parse_status === "confirmed" ? "Cambiar el original y retirar sus datos derivados" : "Cambiar el archivo conservando su clasificación"}><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label>
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
                 {document.parse_status === "confirmed" && productExtractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Link2 size={16} /> Conciliar productos</button> : null}
                 {!isExtracting && document.parse_status === "uploaded" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document, true)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <ScanText size={16} />} Analizar</button> : null}
                 {!isExtracting && document.parse_status === "review_required" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document, true)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Regenerar</button> : null}
                 {isExtracting ? <button className="ghost-button danger" type="button" disabled={cancelling} onClick={() => void stopExtraction(document)}>{cancelling ? <LoaderCircle className="spin" size={16} /> : <CircleStop size={16} />} Detener</button> : null}
                 {!isExtracting && document.parse_status === "failed" && extractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" disabled={busyId === document.id} onClick={() => void retry(document)}>{busyId === document.id ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />} Reintentar</button> : null}
-                {document.parse_status !== "confirmed" ? <button className="icon-button danger" type="button" title="Eliminar documento" disabled={deleting || replacing} onClick={() => void removeDocument(document)}>{deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}</button> : null}
+                <button className="icon-button danger" type="button" title={document.parse_status === "confirmed" ? "Eliminar documento y retirar datos derivados" : "Eliminar documento"} disabled={deleting || replacing} onClick={() => void removeDocument(document)}>{deleting ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />}</button>
               </div>
             </article>;
           })}

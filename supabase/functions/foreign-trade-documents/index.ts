@@ -104,6 +104,20 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
       openAiResult.model,
       requestId,
     );
+    await rpc(rest, "record_foreign_trade_document_processing_version", {
+      p_document_id: documentId,
+      p_payload: prepared.extraction,
+      p_confidence: prepared.confidence,
+      p_warnings: prepared.warnings,
+      p_model: openAiResult.model,
+      p_request_id: openAiResult.requestId || requestId,
+    }).catch((versionError) => {
+      console.warn("[foreign-trade-documents] processing version was not recorded", {
+        requestId,
+        documentId,
+        error: versionError instanceof Error ? versionError.message : String(versionError),
+      });
+    });
     console.info("[foreign-trade-documents] extraction ready", {
       requestId,
       documentId,

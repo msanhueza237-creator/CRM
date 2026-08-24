@@ -446,11 +446,14 @@ export async function cancelForeignTradeDocumentExtraction(documentId: string) {
   if (error) throw error;
 }
 
-export async function deleteForeignTradeDocument(documentId: string) {
+export async function deleteForeignTradeDocument(documentId: string, includeConfirmed = false) {
   requireSupabase();
-  const { data, error } = await supabase!.rpc("delete_foreign_trade_document", {
+  const { data, error } = await supabase!.rpc(
+    includeConfirmed ? "delete_foreign_trade_document_admin" : "delete_foreign_trade_document",
+    {
     p_document_id: documentId,
-  });
+    },
+  );
   if (error) throw error;
   const deleted = data as { storage_bucket?: string; storage_path?: string } | null;
   if (!deleted?.storage_bucket || !deleted.storage_path) return;
@@ -460,6 +463,38 @@ export async function deleteForeignTradeDocument(documentId: string) {
   if (storageError) {
     throw new Error("El documento se eliminó del CRM, pero no se pudo limpiar el archivo privado de Storage.");
   }
+}
+
+export async function deleteForeignTradeOperation(operationId: string, confirmationReference: string) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("delete_foreign_trade_operation", {
+    p_operation_id: operationId,
+    p_confirmation_reference: confirmationReference,
+  });
+  if (error) throw error;
+
+  const result = data as {
+    operation_id: string;
+    reference: string;
+    documents?: Array<{ storage_bucket?: string; storage_path?: string }>;
+    deleted_counts?: Record<string, number>;
+    storage_cleanup_failed?: boolean;
+  };
+  const documentsByBucket = new Map<string, string[]>();
+  for (const document of result.documents || []) {
+    if (!document.storage_bucket || !document.storage_path) continue;
+    const paths = documentsByBucket.get(document.storage_bucket) || [];
+    paths.push(document.storage_path);
+    documentsByBucket.set(document.storage_bucket, paths);
+  }
+
+  for (const [bucket, paths] of documentsByBucket) {
+    const { error: storageError } = await supabase!.storage.from(bucket).remove(paths);
+    if (storageError) {
+      result.storage_cleanup_failed = true;
+    }
+  }
+  return result;
 }
 
 export async function confirmForeignTradeDocument(documentId: string, review: ForeignTradeDocumentExtraction) {
