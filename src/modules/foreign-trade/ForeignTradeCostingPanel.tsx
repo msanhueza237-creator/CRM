@@ -184,17 +184,17 @@ export function ForeignTradeCostingPanel({
               <thead><tr><th>Producto</th><th>Cantidad</th><th>CIF asignado</th><th>Derecho</th><th>IVA import.</th><th>Gastos</th><th>Costo unitario</th><th>Venta proyectada</th><th>Objetivo</th><th>Precio neto</th><th>Margen</th></tr></thead>
               <tbody>{result.lines.map((line) => (
                 <tr key={line.lineId}>
-                  <td><strong>{line.productName}</strong><small>{line.sku || "Sin SKU"}</small></td>
-                  <td>{formatNumber(line.quantity)}</td>
-                  <td>{formatClp(line.cifClp)}</td>
-                  <td><div className="foreign-trade-table-percent"><input aria-label={`Derecho de ${line.productName}`} inputMode="decimal" value={form.lineDutyPercent[line.lineId] ?? form.generalDutyPercent} onChange={(event) => setForm({ ...form, lineDutyPercent: { ...form.lineDutyPercent, [line.lineId]: event.target.value } })} /><b>%</b></div><small>{formatClp(line.dutyClp)}</small></td>
-                  <td>{formatClp(line.importVatClp)}<small>{form.importVatRecoverable ? "Crédito" : "Costo"}</small></td>
-                  <td>{formatClp(line.allocatedExpensesClp)}</td>
-                  <td><strong>{formatClp(line.landedUnitClp)}</strong></td>
-                  <td><strong>{formatClp(line.finalSaleUnitClp)}</strong><small>Precio final con IVA</small></td>
-                  <td><div className="foreign-trade-table-percent"><input aria-label={`Objetivo de ${line.productName}`} inputMode="decimal" value={form.lineTargetPercent[line.lineId] ?? form.targetPercent} onChange={(event) => setForm({ ...form, lineTargetPercent: { ...form.lineTargetPercent, [line.lineId]: event.target.value } })} /><b>%</b></div></td>
-                  <td>{formatClp(line.netSaleUnitClp)}<small>Utilidad {formatClp(line.profitUnitClp)}</small></td>
-                  <td>{formatPercent(line.marginPercent)}<small>Markup {formatPercent(line.markupPercent)}</small></td>
+                  <td data-label="Producto"><strong>{line.productName}</strong><small>{line.sku || "Sin SKU"}</small></td>
+                  <td data-label="Cantidad">{formatNumber(line.quantity)}</td>
+                  <td data-label="CIF asignado">{formatClp(line.cifClp)}</td>
+                  <td data-label="Derecho"><div className="foreign-trade-table-percent"><input aria-label={`Derecho de ${line.productName}`} inputMode="decimal" value={form.lineDutyPercent[line.lineId] ?? form.generalDutyPercent} onChange={(event) => setForm({ ...form, lineDutyPercent: { ...form.lineDutyPercent, [line.lineId]: event.target.value } })} /><b>%</b></div><small>{formatClp(line.dutyClp)}</small></td>
+                  <td data-label="IVA importación">{formatClp(line.importVatClp)}<small>{form.importVatRecoverable ? "Crédito" : "Costo"}</small></td>
+                  <td data-label="Gastos">{formatClp(line.allocatedExpensesClp)}</td>
+                  <td data-label="Costo unitario"><strong>{formatClp(line.landedUnitClp)}</strong></td>
+                  <td data-label="Venta proyectada"><strong>{formatClp(line.finalSaleUnitClp)}</strong><small>Precio final con IVA</small></td>
+                  <td data-label="Objetivo"><div className="foreign-trade-table-percent"><input aria-label={`Objetivo de ${line.productName}`} inputMode="decimal" value={form.lineTargetPercent[line.lineId] ?? form.targetPercent} onChange={(event) => setForm({ ...form, lineTargetPercent: { ...form.lineTargetPercent, [line.lineId]: event.target.value } })} /><b>%</b></div></td>
+                  <td data-label="Precio neto">{formatClp(line.netSaleUnitClp)}<small>Utilidad {formatClp(line.profitUnitClp)}</small></td>
+                  <td data-label="Margen">{formatPercent(line.marginPercent)}<small>Markup {formatPercent(line.markupPercent)}</small></td>
                 </tr>
               ))}</tbody>
             </table>

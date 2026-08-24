@@ -9551,3 +9551,590 @@ th {
   .foreign-trade-reconciliation-actions button { justify-content: center; width: 100%; }
   .foreign-trade-reconciliation-actions .primary-button { bottom: 78px; box-shadow: 0 5px 18px rgba(12,55,62,.25); position: sticky; z-index: 4; }
 }
+
+/* Comercio Exterior: experiencia móvil completa. */
+@media (max-width: 720px) {
+  .foreign-trade-center-page {
+    gap: .75rem;
+    overflow: clip;
+    padding-bottom: calc(96px + env(safe-area-inset-bottom));
+  }
+
+  .foreign-trade-center-page .panel {
+    border-radius: 7px;
+    min-width: 0;
+  }
+
+  .foreign-trade-page-heading {
+    display: grid;
+    gap: .65rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-page-heading h1 {
+    font-size: 1.45rem;
+    line-height: 1.1;
+    overflow-wrap: anywhere;
+  }
+
+  .foreign-trade-heading-actions {
+    align-items: center;
+    display: grid;
+    gap: .5rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    justify-items: stretch;
+  }
+
+  .foreign-trade-heading-actions .foreign-trade-private-badge {
+    justify-content: center;
+  }
+
+  .foreign-trade-heading-actions .ghost-button,
+  .foreign-trade-center-page .primary-button,
+  .foreign-trade-center-page .ghost-button,
+  .foreign-trade-center-page .icon-button {
+    min-height: 44px;
+  }
+
+  .foreign-trade-security-band {
+    gap: .55rem;
+    padding: .7rem .75rem;
+  }
+
+  .foreign-trade-security-band span {
+    overflow-wrap: anywhere;
+  }
+
+  .foreign-trade-center-page > .content-module-tabs {
+    display: flex;
+    gap: .35rem;
+    margin-inline: -.15rem;
+    max-width: calc(100vw - 24px);
+    overflow-x: auto;
+    padding: .25rem .15rem .45rem;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+
+  .foreign-trade-center-page > .content-module-tabs::-webkit-scrollbar,
+  .foreign-trade-detail-tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .foreign-trade-center-page > .content-module-tabs button {
+    flex: 0 0 auto;
+    min-height: 44px;
+    scroll-snap-align: start;
+    white-space: nowrap;
+  }
+
+  .foreign-trade-command-band {
+    gap: 1rem;
+  }
+
+  .foreign-trade-command-band h2 {
+    font-size: 1.18rem;
+  }
+
+  .foreign-trade-command-band > div:last-child {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-quick-actions button {
+    align-items: center;
+    line-height: 1.25;
+    min-height: 58px;
+    overflow-wrap: anywhere;
+  }
+
+  .foreign-trade-kpi-grid,
+  .foreign-trade-detail-kpis {
+    gap: .55rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .foreign-trade-kpi-grid > article {
+    gap: .38rem;
+    min-height: 108px;
+    padding: .68rem;
+  }
+
+  .foreign-trade-kpi-grid > article > strong {
+    font-size: 1rem;
+  }
+
+  .foreign-trade-operation-list > div:not(.empty-state) {
+    align-items: stretch;
+    display: grid;
+    gap: .55rem;
+  }
+
+  .foreign-trade-operation-list > div > div:last-child {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .foreign-trade-operation-list strong {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .foreign-trade-toolbar,
+  .foreign-trade-section-heading {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-section-heading .primary-button,
+  .foreign-trade-toolbar .primary-button,
+  .foreign-trade-detail-panel-heading > .primary-button {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .foreign-trade-settings-list > div {
+    gap: .35rem;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-settings-list small {
+    text-align: left;
+  }
+
+  .foreign-trade-audit-list > article {
+    gap: .55rem;
+  }
+
+  .foreign-trade-audit-list pre {
+    font-size: .58rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .foreign-trade-detail-header {
+    align-items: start;
+    gap: .65rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: .75rem;
+  }
+
+  .foreign-trade-detail-header h2 {
+    font-size: 1rem;
+    line-height: 1.25;
+  }
+
+  .foreign-trade-detail-header > div:last-child {
+    display: grid;
+    gap: .45rem;
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) auto;
+    width: 100%;
+  }
+
+  .foreign-trade-detail-header > div:last-child .foreign-trade-status {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .foreign-trade-detail-header > div:last-child .ghost-button {
+    justify-content: center;
+    width: 100%;
+  }
+
+  .foreign-trade-detail-tabs {
+    gap: .85rem;
+    margin-inline: -.15rem;
+    max-width: calc(100vw - 24px);
+    overflow-x: auto;
+    padding-inline: .15rem;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+  }
+
+  .foreign-trade-detail-tabs button {
+    min-height: 46px;
+    scroll-snap-align: start;
+  }
+
+  .foreign-trade-detail-columns,
+  .foreign-trade-facts-panel dl {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-detail-panel-heading,
+  .foreign-trade-reconciliation-header .foreign-trade-detail-panel-heading {
+    align-items: stretch;
+    display: grid;
+    gap: .75rem;
+    grid-template-columns: minmax(0, 1fr);
+    padding: .85rem .85rem 0;
+  }
+
+  .foreign-trade-detail-panel-heading h2 {
+    font-size: 1.05rem;
+  }
+
+  .foreign-trade-detail-panel-heading > div:last-child {
+    display: grid;
+    gap: .45rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .foreign-trade-detail-panel-heading > div:first-child {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-detail-panel-heading > div:last-child .foreign-trade-private-badge {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .foreign-trade-money-input,
+  .foreign-trade-catalog-picker > div:first-child,
+  .foreign-trade-mode-switch {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-catalog-picker > div:last-child {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-operation-dialog {
+    border-radius: 8px 8px 0 0;
+    max-height: 94dvh;
+    padding: .85rem;
+  }
+
+  .foreign-trade-dialog-heading {
+    background: #fff;
+    position: sticky;
+    top: -.85rem;
+    z-index: 4;
+  }
+
+  .foreign-trade-dialog-heading h2 {
+    font-size: 1.05rem;
+  }
+
+  .foreign-trade-dialog-actions {
+    background: #fff;
+    bottom: -.85rem;
+    padding-block: .55rem .15rem;
+    position: sticky;
+    z-index: 4;
+  }
+
+  .foreign-trade-documents-layout {
+    gap: .75rem;
+  }
+
+  .foreign-trade-document-upload,
+  .foreign-trade-document-list {
+    gap: .75rem;
+    padding: 0 .85rem .85rem;
+  }
+
+  .foreign-trade-document-upload .foreign-trade-detail-panel-heading,
+  .foreign-trade-document-list .foreign-trade-detail-panel-heading {
+    padding-top: .85rem;
+  }
+
+  .foreign-trade-document-upload .foreign-trade-detail-panel-heading .foreign-trade-private-badge {
+    justify-self: start;
+  }
+
+  .foreign-trade-dropzone {
+    min-height: 140px;
+    padding: 1rem;
+  }
+
+  .foreign-trade-document-items > article {
+    align-items: start;
+    gap: .65rem;
+    grid-template-columns: 42px minmax(0, 1fr);
+    padding: .8rem 0;
+  }
+
+  .foreign-trade-document-items .foreign-trade-document-status {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .foreign-trade-document-items .foreign-trade-row-actions {
+    display: grid;
+    gap: .45rem;
+    grid-column: 1 / -1;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-width: none;
+    width: 100%;
+  }
+
+  .foreign-trade-document-items .foreign-trade-row-actions > *,
+  .foreign-trade-document-items .foreign-trade-row-actions .ghost-button {
+    box-sizing: border-box;
+    justify-content: center;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .foreign-trade-document-type-editor {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: none;
+  }
+
+  .foreign-trade-costing-config {
+    padding: 0 .85rem .85rem;
+  }
+
+  .foreign-trade-costing-config > .foreign-trade-detail-panel-heading {
+    padding-top: .85rem;
+  }
+
+  .foreign-trade-costing-kpis {
+    gap: .55rem;
+  }
+
+  .foreign-trade-costing-kpis article {
+    min-height: 98px;
+    padding: .65rem;
+  }
+
+  .foreign-trade-segmented button {
+    min-height: 44px;
+  }
+
+  .foreign-trade-reconciliation-list {
+    padding: .75rem;
+  }
+
+  .foreign-trade-reconciliation-main,
+  .foreign-trade-reconciliation-table-panel {
+    min-width: 0;
+  }
+
+  .foreign-trade-reconciliation-kpis {
+    gap: .55rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .foreign-trade-reconciliation-kpis article {
+    min-height: 100px;
+    padding: .65rem;
+  }
+
+  .foreign-trade-reconciliation-source,
+  .foreign-trade-source-money-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-reconciliation-actions {
+    margin: 0 .75rem;
+    padding-bottom: .75rem;
+  }
+
+  .foreign-trade-review-lines > article {
+    padding: .75rem;
+  }
+
+  .foreign-trade-product-match {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-technical-attributes > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-center-page .table-scroll {
+    margin: 0;
+    overflow: visible;
+    width: 100%;
+  }
+
+  .foreign-trade-operations-table,
+  .foreign-trade-detail-table,
+  .foreign-trade-costing-table,
+  .foreign-trade-reconciliation-table,
+  .foreign-trade-operations-table tbody,
+  .foreign-trade-detail-table tbody,
+  .foreign-trade-costing-table tbody,
+  .foreign-trade-reconciliation-table tbody {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .foreign-trade-table-panel table.foreign-trade-operations-table {
+    min-width: 0;
+  }
+
+  .foreign-trade-operations-table thead,
+  .foreign-trade-detail-table thead,
+  .foreign-trade-costing-table thead,
+  .foreign-trade-reconciliation-table thead {
+    border: 0;
+    clip: rect(0 0 0 0);
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    padding: 0;
+    position: absolute;
+    white-space: nowrap;
+    width: 1px;
+  }
+
+  .foreign-trade-operations-table tr,
+  .foreign-trade-detail-table tr,
+  .foreign-trade-costing-table tr,
+  .foreign-trade-reconciliation-table tr {
+    background: #fff;
+    border: 1px solid #dce6e8;
+    border-radius: 7px;
+    box-shadow: 0 1px 2px rgba(16, 55, 62, .04);
+    display: block;
+    margin: .7rem;
+    overflow: hidden;
+  }
+
+  .foreign-trade-operations-table td,
+  .foreign-trade-detail-table td,
+  .foreign-trade-costing-table td,
+  .foreign-trade-reconciliation-table td {
+    align-items: center;
+    background: #fff;
+    border: 0;
+    border-top: 1px solid #edf1f2;
+    box-sizing: border-box;
+    display: grid;
+    gap: .65rem;
+    grid-template-columns: minmax(100px, .42fr) minmax(0, 1fr);
+    max-width: none;
+    min-height: 44px;
+    min-width: 0;
+    padding: .62rem .7rem;
+    text-align: right;
+    width: 100%;
+  }
+
+  .foreign-trade-operations-table td::before,
+  .foreign-trade-detail-table td::before,
+  .foreign-trade-costing-table td::before,
+  .foreign-trade-reconciliation-table td::before {
+    color: #6b7f84;
+    content: attr(data-label);
+    font-size: .59rem;
+    font-weight: 900;
+    line-height: 1.25;
+    text-align: left;
+    text-transform: uppercase;
+  }
+
+  .foreign-trade-operations-table td:first-child,
+  .foreign-trade-detail-table td[data-label="Producto"],
+  .foreign-trade-detail-table td[data-label="Concepto"],
+  .foreign-trade-costing-table td[data-label="Producto"],
+  .foreign-trade-reconciliation-table td[data-label="Concepto y respaldo"],
+  .foreign-trade-reconciliation-table td.foreign-trade-source-money-cell {
+    display: block;
+    text-align: left;
+  }
+
+  .foreign-trade-operations-table td:first-child::before,
+  .foreign-trade-detail-table td[data-label="Producto"]::before,
+  .foreign-trade-detail-table td[data-label="Concepto"]::before,
+  .foreign-trade-costing-table td[data-label="Producto"]::before,
+  .foreign-trade-reconciliation-table td[data-label="Concepto y respaldo"]::before,
+  .foreign-trade-reconciliation-table td.foreign-trade-source-money-cell::before {
+    display: block;
+    margin-bottom: .45rem;
+  }
+
+  .foreign-trade-operations-table td:first-child strong,
+  .foreign-trade-operations-table td:first-child span {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .foreign-trade-operations-table td > .foreign-trade-status {
+    justify-self: end;
+  }
+
+  .foreign-trade-detail-table td > strong,
+  .foreign-trade-detail-table td > small,
+  .foreign-trade-costing-table td > strong,
+  .foreign-trade-costing-table td > small {
+    justify-self: end;
+  }
+
+  .foreign-trade-product-cell {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .foreign-trade-product-cell strong {
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .foreign-trade-table-percent {
+    justify-self: end;
+  }
+
+  .foreign-trade-reconciliation-table input,
+  .foreign-trade-reconciliation-table select {
+    font-size: .72rem;
+    min-height: 42px;
+  }
+
+  .foreign-trade-reconciliation-table tr.tax td {
+    background: #fffbf1;
+  }
+
+  .foreign-trade-reconciliation-table td.positive,
+  .foreign-trade-reconciliation-table td.negative,
+  .foreign-trade-reconciliation-table td[data-label="Costeo"],
+  .foreign-trade-reconciliation-table td[data-label="Acciones"] {
+    text-align: right;
+  }
+
+  .foreign-trade-operations-table td[data-label="Acciones"] .foreign-trade-row-actions,
+  .foreign-trade-detail-table td[data-label="Acciones"] .foreign-trade-row-actions {
+    justify-self: end;
+  }
+
+  .foreign-trade-reconciliation-table td[data-label="Acciones"] .icon-button,
+  .foreign-trade-operations-table td[data-label="Acciones"] .icon-button,
+  .foreign-trade-detail-table td[data-label="Acciones"] .icon-button {
+    height: 44px;
+    width: 44px;
+  }
+}
+
+@media (max-width: 420px) {
+  .foreign-trade-heading-actions,
+  .foreign-trade-quick-actions,
+  .foreign-trade-dialog-actions,
+  .foreign-trade-document-items .foreign-trade-row-actions,
+  .foreign-trade-detail-panel-heading > div:last-child {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-heading-actions .foreign-trade-private-badge {
+    justify-content: flex-start;
+  }
+
+  .foreign-trade-kpi-grid > article,
+  .foreign-trade-costing-kpis article,
+  .foreign-trade-reconciliation-kpis article {
+    min-height: 102px;
+  }
+
+  .foreign-trade-operations-table td,
+  .foreign-trade-detail-table td,
+  .foreign-trade-costing-table td,
+  .foreign-trade-reconciliation-table td {
+    grid-template-columns: minmax(92px, .45fr) minmax(0, 1fr);
+    padding-inline: .62rem;
+  }
+}
