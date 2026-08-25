@@ -485,6 +485,7 @@ const phase15Migration = await readFile(
 assert.match(phase15Migration, /foreign_trade_is_reconciliation_summary_line/i);
 assert.match(phase15Migration, /documentary_summary_version/i);
 assert.match(phase15Migration, /documentary_refund_due_clp/i);
+assert.match(phase15Migration, /metadata->>'documentary_summary_amount_clp'/i, "las reaplicaciones deben conservar el monto informativo original");
 await db.exec(phase15Migration);
 await db.exec(phase15Migration);
 

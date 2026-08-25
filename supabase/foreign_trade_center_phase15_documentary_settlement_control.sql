@@ -23,7 +23,11 @@ begin
   if public.foreign_trade_is_reconciliation_summary_line(new.concept) then
     new.metadata := coalesce(new.metadata, '{}'::jsonb) || jsonb_build_object(
       'informational_summary', true,
-      'documentary_summary_amount_clp', coalesce(new.actual_total_clp, 0),
+      'documentary_summary_amount_clp', coalesce(
+        nullif(trim(new.metadata->>'documentary_summary_amount_clp'), '')::numeric,
+        new.actual_total_clp,
+        0
+      ),
       'excluded_from_costing', true
     );
     new.include_in_costing := false;
@@ -59,7 +63,11 @@ where c.metadata->>'reconciliation_line_id' = l.id::text
 update public.foreign_trade_expense_reconciliation_lines
 set metadata = coalesce(metadata, '{}'::jsonb) || jsonb_build_object(
       'informational_summary', true,
-      'documentary_summary_amount_clp', coalesce(actual_total_clp, 0),
+      'documentary_summary_amount_clp', coalesce(
+        nullif(trim(metadata->>'documentary_summary_amount_clp'), '')::numeric,
+        actual_total_clp,
+        0
+      ),
       'excluded_from_costing', true,
       'documentary_summary_migrated_at', now()
     ),
