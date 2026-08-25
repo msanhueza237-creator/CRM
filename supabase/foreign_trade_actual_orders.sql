@@ -25,7 +25,7 @@ create table if not exists public.foreign_trade_actual_orders (
   check (jsonb_typeof(suggested_snapshot) = 'object'),
   check (jsonb_typeof(actual_summary) = 'object'),
   check (jsonb_typeof(comparison_summary) = 'object'),
-  check (file_size is null or (file_size > 0 and file_size <= 26214400))
+  check (file_size is null or (file_size > 0 and file_size <= 52428800))
 );
 
 create index if not exists foreign_trade_actual_orders_created_idx
@@ -71,11 +71,13 @@ values (
   'foreign-trade-orders',
   'foreign-trade-orders',
   false,
-  26214400,
+  52428800,
   array[
     'application/pdf',
     'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/csv',
+    'application/csv'
   ]
 )
 on conflict (id) do update set

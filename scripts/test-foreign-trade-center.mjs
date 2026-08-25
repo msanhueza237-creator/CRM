@@ -38,8 +38,13 @@ const documentsFunctionSource = await readFile(
   new URL("../supabase/functions/foreign-trade-documents/index.ts", import.meta.url),
   "utf8",
 );
+const foreignTradeApiSource = await readFile(
+  new URL("../src/lib/foreignTradeApi.ts", import.meta.url),
+  "utf8",
+);
 assert.match(documentsPanelSource, /detectForeignTradeDocumentSection\(documentId\)/);
-assert.match(documentsPanelSource, /Guardar y detectar/);
+assert.match(documentsPanelSource, /Guardar y analizar/);
+assert.match(documentsPanelSource, /await runExtraction\(documentId\)/);
 assert.match(documentsFunctionSource, /route === "detect-section"/);
 assert.match(documentsFunctionSource, /route === "set-section"/);
 assert.match(documentsFunctionSource, /stored section reused/);
@@ -49,7 +54,14 @@ assert.match(documentsFunctionSource, /extractLineRangeSafely\(lineCommon/);
 assert.match(documentsFunctionSource, /preferredStoredDocumentScope\(document, documentType\)/);
 assert.match(documentsFunctionSource, /SECCION YA RECONOCIDA Y VALIDADA/);
 assert.match(documentsPanelSource, /cancelForeignTradeDocumentExtraction\(documentId\)/);
-assert.match(documentsPanelSource, /150_000/);
+assert.match(documentsPanelSource, /240_000/);
+assert.match(documentsFunctionSource, /OPENAI_INLINE_FILE_MAX_BYTES/);
+assert.match(documentsFunctionSource, /https:\/\/api\.openai\.com\/v1\/files/);
+assert.match(documentsFunctionSource, /file_id: input\.fileId/);
+assert.match(foreignTradeApiSource, /new Upload\(file/);
+assert.match(foreignTradeApiSource, /upload\/resumable/);
+assert.match(foreignTradeApiSource, /50 \* 1024 \* 1024/);
+assert.match(foreignTradeApiSource, /onProgress: \(bytesUploaded, bytesTotal\)/);
 assert.match(documentsPanelSource, /setForeignTradeDocumentSection\(document\.id, pageNumbers\)/);
 assert.match(documentsPanelSource, /Páginas<\/button>/);
 
@@ -326,6 +338,13 @@ const phase11Migration = await readFile(
 );
 await db.exec(phase11Migration);
 await db.exec(phase11Migration);
+
+const phase12Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase12_large_documents.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase12Migration);
+await db.exec(phase12Migration);
 
 const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
   id: "00000000-0000-4000-8000-000000000101",

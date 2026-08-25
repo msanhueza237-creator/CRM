@@ -1824,8 +1824,8 @@ function ForeignTradeDashboard({
       setActualOrderMessage("Selecciona un PDF o un archivo Excel (.xls o .xlsx).");
       return;
     }
-    if (actualOrderFile.size > 25 * 1024 * 1024) {
-      setActualOrderMessage("El archivo supera el máximo permitido de 25 MB.");
+    if (actualOrderFile.size > 50 * 1024 * 1024) {
+      setActualOrderMessage("El archivo supera el máximo permitido de 50 MB.");
       return;
     }
 
@@ -2266,7 +2266,7 @@ function ForeignTradeDashboard({
                 onChange={(event) => setActualOrderFile(event.target.files?.[0] ?? null)}
                 type="file"
               />
-              <small>{actualOrderFile ? `${actualOrderFile.name} · ${(actualOrderFile.size / 1024 / 1024).toFixed(2)} MB` : "Máximo 25 MB"}</small>
+              <small>{actualOrderFile ? `${actualOrderFile.name} · ${(actualOrderFile.size / 1024 / 1024).toFixed(2)} MB` : "Máximo 50 MB"}</small>
             </label>
             <label>
               <span>Nota del ajuste (opcional)</span>

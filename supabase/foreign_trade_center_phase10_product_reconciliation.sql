@@ -775,7 +775,7 @@ begin
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'text/csv','application/csv'
   ) then raise exception 'foreign_trade_invalid_document_mime'; end if;
-  if v_file_size is null or v_file_size <= 0 or v_file_size > 26214400 then raise exception 'foreign_trade_invalid_document_size'; end if;
+  if v_file_size is null or v_file_size <= 0 or v_file_size > 52428800 then raise exception 'foreign_trade_invalid_document_size'; end if;
   if v_storage_path = '' or position(v_operation_id::text || '/' in v_storage_path) <> 1 then raise exception 'foreign_trade_invalid_storage_path'; end if;
   if v_file_hash is not null and v_file_hash !~ '^[0-9a-f]{64}$' then raise exception 'foreign_trade_invalid_file_hash'; end if;
   if v_document_type not in (

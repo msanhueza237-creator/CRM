@@ -1,4 +1,5 @@
-import { getSupabaseFunctionUrl, isSupabaseConfigured, supabase } from "./supabase";
+import { Upload } from "tus-js-client";
+import { getSupabaseFunctionUrl, getSupabaseStorageUrl, isSupabaseConfigured, supabase } from "./supabase";
 import type {
   CreateForeignTradeOperationInput,
   ForeignTradeAuditEvent,
@@ -51,6 +52,9 @@ const emptySummary: ForeignTradeDashboardSummary = {
   open_alerts: 0,
   recent_simulations: [],
 };
+
+export const FOREIGN_TRADE_MAX_FILE_BYTES = 50 * 1024 * 1024;
+const RESUMABLE_UPLOAD_THRESHOLD_BYTES = 6 * 1024 * 1024;
 
 export const emptyForeignTradeCenterData: ForeignTradeCenterData = {
   summary: emptySummary,
@@ -376,11 +380,12 @@ export async function uploadForeignTradeDocument(input: {
   supplierId?: string | null;
   documentType: ForeignTradeDocumentType;
   file: File;
+  onUploadProgress?: (progress: number) => void;
 }) {
   requireSupabase();
   const extension = input.file.name.split(".").pop()?.toLowerCase() || "";
   if (!["pdf", "xls", "xlsx", "csv"].includes(extension)) throw new Error("Selecciona un PDF, Excel o CSV.");
-  if (input.file.size <= 0 || input.file.size > 25 * 1024 * 1024) throw new Error("El archivo debe pesar entre 1 byte y 25 MB.");
+  if (input.file.size <= 0 || input.file.size > FOREIGN_TRADE_MAX_FILE_BYTES) throw new Error("El archivo debe pesar entre 1 byte y 50 MB.");
   const mimeType = input.file.type || ({
     pdf: "application/pdf",
     xls: "application/vnd.ms-excel",
@@ -395,10 +400,7 @@ export async function uploadForeignTradeDocument(input: {
     .slice(-180);
   const storagePath = `${input.operationId}/${crypto.randomUUID()}-${cleanName}`;
   const fileHash = await sha256(input.file);
-  const { error: uploadError } = await supabase!.storage
-    .from("foreign-trade-orders")
-    .upload(storagePath, input.file, { contentType: mimeType, upsert: false });
-  if (uploadError) throw uploadError;
+  await uploadForeignTradeOriginal(storagePath, input.file, mimeType, input.onUploadProgress);
 
   try {
     const { data, error } = await supabase!.rpc("register_foreign_trade_document", {
@@ -419,6 +421,51 @@ export async function uploadForeignTradeDocument(input: {
     await supabase!.storage.from("foreign-trade-orders").remove([storagePath]);
     throw error;
   }
+}
+
+async function uploadForeignTradeOriginal(
+  storagePath: string,
+  file: File,
+  mimeType: string,
+  onProgress?: (progress: number) => void,
+) {
+  if (file.size <= RESUMABLE_UPLOAD_THRESHOLD_BYTES) {
+    const { error } = await supabase!.storage
+      .from("foreign-trade-orders")
+      .upload(storagePath, file, { contentType: mimeType, upsert: false });
+    if (error) throw error;
+    onProgress?.(1);
+    return;
+  }
+
+  const { data } = await supabase!.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+  await new Promise<void>((resolve, reject) => {
+    const upload = new Upload(file, {
+      endpoint: getSupabaseStorageUrl("upload/resumable"),
+      retryDelays: [0, 3_000, 5_000, 10_000, 20_000],
+      headers: { authorization: `Bearer ${token}` },
+      uploadDataDuringCreation: true,
+      removeFingerprintOnSuccess: true,
+      chunkSize: 6 * 1024 * 1024,
+      metadata: {
+        bucketName: "foreign-trade-orders",
+        objectName: storagePath,
+        contentType: mimeType,
+        cacheControl: "3600",
+      },
+      onProgress: (bytesUploaded, bytesTotal) => onProgress?.(bytesTotal > 0 ? bytesUploaded / bytesTotal : 0),
+      onError: (error) => reject(new Error(`No se pudo completar la carga reanudable: ${error.message}`)),
+      onSuccess: () => resolve(),
+    });
+    void upload.findPreviousUploads()
+      .then((previousUploads) => {
+        if (previousUploads.length) upload.resumeFromPreviousUpload(previousUploads[0]);
+        upload.start();
+      })
+      .catch(reject);
+  });
 }
 
 export async function extractForeignTradeDocument(documentId: string, signal?: AbortSignal) {

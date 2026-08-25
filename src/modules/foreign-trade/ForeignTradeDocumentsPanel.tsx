@@ -29,6 +29,7 @@ import {
   detectForeignTradeDocumentSection,
   downloadForeignTradeDocumentSection,
   extractForeignTradeDocument,
+  FOREIGN_TRADE_MAX_FILE_BYTES,
   getForeignTradeDocumentUrl,
   getForeignTradeDocuments,
   getForeignTradeExpenseReconciliations,
@@ -168,7 +169,7 @@ export function ForeignTradeDocumentsPanel({
     const timeout = window.setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, 150_000);
+    }, 240_000);
     extractionControllers.current.set(documentId, controller);
     setExtractingIds((current) => new Set(current).add(documentId));
     try {
@@ -178,7 +179,7 @@ export function ForeignTradeDocumentsPanel({
         await cancelForeignTradeDocumentExtraction(documentId).catch(() => undefined);
       }
       if (timedOut) {
-        throw new Error("El servidor interrumpió el análisis después de 150 segundos. El documento quedó disponible para reintentar y no permanecerá bloqueado en Analizando.");
+        throw new Error("El servidor interrumpió el análisis después de 240 segundos. El documento quedó disponible para reintentar y no permanecerá bloqueado en Analizando.");
       }
       throw extractionError;
     } finally {
@@ -217,6 +218,7 @@ export function ForeignTradeDocumentsPanel({
             supplierId,
             documentType: pending.documentType,
             file: pending.file,
+            onUploadProgress: (progress) => setMessage(`Subiendo documento ${index + 1} de ${pendingFiles.length}: ${Math.round(progress * 100)}% · ${pending.file.name}`),
           });
           activeUploadDocumentId.current = documentId;
           uploadedKeys.add(pending.key);
@@ -238,8 +240,12 @@ export function ForeignTradeDocumentsPanel({
         }
         if (isSectionAwarePdf(pending.file.name, pending.file.type, pending.documentType)) {
           try {
+            setMessage(`Documento ${index + 1} de ${pendingFiles.length}: aislando ${documentTypeLabel(pending.documentType)}...`);
             await detectForeignTradeDocumentSection(documentId);
             sectionsDetected += 1;
+            setMessage(`Documento ${index + 1} de ${pendingFiles.length}: sección aislada. Analizando sus datos y productos...`);
+            await runExtraction(documentId);
+            extracted += 1;
           } catch (detectionError) {
             extractionErrors.push(`${pending.file.name}: ${humanizeDocumentError(detectionError)}`);
           } finally {
@@ -261,15 +267,13 @@ export function ForeignTradeDocumentsPanel({
       await load();
       const summary = [
         uploadedKeys.size ? `${uploadedKeys.size} original(es) guardado(s)` : "",
-        sectionsDetected ? `${sectionsDetected} sección(es) lista(s) para descargar` : "",
+        sectionsDetected ? `${sectionsDetected} sección(es) aislada(s)` : "",
         extracted ? `${extracted} extracción(es) lista(s) para revisar` : "",
         originalsOnly ? `${originalsOnly} documento(s) conservado(s) como respaldo` : "",
       ].filter(Boolean).join(" · ");
       setMessage(stopBatchRequested.current
         ? `${summary || "Carga detenida"}. No se procesarán más archivos.`
-        : sectionsDetected
-          ? `${summary}. Usa Sección para descargar o Analizar para leer todos sus datos.`
-          : summary || "No se cargaron documentos.");
+        : summary || "No se cargaron documentos.");
       setError([...uploadErrors, ...extractionErrors].join(" "));
     } finally {
       activeUploadDocumentId.current = "";
@@ -403,6 +407,7 @@ export function ForeignTradeDocumentsPanel({
         supplierId: document.supplier_id || supplierId,
         documentType: document.document_type,
         file: replacement,
+        onUploadProgress: (progress) => setMessage(`Subiendo reemplazo: ${Math.round(progress * 100)}% · ${replacement.name}`),
       });
       await deleteForeignTradeDocument(document.id, document.parse_status === "confirmed");
       await load();
@@ -410,8 +415,10 @@ export function ForeignTradeDocumentsPanel({
         if (isSectionAwarePdf(replacement.name, replacement.type, document.document_type)) {
           setMessage("Archivo reemplazado. Detectando las páginas de la sección...");
           await detectForeignTradeDocumentSection(replacementId);
+          setMessage("Sección aislada. Analizando sus datos y productos...");
+          await runExtraction(replacementId);
           await load();
-          setMessage("Archivo reemplazado y sección lista. Usa Analizar cuando necesites importar sus datos.");
+          setMessage("Archivo reemplazado, sección aislada y extracción lista para revisión.");
         } else {
           setMessage("Archivo reemplazado. Analizando el nuevo original...");
           await runExtraction(replacementId);
@@ -496,7 +503,7 @@ export function ForeignTradeDocumentsPanel({
         <label className="foreign-trade-dropzone">
           <FileUp size={28} />
           <strong>{pendingFiles.length ? `${pendingFiles.length} documento(s) seleccionado(s)` : "Selecciona uno o dos documentos"}</strong>
-          <span>PDF, XLS, XLSX o CSV · máximo 25 MB por archivo</span>
+          <span>PDF, XLS, XLSX o CSV · máximo {Math.round(FOREIGN_TRADE_MAX_FILE_BYTES / 1024 / 1024)} MB por archivo</span>
           <input multiple disabled={Boolean(busyId)} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { selectFiles(event.target.files); event.currentTarget.value = ""; }} />
         </label>
         {pendingFiles.length ? <div className="foreign-trade-pending-documents">{pendingFiles.map((pending) => <article key={pending.key}>
@@ -508,10 +515,10 @@ export function ForeignTradeDocumentsPanel({
           <label><span>Tipo predeterminado</span><select value={documentType} disabled={Boolean(busyId)} onChange={(event) => { const nextType = event.target.value as ForeignTradeDocumentType; setDocumentType(nextType); setPendingFiles((current) => current.map((item) => ({ ...item, documentType: nextType }))); }}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
           <div className="foreign-trade-upload-action-buttons">
             {busyId === "upload" ? <button className="ghost-button danger" type="button" onClick={() => void stopUpload()}><CircleStop size={17} /> Detener carga</button> : null}
-            <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => isSectionAwarePdf(item.file.name, item.file.type, item.documentType)) ? "Guardar y detectar" : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
+            <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => isSectionAwarePdf(item.file.name, item.file.type, item.documentType)) ? "Guardar y analizar" : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
           </div>
         </div>
-        <p className="foreign-trade-document-type-help">Si un PDF contiene varios documentos, selecciona <strong>Commercial invoice</strong>, <strong>Packing list</strong> o <strong>Bill of lading</strong>: el lector aislará solo sus páginas y habilitará la descarga de esa sección. Usa <strong>Factura / cotización de transporte</strong> para fletes y <strong>Rendición final de agencia</strong> para paquetes de facturas aduaneras.</p>
+        <p className="foreign-trade-document-type-help">Si un PDF contiene varios documentos, selecciona <strong>Commercial invoice</strong>, <strong>Packing list</strong> o <strong>Bill of lading</strong>: el lector aislará sus páginas, analizará esa sección automáticamente y conservará su descarga independiente. No necesitas volver a cargar el PDF recortado. Usa <strong>Factura / cotización de transporte</strong> para fletes y <strong>Rendición final de agencia</strong> para paquetes de facturas aduaneras.</p>
         {message ? <div className="notice-banner success"><CheckCircle2 size={17} /> {message}</div> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
       </form>

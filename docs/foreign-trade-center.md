@@ -49,7 +49,9 @@ Los totales de esta fase se muestran como **registrados**. No representan aún c
 La migración incremental `supabase/foreign_trade_center_phase3.sql` y la Edge Function
 `foreign-trade-documents` agregan el flujo de documentos privados:
 
-- carga de PDF, XLS y XLSX de hasta 25 MB al bucket privado existente;
+- carga de PDF, XLS, XLSX y CSV de hasta 50 MB al bucket privado existente;
+- carga reanudable TUS para archivos mayores a 6 MB, evitando reiniciar desde cero ante cortes de red;
+- aislamiento automático de Commercial Invoice, Packing List o Bill of Lading dentro de PDFs compuestos y análisis inmediato de la sección elegida;
 - hash SHA-256 para identificar el original y ruta aislada por operación;
 - descarga privada mediante URL firmada de corta duración;
 - extracción estructurada de datos generales, productos, cantidades, precios, embalaje, peso, CBM, origen y HS Code;
@@ -112,8 +114,17 @@ Ejecutar en Supabase SQL Editor, después de las migraciones que ya están en pr
 5. `supabase/foreign_trade_center.sql`
 6. `supabase/foreign_trade_center_phase2.sql`
 7. `supabase/foreign_trade_center_phase3.sql`
+8. `supabase/foreign_trade_center_phase4_costing.sql`
+9. `supabase/foreign_trade_center_phase5_reconciliation.sql`
+10. `supabase/foreign_trade_center_phase6_fund_requests.sql`
+11. `supabase/foreign_trade_center_phase7_agency_settlements.sql`
+12. `supabase/foreign_trade_center_phase8_automatic_reconciliation.sql`
+13. `supabase/foreign_trade_center_phase9_freight_documents.sql`
+14. `supabase/foreign_trade_center_phase10_product_reconciliation.sql`
+15. `supabase/foreign_trade_center_phase11_intelligent_normalization.sql`
+16. `supabase/foreign_trade_center_phase12_large_documents.sql`
 
-Las tres migraciones del módulo son idempotentes y se pueden ejecutar nuevamente. La Fase 1 crea el bucket privado `foreign-trade-orders` y lo limita a PDF/XLS/XLSX de hasta 25 MB.
+Las migraciones del módulo son idempotentes y se pueden ejecutar nuevamente. La Fase 12 amplía el bucket privado `foreign-trade-orders` y las validaciones de base de datos a 50 MB.
 
 La carpeta `supabase/functions/foreign-trade-documents` debe quedar disponible dentro del volumen de
 funciones del Supabase autohospedado y luego se debe redesplegar el servicio `functions`. Reutiliza:

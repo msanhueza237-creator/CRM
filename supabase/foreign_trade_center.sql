@@ -439,7 +439,7 @@ create table if not exists public.foreign_trade_documents (
   storage_bucket text not null default 'foreign-trade-orders',
   storage_path text not null unique,
   mime_type text,
-  file_size bigint check (file_size is null or (file_size > 0 and file_size <= 26214400)),
+  file_size bigint check (file_size is null or (file_size > 0 and file_size <= 52428800)),
   file_hash text,
   parse_status text not null default 'uploaded'
     check (parse_status in ('uploaded','queued','extracting','review_required','confirmed','failed')),
@@ -942,11 +942,13 @@ $$;
 
 insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
 values (
-  'foreign-trade-orders', 'foreign-trade-orders', false, 26214400,
+  'foreign-trade-orders', 'foreign-trade-orders', false, 52428800,
   array[
     'application/pdf',
     'application/vnd.ms-excel',
-    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'text/csv',
+    'application/csv'
   ]
 )
 on conflict (id) do update set

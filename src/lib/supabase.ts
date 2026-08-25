@@ -20,3 +20,9 @@ export function getSupabaseFunctionUrl(functionName: string, route = "") {
   const cleanRoute = route.replace(/^\/+/, "");
   return `${supabaseUrl}/functions/v1/${functionName}${cleanRoute ? `/${cleanRoute}` : ""}`;
 }
+
+export function getSupabaseStorageUrl(route = "") {
+  if (!supabaseUrl) return "";
+  const cleanRoute = route.replace(/^\/+/, "");
+  return `${supabaseUrl}/storage/v1${cleanRoute ? `/${cleanRoute}` : ""}`;
+}

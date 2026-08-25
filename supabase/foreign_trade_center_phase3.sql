@@ -105,7 +105,7 @@ begin
   ) then
     raise exception 'foreign_trade_invalid_document_mime';
   end if;
-  if v_file_size is null or v_file_size <= 0 or v_file_size > 26214400 then
+  if v_file_size is null or v_file_size <= 0 or v_file_size > 52428800 then
     raise exception 'foreign_trade_invalid_document_size';
   end if;
   if v_storage_path = '' or position(v_operation_id::text || '/' in v_storage_path) <> 1 then

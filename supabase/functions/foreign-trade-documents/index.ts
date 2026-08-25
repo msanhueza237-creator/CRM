@@ -36,6 +36,8 @@ const allowedMimeTypes = new Set([
   "text/csv",
   "application/csv",
 ]);
+const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
+const OPENAI_INLINE_FILE_MAX_BYTES = 8 * 1024 * 1024;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
@@ -185,7 +187,7 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
   if (document.parse_status === "confirmed") throw new HttpError(409, "El documento ya fue confirmado.");
   const mimeType = String(document.mime_type || "").toLowerCase();
   const fileSize = Number(document.file_size || 0);
-  if (!allowedMimeTypes.has(mimeType) || fileSize <= 0 || fileSize > 25 * 1024 * 1024) {
+  if (!allowedMimeTypes.has(mimeType) || fileSize <= 0 || fileSize > MAX_DOCUMENT_BYTES) {
     throw new HttpError(400, "El archivo no cumple el formato o tamaño permitido.");
   }
 
@@ -343,30 +345,40 @@ async function callOpenAiDocumentScopeDetection(
     || Deno.env.get("OPENAI_TEXT_MODEL")?.trim()
     || "gpt-4.1-mini";
   const configuredTimeout = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
-  const result = await callOpenAiStructuredExtraction({
-    apiKey,
-    model,
-    filename,
-    mimeType: "application/pdf",
-    fileData: `data:application/pdf;base64,${bytesToBase64(bytes)}`,
-    requestId,
-    requestSignal,
-    timeoutMs: Math.min(configuredTimeout, 90_000),
-    maxTokens: 1_800,
-    stage: "document-scope",
-    schemaName: "foreign_trade_document_scope_only",
-    schema: {
-      type: "object",
-      additionalProperties: false,
-      required: ["document_scope"],
-      properties: { document_scope: documentScopeSchema },
-    },
-    prompt: createForeignTradeDocumentScopePrompt(documentType),
-  });
-  return {
-    model,
-    scope: normalizeForeignTradeDocumentScope(asObject(result.data).document_scope, documentType),
-  };
+  let temporaryFileId = "";
+  try {
+    if (bytes.byteLength > OPENAI_INLINE_FILE_MAX_BYTES) {
+      temporaryFileId = await uploadOpenAiTemporaryFile(apiKey, bytes, filename, "application/pdf", requestId, requestSignal);
+    }
+    const result = await callOpenAiStructuredExtraction({
+      apiKey,
+      model,
+      filename,
+      mimeType: "application/pdf",
+      ...(temporaryFileId
+        ? { fileId: temporaryFileId }
+        : { fileData: `data:application/pdf;base64,${bytesToBase64(bytes)}` }),
+      requestId,
+      requestSignal,
+      timeoutMs: Math.min(configuredTimeout, 120_000),
+      maxTokens: 1_800,
+      stage: "document-scope",
+      schemaName: "foreign_trade_document_scope_only",
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["document_scope"],
+        properties: { document_scope: documentScopeSchema },
+      },
+      prompt: createForeignTradeDocumentScopePrompt(documentType),
+    });
+    return {
+      model,
+      scope: normalizeForeignTradeDocumentScope(asObject(result.data).document_scope, documentType),
+    };
+  } finally {
+    if (temporaryFileId) await deleteOpenAiTemporaryFile(apiKey, temporaryFileId, requestId);
+  }
 }
 
 async function callOpenAiFundRequestExtraction(bytes: Uint8Array, filename: string, mimeType: string, requestId: string, requestSignal: AbortSignal) {
@@ -770,7 +782,8 @@ type StructuredExtractionInput = {
   model: string;
   filename: string;
   mimeType: string;
-  fileData: string;
+  fileData?: string;
+  fileId?: string;
   requestId: string;
   requestSignal: AbortSignal;
   timeoutMs: number;
@@ -839,6 +852,7 @@ async function extractLineRangeSafely(
 }
 
 async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) {
+  if (!input.fileData && !input.fileId) throw new HttpError(500, "La extracción no recibió un archivo válido.");
   const controller = new AbortController();
   let timedOut = false;
   const abortFromRequest = () => controller.abort();
@@ -860,12 +874,18 @@ async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) 
         input: [{
           role: "user",
           content: [
-            {
-              type: "input_file",
-              filename: input.filename,
-              file_data: input.fileData,
-              ...(input.mimeType === "application/pdf" ? { detail: "high" } : {}),
-            },
+            input.fileId
+              ? {
+                type: "input_file",
+                file_id: input.fileId,
+                ...(input.mimeType === "application/pdf" ? { detail: "high" } : {}),
+              }
+              : {
+                type: "input_file",
+                filename: input.filename,
+                file_data: input.fileData,
+                ...(input.mimeType === "application/pdf" ? { detail: "high" } : {}),
+              },
             {
               type: "input_text",
               text: input.prompt,
@@ -896,6 +916,71 @@ async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) 
   } finally {
     clearTimeout(timeout);
     input.requestSignal.removeEventListener("abort", abortFromRequest);
+  }
+}
+
+async function uploadOpenAiTemporaryFile(
+  apiKey: string,
+  bytes: Uint8Array,
+  filename: string,
+  mimeType: string,
+  requestId: string,
+  requestSignal: AbortSignal,
+) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromRequest = () => controller.abort();
+  if (requestSignal.aborted) controller.abort();
+  else requestSignal.addEventListener("abort", abortFromRequest, { once: true });
+  const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 120_000);
+  try {
+    const form = new FormData();
+    form.append("purpose", "user_data");
+    form.append("expires_after[anchor]", "created_at");
+    form.append("expires_after[seconds]", "3600");
+    form.append("file", new Blob([bytes], { type: mimeType }), filename);
+    const response = await fetch("https://api.openai.com/v1/files", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: controller.signal,
+    });
+    const payload = await response.json().catch(() => ({})) as JsonRecord;
+    if (!response.ok) {
+      const apiError = asObject(payload.error);
+      throw new HttpError(response.status, String(apiError.message || "OpenAI rechazó el PDF temporal."));
+    }
+    const fileId = String(payload.id || "");
+    if (!fileId) throw new HttpError(502, "OpenAI no devolvió el identificador del PDF temporal.");
+    console.info("[foreign-trade-documents] large PDF uploaded for section detection", {
+      requestId,
+      bytes: bytes.byteLength,
+    });
+    return fileId;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      if (!timedOut) throw new HttpError(499, "Análisis detenido por el usuario.");
+      throw new HttpError(504, "La preparación del PDF grande excedió 120 segundos. El original quedó guardado para reintentar.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    requestSignal.removeEventListener("abort", abortFromRequest);
+  }
+}
+
+async function deleteOpenAiTemporaryFile(apiKey: string, fileId: string, requestId: string) {
+  try {
+    const response = await fetch(`https://api.openai.com/v1/files/${encodeURIComponent(fileId)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) console.warn("[foreign-trade-documents] temporary OpenAI file could not be deleted", { requestId, status: response.status });
+  } catch (error) {
+    console.warn("[foreign-trade-documents] temporary OpenAI file cleanup failed", {
+      requestId,
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
