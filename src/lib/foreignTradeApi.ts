@@ -10,7 +10,6 @@ import type {
   ForeignTradeCostParameter,
   ForeignTradeDashboardSummary,
   ForeignTradeDocument,
-  ForeignTradeAnyDocumentExtraction,
   ForeignTradeDocumentExtraction,
   ForeignTradeAgencySettlementExtraction,
   ForeignTradeFundRequestExtraction,
@@ -675,9 +674,8 @@ function isUploadAbortError(error: unknown) {
 export async function extractForeignTradeDocument(documentId: string, signal?: AbortSignal) {
   return foreignTradeDocumentRequest<{
     documentId: string;
-    status: "review_required";
-    extraction: ForeignTradeAnyDocumentExtraction;
-    confidence: number | null;
+    status: "extracting";
+    requestId: string;
   }>("extract", { document_id: documentId }, signal);
 }
 

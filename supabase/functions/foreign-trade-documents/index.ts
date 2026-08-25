@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
     if (route === "extract" && req.method === "POST") {
       const payload = await readJson(req);
       const documentId = requiredUuid(payload.document_id, "documento");
-      return json(await extractDocument(rest, documentId, requestId, req.signal), 200, req);
+      return json(await queueDocumentExtraction(rest, documentId, requestId), 202, req);
     }
     if (route === "detect-section" && req.method === "POST") {
       const payload = await readJson(req);
@@ -178,7 +178,7 @@ async function setDocumentSection(
   return { documentId, status: String(document.parse_status || "uploaded"), scope };
 }
 
-async function extractDocument(rest: RestClient, documentId: string, requestId: string, requestSignal: AbortSignal) {
+async function queueDocumentExtraction(rest: RestClient, documentId: string, requestId: string) {
   const documents = await selectRows(rest,
     `foreign_trade_documents?select=id,operation_id,document_type,storage_bucket,storage_path,original_file_name,mime_type,file_size,parse_status,extraction_result,review_result&id=eq.${documentId}&limit=1`,
   );
@@ -192,6 +192,33 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
   }
 
   await setExtraction(rest, documentId, "extracting", {}, null, [], null, null, requestId);
+  const runtime = (globalThis as unknown as {
+    EdgeRuntime?: { waitUntil(promise: Promise<unknown>): void };
+  }).EdgeRuntime;
+  if (!runtime?.waitUntil) {
+    await setExtraction(rest, documentId, "failed", {}, null, [], "El runtime no permite procesamiento en segundo plano.", null, requestId);
+    throw new HttpError(503, "El runtime de Supabase no permite iniciar el análisis en segundo plano.");
+  }
+  const backgroundController = new AbortController();
+  const task = extractDocument(rest, document, requestId, backgroundController.signal).catch((error) => {
+    console.error("[foreign-trade-documents] background extraction finished with error", {
+      requestId,
+      documentId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  });
+  runtime.waitUntil(task);
+  console.info("[foreign-trade-documents] extraction accepted for background processing", {
+    requestId,
+    documentId,
+  });
+  return { documentId, status: "extracting", requestId };
+}
+
+async function extractDocument(rest: RestClient, document: JsonRecord, requestId: string, requestSignal: AbortSignal) {
+  const documentId = String(document.id || "");
+  const mimeType = String(document.mime_type || "").toLowerCase();
+  const fileSize = Number(document.file_size || 0);
   try {
     const bytes = await downloadPrivateFile(rest, String(document.storage_bucket), String(document.storage_path));
     if (bytes.byteLength !== fileSize) console.warn("[foreign-trade-documents] file size differs", { requestId, documentId });

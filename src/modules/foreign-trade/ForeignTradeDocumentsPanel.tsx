@@ -183,17 +183,17 @@ export function ForeignTradeDocumentsPanel({
     const timeout = window.setTimeout(() => {
       timedOut = true;
       controller.abort();
-    }, 240_000);
+    }, 30_000);
     extractionControllers.current.set(documentId, controller);
     setExtractingIds((current) => new Set(current).add(documentId));
     try {
       return await extractForeignTradeDocument(documentId, controller.signal);
     } catch (extractionError) {
-      if (timedOut || !controller.signal.aborted) {
+      if (!timedOut && !controller.signal.aborted) {
         await cancelForeignTradeDocumentExtraction(documentId).catch(() => undefined);
       }
       if (timedOut) {
-        throw new Error("El servidor interrumpió el análisis después de 240 segundos. El documento quedó disponible para reintentar y no permanecerá bloqueado en Analizando.");
+        throw new Error("El servidor no confirmó el inicio dentro de 30 segundos. Si alcanzó a recibir la solicitud, el análisis continuará en segundo plano y el estado se actualizará automáticamente.");
       }
       throw extractionError;
     } finally {
@@ -217,7 +217,7 @@ export function ForeignTradeDocumentsPanel({
     const uploadedKeys = new Set<string>();
     const uploadErrors: string[] = [];
     const extractionErrors: string[] = [];
-    let extracted = 0;
+    let extractionStarted = 0;
     let sectionsDetected = 0;
     let originalsOnly = 0;
     try {
@@ -270,7 +270,7 @@ export function ForeignTradeDocumentsPanel({
             sectionsDetected += 1;
             setMessage(`Documento ${index + 1} de ${pendingFiles.length}: sección aislada. Analizando sus datos y productos...`);
             await runExtraction(documentId);
-            extracted += 1;
+            extractionStarted += 1;
           } catch (detectionError) {
             extractionErrors.push(`${pending.file.name}: ${humanizeDocumentError(detectionError)}`);
           } finally {
@@ -280,7 +280,7 @@ export function ForeignTradeDocumentsPanel({
         }
         try {
           await runExtraction(documentId);
-          extracted += 1;
+          extractionStarted += 1;
         } catch (extractionError) {
           if (!isAbortError(extractionError)) extractionErrors.push(`${pending.file.name}: ${humanizeDocumentError(extractionError)}`);
         } finally {
@@ -293,7 +293,7 @@ export function ForeignTradeDocumentsPanel({
       const summary = [
         uploadedKeys.size ? `${uploadedKeys.size} original(es) guardado(s)` : "",
         sectionsDetected ? `${sectionsDetected} sección(es) aislada(s)` : "",
-        extracted ? `${extracted} extracción(es) lista(s) para revisar` : "",
+        extractionStarted ? `${extractionStarted} análisis iniciado(s) en segundo plano` : "",
         originalsOnly ? `${originalsOnly} documento(s) conservado(s) como respaldo` : "",
       ].filter(Boolean).join(" · ");
       setMessage(stopBatchRequested.current
@@ -351,6 +351,10 @@ export function ForeignTradeDocumentsPanel({
       setDocuments(refreshedDocuments);
       const refreshedDocument = refreshedDocuments.find((item) => item.id === document.id);
       if (openReview && refreshedDocument?.parse_status === "review_required") setReviewDocument(refreshedDocument);
+      if (refreshedDocument?.parse_status === "extracting") {
+        setMessage("Análisis iniciado en segundo plano. Puedes seguir usando el CRM; esta pantalla se actualizará automáticamente.");
+        return;
+      }
       const lineCount = extractionLines(refreshedDocument?.extraction_result).length;
       setMessage(lineCount
         ? document.document_type === "freight_quote"
@@ -445,12 +449,12 @@ export function ForeignTradeDocumentsPanel({
           setMessage("Sección aislada. Analizando sus datos y productos...");
           await runExtraction(replacementId);
           await load();
-          setMessage("Archivo reemplazado, sección aislada y extracción lista para revisión.");
+          setMessage("Archivo reemplazado y análisis iniciado en segundo plano.");
         } else {
           setMessage("Archivo reemplazado. Analizando el nuevo original...");
           await runExtraction(replacementId);
           await load();
-          setMessage("Archivo reemplazado y extracción lista para revisión.");
+          setMessage("Archivo reemplazado y análisis iniciado en segundo plano.");
         }
       } else {
         setMessage("Archivo reemplazado correctamente.");
