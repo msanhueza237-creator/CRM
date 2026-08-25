@@ -11,7 +11,7 @@ immutable
 set search_path = public, pg_temp
 as $$
   select regexp_replace(translate(lower(coalesce(p_concept, '')), 'áéíóúüñ', 'aeiouun'), '[^a-z0-9]+', '', 'g')
-    ~ '^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$';
+    ~ '^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|honorarios(?:partede)?facturaagencia|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$';
 $$;
 
 create or replace function public.foreign_trade_normalize_reconciliation_summary_line()

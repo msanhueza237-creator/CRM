@@ -224,7 +224,7 @@ export function autoMatchForeignTradeAgencySettlementLines(
 
 export function isAgencySettlementSummaryConcept(value: string) {
   const normalized = normalizeWords(value).replace(/\s/g, "");
-  return /^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$/.test(normalized);
+  return /^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|honorarios(?:partede)?facturaagencia|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$/.test(normalized);
 }
 
 export function calculateForeignTradeDocumentarySettlement(

@@ -549,6 +549,7 @@ assert.deepEqual(matchedSettlementLines.map((line) => line.reconciliation_line_i
 assert.equal(isAgencySettlementSummaryConcept("Total Desembolsos"), true);
 assert.equal(isAgencySettlementSummaryConcept("TOTAL FACTURA AGENCIA"), true);
 assert.equal(isAgencySettlementSummaryConcept("Total Derechos Aduana"), true);
+assert.equal(isAgencySettlementSummaryConcept("Honorarios (parte de Factura Agencia)"), true);
 assert.equal(isAgencySettlementSummaryConcept("Remesa"), true);
 assert.equal(isAgencySettlementSummaryConcept("Pago Directo"), true);
 assert.equal(isAgencySettlementSummaryConcept("TOTAL A SU FAVOR"), true);
@@ -562,6 +563,21 @@ const normalizedSettlementSummary = normalizeForeignTradeAgencySettlementReview(
 });
 assert.equal(normalizedSettlementSummary.review.lines[0].include, false, "los subtotales no deben duplicar gastos reales");
 assert.equal(normalizedSettlementSummary.review.lines[0].include_in_costing, false);
+const normalizedAgencyInvoiceComponent = normalizeForeignTradeAgencySettlementReview({
+  extraction_version: "agency_settlement_v2_documentary_summary",
+  document_kind: "agency_settlement",
+  general: {},
+  totals: {},
+  lines: [{
+    source_index: 1,
+    concept: "Honorarios (parte de Factura Agencia)",
+    include: true,
+    actual_total_clp: 197659,
+  }],
+  warnings: [],
+});
+assert.equal(normalizedAgencyInvoiceComponent.review.lines[0].include, false, "un componente ya incluido en la factura de agencia debe quedar informativo");
+assert.equal(normalizedAgencyInvoiceComponent.review.lines[0].include_in_costing, false);
 const invoice25868Summary = prepareAgencySettlementExtraction({
   general: {
     reference: "51082",
