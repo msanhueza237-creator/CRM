@@ -186,7 +186,7 @@ function isInformationalSummary(value: string | null | undefined) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "")
     .trim();
-  return /^(total|subtotal|suma)(desembolsos|gastos|rendicion|facturas|documentos|general)?$/.test(normalized);
+  return /^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$/.test(normalized);
 }
 
 function money(value: number | string | null | undefined) {

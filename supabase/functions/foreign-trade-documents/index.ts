@@ -557,9 +557,11 @@ REGLAS:
 3. Extrae actual_net_clp, actual_vat_clp y actual_total_clp solo cuando el documento los muestra en CLP. No calcules IVA que no esté impreso.
 4. Si una factura está en USD u otra moneda, conserva amount_original y currency. Extrae exchange_rate_clp solo si aparece en esa factura. Si el documento también declara su equivalente CLP, consérvalo en actual_total_clp aunque el tipo de cambio no esté explícito.
 5. El IVA de importación es potencialmente recuperable: recoverable_tax true e include_in_costing false. El IVA de facturas de servicios también puede ser recuperable, pero el total real debe conservarse para conciliación.
-6. Identifica referencia del despacho, agencia, número de factura principal, fecha y total declarado. Fechas en YYYY-MM-DD cuando sean inequívocas.
-7. No dupliques subtotales o resúmenes cuando sus conceptos ya aparecen desglosados. Una nota de crédito o devolución debe ser adjustment y describirse claramente, sin convertirla silenciosamente en gasto positivo.
-8. Si un dato es dudoso, déjalo null y explica la duda en warnings. confidence entre 0 y 1 refleja confianza de lectura.
+6. Identifica referencia del despacho, agencia, número de factura principal y fecha. Fechas en YYYY-MM-DD cuando sean inequívocas.
+7. Lee el recuadro de RESUMEN como control documental y devuelve por separado: total factura de agencia, total desembolsos, total derechos/tributos de aduana, total factura o total rendido, remesa, pago directo y total a favor/devolución. refund_due_clp siempre es positivo aunque el documento imprima el saldo con signo negativo.
+8. Debe cumplirse: factura agencia + desembolsos + tributos = total rendido; y remesa + pago directo - total rendido = devolución. Conserva los importes impresos aun cuando exista una diferencia y explícala en warnings.
+9. No devuelvas esos subtotales, la remesa, el pago directo ni el saldo a favor como líneas de costo. lines contiene exclusivamente conceptos detallados que explican el total rendido. Una nota de crédito real sí debe ser adjustment y describirse claramente.
+10. Si un dato es dudoso, déjalo null y explica la duda en warnings. confidence entre 0 y 1 refleja confianza de lectura.
 
 La salida debe corresponder exactamente al esquema solicitado.`,
   });
@@ -1733,11 +1735,21 @@ const agencySettlementExtractionSchema: JsonRecord = {
     totals: {
       type: "object",
       additionalProperties: false,
-      required: ["expenses_clp", "taxes_clp", "document_total_clp", "line_count"],
+      required: [
+        "expenses_clp", "taxes_clp", "agency_invoice_total_clp", "disbursements_total_clp",
+        "customs_total_clp", "document_total_clp", "remittance_clp",
+        "documentary_direct_payment_clp", "refund_due_clp", "line_count",
+      ],
       properties: {
         expenses_clp: nullableNumber,
         taxes_clp: nullableNumber,
+        agency_invoice_total_clp: nullableNumber,
+        disbursements_total_clp: nullableNumber,
+        customs_total_clp: nullableNumber,
         document_total_clp: nullableNumber,
+        remittance_clp: nullableNumber,
+        documentary_direct_payment_clp: nullableNumber,
+        refund_due_clp: nullableNumber,
         line_count: { type: "integer", minimum: 0, maximum: 300 },
       },
     },

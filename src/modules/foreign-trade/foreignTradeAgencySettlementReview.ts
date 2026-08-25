@@ -51,7 +51,13 @@ export function normalizeForeignTradeAgencySettlementReview(value: unknown) {
       totals: {
         expenses_clp: nullableNumber(totals.expenses_clp),
         taxes_clp: nullableNumber(totals.taxes_clp),
+        agency_invoice_total_clp: nullableNumber(totals.agency_invoice_total_clp),
+        disbursements_total_clp: nullableNumber(totals.disbursements_total_clp),
+        customs_total_clp: nullableNumber(totals.customs_total_clp),
         document_total_clp: nullableNumber(totals.document_total_clp),
+        remittance_clp: nullableNumber(totals.remittance_clp),
+        documentary_direct_payment_clp: nullableNumber(totals.documentary_direct_payment_clp),
+        refund_due_clp: nullableNumber(totals.refund_due_clp),
         line_count: positiveInteger(totals.line_count) || lines.length,
       },
       warnings: stringArray(source.warnings),
@@ -76,7 +82,18 @@ function emptyReview(): ForeignTradeAgencySettlementExtraction {
       warnings: [],
     },
     lines: [],
-    totals: { expenses_clp: null, taxes_clp: null, document_total_clp: null, line_count: 0 },
+    totals: {
+      expenses_clp: null,
+      taxes_clp: null,
+      agency_invoice_total_clp: null,
+      disbursements_total_clp: null,
+      customs_total_clp: null,
+      document_total_clp: null,
+      remittance_clp: null,
+      documentary_direct_payment_clp: null,
+      refund_due_clp: null,
+      line_count: 0,
+    },
     warnings: [],
   };
 }
@@ -207,7 +224,44 @@ export function autoMatchForeignTradeAgencySettlementLines(
 
 export function isAgencySettlementSummaryConcept(value: string) {
   const normalized = normalizeWords(value).replace(/\s/g, "");
-  return /^(total|subtotal|suma)(desembolsos|gastos|rendicion|facturas|documentos|general)?$/.test(normalized);
+  return /^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$/.test(normalized);
+}
+
+export function calculateForeignTradeDocumentarySettlement(
+  totals: ForeignTradeAgencySettlementExtraction["totals"],
+) {
+  const agencyInvoice = finite(totals.agency_invoice_total_clp);
+  const disbursements = finite(totals.disbursements_total_clp);
+  const customs = finite(totals.customs_total_clp);
+  const documentTotal = finite(totals.document_total_clp);
+  const remittance = finite(totals.remittance_clp);
+  const directPayment = finite(totals.documentary_direct_payment_clp);
+  const documentedRefund = finite(totals.refund_due_clp);
+  const hasComponentSummary = [
+    totals.agency_invoice_total_clp,
+    totals.disbursements_total_clp,
+    totals.customs_total_clp,
+  ].every((value) => value !== null && value !== undefined);
+  const hasBalanceSummary = totals.document_total_clp !== null
+    && totals.remittance_clp !== null;
+  const componentsTotalClp = roundMoney(agencyInvoice + disbursements + customs);
+  const calculatedRefundDueClp = roundMoney(Math.max(remittance + directPayment - documentTotal, 0));
+  const calculatedAdditionalPaymentClp = roundMoney(Math.max(documentTotal - remittance - directPayment, 0));
+  return {
+    hasComponentSummary,
+    hasBalanceSummary,
+    componentsTotalClp,
+    componentVarianceClp: hasComponentSummary ? roundMoney(componentsTotalClp - documentTotal) : null,
+    calculatedRefundDueClp,
+    calculatedAdditionalPaymentClp,
+    refundVarianceClp: totals.refund_due_clp !== null && hasBalanceSummary
+      ? roundMoney(documentedRefund - calculatedRefundDueClp)
+      : null,
+    isDocumentBalanced: !hasComponentSummary || Math.abs(componentsTotalClp - documentTotal) <= 1,
+    isRefundBalanced: totals.refund_due_clp === null
+      || !hasBalanceSummary
+      || Math.abs(documentedRefund - calculatedRefundDueClp) <= 1,
+  };
 }
 
 function settlementMatchScore(

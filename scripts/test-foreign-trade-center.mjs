@@ -32,6 +32,7 @@ import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trad
 import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
 import {
   autoMatchForeignTradeAgencySettlementLines,
+  calculateForeignTradeDocumentarySettlement,
   isAgencySettlementSummaryConcept,
   normalizeForeignTradeAgencySettlementReview,
 } from "../src/modules/foreign-trade/foreignTradeAgencySettlementReview.ts";
@@ -477,6 +478,16 @@ assert.match(phase14Migration, /direct_supplier_total_clp/i);
 await db.exec(phase14Migration);
 await db.exec(phase14Migration);
 
+const phase15Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase15_documentary_settlement_control.sql", import.meta.url),
+  "utf8",
+);
+assert.match(phase15Migration, /foreign_trade_is_reconciliation_summary_line/i);
+assert.match(phase15Migration, /documentary_summary_version/i);
+assert.match(phase15Migration, /documentary_refund_due_clp/i);
+await db.exec(phase15Migration);
+await db.exec(phase15Migration);
+
 const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
   id: "00000000-0000-4000-8000-000000000101",
   applied_cost_line_id: "00000000-0000-4000-8000-000000000102",
@@ -536,6 +547,11 @@ const settlementLinesForMatching = [
 const matchedSettlementLines = autoMatchForeignTradeAgencySettlementLines(settlementLinesForMatching, provisionLinesForMatching);
 assert.deepEqual(matchedSettlementLines.map((line) => line.reconciliation_line_id), ["gate", "freight", "insurance"]);
 assert.equal(isAgencySettlementSummaryConcept("Total Desembolsos"), true);
+assert.equal(isAgencySettlementSummaryConcept("TOTAL FACTURA AGENCIA"), true);
+assert.equal(isAgencySettlementSummaryConcept("Total Derechos Aduana"), true);
+assert.equal(isAgencySettlementSummaryConcept("Remesa"), true);
+assert.equal(isAgencySettlementSummaryConcept("Pago Directo"), true);
+assert.equal(isAgencySettlementSummaryConcept("TOTAL A SU FAVOR"), true);
 const normalizedSettlementSummary = normalizeForeignTradeAgencySettlementReview({
   extraction_version: "agency_settlement_v1",
   document_kind: "agency_settlement",
@@ -546,6 +562,50 @@ const normalizedSettlementSummary = normalizeForeignTradeAgencySettlementReview(
 });
 assert.equal(normalizedSettlementSummary.review.lines[0].include, false, "los subtotales no deben duplicar gastos reales");
 assert.equal(normalizedSettlementSummary.review.lines[0].include_in_costing, false);
+const invoice25868Summary = prepareAgencySettlementExtraction({
+  general: {
+    reference: "51082",
+    agency_name: "JORGE ARMANDO RODRIGUEZ PALMA",
+    invoice_number: "25868",
+    document_date: "2026-06-23",
+    currency: "CLP",
+    declared_total_clp: 11265545,
+    confidence: 0.99,
+    warnings: [],
+  },
+  lines: [
+    { source_index: 1, source_page: 1, include: true, line_type: "agency_fee", cost_category: "customs_agency", concept: "Total Factura Agencia", actual_total_clp: 319467, currency: "CLP", include_in_costing: true, recoverable_tax: false, confidence: 0.99, warnings: [] },
+    { source_index: 9, source_page: 1, include: true, line_type: "agency_fee", cost_category: "customs_agency", concept: "Gasto despacho", actual_net_clp: 40801, actual_vat_clp: 7752, actual_total_clp: 48553, currency: "CLP", include_in_costing: true, recoverable_tax: true, confidence: 0.99, warnings: [] },
+    { source_index: 10, source_page: 1, include: true, line_type: "agency_fee", cost_category: "customs_agency", concept: "Movilización puerto", actual_net_clp: 30000, actual_vat_clp: 5700, actual_total_clp: 35700, currency: "CLP", include_in_costing: true, recoverable_tax: true, confidence: 0.99, warnings: [] },
+    { source_index: 11, source_page: 1, include: true, line_type: "agency_fee", cost_category: "customs_agency", concept: "Honorarios agencia", actual_net_clp: 197659, actual_vat_clp: 37555, actual_total_clp: 235214, currency: "CLP", include_in_costing: true, recoverable_tax: true, confidence: 0.99, warnings: [] },
+    { source_index: 2, source_page: 1, include: true, line_type: "customs_duty", cost_category: "duties", concept: "Derechos ad valorem", actual_total_clp: 422198, currency: "CLP", include_in_costing: true, recoverable_tax: false, confidence: 0.99, warnings: [] },
+    { source_index: 3, source_page: 1, include: true, line_type: "import_vat", cost_category: "taxes", concept: "IVA importación", actual_total_clp: 9469169, currency: "CLP", include_in_costing: false, recoverable_tax: true, confidence: 0.99, warnings: [] },
+    { source_index: 4, source_page: 1, include: true, line_type: "operating_expense", cost_category: "chile_port", concept: "Columbus Maersk Chile", actual_total_clp: 80263, currency: "CLP", include_in_costing: true, recoverable_tax: false, confidence: 0.99, warnings: [] },
+    { source_index: 5, source_page: 1, include: true, line_type: "operating_expense", cost_category: "chile_port", concept: "Maersk Logistics & Services Chile", actual_total_clp: 178500, currency: "CLP", include_in_costing: true, recoverable_tax: false, confidence: 0.99, warnings: [] },
+    { source_index: 6, source_page: 1, include: true, line_type: "operating_expense", cost_category: "chile_port", concept: "STI", actual_total_clp: 32218, currency: "CLP", include_in_costing: true, recoverable_tax: false, confidence: 0.99, warnings: [] },
+    { source_index: 7, source_page: 1, include: true, line_type: "operating_expense", cost_category: "national_transport", concept: "Transportes Judith Duran Luna", actual_total_clp: 571200, currency: "CLP", include_in_costing: true, recoverable_tax: false, confidence: 0.99, warnings: [] },
+    { source_index: 8, source_page: 1, include: true, line_type: "operating_expense", cost_category: "insurance", concept: "Equal Servicios Profesionales", actual_total_clp: 192530, currency: "CLP", include_in_costing: true, recoverable_tax: false, confidence: 0.99, warnings: [] },
+  ],
+  totals: {
+    expenses_clp: 1374178,
+    taxes_clp: 9891367,
+    agency_invoice_total_clp: 319467,
+    disbursements_total_clp: 1054711,
+    customs_total_clp: 9891367,
+    document_total_clp: 11265545,
+    remittance_clp: 11301000,
+    documentary_direct_payment_clp: 0,
+    refund_due_clp: 35455,
+    line_count: 11,
+  },
+  warnings: [],
+});
+const invoice25868Documentary = calculateForeignTradeDocumentarySettlement(invoice25868Summary.extraction.totals);
+assert.equal(invoice25868Summary.extraction.lines[0].include, false, "el total de agencia no debe duplicar sus conceptos detallados");
+assert.equal(invoice25868Documentary.componentsTotalClp, 11265545);
+assert.equal(invoice25868Documentary.calculatedRefundDueClp, 35455);
+assert.equal(invoice25868Documentary.isDocumentBalanced, true);
+assert.equal(invoice25868Documentary.isRefundBalanced, true);
 const reconciliationWithoutDuplicatedSubtotal = calculateForeignTradeReconciliation(0, 0, [
   { concept: "Servicio CAM", line_type: "operating_expense", provision_total_clp: 0, actual_net_clp: 100, actual_vat_clp: 19, actual_total_clp: 119 },
   { concept: "Total Desembolsos", line_type: "operating_expense", provision_total_clp: 0, actual_net_clp: 0, actual_vat_clp: 0, actual_total_clp: 119 },
@@ -975,7 +1035,7 @@ const preparedAgencySettlement = prepareAgencySettlementExtraction({
     invoice_number: "23177",
     document_date: "2026-08-22",
     currency: "CLP",
-    declared_total_clp: 900000,
+    declared_total_clp: 1007201,
     confidence: 0.96,
     warnings: [],
   },
@@ -983,13 +1043,24 @@ const preparedAgencySettlement = prepareAgencySettlementExtraction({
     { source_index: 1, source_page: 1, include: true, line_type: "agency_fee", cost_category: "customs_agency", concept: "Honorarios agencia", provider_name: "Agencia de Aduanas", document_number: "23177", document_date: "2026-08-22", actual_net_clp: 402233, actual_vat_clp: 76424, actual_total_clp: 478657, amount_original: 478657, currency: "CLP", exchange_rate_clp: 1, recoverable_tax: true, include_in_costing: true, confidence: 0.97, warnings: [] },
     { source_index: 2, source_page: 2, include: true, line_type: "operating_expense", cost_category: "chile_port", concept: "Servicios portuarios", provider_name: "AGUNSA", document_number: "2082486", document_date: "2026-08-20", actual_net_clp: 444155, actual_vat_clp: 84389, actual_total_clp: 528544, amount_original: 528544, currency: "CLP", exchange_rate_clp: 1, recoverable_tax: true, include_in_costing: true, confidence: 0.94, warnings: [] },
   ],
-  totals: { expenses_clp: 1007201, taxes_clp: 0, document_total_clp: 900000, line_count: 2 },
+  totals: {
+    expenses_clp: 1007201,
+    taxes_clp: 0,
+    agency_invoice_total_clp: 478657,
+    disbursements_total_clp: 528544,
+    customs_total_clp: 0,
+    document_total_clp: 1007201,
+    remittance_clp: null,
+    documentary_direct_payment_clp: 0,
+    refund_due_clp: null,
+    line_count: 2,
+  },
   warnings: [],
 });
 assert.equal(preparedAgencySettlement.extraction.extraction_version, FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION);
 assert.equal(preparedAgencySettlement.extraction.document_kind, "agency_settlement");
 assert.equal(preparedAgencySettlement.extraction.lines[0].actual_total_clp, 478657);
-assert.ok(preparedAgencySettlement.warnings.some((warning) => warning.code === "agency_settlement_total_mismatch"));
+assert.ok(!preparedAgencySettlement.warnings.some((warning) => warning.code === "agency_settlement_total_mismatch"));
 const normalizedAgencySettlement = normalizeForeignTradeAgencySettlementReview(preparedAgencySettlement.extraction);
 assert.equal(normalizedAgencySettlement.isCompatible, true);
 assert.equal(normalizedAgencySettlement.review.lines.length, 2);

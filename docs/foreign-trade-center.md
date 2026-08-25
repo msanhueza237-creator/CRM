@@ -125,6 +125,7 @@ Ejecutar en Supabase SQL Editor, después de las migraciones que ya están en pr
 16. `supabase/foreign_trade_center_phase12_large_documents.sql`
 17. `supabase/foreign_trade_center_phase13_packing_list_enrichment.sql`
 18. `supabase/foreign_trade_center_phase14_direct_supplier_payments.sql`
+19. `supabase/foreign_trade_center_phase15_documentary_settlement_control.sql`
 
 ### Pagos directos fuera de la rendición
 

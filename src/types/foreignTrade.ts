@@ -687,7 +687,13 @@ export interface ForeignTradeAgencySettlementExtraction {
   totals: {
     expenses_clp: number | null;
     taxes_clp: number | null;
+    agency_invoice_total_clp: number | null;
+    disbursements_total_clp: number | null;
+    customs_total_clp: number | null;
     document_total_clp: number | null;
+    remittance_clp: number | null;
+    documentary_direct_payment_clp: number | null;
+    refund_due_clp: number | null;
     line_count: number;
   };
   warnings: string[];

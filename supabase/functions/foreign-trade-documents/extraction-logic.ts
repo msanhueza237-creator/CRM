@@ -497,7 +497,7 @@ function roundEmbeddedInvoiceMoney(value: number) {
 
 export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v15_embedded_text_documents";
 export const FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION = "fund_request_v1";
-export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v1";
+export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v2_documentary_summary";
 export const FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION = "freight_document_v1";
 
 export type ExtractionWarning = {
@@ -1126,6 +1126,16 @@ export function prepareFundRequestExtraction(value: unknown) {
   };
 }
 
+function isAgencySettlementSummaryLabel(value: unknown) {
+  const normalized = text(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+  return /^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$/.test(normalized);
+}
+
 export function prepareFreightDocumentExtraction(value: unknown) {
   const source = asObject(value);
   const sourceGeneral = asObject(source.general);
@@ -1262,6 +1272,7 @@ export function prepareAgencySettlementExtraction(value: unknown) {
     const rawCategory = text(row.cost_category);
     const costCategory = reconciliationCostCategories.has(rawCategory) ? rawCategory : "other";
     const concept = nullableText(row.concept) || "";
+    const isSummary = isAgencySettlementSummaryLabel(concept);
     const currency = /^[A-Z]{3}$/.test(text(row.currency).toUpperCase()) ? text(row.currency).toUpperCase() : "CLP";
     const amountOriginal = numeric(row.amount_original);
     const exchangeRate = currency === "CLP" ? 1 : numeric(row.exchange_rate_clp);
@@ -1287,12 +1298,15 @@ export function prepareAgencySettlementExtraction(value: unknown) {
       lineWarnings.push(`Falta el tipo de cambio para convertir ${currency} a CLP.`);
       warnings.push(warning("missing_actual_exchange_rate", `Línea ${sourceIndex}: falta tipo de cambio ${currency}/CLP.`, "warning", sourceIndex));
     }
+    if (isSummary) {
+      lineWarnings.push("Resumen documental informativo; no se suma como un costo independiente.");
+    }
 
     const isImportVat = lineType === "import_vat";
     return {
       source_index: sourceIndex,
       source_page: integer(row.source_page),
-      include: row.include !== false,
+      include: !isSummary && row.include !== false,
       reconciliation_line_id: null,
       line_type: lineType,
       cost_category: lineType === "customs_duty" ? "duties" : isImportVat ? "taxes" : costCategory,
@@ -1307,25 +1321,53 @@ export function prepareAgencySettlementExtraction(value: unknown) {
       currency,
       exchange_rate_clp: exchangeRate,
       recoverable_tax: isImportVat ? true : row.recoverable_tax === true,
-      include_in_costing: isImportVat ? false : row.include_in_costing !== false,
+      include_in_costing: isSummary || isImportVat ? false : row.include_in_costing !== false,
       confidence: clamp(numeric(row.confidence), 0, 1),
       warnings: [...new Set(lineWarnings)].slice(0, 20),
     };
   });
 
   const expensesClp = round(lines
-    .filter((line) => !["customs_duty", "import_vat"].includes(line.line_type))
+    .filter((line) => line.include && !["customs_duty", "import_vat"].includes(line.line_type))
     .reduce((sum, line) => sum + (line.actual_total_clp || 0), 0), 2);
   const taxesClp = round(lines
-    .filter((line) => ["customs_duty", "import_vat"].includes(line.line_type))
+    .filter((line) => line.include && ["customs_duty", "import_vat"].includes(line.line_type))
     .reduce((sum, line) => sum + (line.actual_total_clp || 0), 0), 2);
   const calculatedTotal = round(expensesClp + taxesClp, 2);
+  const agencyInvoiceTotal = numeric(sourceTotals.agency_invoice_total_clp);
+  const disbursementsTotal = numeric(sourceTotals.disbursements_total_clp);
+  const customsTotal = numeric(sourceTotals.customs_total_clp);
   const declaredTotal = numeric(sourceTotals.document_total_clp) ?? numeric(sourceGeneral.declared_total_clp);
+  const remittance = numeric(sourceTotals.remittance_clp);
+  const documentaryDirectPayment = numeric(sourceTotals.documentary_direct_payment_clp) ?? 0;
+  const documentedRefund = numeric(sourceTotals.refund_due_clp);
+  const componentValues = [agencyInvoiceTotal, disbursementsTotal, customsTotal];
+  const hasDocumentaryComponents = componentValues.every((item) => item !== null);
+  const documentaryComponentsTotal = hasDocumentaryComponents
+    ? round(componentValues.reduce((sum, item) => sum + (item || 0), 0), 2)
+    : null;
+  const calculatedRefund = remittance !== null && declaredTotal !== null
+    ? round(Math.max(remittance + documentaryDirectPayment - declaredTotal, 0), 2)
+    : null;
   if (declaredTotal !== null && calculatedTotal > 0 && !nearlyEqual(declaredTotal, calculatedTotal, 0.01)) {
     warnings.push(warning(
       "agency_settlement_total_mismatch",
       `Total declarado ${round(declaredTotal, 2)} CLP versus suma de conceptos reales ${calculatedTotal} CLP.`,
       "warning",
+    ));
+  }
+  if (documentaryComponentsTotal !== null && declaredTotal !== null && Math.abs(documentaryComponentsTotal - declaredTotal) > 1) {
+    warnings.push(warning(
+      "agency_settlement_documentary_components_mismatch",
+      `Los subtotales documentales suman ${documentaryComponentsTotal} CLP, pero el total rendido declara ${declaredTotal} CLP.`,
+      "error",
+    ));
+  }
+  if (documentedRefund !== null && calculatedRefund !== null && Math.abs(Math.abs(documentedRefund) - calculatedRefund) > 1) {
+    warnings.push(warning(
+      "agency_settlement_refund_mismatch",
+      `La devolución documentada es ${Math.abs(documentedRefund)} CLP, pero remesa menos rendición calcula ${calculatedRefund} CLP.`,
+      "error",
     ));
   }
   if (!nullableText(sourceGeneral.reference)) warnings.push(warning("missing_agency_settlement_reference", "No se reconoció la referencia del despacho.", "warning"));
@@ -1360,7 +1402,13 @@ export function prepareAgencySettlementExtraction(value: unknown) {
       totals: {
         expenses_clp: numeric(sourceTotals.expenses_clp) ?? expensesClp,
         taxes_clp: numeric(sourceTotals.taxes_clp) ?? taxesClp,
+        agency_invoice_total_clp: agencyInvoiceTotal,
+        disbursements_total_clp: disbursementsTotal,
+        customs_total_clp: customsTotal,
         document_total_clp: declaredTotal ?? calculatedTotal,
+        remittance_clp: remittance,
+        documentary_direct_payment_clp: documentaryDirectPayment,
+        refund_due_clp: documentedRefund === null ? calculatedRefund : Math.abs(documentedRefund),
         line_count: lines.length,
       },
       warnings: stringArray(source.warnings, 30),

@@ -63,6 +63,7 @@ import type {
 import { normalizeForeignTradeFundRequestReview } from "./foreignTradeFundRequestReview";
 import {
   autoMatchForeignTradeAgencySettlementLines,
+  calculateForeignTradeDocumentarySettlement,
   normalizeForeignTradeAgencySettlementReview,
 } from "./foreignTradeAgencySettlementReview";
 import { normalizeForeignTradeFreightDocumentReview } from "./foreignTradeFreightDocumentReview";
@@ -108,7 +109,7 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
 const currentExtractionVersion = "pdf_skill_v15_embedded_text_documents";
 const staleExtractionTimeoutMs = 5 * 60_000;
 const currentFundRequestExtractionVersion = "fund_request_v1";
-const currentAgencySettlementExtractionVersion = "agency_settlement_v1";
+const currentAgencySettlementExtractionVersion = "agency_settlement_v2_documentary_summary";
 const currentFreightDocumentExtractionVersion = "freight_document_v1";
 
 type PendingDocumentUpload = {
@@ -1130,12 +1131,19 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
   const expenses = agencyLines.filter((line) => !["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
   const taxes = agencyLines.filter((line) => ["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
   const calculatedTotal = roundMoney(expenses + taxes);
+  const documentary = calculateForeignTradeDocumentarySettlement(review.totals);
+  const lineDocumentVariance = review.totals.document_total_clp === null
+    ? null
+    : roundMoney(calculatedTotal - review.totals.document_total_clp);
   const needsRegeneration = review.extraction_version !== currentAgencySettlementExtractionVersion;
   const referencesDiffer = Boolean(selectedReconciliation?.provision_reference && review.general.reference
     && normalizeReference(selectedReconciliation.provision_reference) !== normalizeReference(review.general.reference));
 
   function setGeneral(key: keyof ForeignTradeAgencySettlementExtraction["general"], value: string | number | null) {
     setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
+  }
+  function setTotal(key: keyof ForeignTradeAgencySettlementExtraction["totals"], value: number | null) {
+    setReview((current) => ({ ...current, totals: { ...current.totals, [key]: value } }));
   }
   function setLine(index: number, patch: Partial<ForeignTradeAgencySettlementLine>) {
     setReview((current) => ({
@@ -1151,6 +1159,9 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
   async function confirm() {
     if (!reconciliationId) { setError("Selecciona la conciliación creada desde la provisión de fondos."); return; }
     if (referencesDiffer && !review.identity_confirmed) { setError("Las referencias no coinciden. Confirma manualmente que ambos documentos pertenecen al mismo despacho."); return; }
+    if (lineDocumentVariance !== null && Math.abs(lineDocumentVariance) > 1) { setError(`La suma detallada no cuadra con el total rendido: diferencia ${formatClp(Math.abs(lineDocumentVariance))}. Corrige o regenera las líneas antes de costear.`); return; }
+    if (!documentary.isDocumentBalanced) { setError(`Los subtotales del resumen no cuadran con el total rendido: diferencia ${formatClp(Math.abs(documentary.componentVarianceClp || 0))}.`); return; }
+    if (!documentary.isRefundBalanced) { setError(`La devolución indicada no cuadra con remesa menos rendición: diferencia ${formatClp(Math.abs(documentary.refundVarianceClp || 0))}.`); return; }
     if (!window.confirm("¿Confirmar, conciliar y aplicar estos costos reales? El sistema completará las referencias, calculará el saldo y actualizará el costeo automáticamente.")) return;
     setBusy(true); setError("");
     try {
@@ -1164,7 +1175,13 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
         totals: {
           expenses_clp: roundMoney(expenses),
           taxes_clp: roundMoney(taxes),
+          agency_invoice_total_clp: review.totals.agency_invoice_total_clp,
+          disbursements_total_clp: review.totals.disbursements_total_clp,
+          customs_total_clp: review.totals.customs_total_clp,
           document_total_clp: review.totals.document_total_clp ?? calculatedTotal,
+          remittance_clp: review.totals.remittance_clp,
+          documentary_direct_payment_clp: review.totals.documentary_direct_payment_clp,
+          refund_due_clp: review.totals.refund_due_clp ?? (documentary.hasBalanceSummary ? documentary.calculatedRefundDueClp : null),
           line_count: normalizedLines.length,
         },
       };
@@ -1197,13 +1214,27 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
       {referencesDiffer ? <label className="foreign-trade-checkbox-field wide-field"><input type="checkbox" checked={review.identity_confirmed} onChange={(event) => setReview((current) => ({ ...current, identity_confirmed: event.target.checked }))} /><span>Confirmo que esta rendición corresponde a la provisión seleccionada aunque las referencias sean diferentes.</span></label> : null}
     </div></section>
 
-    <section className="foreign-trade-review-section"><div><h3>Control de valores reales</h3><span>Los tributos se mantienen separados de los gastos operacionales.</span></div><div className="foreign-trade-form-grid">
+    <section className="foreign-trade-review-section"><div><h3>Resumen documental y devolución</h3><span>Transcribe el recuadro RESUMEN. Estos importes controlan la conciliación, pero no se duplican como costos.</span></div><div className="foreign-trade-form-grid">
+      <ReviewLineNumber label="Total factura agencia CLP" value={review.totals.agency_invoice_total_clp} onChange={(value) => setTotal("agency_invoice_total_clp", value)} />
+      <ReviewLineNumber label="Total desembolsos CLP" value={review.totals.disbursements_total_clp} onChange={(value) => setTotal("disbursements_total_clp", value)} />
+      <ReviewLineNumber label="Total derechos/tributos CLP" value={review.totals.customs_total_clp} onChange={(value) => setTotal("customs_total_clp", value)} />
+      <ReviewLineNumber label="Total factura/rendición CLP" value={review.totals.document_total_clp} onChange={(value) => setTotal("document_total_clp", value)} />
+      <ReviewLineNumber label="Remesa CLP" value={review.totals.remittance_clp} onChange={(value) => setTotal("remittance_clp", value)} />
+      <ReviewLineNumber label="Pago directo del resumen CLP" value={review.totals.documentary_direct_payment_clp} onChange={(value) => setTotal("documentary_direct_payment_clp", value)} />
+      <ReviewLineNumber label="Devolución a favor CLP" value={review.totals.refund_due_clp} onChange={(value) => setTotal("refund_due_clp", value)} />
+      <ReviewLineReadonlyNumber label="Devolución recalculada CLP" value={documentary.hasBalanceSummary ? documentary.calculatedRefundDueClp : null} />
+    </div>
+      {documentary.hasComponentSummary ? <p className="foreign-trade-recalculation">Control de subtotales: <strong>{formatClp(documentary.componentsTotalClp)}</strong>{documentary.isDocumentBalanced ? " · cuadra con el total rendido." : ` · diferencia ${formatClp(Math.abs(documentary.componentVarianceClp || 0))}.`}</p> : null}
+      {documentary.hasBalanceSummary ? <p className="foreign-trade-recalculation">Saldo: remesa + pago directo - total rendido = <strong>{formatClp(documentary.calculatedRefundDueClp)}</strong>{documentary.isRefundBalanced ? " · cuadra con la devolución documentada." : ` · diferencia ${formatClp(Math.abs(documentary.refundVarianceClp || 0))}.`}</p> : null}
+    </section>
+
+    <section className="foreign-trade-review-section"><div><h3>Control de líneas reales</h3><span>Los tributos se mantienen separados de los gastos operacionales.</span></div><div className="foreign-trade-form-grid">
       <ReviewLineReadonlyNumber label="Gastos reales CLP" value={roundMoney(expenses)} />
       <ReviewLineReadonlyNumber label="Tributos reales CLP" value={roundMoney(taxes)} />
       <ReviewLineReadonlyNumber label="Suma reconocida CLP" value={calculatedTotal} />
       <ReviewLineReadonlyNumber label="Total documento CLP" value={review.totals.document_total_clp} />
-      <ReviewLineReadonlyNumber label="Pago directo fuera de rendición" value={directPaymentTotal} />
-    </div>{review.totals.document_total_clp !== null && Math.abs(calculatedTotal - review.totals.document_total_clp) > Math.max(1, review.totals.document_total_clp * 0.01) ? <p className="foreign-trade-recalculation">La suma difiere del total documental en <strong>{formatClp(Math.abs(calculatedTotal - review.totals.document_total_clp))}</strong>. Revisa líneas faltantes, notas de crédito o subtotales duplicados.</p> : null}</section>
+      <ReviewLineReadonlyNumber label="Proveedor directo fuera de agencia" value={directPaymentTotal} />
+    </div>{lineDocumentVariance !== null && Math.abs(lineDocumentVariance) > 1 ? <p className="foreign-trade-recalculation">La suma difiere del total documental en <strong>{formatClp(Math.abs(lineDocumentVariance))}</strong>. Revisa líneas faltantes, notas de crédito o subtotales duplicados.</p> : null}</section>
 
     <section className="foreign-trade-review-section"><div><h3>Costos reales reconocidos</h3><span>Relaciona cada costo con su provisión. Usa “Nuevo costo real” cuando no existía en la estimación.</span></div><div className="foreign-trade-review-lines">{review.lines.map((line, index) => <AgencySettlementLineCard key={`${line.source_index}-${index}`} line={line} provisionLines={selectedReconciliation?.lines || []} onChange={(patch) => setLine(index, patch)} />)}</div></section>
     {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
@@ -1542,6 +1573,9 @@ function humanizeDocumentError(error: unknown) {
   if (/confirm_foreign_trade_packing_list_document/i.test(message)) return "Falta aplicar en Supabase la migración foreign_trade_center_phase13_packing_list_enrichment.sql.";
   if (/normalize_foreign_trade_product_(?:code|text)/i.test(message)) return "La confirmación de empaque encontró una dependencia de normalización pendiente. Aplica nuevamente foreign_trade_center_phase13_packing_list_enrichment.sql.";
   if (message.includes("foreign_trade_packing_list_without_matching_products")) return "El Packing List no encontró productos del Invoice en esta operación. Confirma primero el Commercial Invoice y luego vuelve a revisar el Packing List.";
+  if (message.includes("foreign_trade_documentary_components_mismatch")) return "Los subtotales del resumen no cuadran con el total rendido. Revisa Factura de agencia + Desembolsos + Derechos/tributos antes de confirmar.";
+  if (message.includes("foreign_trade_documentary_detail_mismatch")) return "La suma de los conceptos detallados no cuadra con el total rendido del documento. Revisa las líneas incluidas o regenera la extracción.";
+  if (message.includes("foreign_trade_documentary_refund_mismatch")) return "La devolución informada no cuadra con Remesa + Pago directo - Total rendido. Revisa el recuadro RESUMEN antes de confirmar.";
   if (message.includes("foreign_trade_reconciliation_identity_mismatch")) return "Las referencias no coinciden. Confirma manualmente que la provisión y la rendición pertenecen al mismo despacho.";
   if (message.includes("foreign_trade_reconciliation_already_applied")) return "Esta conciliación ya fue aplicada al costeo y no puede recibir otra rendición final.";
   if (/update_foreign_trade_document_type|cancel_foreign_trade_document_extraction|delete_foreign_trade_document|schema cache|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos de Comercio Exterior en Supabase.";
