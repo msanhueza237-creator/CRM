@@ -1,4 +1,5 @@
 import {
+  EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
   FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION,
   FOREIGN_TRADE_EXTRACTION_VERSION,
   FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
@@ -9,6 +10,7 @@ import {
   mergeUnnumberedRows,
   missingExtractionRanges,
   normalizeForeignTradeDocumentScope,
+  parseEmbeddedTextInvoice,
   prepareExtraction,
   prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
@@ -18,10 +20,6 @@ import {
   type JsonRecord,
 } from "./extraction-logic.ts";
 import { PDFDocument } from "npm:pdf-lib@1.17.1";
-import {
-  EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
-  parseEmbeddedTextInvoice,
-} from "./embedded-text-invoice-parser.ts";
 import {
   FOREIGN_TRADE_PDF_SKILL_VERSION,
   assessPdfExtractionQuality,
@@ -50,7 +48,7 @@ Deno.serve(async (req) => {
   try {
     const rest = getRestClient();
     const route = getRoute(req.url);
-    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, fundRequestExtractionVersion: FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION, agencySettlementExtractionVersion: FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION, freightDocumentExtractionVersion: FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
+    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, embeddedInvoiceParserVersion: EMBEDDED_TEXT_INVOICE_PARSER_VERSION, fundRequestExtractionVersion: FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION, agencySettlementExtractionVersion: FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION, freightDocumentExtractionVersion: FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
 
     const user = await authenticateRequest(req, rest);
     const profile = await getProfile(rest, user.id);
@@ -229,26 +227,31 @@ async function extractDocument(rest: RestClient, document: JsonRecord, requestId
     if (bytes.byteLength !== fileSize) console.warn("[foreign-trade-documents] file size differs", { requestId, documentId });
     const documentType = String(document.document_type || "other");
     const storedScope = preferredStoredDocumentScope(document, documentType);
-    const openAiResult = documentType === "fund_request"
-      ? await callOpenAiFundRequestExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
-      : documentType === "agency_settlement"
-        ? await callOpenAiAgencySettlementExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
-        : documentType === "freight_quote"
-          ? await callOpenAiFreightDocumentExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
-          : await callOpenAiExtraction(
-            bytes,
-            String(document.original_file_name),
-            mimeType,
-            documentType,
-            requestId,
-            requestSignal,
-            async (header, model) => {
-              const scope = normalizeForeignTradeDocumentScope(header.document_scope, documentType);
-              if (!scope.detected) return;
-              await persistDetectedDocumentScope(rest, documentId, requestId, scope, model);
-            },
-            storedScope,
-          );
+    const embeddedInvoiceResult = mimeType === "application/pdf" && deterministicInvoiceDocumentTypes.has(documentType)
+      ? await callEmbeddedTextInvoiceExtraction(bytes, documentType, requestId, storedScope)
+      : null;
+    const openAiResult = embeddedInvoiceResult || (
+      documentType === "fund_request"
+        ? await callOpenAiFundRequestExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
+        : documentType === "agency_settlement"
+          ? await callOpenAiAgencySettlementExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
+          : documentType === "freight_quote"
+            ? await callOpenAiFreightDocumentExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
+            : await callOpenAiExtraction(
+              bytes,
+              String(document.original_file_name),
+              mimeType,
+              documentType,
+              requestId,
+              requestSignal,
+              async (header, model) => {
+                const scope = normalizeForeignTradeDocumentScope(header.document_scope, documentType);
+                if (!scope.detected) return;
+                await persistDetectedDocumentScope(rest, documentId, requestId, scope, model);
+              },
+              storedScope,
+            )
+    );
     const prepared = documentType === "fund_request"
       ? prepareFundRequestExtraction(openAiResult.data)
       : documentType === "agency_settlement"
@@ -549,6 +552,71 @@ La salida debe corresponder exactamente al esquema solicitado.`,
     openAiRequestId: result.requestId || null,
   });
   return { model, requestId: result.requestId, data: result.data };
+}
+
+async function callEmbeddedTextInvoiceExtraction(
+  bytes: Uint8Array,
+  documentType: string,
+  requestId: string,
+  storedScope: ReturnType<typeof normalizeForeignTradeDocumentScope> | null,
+) {
+  const scopedPdf = storedScope?.detected && storedScope.page_numbers.length
+    ? await createScopedPdfData(bytes, storedScope.page_numbers, requestId)
+    : null;
+  const parsed = await extractEmbeddedTextInvoiceSafely(
+    scopedPdf?.bytes || bytes,
+    scopedPdf?.originalPageNumbers || [],
+    requestId,
+  );
+  if (!parsed || parsed.coverage < 0.95 || parsed.lines.length < 5) return null;
+
+  const pageNumbers = parsed.pageNumbers.length
+    ? parsed.pageNumbers
+    : storedScope?.page_numbers || Array.from({ length: parsed.pageCount }, (_, index) => index + 1);
+  const documentScope = storedScope?.detected
+    ? storedScope
+    : normalizeForeignTradeDocumentScope({
+      selected_document_type: documentType,
+      detected: true,
+      page_start: pageNumbers[0] || 1,
+      page_end: pageNumbers[pageNumbers.length - 1] || parsed.pageCount,
+      page_numbers: pageNumbers,
+      total_pdf_pages: parsed.pageCount,
+      confidence: parsed.coverage,
+      evidence: [`${parsed.lines.length} filas comerciales verificadas por texto incrustado.`],
+      warnings: [],
+    }, documentType);
+  console.info("[foreign-trade-documents] embedded text invoice extraction ready", {
+    requestId,
+    documentType,
+    extractedLineCount: parsed.lines.length,
+    candidateCount: parsed.candidateCount,
+    coverage: parsed.coverage,
+    lineTotal: parsed.lineTotal,
+    parserVersion: EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+    skippedOpenAi: true,
+  });
+  return {
+    model: EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+    requestId,
+    data: {
+      extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
+      pdf_skill_version: EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+      document_scope: documentScope,
+      general: parsed.general,
+      document_totals: {
+        subtotal: parsed.lineTotal,
+        total: parsed.lineTotal,
+        cbm_total: null,
+        gross_weight_kg: null,
+        net_weight_kg: null,
+        boxes: null,
+        line_count: parsed.lines.length,
+      },
+      lines: parsed.lines,
+      warnings: parsed.warnings,
+    },
+  };
 }
 
 async function callOpenAiExtraction(

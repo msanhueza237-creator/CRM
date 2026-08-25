@@ -1,5 +1,272 @@
 export type JsonRecord = Record<string, unknown>;
 
+export type EmbeddedInvoiceLine = {
+  source_index: number;
+  source_page: number;
+  source_row_label: string;
+  supplier_product_code: null;
+  supplier_sku: null;
+  supplier_reference: null;
+  sku: null;
+  product_name: string;
+  description: string;
+  description_original: string;
+  description_translated: null;
+  model: null;
+  brand: null;
+  technical_attributes: string[];
+  quantity: number;
+  quantity_per_box: null;
+  box_count: null;
+  currency: null;
+  unit_price: number;
+  total_price: number;
+  unit_weight_kg: null;
+  gross_weight_kg: null;
+  net_weight_kg: null;
+  box_length_cm: null;
+  box_width_cm: null;
+  box_height_cm: null;
+  cbm_per_box: null;
+  cbm_total: null;
+  country_of_origin: null;
+  hs_code: null;
+  confidence: number;
+  warnings: string[];
+};
+
+export type EmbeddedInvoiceExtraction = {
+  lines: EmbeddedInvoiceLine[];
+  lineTotal: number;
+  candidateCount: number;
+  coverage: number;
+  pageCount: number;
+  pageNumbers: number[];
+  general: {
+    supplier_name: string | null;
+    proforma_number: string | null;
+    document_date: string | null;
+    currency: string | null;
+    incoterm: string | null;
+    origin_port: string | null;
+    destination_port: string | null;
+    payment_terms: string | null;
+    order_number: string | null;
+    confidence: number;
+    warnings: string[];
+  };
+  warnings: string[];
+};
+
+export const EMBEDDED_TEXT_INVOICE_PARSER_VERSION = "embedded_invoice_text_v2";
+
+const embeddedInvoiceRowStartPattern = /^\s*(\d{1,3})\s+(.+)$/;
+const embeddedInvoiceRowPattern = /^\s*(\d{1,3})\s+(.+?)\s+([\d,.]+)\s+([A-Za-z]+(?:\/[A-Za-z]+)?)\s+(?:US\$|USD\s*|\$)\s*([\d,.]+)\s+(?:US\$|USD\s*|\$)\s*([\d,.]+)\s*$/i;
+
+export function parseEmbeddedTextInvoice(
+  pages: string[],
+  originalPageNumbers: number[] = [],
+): EmbeddedInvoiceExtraction {
+  const lines: EmbeddedInvoiceLine[] = [];
+  const warnings: string[] = [];
+  let candidateCount = 0;
+
+  pages.forEach((pageText, pageIndex) => {
+    const physicalPage = originalPageNumbers[pageIndex] || pageIndex + 1;
+    const pageLines = normalizeEmbeddedInvoicePageLines(pageText);
+    let pending: { text: string } | null = null;
+
+    const flushPending = () => {
+      if (!pending) return;
+      const parsed = parseEmbeddedInvoiceRow(pending.text, lines.length + 1, physicalPage);
+      if (parsed) lines.push(parsed);
+      pending = null;
+    };
+
+    for (const line of pageLines) {
+      const start = line.match(embeddedInvoiceRowStartPattern);
+      if (start && isPlausibleEmbeddedInvoiceRowLabel(start[1])) {
+        flushPending();
+        candidateCount += 1;
+        pending = { text: line };
+        if (embeddedInvoiceRowPattern.test(pending.text)) flushPending();
+        continue;
+      }
+
+      if (!pending) continue;
+      if (isEmbeddedInvoiceDocumentBoundary(line)) {
+        flushPending();
+        continue;
+      }
+      pending.text = `${pending.text} ${line}`.replace(/\s+/g, " ").trim();
+      if (embeddedInvoiceRowPattern.test(pending.text)) flushPending();
+    }
+    flushPending();
+  });
+
+  const printedLabels = lines.map((line) => Number(line.source_row_label));
+  const duplicates = uniqueEmbeddedInvoiceNumbers(printedLabels.filter((label, index) => printedLabels.indexOf(label) !== index));
+  const skipped = missingEmbeddedInvoiceLabels(printedLabels);
+  if (duplicates.length) {
+    warnings.push(`El proveedor repitió los números de fila ${duplicates.join(", ")}; se conservaron como referencia y se usó el orden físico para importar.`);
+  }
+  if (skipped.length) {
+    warnings.push(`El proveedor omitió los números de fila ${skipped.join(", ")}; no se descartaron productos y se usó el orden físico para importar.`);
+  }
+
+  const pageNumbers = uniqueEmbeddedInvoiceNumbers(lines.map((line) => line.source_page));
+  const coverage = candidateCount > 0 ? lines.length / candidateCount : 0;
+  return {
+    lines,
+    lineTotal: roundEmbeddedInvoiceMoney(lines.reduce((sum, line) => sum + line.total_price, 0)),
+    candidateCount,
+    coverage,
+    pageCount: pages.length,
+    pageNumbers,
+    general: parseEmbeddedInvoiceGeneral(pages.join("\n")),
+    warnings,
+  };
+}
+
+function parseEmbeddedInvoiceRow(
+  value: string,
+  sourceIndex: number,
+  sourcePage: number,
+): EmbeddedInvoiceLine | null {
+  const match = value.match(embeddedInvoiceRowPattern);
+  if (!match) return null;
+  const quantity = parseEmbeddedInvoiceNumber(match[3]);
+  const unitPrice = parseEmbeddedInvoiceNumber(match[5]);
+  const totalPrice = parseEmbeddedInvoiceNumber(match[6]);
+  if (quantity === null || unitPrice === null || totalPrice === null) return null;
+  const unit = match[4].toLowerCase();
+  const productName = match[2].replace(/\s+/g, " ").trim();
+  if (!productName) return null;
+  const calculatedTotal = roundEmbeddedInvoiceMoney(quantity * unitPrice);
+  const rowWarnings = Math.abs(calculatedTotal - totalPrice) > 0.02
+    ? [`Total impreso ${totalPrice} versus cantidad por precio ${calculatedTotal}.`]
+    : [];
+
+  return {
+    source_index: sourceIndex,
+    source_page: sourcePage,
+    source_row_label: match[1],
+    supplier_product_code: null,
+    supplier_sku: null,
+    supplier_reference: null,
+    sku: null,
+    product_name: productName,
+    description: productName,
+    description_original: productName,
+    description_translated: null,
+    model: null,
+    brand: null,
+    technical_attributes: [`Unidad documental: ${unit}`],
+    quantity,
+    quantity_per_box: null,
+    box_count: null,
+    currency: null,
+    unit_price: unitPrice,
+    total_price: totalPrice,
+    unit_weight_kg: null,
+    gross_weight_kg: null,
+    net_weight_kg: null,
+    box_length_cm: null,
+    box_width_cm: null,
+    box_height_cm: null,
+    cbm_per_box: null,
+    cbm_total: null,
+    country_of_origin: null,
+    hs_code: null,
+    confidence: rowWarnings.length ? 0.96 : 0.995,
+    warnings: rowWarnings,
+  };
+}
+
+function parseEmbeddedInvoiceGeneral(value: string): EmbeddedInvoiceExtraction["general"] {
+  const supplier = value.match(/([A-Z][A-Z\s.,&()-]{4,80}(?:CO\.?\s*,?\s*LTD|LIMITED))/i)?.[1]
+    ?.replace(/\s+/g, " ")
+    .trim() || null;
+  const invoiceNumber = value.match(/\bINVOICE\s+([A-Z0-9][A-Z0-9._/-]{2,39})\b/i)?.[1] || null;
+  const orderNumber = value.match(/\b(?:CONTRACT|ORDER)\s*(?:NO\.?|NUMBER)?\s*[:#]?\s*([A-Z0-9][A-Z0-9._/-]{2,39})\b/i)?.[1] || null;
+  const dateValue = value.match(/\bDATE\s+([0-3]?\d[-/.][A-Za-z]{3}[-/.]\d{2,4}|[0-3]?\d[-/.][01]?\d[-/.]\d{2,4})\b/i)?.[1] || "";
+  const route = value.match(/\bFROM\s+([^\n]+?)\s+TO:\s*([^\n]+)/i);
+  const payment = value.match(/\bPAYMENT\s+BY\s+([^\n]+)/i)?.[1]?.trim() || null;
+  const incoterm = value.match(/\b(EXW|FOB|CFR|CIF|DAP|DDP|FCA)\b/i)?.[1]?.toUpperCase() || null;
+  const currency = /(?:US\$|USD|\$\s*\d)/i.test(value) ? "USD" : null;
+  const documentDate = normalizeEmbeddedInvoiceDate(dateValue);
+  const recognized = [supplier, invoiceNumber, documentDate, currency, orderNumber].filter(Boolean).length;
+  return {
+    supplier_name: supplier,
+    proforma_number: invoiceNumber || orderNumber,
+    document_date: documentDate,
+    currency,
+    incoterm,
+    origin_port: route?.[1]?.replace(/\s+/g, " ").trim() || null,
+    destination_port: route?.[2]?.replace(/\s+/g, " ").trim() || null,
+    payment_terms: payment,
+    order_number: orderNumber,
+    confidence: Math.min(0.99, 0.75 + recognized * 0.045),
+    warnings: [],
+  };
+}
+
+function normalizeEmbeddedInvoiceDate(value: string) {
+  if (!value) return null;
+  const normalized = value.replace(/[/.]/g, "-");
+  const textual = normalized.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2}|\d{4})$/);
+  if (textual) {
+    const month = ({ jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 } as Record<string, number>)[textual[2].toLowerCase()];
+    const year = textual[3].length === 2 ? 2000 + Number(textual[3]) : Number(textual[3]);
+    if (month) return `${year}-${String(month).padStart(2, "0")}-${String(Number(textual[1])).padStart(2, "0")}`;
+  }
+  const numericDate = normalized.match(/^(\d{1,2})-(\d{1,2})-(\d{2}|\d{4})$/);
+  if (!numericDate) return null;
+  const year = numericDate[3].length === 2 ? 2000 + Number(numericDate[3]) : Number(numericDate[3]);
+  return `${year}-${String(Number(numericDate[2])).padStart(2, "0")}-${String(Number(numericDate[1])).padStart(2, "0")}`;
+}
+
+function normalizeEmbeddedInvoicePageLines(value: string) {
+  return value
+    .replace(/\u00a0/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function isPlausibleEmbeddedInvoiceRowLabel(value: string) {
+  const label = Number(value);
+  return Number.isInteger(label) && label >= 1 && label <= 500;
+}
+
+function isEmbeddedInvoiceDocumentBoundary(value: string) {
+  return /^(?:INVOICE|COMMERCIAL|PACKING|TOTAL|SUBTOTAL|DEPOSIT|BALANCE|HANGZHOU|杭州|NO\.\s+DESCRIPTION)/i.test(value);
+}
+
+function parseEmbeddedInvoiceNumber(value: string) {
+  const normalized = value.replace(/,/g, "").trim();
+  if (!/^-?\d+(?:\.\d+)?$/.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function uniqueEmbeddedInvoiceNumbers(values: number[]) {
+  return [...new Set(values)].sort((left, right) => left - right);
+}
+
+function missingEmbeddedInvoiceLabels(labels: number[]) {
+  if (!labels.length) return [];
+  const unique = new Set(labels);
+  const minimum = Math.min(...labels);
+  const maximum = Math.max(...labels);
+  return Array.from({ length: maximum - minimum + 1 }, (_, index) => minimum + index)
+    .filter((label) => !unique.has(label));
+}
+
+function roundEmbeddedInvoiceMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
 export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v14_embedded_text_invoices";
 export const FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION = "fund_request_v1";
 export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v1";

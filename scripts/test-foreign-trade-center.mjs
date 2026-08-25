@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import {
+  EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
   FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION,
   FOREIGN_TRADE_EXTRACTION_VERSION,
   FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
@@ -12,6 +13,7 @@ import {
   mergeUnnumberedRows,
   missingExtractionRanges,
   normalizeForeignTradeDocumentScope,
+  parseEmbeddedTextInvoice,
   prepareExtraction,
   prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
@@ -23,10 +25,6 @@ import {
   createForeignTradeDocumentScopePrompt,
   createForeignTradePdfReadingSkill,
 } from "../supabase/functions/foreign-trade-documents/pdf-reading-skill.ts";
-import {
-  EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
-  parseEmbeddedTextInvoice,
-} from "../supabase/functions/foreign-trade-documents/embedded-text-invoice-parser.ts";
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
@@ -65,6 +63,9 @@ assert.match(documentsFunctionSource, /runtime\.waitUntil\(task\)/);
 assert.match(documentsFunctionSource, /extractEmbeddedTextInvoiceSafely/);
 assert.match(documentsFunctionSource, /npm:unpdf@1\.8\.1/);
 assert.match(documentsFunctionSource, /embedded text invoice extraction ready/);
+assert.match(documentsFunctionSource, /const embeddedInvoiceResult =/);
+assert.match(documentsFunctionSource, /skippedOpenAi: true/);
+assert.doesNotMatch(documentsFunctionSource, /embedded-text-invoice-parser\.ts/);
 assert.match(documentsFunctionSource, /status: "extracting"/);
 assert.match(documentsFunctionSource, /extraction accepted for background processing/);
 assert.match(documentsPanelSource, /análisis iniciado\(s\) en segundo plano/);
@@ -100,10 +101,14 @@ assert.match(documentsPanelSource, /No se pudo abrir la ruta pública para carga
 assert.match(documentsPanelSource, /setForeignTradeDocumentSection\(document\.id, pageNumbers\)/);
 assert.match(documentsPanelSource, /Páginas<\/button>/);
 
-assert.equal(EMBEDDED_TEXT_INVOICE_PARSER_VERSION, "embedded_invoice_text_v1");
+assert.equal(EMBEDDED_TEXT_INVOICE_PARSER_VERSION, "embedded_invoice_text_v2");
 const embeddedInvoice = parseEmbeddedTextInvoice([
   [
     "INVOICE HZ26CF296",
+    "HANGZHOU LIFENG IMPORT AND EXPORT CO.,LTD",
+    "DATE 29-Apr-26",
+    "Contract NO TDC12",
+    "FROM NINGBO, CHINA TO: SAN ANTONIO, CHILE",
     "39 Capacitor 80 440V 100 pcs $1.8000 $180.00",
     "41 Thermostat Guards BTG-RK 100 pcs $2.1800 $218.00",
     "64 Split A/C valve 1/2 3Way 30 pcs $4.1000 $123.00",
@@ -125,6 +130,11 @@ assert.equal(embeddedInvoice.lines[3].source_row_label, "64");
 assert.equal(embeddedInvoice.lines[4].product_name, "Universal A/C Remote Control INVERTER SPLIT 6000 TO 18000BTU");
 assert.equal(embeddedInvoice.lines[5].quantity, 50);
 assert.equal(embeddedInvoice.lineTotal, 1519.5);
+assert.equal(embeddedInvoice.general.proforma_number, "HZ26CF296");
+assert.equal(embeddedInvoice.general.document_date, "2026-04-29");
+assert.equal(embeddedInvoice.general.currency, "USD");
+assert.equal(embeddedInvoice.general.order_number, "TDC12");
+assert.equal(embeddedInvoice.pageNumbers[0], 7);
 assert.match(embeddedInvoice.warnings.join(" "), /repitió los números de fila 64/);
 assert.match(embeddedInvoice.warnings.join(" "), /omitió los números de fila 40/);
 
