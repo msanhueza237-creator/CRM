@@ -519,8 +519,8 @@ export function ForeignTradeDocumentsPanel({
           </div>
         </div>
         <p className="foreign-trade-document-type-help">Si un PDF contiene varios documentos, selecciona <strong>Commercial invoice</strong>, <strong>Packing list</strong> o <strong>Bill of lading</strong>: el lector aislará sus páginas, analizará esa sección automáticamente y conservará su descarga independiente. No necesitas volver a cargar el PDF recortado. Usa <strong>Factura / cotización de transporte</strong> para fletes y <strong>Rendición final de agencia</strong> para paquetes de facturas aduaneras.</p>
-        {message ? <div className="notice-banner success"><CheckCircle2 size={17} /> {message}</div> : null}
-        {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+        {message ? <div className="notice-banner success"><CheckCircle2 size={17} /><span>{message}</span></div> : null}
+        {error ? <div className="notice-banner error"><AlertTriangle size={17} /><span>{error}</span></div> : null}
       </form>
 
       <section className="panel foreign-trade-document-list">
@@ -1472,6 +1472,7 @@ function humanizeDocumentError(error: unknown) {
     : String(details.message || details.details || details.hint || "No se pudo procesar el documento.");
   if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase.";
   if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
+  if (/foreign_trade_storage_limit_not_updated|\b413\b|maximum size|payload too large|request entity too large/i.test(message)) return "Supabase todavía conserva el límite anterior de Storage. Ejecuta la migración foreign_trade_center_phase12_large_documents.sql y vuelve a cargar el archivo.";
   if (/no se encontr[oó] una secci[oó]n|no se identificaron p[aá]ginas|reconocimiento/i.test(message)) return "No se pudo reconocer la sección automáticamente. Usa el botón Páginas e indica el rango físico del PDF, por ejemplo 2-5.";
   if (/confirm_foreign_trade_fund_request_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase6_fund_requests.sql.";
   if (/confirm_foreign_trade_agency_settlement_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase7_agency_settlements.sql.";

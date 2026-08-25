@@ -456,7 +456,14 @@ async function uploadForeignTradeOriginal(
         cacheControl: "3600",
       },
       onProgress: (bytesUploaded, bytesTotal) => onProgress?.(bytesTotal > 0 ? bytesUploaded / bytesTotal : 0),
-      onError: (error) => reject(new Error(`No se pudo completar la carga reanudable: ${error.message}`)),
+      onError: (error) => {
+        const message = String(error.message || "");
+        if (/\b413\b|maximum size|payload too large|request entity too large/i.test(message)) {
+          reject(new Error("foreign_trade_storage_limit_not_updated"));
+          return;
+        }
+        reject(new Error(`No se pudo completar la carga reanudable: ${message}`));
+      },
       onSuccess: () => resolve(),
     });
     void upload.findPreviousUploads()

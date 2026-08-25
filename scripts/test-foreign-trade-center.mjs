@@ -62,6 +62,8 @@ assert.match(foreignTradeApiSource, /new Upload\(file/);
 assert.match(foreignTradeApiSource, /upload\/resumable/);
 assert.match(foreignTradeApiSource, /50 \* 1024 \* 1024/);
 assert.match(foreignTradeApiSource, /onProgress: \(bytesUploaded, bytesTotal\)/);
+assert.match(foreignTradeApiSource, /foreign_trade_storage_limit_not_updated/);
+assert.match(documentsPanelSource, /Supabase todavía conserva el límite anterior de Storage/);
 assert.match(documentsPanelSource, /setForeignTradeDocumentSection\(document\.id, pageNumbers\)/);
 assert.match(documentsPanelSource, /Páginas<\/button>/);
 

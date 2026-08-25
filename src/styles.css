@@ -8633,15 +8633,19 @@ th {
   display: grid;
   gap: 16px;
   grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr);
+  min-width: 0;
 }
 
 .foreign-trade-document-upload,
 .foreign-trade-document-list {
   align-content: start;
+  box-sizing: border-box;
   display: grid;
   gap: 14px;
   min-width: 0;
+  overflow: hidden;
   padding: 0 16px 16px;
+  width: 100%;
 }
 
 .foreign-trade-document-upload .foreign-trade-detail-panel-heading,
@@ -8717,10 +8721,14 @@ th {
   background: #f4f8f8;
   border: 1px solid #d8e5e6;
   border-radius: 7px;
+  box-sizing: border-box;
   display: grid;
   gap: 9px;
   grid-template-columns: minmax(0, 1fr) minmax(150px, .7fr) auto;
+  min-width: 0;
+  overflow: hidden;
   padding: 9px;
+  width: 100%;
 }
 
 .foreign-trade-pending-documents > article > div {
@@ -8762,6 +8770,8 @@ th {
   background: #fff;
   border: 1px solid #cbdadd;
   border-radius: 6px;
+  box-sizing: border-box;
+  max-width: 100%;
   min-height: 36px;
   min-width: 0;
   padding: 6px 8px;
@@ -8780,6 +8790,11 @@ th {
   flex-wrap: wrap;
   gap: 7px;
   justify-content: flex-end;
+  min-width: 0;
+}
+
+.foreign-trade-upload-action-buttons > button {
+  max-width: 100%;
   min-width: 0;
 }
 
@@ -8811,7 +8826,10 @@ th {
 .foreign-trade-review-products-heading input {
   border: 1px solid #cbdadd;
   border-radius: 6px;
+  box-sizing: border-box;
+  max-width: 100%;
   min-height: 40px;
+  min-width: 0;
   padding: 7px 9px;
   width: 100%;
 }
@@ -8821,6 +8839,24 @@ th {
   font-size: 10px;
   line-height: 1.45;
   margin: -3px 0 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.foreign-trade-document-upload .notice-banner {
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.foreign-trade-document-upload .notice-banner > svg {
+  flex: 0 0 auto;
+}
+
+.foreign-trade-document-upload .notice-banner > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .foreign-trade-document-type-editor {
