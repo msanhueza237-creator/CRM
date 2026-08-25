@@ -6,6 +6,7 @@ import { AuthProvider } from "./modules/auth/AuthContext";
 import { CompanyStoreProvider } from "./modules/companies/CompanyStore";
 import { TemplateStoreProvider } from "./modules/templates/TemplateStore";
 import "./styles.css";
+import "./modules/foreign-trade/foreignTradeMobile.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

@@ -106,7 +106,7 @@ export function ForeignTradeOperationDetail({
       </header>
 
       {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}
-      {missing.length ? <div className="notice-banner warning"><AlertTriangle size={18} /><div><strong>Análisis todavía incompleto</strong><span>{missing.join(" · ")}</span></div></div> : null}
+      {missing.length ? <div className="notice-banner warning foreign-trade-analysis-warning"><AlertTriangle size={18} /><div><strong>Análisis todavía incompleto</strong><span>{missing.join(" · ")}</span></div></div> : null}
 
       <nav className="foreign-trade-detail-tabs" aria-label="Ficha de operación">
         <button className={tab === "summary" ? "active" : ""} type="button" onClick={() => setTab("summary")}>Resumen</button>
@@ -150,7 +150,10 @@ export function ForeignTradeOperationDetail({
       {tab === "products" ? (
         <section className="panel foreign-trade-detail-panel">
           <div className="foreign-trade-detail-panel-heading"><div><h2>Productos de la operación</h2><p>Vincula el catálogo oficial o registra un producto temporal en estudio.</p></div><button className="primary-button" type="button" onClick={() => setLineDialog("new")}><Plus size={17} /> Agregar producto</button></div>
-          {detail.lines.length ? <div className="table-scroll"><table className="foreign-trade-detail-table"><thead><tr><th>Producto</th><th>Cantidad</th><th>Costo fábrica</th><th>Total registrado</th><th>CBM</th><th>Fuente</th><th aria-label="Acciones" /></tr></thead><tbody>{detail.lines.map((line) => <ProductRow key={line.id} line={line} onEdit={() => setLineDialog(line)} onDelete={async () => { if (!window.confirm(`¿Eliminar ${line.product_name} de esta operación?`)) return; await deleteForeignTradeOperationLine(line.id); await changed("Producto eliminado de la operación."); }} />)}</tbody></table></div> : <EmptyDetail title="Aún no hay productos" detail="Agrega líneas vinculadas al catálogo o productos temporales para esta negociación." />}
+          {detail.lines.length ? <>
+            <div className="table-scroll foreign-trade-desktop-records"><table className="foreign-trade-detail-table"><thead><tr><th>Producto</th><th>Cantidad</th><th>Costo fábrica</th><th>Total registrado</th><th>CBM</th><th>Fuente</th><th aria-label="Acciones" /></tr></thead><tbody>{detail.lines.map((line) => <ProductRow key={line.id} line={line} onEdit={() => setLineDialog(line)} onDelete={async () => { if (!window.confirm(`¿Eliminar ${line.product_name} de esta operación?`)) return; await deleteForeignTradeOperationLine(line.id); await changed("Producto eliminado de la operación."); }} />)}</tbody></table></div>
+            <div className="foreign-trade-mobile-records" role="list" aria-label="Productos de la operación">{detail.lines.map((line) => <MobileProductCard key={line.id} line={line} onEdit={() => setLineDialog(line)} onDelete={async () => { if (!window.confirm(`¿Eliminar ${line.product_name} de esta operación?`)) return; await deleteForeignTradeOperationLine(line.id); await changed("Producto eliminado de la operación."); }} />)}</div>
+          </> : <EmptyDetail title="Aún no hay productos" detail="Agrega líneas vinculadas al catálogo o productos temporales para esta negociación." />}
         </section>
       ) : null}
 
@@ -333,13 +336,35 @@ function CostLineDialog({ operationId, defaultRate, cost, lines, onClose, onSave
 }
 
 function ProductRow({ line, onEdit, onDelete }: { line: ForeignTradeOperationLine; onEdit: () => void; onDelete: () => Promise<void> }) {
-  const total = line.cif_total ?? line.fob_total ?? line.exw_total ?? ((line.unit_factory_cost || 0) * line.quantity - (line.discount_total || 0) + (line.supplier_charges_total || 0));
+  const total = getProductLineTotal(line);
   const cbmPerUnit = line.cbm_total !== null && line.quantity > 0 ? line.cbm_total / line.quantity : null;
   return <tr><td data-label="Producto"><div className="foreign-trade-product-cell">{line.primary_image_url ? <img src={line.primary_image_url} alt="" /> : <span><Boxes size={18} /></span>}<div><strong>{line.product_name}</strong><small>{line.sku || "Sin SKU"} · {line.temporary_product ? "Temporal" : "Catálogo CRM"}</small></div></div></td><td data-label="Cantidad">{formatDecimal(line.quantity)}</td><td data-label="Costo fábrica">{line.unit_factory_cost === null ? "Pendiente" : formatMoney(line.unit_factory_cost, line.currency)}</td><td data-label="Total registrado">{formatMoney(total, line.currency)}</td><td data-label="CBM">{line.cbm_total === null ? "Pendiente" : <><strong>{formatDecimal(line.cbm_total)} m³</strong>{cbmPerUnit !== null ? <small>{formatDecimal(cbmPerUnit)} m³ por unidad</small> : null}</>}</td><td data-label="Fuente"><SourceBadge source={line.data_source} /></td><td data-label="Acciones"><div className="foreign-trade-row-actions"><button className="icon-button" type="button" title="Editar producto" aria-label={`Editar ${line.product_name}`} onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar producto" aria-label={`Eliminar ${line.product_name}`} onClick={() => void onDelete()}><Trash2 size={16} /></button></div></td></tr>;
 }
 
+function MobileProductCard({ line, onEdit, onDelete }: { line: ForeignTradeOperationLine; onEdit: () => void; onDelete: () => Promise<void> }) {
+  const total = getProductLineTotal(line);
+  const cbmPerUnit = line.cbm_total !== null && line.quantity > 0 ? line.cbm_total / line.quantity : null;
+  return <article className="foreign-trade-mobile-record-card" role="listitem">
+    <header className="foreign-trade-mobile-record-header">
+      {line.primary_image_url ? <img src={line.primary_image_url} alt="" /> : <span className="foreign-trade-mobile-record-icon"><Boxes size={20} /></span>}
+      <div><strong>{line.product_name}</strong><small>{line.sku || "Sin SKU"} · {line.temporary_product ? "Temporal" : "Catálogo CRM"}</small></div>
+      <div className="foreign-trade-mobile-record-actions"><button className="icon-button" type="button" title="Editar producto" aria-label={`Editar ${line.product_name}`} onClick={onEdit}><Edit3 size={17} /></button><button className="icon-button danger" type="button" title="Eliminar producto" aria-label={`Eliminar ${line.product_name}`} onClick={() => void onDelete()}><Trash2 size={17} /></button></div>
+    </header>
+    <div className="foreign-trade-mobile-record-metrics">
+      <MobileMetric label="Cantidad" value={formatDecimal(line.quantity)} />
+      <MobileMetric label="Costo fábrica" value={line.unit_factory_cost === null ? "Pendiente" : formatMoney(line.unit_factory_cost, line.currency)} />
+      <MobileMetric label="Total registrado" value={formatMoney(total, line.currency)} />
+      <MobileMetric label="Volumen" value={line.cbm_total === null ? "Pendiente" : `${formatDecimal(line.cbm_total)} m³`} detail={cbmPerUnit === null ? undefined : `${formatDecimal(cbmPerUnit)} m³ por unidad`} />
+    </div>
+    <footer><span>Fuente</span><SourceBadge source={line.data_source} /></footer>
+  </article>;
+}
+
 function CostTable({ costs, onEdit, onChanged }: { costs: ForeignTradeCostLine[]; onEdit: (cost: ForeignTradeCostLine) => void; onChanged: (message: string) => Promise<void> }) {
-  return <div className="table-scroll"><table className="foreign-trade-detail-table"><thead><tr><th>Concepto</th><th>Categoría</th><th>Monto original</th><th>Conversión CLP</th><th>Distribución</th><th>Fuente</th><th aria-label="Acciones" /></tr></thead><tbody>{costs.map((cost) => <CostRow key={cost.id} cost={cost} onEdit={() => onEdit(cost)} onDelete={async () => { if (!window.confirm(`¿Eliminar el registro ${cost.name}?`)) return; await deleteForeignTradeCostLine(cost.id); await onChanged("Registro eliminado de la operación."); }} />)}</tbody></table></div>;
+  return <>
+    <div className="table-scroll foreign-trade-desktop-records"><table className="foreign-trade-detail-table"><thead><tr><th>Concepto</th><th>Categoría</th><th>Monto original</th><th>Conversión CLP</th><th>Distribución</th><th>Fuente</th><th aria-label="Acciones" /></tr></thead><tbody>{costs.map((cost) => <CostRow key={cost.id} cost={cost} onEdit={() => onEdit(cost)} onDelete={async () => { if (!window.confirm(`¿Eliminar el registro ${cost.name}?`)) return; await deleteForeignTradeCostLine(cost.id); await onChanged("Registro eliminado de la operación."); }} />)}</tbody></table></div>
+    <div className="foreign-trade-mobile-records" role="list" aria-label="Costos base de la operación">{costs.map((cost) => <MobileCostCard key={cost.id} cost={cost} onEdit={() => onEdit(cost)} onDelete={async () => { if (!window.confirm(`¿Eliminar el registro ${cost.name}?`)) return; await deleteForeignTradeCostLine(cost.id); await onChanged("Registro eliminado de la operación."); }} />)}</div>
+  </>;
 }
 
 function CostRow({ cost, onEdit, onDelete }: { cost: ForeignTradeCostLine; onEdit: () => void; onDelete: () => Promise<void> }) {
@@ -347,6 +372,35 @@ function CostRow({ cost, onEdit, onDelete }: { cost: ForeignTradeCostLine; onEdi
   const reconciled = Boolean(cost.metadata?.reconciliation_id);
   const excluded = Boolean(cost.metadata?.excluded_from_costing);
   return <tr className={excluded ? "foreign-trade-cost-excluded" : ""}><td data-label="Concepto"><strong>{cost.name}</strong>{excluded ? <small>Estimación reemplazada · conservada en historial</small> : cost.notes ? <small>{cost.notes}</small> : null}</td><td data-label="Categoría">{costCategoryLabel(cost.category)}</td><td data-label="Monto original">{formatMoney(cost.amount_original, cost.currency)}<small>{cost.metadata?.amount_basis === "gross" ? "Monto bruto" : "Monto neto"}{vatRate ? ` · IVA ${formatDecimal(vatRate)}%${cost.recoverable_tax ? " recuperable" : ""}` : ""}</small></td><td data-label="Conversión CLP">{cost.amount_clp === null ? "Falta tipo de cambio" : formatClp(cost.amount_clp)}</td><td data-label="Distribución">{allocationLabel(cost.allocation_method)}</td><td data-label="Fuente">{excluded ? <span className="foreign-trade-source-badge estimated">Reemplazado</span> : <SourceBadge source={cost.source_type} />}</td><td data-label="Acciones"><div className="foreign-trade-row-actions">{reconciled || excluded ? <small>Editar en conciliación</small> : <><button className="icon-button" type="button" title="Editar registro" aria-label={`Editar ${cost.name}`} onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar registro" aria-label={`Eliminar ${cost.name}`} onClick={() => void onDelete()}><Trash2 size={16} /></button></>}</div></td></tr>;
+}
+
+function MobileCostCard({ cost, onEdit, onDelete }: { cost: ForeignTradeCostLine; onEdit: () => void; onDelete: () => Promise<void> }) {
+  const vatRate = Number(cost.metadata?.vat_rate_percent || 0);
+  const reconciled = Boolean(cost.metadata?.reconciliation_id);
+  const excluded = Boolean(cost.metadata?.excluded_from_costing);
+  const amountDetail = `${cost.metadata?.amount_basis === "gross" ? "Monto bruto" : "Monto neto"}${vatRate ? ` · IVA ${formatDecimal(vatRate)}%${cost.recoverable_tax ? " recuperable" : ""}` : ""}`;
+  return <article className={`foreign-trade-mobile-record-card foreign-trade-mobile-cost-card${excluded ? " excluded" : ""}`} role="listitem">
+    <header className="foreign-trade-mobile-record-header">
+      <span className="foreign-trade-mobile-record-icon"><CircleDollarSign size={20} /></span>
+      <div><strong>{cost.name}</strong><small>{excluded ? "Estimación reemplazada · conservada en historial" : cost.notes || costCategoryLabel(cost.category)}</small></div>
+      {!reconciled && !excluded ? <div className="foreign-trade-mobile-record-actions"><button className="icon-button" type="button" title="Editar registro" aria-label={`Editar ${cost.name}`} onClick={onEdit}><Edit3 size={17} /></button><button className="icon-button danger" type="button" title="Eliminar registro" aria-label={`Eliminar ${cost.name}`} onClick={() => void onDelete()}><Trash2 size={17} /></button></div> : null}
+    </header>
+    <div className="foreign-trade-mobile-record-metrics">
+      <MobileMetric label="Categoría" value={costCategoryLabel(cost.category)} />
+      <MobileMetric label="Distribución" value={allocationLabel(cost.allocation_method)} />
+      <MobileMetric label="Monto original" value={formatMoney(cost.amount_original, cost.currency)} detail={amountDetail} />
+      <MobileMetric label="Conversión CLP" value={cost.amount_clp === null ? "Falta tipo de cambio" : formatClp(cost.amount_clp)} />
+    </div>
+    <footer><span>{reconciled || excluded ? "Editar en conciliación" : "Fuente"}</span>{excluded ? <span className="foreign-trade-source-badge estimated">Reemplazado</span> : <SourceBadge source={cost.source_type} />}</footer>
+  </article>;
+}
+
+function MobileMetric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return <div><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</div>;
+}
+
+function getProductLineTotal(line: ForeignTradeOperationLine) {
+  return line.cif_total ?? line.fob_total ?? line.exw_total ?? ((line.unit_factory_cost || 0) * line.quantity - (line.discount_total || 0) + (line.supplier_charges_total || 0));
 }
 
 function DetailKpi({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail: string }) { return <article><div>{icon}<span>{label}</span></div><strong>{value}</strong><small>{detail}</small></article>; }
