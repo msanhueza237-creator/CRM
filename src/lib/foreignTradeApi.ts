@@ -572,6 +572,31 @@ export async function getForeignTradeDocumentUrl(document: ForeignTradeDocument)
   return data.signedUrl;
 }
 
+export async function downloadForeignTradeDocumentSection(documentId: string) {
+  requireSupabase();
+  const { data } = await supabase!.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+  let response: Response;
+  try {
+    response = await fetch(getSupabaseFunctionUrl("foreign-trade-documents", "download-section"), {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ document_id: documentId }),
+    });
+  } catch {
+    throw new Error("No se pudo contactar el servicio de documentos.");
+  }
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.error || `El servicio respondió con error ${response.status}.`);
+  }
+  const contentDisposition = response.headers.get("content-disposition") || "";
+  const fileName = /filename="([^"]+)"/i.exec(contentDisposition)?.[1] || "seccion-documento.pdf";
+  const pages = (response.headers.get("x-document-pages") || "").split(",").map(Number).filter(Number.isFinite);
+  return { blob: await response.blob(), fileName, pages };
+}
+
 async function foreignTradeDocumentRequest<T>(route: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   requireSupabase();
   const { data } = await supabase!.auth.getSession();

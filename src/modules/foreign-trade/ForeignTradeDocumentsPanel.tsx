@@ -26,6 +26,7 @@ import {
   confirmForeignTradeFundRequestDocument,
   deleteForeignTradeProductSupplierMapping,
   deleteForeignTradeDocument,
+  downloadForeignTradeDocumentSection,
   extractForeignTradeDocument,
   getForeignTradeDocumentUrl,
   getForeignTradeDocuments,
@@ -43,6 +44,7 @@ import type {
   ForeignTradeCostCategory,
   ForeignTradeDocument,
   ForeignTradeDocumentExtraction,
+  ForeignTradeDocumentScope,
   ForeignTradeDocumentType,
   ForeignTradeExpenseReconciliation,
   ForeignTradeExtractedLine,
@@ -80,13 +82,20 @@ const productExtractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   "commercial_invoice",
   "packing_list",
 ]);
+const sectionAwareDocumentTypes = new Set<ForeignTradeDocumentType>([
+  "commercial_invoice",
+  "packing_list",
+  "bill_of_lading",
+]);
+const supportingExtractableDocumentTypes = new Set<ForeignTradeDocumentType>(["bill_of_lading"]);
 const expenseExtractableDocumentTypes = new Set<ForeignTradeDocumentType>(["fund_request", "agency_settlement", "freight_quote"]);
 const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   ...productExtractableDocumentTypes,
+  ...supportingExtractableDocumentTypes,
   ...expenseExtractableDocumentTypes,
 ]);
 
-const currentExtractionVersion = "pdf_skill_v11_product_reconciliation";
+const currentExtractionVersion = "pdf_skill_v12_compound_sections";
 const currentFundRequestExtractionVersion = "fund_request_v1";
 const currentAgencySettlementExtractionVersion = "agency_settlement_v1";
 const currentFreightDocumentExtractionVersion = "freight_document_v1";
@@ -397,6 +406,24 @@ export function ForeignTradeDocumentsPanel({
     } finally { setBusyId(""); }
   }
 
+  async function downloadDocumentSection(document: ForeignTradeDocument) {
+    setBusyId(`section:${document.id}`); setError(""); setMessage("");
+    try {
+      const result = await downloadForeignTradeDocumentSection(document.id);
+      const url = URL.createObjectURL(result.blob);
+      const anchor = window.document.createElement("a");
+      anchor.href = url;
+      anchor.download = result.fileName;
+      window.document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setMessage(`${documentTypeLabel(document.document_type)} descargado: página${result.pages.length === 1 ? "" : "s"} ${formatPageNumbers(result.pages)}.`);
+    } catch (downloadError) {
+      setError(humanizeDocumentError(downloadError));
+    } finally { setBusyId(""); }
+  }
+
   return (
     <section className="foreign-trade-documents-layout">
       <form className="panel foreign-trade-document-upload" onSubmit={upload}>
@@ -422,7 +449,7 @@ export function ForeignTradeDocumentsPanel({
             <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
           </div>
         </div>
-        <p className="foreign-trade-document-type-help">Usa <strong>Factura / cotización de transporte</strong> para flete marítimo, aéreo o terrestre; al confirmar se incorporará a Costos base y Costeo y precio. Usa <strong>Rendición final de agencia</strong> para paquetes de facturas aduaneras y <strong>Proforma</strong> para productos.</p>
+        <p className="foreign-trade-document-type-help">Si un PDF contiene varios documentos, selecciona <strong>Commercial invoice</strong>, <strong>Packing list</strong> o <strong>Bill of lading</strong>: el lector aislará solo sus páginas y habilitará la descarga de esa sección. Usa <strong>Factura / cotización de transporte</strong> para fletes y <strong>Rendición final de agencia</strong> para paquetes de facturas aduaneras.</p>
         {message ? <div className="notice-banner success"><CheckCircle2 size={17} /> {message}</div> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
       </form>
@@ -434,6 +461,7 @@ export function ForeignTradeDocumentsPanel({
         <div className="foreign-trade-document-items">
           {documents.map((document) => {
             const isExtracting = ["queued", "extracting"].includes(document.parse_status) || extractingIds.has(document.id);
+            const sectionScope = getDocumentScope(document);
             const replacing = busyId === `replace:${document.id}`;
             const deleting = busyId === `delete:${document.id}`;
             const cancelling = busyId === `cancel:${document.id}`;
@@ -442,12 +470,14 @@ export function ForeignTradeDocumentsPanel({
               <div className="foreign-trade-document-info">
                 <strong>{document.original_file_name}</strong>
                 <span>{documentTypeLabel(document.document_type)} · {formatFileSize(document.file_size)} · {formatDateTime(document.created_at)}</span>
+                {sectionScope?.detected ? <small className="foreign-trade-document-scope">Sección: {formatPageNumbers(sectionScope.page_numbers)} de {sectionScope.total_pdf_pages || "?"} página(s)</small> : null}
                 {document.parse_status !== "confirmed" ? <label className="foreign-trade-document-type-editor"><span>Clasificación</span><select value={document.document_type} disabled={busyId === `type:${document.id}` || replacing || deleting || cancelling} onChange={(event) => void reclassify(document, event.target.value as ForeignTradeDocumentType)}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label> : null}
                 {document.extraction_error ? <small>{document.extraction_error}</small> : null}
               </div>
               <DocumentStatus document={isExtracting ? { ...document, parse_status: "extracting" } : document} />
               <div className="foreign-trade-row-actions">
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
+                {document.mime_type === "application/pdf" && sectionAwareDocumentTypes.has(document.document_type) && sectionScope?.detected ? <button className="ghost-button" type="button" title={`Descargar solo ${documentTypeLabel(document.document_type)}`} disabled={busyId === `section:${document.id}`} onClick={() => void downloadDocumentSection(document)}>{busyId === `section:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} Sección</button> : null}
                 <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title={document.parse_status === "confirmed" ? "Cambiar el original y retirar sus datos derivados" : "Cambiar el archivo conservando su clasificación"}><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label>
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
                 {document.parse_status === "confirmed" && productExtractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Link2 size={16} /> Conciliar productos</button> : null}
@@ -468,10 +498,55 @@ export function ForeignTradeDocumentsPanel({
           ? <AgencySettlementReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
           : reviewDocument.document_type === "freight_quote"
             ? <FreightDocumentReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
+            : supportingExtractableDocumentTypes.has(reviewDocument.document_type)
+              ? <SupportingDocumentReviewDialog document={reviewDocument} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onDownload={() => downloadDocumentSection(reviewDocument)} />
             : <DocumentReviewDialog document={reviewDocument} suppliers={suppliers} onClose={() => setReviewDocument(null)} onRegenerate={async () => { const staleDocument = reviewDocument; setReviewDocument(null); await retry(staleDocument, true); }} onConfirmed={async (resultMessage) => { setReviewDocument(null); await load(); await onChanged(resultMessage); }} />
         : null}
     </section>
   );
+}
+
+function SupportingDocumentReviewDialog({
+  document,
+  onClose,
+  onRegenerate,
+  onDownload,
+}: {
+  document: ForeignTradeDocument;
+  onClose: () => void;
+  onRegenerate: () => Promise<void>;
+  onDownload: () => Promise<void>;
+}) {
+  const review = structuredClone(document.extraction_result) as ForeignTradeDocumentExtraction;
+  const scope = getDocumentScope(document);
+  const general = review.general || {} as ForeignTradeDocumentExtraction["general"];
+  const [busy, setBusy] = useState<"regenerate" | "download" | "">("");
+  const [error, setError] = useState("");
+
+  async function run(action: "regenerate" | "download", callback: () => Promise<void>) {
+    setBusy(action); setError("");
+    try { await callback(); }
+    catch (actionError) { setError(humanizeDocumentError(actionError)); }
+    finally { setBusy(""); }
+  }
+
+  return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog compact" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-supporting-review-title">
+    <header className="foreign-trade-dialog-heading"><div><span>Sección documental protegida</span><h2 id="foreign-trade-supporting-review-title">Revisar {documentTypeLabel(document.document_type)}</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
+    {scope?.detected ? <section className="foreign-trade-section-detection success"><CheckCircle2 size={19} /><div><strong>Sección identificada</strong><span>Página{scope.page_numbers.length === 1 ? "" : "s"} {formatPageNumbers(scope.page_numbers)} de {scope.total_pdf_pages || "?"}. La descarga contendrá únicamente estas páginas.</span></div></section> : <section className="foreign-trade-section-detection warning"><AlertTriangle size={19} /><div><strong>No se identificaron páginas confiables</strong><span>Regenera el análisis con la clasificación correcta antes de descargar la sección.</span></div></section>}
+    <section className="foreign-trade-review-section"><div><h3>Datos reconocidos</h3><span>Solo se muestran antecedentes encontrados dentro del B/L.</span></div><div className="foreign-trade-form-grid foreign-trade-readonly-grid">
+      <ReadOnlyReviewField label="Referencia documental" value={general.proforma_number || general.order_number} />
+      <ReadOnlyReviewField label="Fecha" value={general.document_date} />
+      <ReadOnlyReviewField label="Proveedor / emisor" value={general.supplier_name} />
+      <ReadOnlyReviewField label="Puerto de origen" value={general.origin_port} />
+      <ReadOnlyReviewField label="Puerto de destino" value={general.destination_port} />
+      <ReadOnlyReviewField label="Incoterm" value={general.incoterm} />
+      <ReadOnlyReviewField label="Observaciones" value={general.observations} wide />
+    </div></section>
+    {scope?.evidence.length ? <section className="foreign-trade-review-section"><div><h3>Evidencia de clasificación</h3><span>{scope.evidence.join(" · ")}</span></div></section> : null}
+    {document.review_warnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{document.review_warnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
+    {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cerrar</button><button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void run("regenerate", onRegenerate)}>{busy === "regenerate" ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />} Regenerar</button><button className="primary-button" type="button" disabled={Boolean(busy) || !scope?.detected} onClick={() => void run("download", onDownload)}>{busy === "download" ? <LoaderCircle className="spin" size={17} /> : <Download size={17} />} Descargar sección</button></footer>
+  </div></div>;
 }
 
 function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onConfirmed }: { document: ForeignTradeDocument; suppliers: ForeignTradeSupplier[]; onClose: () => void; onRegenerate: () => Promise<void>; onConfirmed: (message: string) => Promise<void> }) {
@@ -536,9 +611,10 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
   }
   async function confirm() {
     const reconciliationOnly = document.parse_status === "confirmed";
+    const reviewCopy = productDocumentReviewCopy(document.document_type);
     if (!window.confirm(reconciliationOnly
       ? "¿Guardar estas equivalencias de productos? No se duplicarán las líneas ya importadas ni se modificará el catálogo maestro."
-      : "¿Confirmar esta revisión e importar las líneas seleccionadas? Tu revisión manual se considerará definitiva aunque la extracción tenga advertencias. El archivo original y la extracción se conservarán.")) return;
+      : `¿Confirmar esta revisión de ${reviewCopy.label} e importar las líneas seleccionadas? Tu revisión manual se considerará definitiva aunque la extracción tenga advertencias. El archivo original y la sección extraída se conservarán.`)) return;
     setBusy(true); setError("");
     try {
       const documentCurrency = normalizeCurrencyCode(review.general.currency, "USD");
@@ -566,21 +642,24 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
   }
 
   const general = review.general;
+  const reviewCopy = productDocumentReviewCopy(document.document_type);
+  const documentScope = getDocumentScope(document);
   const lineCbmTotal = review.lines.reduce((sum, line) => sum + (line.cbm_total || 0), 0);
   const expectedLineCount = review.document_totals.line_count;
   const incompleteCoverage = Boolean(expectedLineCount && review.lines.length / expectedLineCount < 0.8);
   const needsRegeneration = review.extraction_version !== currentExtractionVersion || incompleteCoverage;
   const reconciliationBySourceIndex = new Map((reconciliation?.lines || []).map((item) => [item.source_index, item]));
   return <div className="foreign-trade-modal-backdrop" role="presentation"><div className="foreign-trade-review-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-review-title">
-    <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-review-title">Revisar proforma</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
+    <header className="foreign-trade-dialog-heading"><div><span>Revisión humana obligatoria</span><h2 id="foreign-trade-review-title">Revisar {reviewCopy.label}</h2><p>{document.original_file_name}</p></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></header>
     <div className="foreign-trade-review-summary"><ConfidenceBadge value={document.extraction_confidence} /><span>{review.lines.length} líneas detectadas</span><span>{document.review_warnings.length} advertencias</span></div>
+    {documentScope?.detected ? <section className="foreign-trade-section-detection success"><CheckCircle2 size={19} /><div><strong>{reviewCopy.label} aislado correctamente</strong><span>Página{documentScope.page_numbers.length === 1 ? "" : "s"} {formatPageNumbers(documentScope.page_numbers)} de {documentScope.total_pdf_pages || "?"}; las demás secciones del PDF fueron excluidas.</span></div></section> : null}
     {needsRegeneration ? <div className="foreign-trade-stale-extraction"><AlertTriangle size={18} /><span><strong>Extracción desactualizada o incompleta.</strong> Puedes regenerarla para intentar recuperar más datos o confirmar tu revisión manual e importarla tal como está.</span></div> : null}
     {document.review_warnings.length ? <section className="foreign-trade-review-warnings"><strong><AlertTriangle size={16} /> Datos que requieren atención</strong>{document.review_warnings.map((warning, index) => <p key={`${warning.code}-${index}`} className={warning.severity}>{warning.message}</p>)}</section> : null}
 
     <section className="foreign-trade-review-section"><div><h3>Datos generales</h3><span>Extraído del documento · editable antes de confirmar</span></div><div className="foreign-trade-form-grid">
       <label><span>Proveedor CRM</span><select value={general.supplier_id || ""} onChange={(event) => setGeneral("supplier_id", event.target.value || null)}><option value="">Sin vincular</option>{suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}</option>)}</select></label>
       <ReviewField label="Proveedor reconocido" value={general.supplier_name} onChange={(value) => setGeneral("supplier_name", value)} />
-      <ReviewField label="Número de proforma" value={general.proforma_number} onChange={(value) => setGeneral("proforma_number", value)} />
+      <ReviewField label={reviewCopy.numberLabel} value={general.proforma_number} onChange={(value) => setGeneral("proforma_number", value)} />
       <ReviewField label="Fecha" type="date" value={general.document_date} onChange={(value) => setGeneral("document_date", value)} />
       <ReviewField label="Vigencia" type="date" value={general.valid_until} onChange={(value) => setGeneral("valid_until", value)} />
       <ReviewField label="Moneda" value={general.currency} maxLength={3} onChange={(value) => setGeneral("currency", value.toUpperCase())} />
@@ -593,7 +672,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
       <label className="wide-field"><span>Observaciones</span><textarea value={general.observations || ""} onChange={(event) => setGeneral("observations", event.target.value || null)} /></label>
     </div></section>
 
-    <section className="foreign-trade-review-section"><div><h3>Totales del documento</h3><span>Contrasta estos valores con el pie de la proforma antes de confirmar.</span></div><div className="foreign-trade-form-grid">
+    <section className="foreign-trade-review-section"><div><h3>Totales del documento</h3><span>Contrasta estos valores con el pie de {reviewCopy.article} antes de confirmar.</span></div><div className="foreign-trade-form-grid">
       <ReviewLineNumber label="Total mercadería" value={review.document_totals.total} onChange={(value) => setDocumentTotal("total", value)} />
       <ReviewLineNumber label="Total cajas" value={review.document_totals.boxes} onChange={(value) => setDocumentTotal("boxes", value)} />
       <ReviewLineNumber label="Peso bruto total kg" value={review.document_totals.gross_weight_kg} onChange={(value) => setDocumentTotal("gross_weight_kg", value)} />
@@ -1186,6 +1265,7 @@ function productMatchStatusLabel(status: ForeignTradeProductReconciliationLine["
 }
 
 function ReviewField({ label, value, onChange, type = "text", maxLength }: { label: string; value: string | number | null; onChange: (value: string) => void; type?: string; maxLength?: number }) { return <label><span>{label}</span><input type={type} maxLength={maxLength} value={value ?? ""} onChange={(event) => onChange(event.target.value)} /></label>; }
+function ReadOnlyReviewField({ label, value, wide = false }: { label: string; value: string | number | null | undefined; wide?: boolean }) { return <div className={`foreign-trade-readonly-field${wide ? " wide-field" : ""}`}><span>{label}</span><strong>{value === null || value === undefined || value === "" ? "No reconocido" : value}</strong></div>; }
 function ReviewLineField({ label, value, onChange, maxLength }: { label: string; value: string | null; onChange: (value: string | null) => void; maxLength?: number }) { return <label><span>{label}</span><input maxLength={maxLength} value={value || ""} onChange={(event) => onChange(event.target.value || null)} /></label>; }
 function ReviewLineNumber({ label, value, onChange }: { label: string; value: number | null; onChange: (value: number | null) => void }) { return <label><span>{label}</span><input type="number" min="0" step="any" value={value ?? ""} onChange={(event) => onChange(nullableNumber(event.target.value))} /></label>; }
 function ReviewLineReadonlyNumber({ label, value }: { label: string; value: number | null }) { return <label className="foreign-trade-derived-field"><span>{label}</span><input type="number" readOnly value={value ?? ""} /></label>; }
@@ -1223,11 +1303,59 @@ function DocumentStatus({ document }: { document: ForeignTradeDocument }) {
 function ConfidenceBadge({ value }: { value: number | null }) { const level = value === null ? "unknown" : value >= .85 ? "high" : value >= .6 ? "medium" : "low"; const label = value === null ? "Sin confianza" : `${Math.round(value * 100)}% confianza`; return <span className={`foreign-trade-confidence ${level}`}>{label}</span>; }
 function nullableNumber(value: string) { const number = Number(value); return value.trim() && Number.isFinite(number) ? number : null; }
 function documentTypeLabel(type: ForeignTradeDocumentType) { return documentTypes.find((item) => item.value === type)?.label || type; }
+function productDocumentReviewCopy(type: ForeignTradeDocumentType) {
+  if (type === "commercial_invoice") return { label: "Commercial Invoice", numberLabel: "Número de invoice", article: "la Commercial Invoice" };
+  if (type === "packing_list") return { label: "Packing List", numberLabel: "Referencia del packing list", article: "el Packing List" };
+  if (type === "purchase_order") return { label: "orden de compra", numberLabel: "Referencia de orden", article: "la orden de compra" };
+  return { label: "proforma", numberLabel: "Número de proforma", article: "la proforma" };
+}
+function getDocumentScope(document: ForeignTradeDocument): ForeignTradeDocumentScope | null {
+  const sources = [document.review_result, document.extraction_result];
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const rawScope = (source as ForeignTradeDocumentExtraction).document_scope;
+    if (!rawScope || typeof rawScope !== "object") continue;
+    const totalPdfPages = Number(rawScope.total_pdf_pages);
+    const pageNumbers = Array.from(new Set((Array.isArray(rawScope.page_numbers) ? rawScope.page_numbers : [])
+      .map(Number)
+      .filter((page) => Number.isInteger(page) && page > 0 && (!Number.isFinite(totalPdfPages) || page <= totalPdfPages))))
+      .sort((left, right) => left - right);
+    if (!rawScope.detected || !pageNumbers.length) continue;
+    return {
+      selected_document_type: rawScope.selected_document_type || document.document_type,
+      detected: true,
+      page_start: pageNumbers[0],
+      page_end: pageNumbers[pageNumbers.length - 1] || pageNumbers[0],
+      page_numbers: pageNumbers,
+      total_pdf_pages: Number.isInteger(totalPdfPages) && totalPdfPages > 0 ? totalPdfPages : null,
+      confidence: typeof rawScope.confidence === "number" ? rawScope.confidence : null,
+      evidence: Array.isArray(rawScope.evidence) ? rawScope.evidence.map(String).filter(Boolean) : [],
+      warnings: Array.isArray(rawScope.warnings) ? rawScope.warnings.map(String).filter(Boolean) : [],
+    };
+  }
+  return null;
+}
+function formatPageNumbers(pages: number[]) {
+  const sortedPages = Array.from(new Set(pages.filter((page) => Number.isInteger(page) && page > 0))).sort((left, right) => left - right);
+  if (!sortedPages.length) return "sin páginas";
+  const ranges: string[] = [];
+  let start = sortedPages[0];
+  let end = start;
+  for (const page of sortedPages.slice(1)) {
+    if (page === end + 1) { end = page; continue; }
+    ranges.push(start === end ? String(start) : `${start}-${end}`);
+    start = page;
+    end = page;
+  }
+  ranges.push(start === end ? String(start) : `${start}-${end}`);
+  return ranges.join(", ");
+}
 function inferDocumentType(fileName: string, fallback: ForeignTradeDocumentType): ForeignTradeDocumentType {
   const normalized = fileName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   if (/rendicion|liquidacion.*agencia|cuenta.*gasto/.test(normalized)) return "agency_settlement";
   if (/solc|solicitud.*fond|provision.*fond/.test(normalized)) return "fund_request";
   if (/packing|lista.*empaque/.test(normalized)) return "packing_list";
+  if (/(^|\W)(bill of lading|b\/l|bl)(\W|$)|conocimiento.*embarque/.test(normalized)) return "bill_of_lading";
   if (/purchase.*order|orden.*compra/.test(normalized)) return "purchase_order";
   if (/commercial.*invoice|factura.*comercial/.test(normalized)) return "commercial_invoice";
   if (/flete|freight|maritim|naviera|transport|forwarder/.test(normalized)) return "freight_quote";

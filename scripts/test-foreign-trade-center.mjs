@@ -11,6 +11,7 @@ import {
   mergeExtractionPasses,
   mergeUnnumberedRows,
   missingExtractionRanges,
+  normalizeForeignTradeDocumentScope,
   prepareExtraction,
   prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
@@ -641,6 +642,17 @@ assert.equal(detail.rows[0].detail.totals.total_cbm, 0.048);
 assert.equal(detail.rows[0].detail.totals.costs_clp, 98025);
 
 const preparedExtraction = prepareExtraction({
+  document_scope: {
+    selected_document_type: "commercial_invoice",
+    detected: true,
+    page_start: 3,
+    page_end: 5,
+    page_numbers: [3, 4, 5],
+    total_pdf_pages: 9,
+    confidence: 0.96,
+    evidence: ["COMMERCIAL INVOICE"],
+    warnings: [],
+  },
   general: { supplier_name: "Proveedor prueba", currency: "USD", confidence: 0.9, warnings: [] },
   lines: [{
     source_index: 1,
@@ -666,8 +678,34 @@ assert.equal(preparedExtraction.extraction.lines[0].cbm_per_box, 0.05);
 assert.equal(preparedExtraction.extraction.lines[0].cbm_per_unit, 0.01);
 assert.equal(preparedExtraction.extraction.lines[0].source_page, 1);
 assert.equal(preparedExtraction.extraction.extraction_version, FOREIGN_TRADE_EXTRACTION_VERSION);
+assert.deepEqual(preparedExtraction.extraction.document_scope?.page_numbers, [3, 4, 5]);
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "line_total_mismatch"));
 assert.ok(preparedExtraction.warnings.some((warning) => warning.code === "cbm_mismatch"));
+
+assert.deepEqual(
+  normalizeForeignTradeDocumentScope({
+    selected_document_type: "packing_list",
+    detected: true,
+    page_start: 6,
+    page_end: 8,
+    page_numbers: [],
+    total_pdf_pages: 9,
+    confidence: 1.4,
+    evidence: ["PACKING LIST"],
+    warnings: [],
+  }, "packing_list"),
+  {
+    selected_document_type: "packing_list",
+    detected: true,
+    page_start: 6,
+    page_end: 8,
+    page_numbers: [6, 7, 8],
+    total_pdf_pages: 9,
+    confidence: 1,
+    evidence: ["PACKING LIST"],
+    warnings: [],
+  },
+);
 
 const preparedFundRequest = prepareFundRequestExtraction({
   general: {
@@ -852,7 +890,11 @@ assert.deepEqual(missingExtractionRanges(6, mergedExtraction.lines.slice(0, 3)),
 const pdfSkill = createForeignTradePdfReadingSkill("proforma");
 assert.equal(pdfSkill.version, FOREIGN_TRADE_PDF_SKILL_VERSION);
 assert.match(pdfSkill.headerPrompt, /todas las páginas/i);
+assert.match(pdfSkill.headerPrompt, /document_scope/i);
 assert.match(pdfSkill.linePrompt({ start: 31, end: 60 }, "verify"), /source_page/);
+const billOfLadingSkill = createForeignTradePdfReadingSkill("bill_of_lading");
+assert.match(billOfLadingSkill.headerPrompt, /bill of lading/i);
+assert.match(billOfLadingSkill.headerPrompt, /omitir por completo/i);
 const qualityExtraction = {
   document_totals: { total: 40, boxes: 4, gross_weight_kg: 8, cbm_total: 0.2, line_count: 2 },
   lines: [

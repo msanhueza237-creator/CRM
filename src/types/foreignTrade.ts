@@ -498,6 +498,18 @@ export interface ForeignTradeExtractionWarning {
   line_index: number | null;
 }
 
+export interface ForeignTradeDocumentScope {
+  selected_document_type: ForeignTradeDocumentType;
+  detected: boolean;
+  page_start: number | null;
+  page_end: number | null;
+  page_numbers: number[];
+  total_pdf_pages: number | null;
+  confidence: number | null;
+  evidence: string[];
+  warnings: string[];
+}
+
 export interface ForeignTradeExtractionGeneral {
   supplier_id: string | null;
   supplier_name: string | null;
@@ -565,6 +577,7 @@ export interface ForeignTradeExtractedLine {
 export interface ForeignTradeDocumentExtraction {
   extraction_version?: string;
   pdf_skill_version?: string | null;
+  document_scope?: ForeignTradeDocumentScope;
   general: ForeignTradeExtractionGeneral;
   lines: ForeignTradeExtractedLine[];
   document_totals: {

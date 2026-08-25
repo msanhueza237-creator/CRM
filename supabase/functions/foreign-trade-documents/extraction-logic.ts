@@ -1,6 +1,6 @@
 export type JsonRecord = Record<string, unknown>;
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v11_product_reconciliation";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v12_compound_sections";
 export const FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION = "fund_request_v1";
 export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v1";
 export const FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION = "freight_document_v1";
@@ -20,6 +20,44 @@ export type ExtractionRange = {
 export type ExtractionLineBatch = ExtractionRange & {
   data: unknown;
 };
+
+export type ForeignTradeDocumentScope = {
+  selected_document_type: string;
+  detected: boolean;
+  page_start: number | null;
+  page_end: number | null;
+  page_numbers: number[];
+  total_pdf_pages: number | null;
+  confidence: number | null;
+  evidence: string[];
+  warnings: string[];
+};
+
+export function normalizeForeignTradeDocumentScope(value: unknown, expectedDocumentType = ""): ForeignTradeDocumentScope {
+  const source = asObject(value);
+  const totalPdfPages = positiveInteger(source.total_pdf_pages);
+  const pageStart = positiveInteger(source.page_start);
+  const pageEnd = positiveInteger(source.page_end);
+  const explicitPages = (Array.isArray(source.page_numbers) ? source.page_numbers : [])
+    .map(positiveInteger)
+    .filter((page): page is number => page !== null && (!totalPdfPages || page <= totalPdfPages));
+  const rangedPages = pageStart && pageEnd && pageEnd >= pageStart
+    ? Array.from({ length: Math.min(500, pageEnd - pageStart + 1) }, (_, index) => pageStart + index)
+    : [];
+  const pageNumbers = [...new Set(explicitPages.length ? explicitPages : rangedPages)].sort((left, right) => left - right);
+  const detected = source.detected === true && pageNumbers.length > 0;
+  return {
+    selected_document_type: expectedDocumentType || nullableText(source.selected_document_type) || "other",
+    detected,
+    page_start: detected ? pageNumbers[0] : null,
+    page_end: detected ? pageNumbers[pageNumbers.length - 1] || null : null,
+    page_numbers: detected ? pageNumbers : [],
+    total_pdf_pages: totalPdfPages,
+    confidence: clamp(numeric(source.confidence), 0, 1),
+    evidence: stringArray(source.evidence, 12),
+    warnings: stringArray(source.warnings, 12),
+  };
+}
 
 export function buildExtractionRanges(expectedLineCount: unknown, chunkSize = 40): ExtractionRange[] {
   const expected = integer(expectedLineCount);
@@ -95,6 +133,7 @@ export function mergeExtractionPasses(headerValue: unknown, batches: ExtractionL
     warnings.push(`Se reconocieron ${lines.length} de ${expectedLineCount} filas comerciales físicas detectadas en el documento.`);
   }
   return {
+    document_scope: asObject(header.document_scope),
     general: asObject(header.general),
     document_totals: { ...documentTotals, line_count: expectedLineCount },
     lines,
@@ -233,6 +272,7 @@ function removeLikelyDuplicateAggregate(lines: JsonRecord[], documentTotalValue:
 
 export function prepareExtraction(value: unknown) {
   const source = asObject(value);
+  const documentScope = normalizeForeignTradeDocumentScope(source.document_scope);
   const general = asObject(source.general);
   const documentTotals = asObject(source.document_totals);
   const sourceLines = Array.isArray(source.lines) ? source.lines.slice(0, 500) : [];
@@ -395,6 +435,7 @@ export function prepareExtraction(value: unknown) {
     extraction: {
       extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
       pdf_skill_version: nullableText(source.pdf_skill_version),
+      document_scope: documentScope,
       general: {
         supplier_id: null,
         supplier_name: nullableText(general.supplier_name),
@@ -869,6 +910,11 @@ function numeric(value: unknown): number | null {
 function integer(value: unknown) {
   const result = numeric(value);
   return result === null ? null : Math.max(0, Math.round(result));
+}
+
+function positiveInteger(value: unknown) {
+  const result = integer(value);
+  return result !== null && result > 0 ? result : null;
 }
 
 function clamp(value: number | null, minimum: number, maximum: number) {

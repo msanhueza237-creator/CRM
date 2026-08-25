@@ -8,6 +8,7 @@ import {
   mergeCompactVerification,
   mergeUnnumberedRows,
   missingExtractionRanges,
+  normalizeForeignTradeDocumentScope,
   prepareExtraction,
   prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
@@ -16,6 +17,7 @@ import {
   type ExtractionRange,
   type JsonRecord,
 } from "./extraction-logic.ts";
+import { PDFDocument } from "npm:pdf-lib@1.17.1";
 import {
   FOREIGN_TRADE_PDF_SKILL_VERSION,
   assessPdfExtractionQuality,
@@ -51,6 +53,11 @@ Deno.serve(async (req) => {
       const payload = await readJson(req);
       const documentId = requiredUuid(payload.document_id, "documento");
       return json(await extractDocument(rest, documentId, requestId, req.signal), 200, req);
+    }
+    if (route === "download-section" && req.method === "POST") {
+      const payload = await readJson(req);
+      const documentId = requiredUuid(payload.document_id, "documento");
+      return await downloadDocumentSection(rest, documentId, req);
     }
     throw new HttpError(404, "Ruta no encontrada.");
   } catch (error) {
@@ -132,6 +139,51 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
     await setExtraction(rest, documentId, "failed", {}, null, [], message, null, requestId).catch(() => undefined);
     throw error;
   }
+}
+
+async function downloadDocumentSection(rest: RestClient, documentId: string, req: Request) {
+  const documents = await selectRows(rest,
+    `foreign_trade_documents?select=id,document_type,storage_bucket,storage_path,original_file_name,mime_type,extraction_result,review_result&id=eq.${documentId}&limit=1`,
+  );
+  const document = documents[0];
+  if (!document) throw new HttpError(404, "El documento no existe.");
+  if (String(document.mime_type || "").toLowerCase() !== "application/pdf") {
+    throw new HttpError(400, "La descarga por sección está disponible únicamente para archivos PDF.");
+  }
+  const reviewScope = normalizeForeignTradeDocumentScope(asObject(document.review_result).document_scope, String(document.document_type || "other"));
+  const extractionScope = normalizeForeignTradeDocumentScope(asObject(document.extraction_result).document_scope, String(document.document_type || "other"));
+  const scope = reviewScope.detected ? reviewScope : extractionScope;
+  if (!scope.detected || !scope.page_numbers.length) {
+    throw new HttpError(409, "Todavía no se identificaron las páginas de esta sección. Regenera el análisis con la clasificación correcta.");
+  }
+
+  const bytes = await downloadPrivateFile(rest, String(document.storage_bucket), String(document.storage_path));
+  let sourcePdf: PDFDocument;
+  try {
+    sourcePdf = await PDFDocument.load(bytes);
+  } catch {
+    throw new HttpError(422, "El PDF no se pudo dividir. Puede estar cifrado o dañado; el original permanece disponible.");
+  }
+  const pageCount = sourcePdf.getPageCount();
+  const pageNumbers = scope.page_numbers.filter((page) => page >= 1 && page <= pageCount);
+  if (!pageNumbers.length) throw new HttpError(422, "Las páginas detectadas no existen en el PDF original. Regenera el análisis.");
+
+  const sectionPdf = await PDFDocument.create();
+  const copiedPages = await sectionPdf.copyPages(sourcePdf, pageNumbers.map((page) => page - 1));
+  copiedPages.forEach((page) => sectionPdf.addPage(page));
+  sectionPdf.setTitle(`${documentTypeFileLabel(String(document.document_type || "document"))} - ${String(document.original_file_name || "documento")}`);
+  const sectionBytes = await sectionPdf.save();
+  const fileName = sectionFileName(String(document.original_file_name || "documento.pdf"), String(document.document_type || "document"));
+  return new Response(sectionBytes, {
+    status: 200,
+    headers: {
+      ...corsHeaders(req),
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `attachment; filename="${fileName}"`,
+      "Cache-Control": "private, no-store",
+      "X-Document-Pages": pageNumbers.join(","),
+    },
+  });
 }
 
 async function callOpenAiFundRequestExtraction(bytes: Uint8Array, filename: string, mimeType: string, requestId: string, requestSignal: AbortSignal) {
@@ -285,7 +337,6 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   const fileData = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
   const common = { apiKey, model, filename, mimeType, fileData, requestId, requestSignal, timeoutMs };
   const skill = createForeignTradePdfReadingSkill(documentType);
-  const unnumberedPromise = extractUnnumberedRowsSafely(common, skill, maxTokens);
   console.info("[foreign-trade-documents] OpenAI extraction started", {
     requestId,
     filename,
@@ -306,7 +357,20 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     schema: headerExtractionSchema,
     maxTokens: Math.min(maxTokens, 5_000),
   });
-  const headerTotals = asObject(asObject(headerResult.data).document_totals);
+  const documentScope = normalizeForeignTradeDocumentScope(asObject(headerResult.data).document_scope, documentType);
+  const headerData = { ...asObject(headerResult.data), document_scope: documentScope };
+  if (mimeType === "application/pdf" && !documentScope.detected) {
+    throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(documentType)} dentro del PDF. Cambia la clasificación o verifica el archivo.`);
+  }
+  const scopeInstruction = documentScope.detected
+    ? `\n\nRESTRICCIÓN DE SECCIÓN: trabaja únicamente con las páginas PDF ${documentScope.page_numbers.join(", ")} identificadas como ${documentTypeFileLabel(documentType)}. Ignora cualquier Invoice, Packing List, B/L u otro documento ubicado fuera de esas páginas. source_page debe conservar el número físico del PDF original.`
+    : "";
+  const scopedSkill: ForeignTradePdfReadingSkill = {
+    ...skill,
+    linePrompt: (range, mode) => skill.linePrompt(range, mode) + scopeInstruction,
+  };
+  const unnumberedPromise = extractUnnumberedRowsSafely(common, scopedSkill, maxTokens, scopeInstruction);
+  const headerTotals = asObject(headerData.document_totals);
   const expectedLineCount = Number(headerTotals.line_count || 0);
   console.info("[foreign-trade-documents] header extraction ready", {
     requestId,
@@ -314,9 +378,9 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   });
   const extractionTarget = expectedLineCount > 0 ? Math.min(500, expectedLineCount + 2) : expectedLineCount;
   const ranges = buildExtractionRanges(extractionTarget, lineChunkSize);
-  let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRangeSafely(common, skill, range, maxTokens, "extract"));
+  let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRangeSafely(common, scopedSkill, range, maxTokens, "extract"));
   let requestBatches = [...batches];
-  let merged = mergeExtractionPasses(headerResult.data, batches);
+  let merged = mergeExtractionPasses(headerData, batches);
   console.info("[foreign-trade-documents] first line pass ready", {
     requestId,
     expectedLineCount,
@@ -333,11 +397,11 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     const recovered = await mapWithConcurrency(
       recoveryRanges,
       rangeConcurrency,
-      async (range) => extractLineRangeSafely(common, skill, range, maxTokens, "recover"),
+      async (range) => extractLineRangeSafely(common, scopedSkill, range, maxTokens, "recover"),
     );
     batches = [...batches, ...recovered];
     requestBatches = [...requestBatches, ...recovered];
-    merged = mergeExtractionPasses(headerResult.data, batches);
+    merged = mergeExtractionPasses(headerData, batches);
   }
 
   let quality = assessPdfExtractionQuality(merged, lineChunkSize);
@@ -351,7 +415,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
     const verifiedBatches = await mapWithConcurrency(
       verificationRanges,
       rangeConcurrency,
-      async (range) => extractCompactLineRangeSafely(common, skill, range, maxTokens),
+      async (range) => extractCompactLineRangeSafely(common, scopedSkill, range, maxTokens),
     );
     requestBatches = [...requestBatches, ...verifiedBatches];
     const compactVerification = {
@@ -408,12 +472,13 @@ async function extractUnnumberedRowsSafely(
   common: Omit<StructuredExtractionInput, "maxTokens" | "stage" | "prompt" | "schemaName" | "schema">,
   skill: ForeignTradePdfReadingSkill,
   maxTokens: number,
+  scopeInstruction = "",
 ) {
   try {
     const result = await callOpenAiStructuredExtraction({
       ...common,
       stage: "scan-unnumbered-rows",
-      prompt: `Actúa como segundo revisor de un documento ${skill.documentType}. Recorre visualmente todas las páginas y devuelve EXCLUSIVAMENTE productos comerciales que no tengan número o etiqueta de fila impresa en la primera columna. No devuelvas filas numeradas, encabezados, subtotales ni totales.\n\nPara cada producto sin número, source_index debe ser su posición física contando todas las filas comerciales anteriores, incluidas otras filas sin número; source_row_label debe ser null. Extrae nombre, cantidad, cajas, precio, importe, peso y CBM desde su propia línea. Presta especial atención a productos ubicados entre dos filas numeradas consecutivas. Si no existe ninguno, devuelve lines vacío. Nunca inventes una fila para explicar una diferencia de totales.`,
+      prompt: `Actúa como segundo revisor de un documento ${skill.documentType}. Recorre visualmente todas las páginas y devuelve EXCLUSIVAMENTE productos comerciales que no tengan número o etiqueta de fila impresa en la primera columna. No devuelvas filas numeradas, encabezados, subtotales ni totales.\n\nPara cada producto sin número, source_index debe ser su posición física contando todas las filas comerciales anteriores, incluidas otras filas sin número; source_row_label debe ser null. Extrae nombre, cantidad, cajas, precio, importe, peso y CBM desde su propia línea. Presta especial atención a productos ubicados entre dos filas numeradas consecutivas. Si no existe ninguno, devuelve lines vacío. Nunca inventes una fila para explicar una diferencia de totales.${scopeInstruction}`,
       schemaName: "foreign_trade_document_unnumbered_rows",
       schema: lineExtractionSchema,
       maxTokens: Math.min(maxTokens, 3_000),
@@ -622,6 +687,22 @@ const nullableString = { anyOf: [{ type: "string", maxLength: 2000 }, { type: "n
 const nullableNumber = { anyOf: [{ type: "number" }, { type: "null" }] };
 const nullableInteger = { anyOf: [{ type: "integer" }, { type: "null" }] };
 const warningsSchema = { type: "array", maxItems: 20, items: { type: "string", maxLength: 300 } };
+const documentScopeSchema: JsonRecord = {
+  type: "object",
+  additionalProperties: false,
+  required: ["selected_document_type", "detected", "page_start", "page_end", "page_numbers", "total_pdf_pages", "confidence", "evidence", "warnings"],
+  properties: {
+    selected_document_type: { type: "string", maxLength: 80 },
+    detected: { type: "boolean" },
+    page_start: nullableInteger,
+    page_end: nullableInteger,
+    page_numbers: { type: "array", maxItems: 500, items: { type: "integer", minimum: 1, maximum: 5000 } },
+    total_pdf_pages: nullableInteger,
+    confidence: nullableNumber,
+    evidence: { type: "array", maxItems: 12, items: { type: "string", maxLength: 300 } },
+    warnings: { type: "array", maxItems: 12, items: { type: "string", maxLength: 300 } },
+  },
+};
 const generalSchema: JsonRecord = {
   type: "object",
   additionalProperties: false,
@@ -647,8 +728,9 @@ const documentTotalsSchema: JsonRecord = {
 const headerExtractionSchema: JsonRecord = {
   type: "object",
   additionalProperties: false,
-  required: ["general", "document_totals", "warnings"],
+  required: ["document_scope", "general", "document_totals", "warnings"],
   properties: {
+    document_scope: documentScopeSchema,
     general: generalSchema,
     document_totals: documentTotalsSchema,
     warnings: { type: "array", maxItems: 30, items: { type: "string", maxLength: 300 } },
@@ -1024,6 +1106,7 @@ function corsHeaders(req: Request) {
     "Access-Control-Allow-Origin": origin === configuredOrigin || localOrigin ? origin : configuredOrigin,
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-request-id",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Expose-Headers": "Content-Disposition, X-Document-Pages",
   };
 }
 
@@ -1054,6 +1137,23 @@ function bytesToBase64(bytes: Uint8Array) {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
   return btoa(binary);
+}
+
+function documentTypeFileLabel(documentType: string) {
+  return ({
+    commercial_invoice: "Commercial Invoice",
+    packing_list: "Packing List",
+    bill_of_lading: "Bill of Lading",
+    proforma: "Proforma",
+    purchase_order: "Purchase Order",
+  } as Record<string, string>)[documentType] || "documento seleccionado";
+}
+
+function sectionFileName(originalName: string, documentType: string) {
+  const base = originalName.replace(/\.pdf$/i, "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 120) || "documento";
+  const suffix = documentTypeFileLabel(documentType).toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  return `${base}-${suffix}.pdf`;
 }
 
 function extractOutputText(payload: JsonRecord) {

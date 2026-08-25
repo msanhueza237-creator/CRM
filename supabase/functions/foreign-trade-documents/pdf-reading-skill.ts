@@ -4,13 +4,14 @@ import {
   type JsonRecord,
 } from "./extraction-logic.ts";
 
-export const FOREIGN_TRADE_PDF_SKILL_VERSION = "foreign_trade_pdf_reader_v1";
+export const FOREIGN_TRADE_PDF_SKILL_VERSION = "foreign_trade_pdf_reader_v2_compound_sections";
 
 export type ForeignTradePdfDocumentType =
   | "proforma"
   | "purchase_order"
   | "commercial_invoice"
   | "packing_list"
+  | "bill_of_lading"
   | string;
 
 export type ForeignTradePdfReadingSkill = {
@@ -52,6 +53,11 @@ const documentProfiles: Record<string, { label: string; headerRules: string; lin
     headerRules: "Prioriza Packing List No., Shipment No. o la referencia de embarque. Los precios pueden no existir y deben permanecer null.",
     lineRules: "Prioriza cantidad, cajas, peso neto, peso bruto, dimensiones y CBM. No interpretes peso o volumen como precio.",
   },
+  bill_of_lading: {
+    label: "bill of lading (B/L)",
+    headerRules: "Prioriza B/L No., Bill of Lading No., Booking No., naviera, buque, viaje, shipper, consignee, notify party, puertos, fecha on board y números de contenedor. Conserva esos antecedentes visibles en observaciones sin inventar campos.",
+    lineRules: "Extrae solo bultos o productos descritos dentro del B/L seleccionado. No copies líneas comerciales de una Invoice o Packing List adjunta en otras páginas.",
+  },
 };
 
 export function createForeignTradePdfReadingSkill(documentType: ForeignTradePdfDocumentType): ForeignTradePdfReadingSkill {
@@ -64,12 +70,18 @@ export function createForeignTradePdfReadingSkill(documentType: ForeignTradePdfD
   return {
     version: FOREIGN_TRADE_PDF_SKILL_VERSION,
     documentType,
-    headerPrompt: `Actúa como lector documental especializado en comercio exterior. Analiza visual y textualmente
-todas las páginas u hojas de este ${profile.label}; no leas solo la primera página ni una muestra.
+    headerPrompt: `Actúa como lector documental especializado en comercio exterior. El archivo puede contener
+varios documentos concatenados, por ejemplo Bill of Lading, Commercial Invoice y Packing List. Debes localizar
+EXCLUSIVAMENTE la sección que corresponda a ${profile.label} y omitir por completo las demás secciones.
+
+Analiza visual y textualmente todas las páginas u hojas para identificar los límites de esa sección; no leas solo
+la primera página ni una muestra. Completa document_scope con todas las páginas PDF que realmente pertenecen a
+${profile.label}. Usa números de página físicos comenzando en 1. Si la sección no existe, marca detected=false,
+deja page_numbers vacío y no atribuyas datos de otro documento al tipo seleccionado.
 
 Objetivo de esta pasada:
-1. Extraer encabezado, condiciones y totales impresos.
-2. Contar el número EXACTO de filas comerciales físicas del documento.
+1. Extraer encabezado, condiciones y totales impresos únicamente dentro de la sección seleccionada.
+2. Contar el número EXACTO de filas comerciales físicas de esa sección.
 3. Conservar la trazabilidad y señalar datos ausentes o ambiguos.
 
 Cuenta cada producto real una vez aunque su descripción continúe en otra línea. Incluye productos sin
