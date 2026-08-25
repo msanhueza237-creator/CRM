@@ -60,6 +60,11 @@ Deno.serve(async (req) => {
       const documentId = requiredUuid(payload.document_id, "documento");
       return json(await detectDocumentSection(rest, documentId, requestId, req.signal), 200, req);
     }
+    if (route === "set-section" && req.method === "POST") {
+      const payload = await readJson(req);
+      const documentId = requiredUuid(payload.document_id, "documento");
+      return json(await setDocumentSection(rest, documentId, payload.page_numbers, requestId), 200, req);
+    }
     if (route === "download-section" && req.method === "POST") {
       const payload = await readJson(req);
       const documentId = requiredUuid(payload.document_id, "documento");
@@ -76,7 +81,7 @@ Deno.serve(async (req) => {
 
 async function detectDocumentSection(rest: RestClient, documentId: string, requestId: string, requestSignal: AbortSignal) {
   const documents = await selectRows(rest,
-    `foreign_trade_documents?select=id,document_type,storage_bucket,storage_path,original_file_name,mime_type,parse_status,extraction_result&id=eq.${documentId}&limit=1`,
+    `foreign_trade_documents?select=id,document_type,storage_bucket,storage_path,original_file_name,mime_type,parse_status,extraction_result,review_result&id=eq.${documentId}&limit=1`,
   );
   const document = documents[0];
   if (!document) throw new HttpError(404, "El documento no existe.");
@@ -89,6 +94,19 @@ async function detectDocumentSection(rest: RestClient, documentId: string, reque
     throw new HttpError(422, "El PDF original no se pudo abrir o está protegido.");
   });
   const pageCount = sourcePdf.getPageCount();
+  const storedScope = preferredStoredDocumentScope(document, documentType);
+  if (storedScope) {
+    const reusableScope = normalizeScopeForPdf(storedScope, pageCount);
+    if (reusableScope.detected) {
+      console.info("[foreign-trade-documents] stored section reused", {
+        requestId,
+        documentId,
+        documentType,
+        pageNumbers: reusableScope.page_numbers,
+      });
+      return { documentId, status: String(document.parse_status || "uploaded"), scope: reusableScope, reused: true };
+    }
+  }
   const detected = await callOpenAiDocumentScopeDetection(
     bytes,
     String(document.original_file_name),
@@ -111,9 +129,56 @@ async function detectDocumentSection(rest: RestClient, documentId: string, reque
   return { documentId, status: String(document.parse_status || "uploaded"), scope };
 }
 
+async function setDocumentSection(
+  rest: RestClient,
+  documentId: string,
+  rawPageNumbers: unknown,
+  requestId: string,
+) {
+  const documents = await selectRows(rest,
+    `foreign_trade_documents?select=id,document_type,storage_bucket,storage_path,original_file_name,mime_type,parse_status,extraction_result,review_result&id=eq.${documentId}&limit=1`,
+  );
+  const document = documents[0];
+  if (!document) throw new HttpError(404, "El documento no existe.");
+  if (!isPdfDocumentRecord(document)) throw new HttpError(400, "La definición de páginas solo está disponible para archivos PDF.");
+  const documentType = String(document.document_type || "other");
+  if (!isSectionAwareDocumentType(documentType)) throw new HttpError(400, "Esta clasificación no utiliza separación de páginas.");
+  if (String(document.parse_status || "") === "confirmed") {
+    throw new HttpError(409, "El documento confirmado no puede cambiar de sección sin reemplazarlo.");
+  }
+
+  const bytes = await downloadPrivateFile(rest, String(document.storage_bucket), String(document.storage_path));
+  const sourcePdf = await PDFDocument.load(bytes).catch(() => {
+    throw new HttpError(422, "El PDF original no se pudo abrir o está protegido.");
+  });
+  const pageCount = sourcePdf.getPageCount();
+  const pageNumbers = normalizeManualPageNumbers(rawPageNumbers, pageCount);
+  if (!pageNumbers.length) throw new HttpError(400, `Indica al menos una página válida entre 1 y ${pageCount}.`);
+  const scope = normalizeScopeForPdf(normalizeForeignTradeDocumentScope({
+    selected_document_type: documentType,
+    detected: true,
+    page_start: pageNumbers[0],
+    page_end: pageNumbers[pageNumbers.length - 1],
+    page_numbers: pageNumbers,
+    total_pdf_pages: pageCount,
+    confidence: 1,
+    evidence: ["Páginas verificadas manualmente por Administración."],
+    warnings: [],
+  }, documentType), pageCount);
+  await persistDiscoveredDocumentScope(rest, document, scope, "manual_admin_review");
+  console.info("[foreign-trade-documents] manual section saved", {
+    requestId,
+    documentId,
+    documentType,
+    pageNumbers,
+    totalPdfPages: pageCount,
+  });
+  return { documentId, status: String(document.parse_status || "uploaded"), scope };
+}
+
 async function extractDocument(rest: RestClient, documentId: string, requestId: string, requestSignal: AbortSignal) {
   const documents = await selectRows(rest,
-    `foreign_trade_documents?select=id,operation_id,document_type,storage_bucket,storage_path,original_file_name,mime_type,file_size,parse_status&id=eq.${documentId}&limit=1`,
+    `foreign_trade_documents?select=id,operation_id,document_type,storage_bucket,storage_path,original_file_name,mime_type,file_size,parse_status,extraction_result,review_result&id=eq.${documentId}&limit=1`,
   );
   const document = documents[0];
   if (!document) throw new HttpError(404, "El documento no existe.");
@@ -129,6 +194,7 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
     const bytes = await downloadPrivateFile(rest, String(document.storage_bucket), String(document.storage_path));
     if (bytes.byteLength !== fileSize) console.warn("[foreign-trade-documents] file size differs", { requestId, documentId });
     const documentType = String(document.document_type || "other");
+    const storedScope = preferredStoredDocumentScope(document, documentType);
     const openAiResult = documentType === "fund_request"
       ? await callOpenAiFundRequestExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
       : documentType === "agency_settlement"
@@ -147,6 +213,7 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
               if (!scope.detected) return;
               await persistDetectedDocumentScope(rest, documentId, requestId, scope, model);
             },
+            storedScope,
           );
     const prepared = documentType === "fund_request"
       ? prepareFundRequestExtraction(openAiResult.data)
@@ -448,6 +515,7 @@ async function callOpenAiExtraction(
   requestId: string,
   requestSignal: AbortSignal,
   onHeader?: (header: JsonRecord, model: string) => Promise<void>,
+  storedScope: ReturnType<typeof normalizeForeignTradeDocumentScope> | null = null,
 ) {
   const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
   if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
@@ -461,6 +529,19 @@ async function callOpenAiExtraction(
   const fileData = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
   const common = { apiKey, model, filename, mimeType, fileData, requestId, requestSignal, timeoutMs };
   const skill = createForeignTradePdfReadingSkill(documentType);
+  const trustedScope = mimeType === "application/pdf" && storedScope?.detected
+    ? storedScope
+    : null;
+  const preScopedPdf = trustedScope
+    ? await createScopedPdfData(bytes, trustedScope.page_numbers, requestId)
+    : null;
+  const headerCommon = preScopedPdf ? { ...common, fileData: preScopedPdf.fileData } : common;
+  const trustedPageMapping = preScopedPdf
+    ? preScopedPdf.originalPageNumbers.map((page, index) => `${index + 1}->${page}`).join(", ")
+    : "";
+  const trustedScopeInstruction = trustedScope
+    ? `\n\nSECCION YA RECONOCIDA Y VALIDADA: no vuelvas a decidir si existe. Usa exclusivamente las paginas fisicas originales ${trustedScope.page_numbers.join(", ")} para ${documentTypeFileLabel(documentType)}.${trustedPageMapping ? ` El PDF adjunto ya fue recortado. Mapeo pagina adjunta->pagina fisica original: ${trustedPageMapping}.` : ""} Devuelve document_scope.detected=true y conserva exactamente esas paginas fisicas originales en document_scope.page_numbers. No rechaces la seccion por no ver paginas externas que fueron retiradas deliberadamente.`
+    : "";
   console.info("[foreign-trade-documents] OpenAI extraction started", {
     requestId,
     filename,
@@ -471,25 +552,28 @@ async function callOpenAiExtraction(
     lineChunkSize,
     rangeConcurrency,
     pdfSkillVersion: skill.version,
+    reusedStoredScope: Boolean(trustedScope),
+    storedScopePages: trustedScope?.page_numbers || [],
   });
 
   const headerResult = await callOpenAiStructuredExtraction({
-    ...common,
+    ...headerCommon,
     stage: "header",
-    prompt: skill.headerPrompt,
+    prompt: skill.headerPrompt + trustedScopeInstruction,
     schemaName: "foreign_trade_document_header",
     schema: headerExtractionSchema,
     maxTokens: Math.min(maxTokens, 5_000),
   });
-  const documentScope = normalizeForeignTradeDocumentScope(asObject(headerResult.data).document_scope, documentType);
+  const detectedHeaderScope = normalizeForeignTradeDocumentScope(asObject(headerResult.data).document_scope, documentType);
+  const documentScope = trustedScope || detectedHeaderScope;
   const headerData = { ...asObject(headerResult.data), document_scope: documentScope };
   await onHeader?.(headerData, model);
   if (mimeType === "application/pdf" && !documentScope.detected) {
     throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(documentType)} dentro del PDF. Cambia la clasificación o verifica el archivo.`);
   }
-  const scopedPdf = mimeType === "application/pdf" && documentScope.detected
+  const scopedPdf = preScopedPdf || (mimeType === "application/pdf" && documentScope.detected
     ? await createScopedPdfData(bytes, documentScope.page_numbers, requestId)
-    : null;
+    : null);
   const lineCommon = scopedPdf ? { ...common, fileData: scopedPdf.fileData } : common;
   const pageMapping = scopedPdf
     ? scopedPdf.originalPageNumbers.map((page, index) => `${index + 1}→${page}`).join(", ")
@@ -1263,6 +1347,26 @@ function normalizeScopeForPdf(
   scope.page_end = scope.page_numbers.length ? Math.max(...scope.page_numbers) : null;
   scope.detected = scope.detected && scope.page_numbers.length > 0;
   return scope;
+}
+
+function normalizeManualPageNumbers(value: unknown, pageCount: number) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(Number))]
+    .filter((page) => Number.isInteger(page) && page >= 1 && page <= pageCount)
+    .sort((left, right) => left - right);
+}
+
+function preferredStoredDocumentScope(document: JsonRecord, documentType: string) {
+  const reviewScope = normalizeForeignTradeDocumentScope(
+    asObject(document.review_result).document_scope,
+    documentType,
+  );
+  if (reviewScope.detected) return reviewScope;
+  const extractionScope = normalizeForeignTradeDocumentScope(
+    asObject(document.extraction_result).document_scope,
+    documentType,
+  );
+  return extractionScope.detected ? extractionScope : null;
 }
 
 async function downloadPrivateFile(rest: RestClient, bucket: string, path: string) {

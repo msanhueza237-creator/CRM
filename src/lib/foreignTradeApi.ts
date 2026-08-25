@@ -438,6 +438,14 @@ export async function detectForeignTradeDocumentSection(documentId: string, sign
   }>("detect-section", { document_id: documentId }, signal);
 }
 
+export async function setForeignTradeDocumentSection(documentId: string, pageNumbers: number[]) {
+  return foreignTradeDocumentRequest<{
+    documentId: string;
+    status: string;
+    scope: ForeignTradeDocumentScope;
+  }>("set-section", { document_id: documentId, page_numbers: pageNumbers });
+}
+
 export async function updateForeignTradeDocumentType(documentId: string, documentType: ForeignTradeDocumentType) {
   requireSupabase();
   const { error } = await supabase!.rpc("update_foreign_trade_document_type", {

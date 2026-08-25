@@ -34,6 +34,7 @@ import {
   getForeignTradeExpenseReconciliations,
   reconcileForeignTradeDocument,
   searchForeignTradeCatalog,
+  setForeignTradeDocumentSection,
   updateForeignTradeDocumentType,
   uploadForeignTradeDocument,
 } from "../../lib/foreignTradeApi";
@@ -163,11 +164,25 @@ export function ForeignTradeDocumentsPanel({
     const previous = extractionControllers.current.get(documentId);
     previous?.abort();
     const controller = new AbortController();
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 150_000);
     extractionControllers.current.set(documentId, controller);
     setExtractingIds((current) => new Set(current).add(documentId));
     try {
       return await extractForeignTradeDocument(documentId, controller.signal);
+    } catch (extractionError) {
+      if (timedOut || !controller.signal.aborted) {
+        await cancelForeignTradeDocumentExtraction(documentId).catch(() => undefined);
+      }
+      if (timedOut) {
+        throw new Error("El servidor interrumpió el análisis después de 150 segundos. El documento quedó disponible para reintentar y no permanecerá bloqueado en Analizando.");
+      }
+      throw extractionError;
     } finally {
+      window.clearTimeout(timeout);
       if (extractionControllers.current.get(documentId) === controller) {
         extractionControllers.current.delete(documentId);
         setExtractingIds((current) => {
@@ -448,6 +463,29 @@ export function ForeignTradeDocumentsPanel({
     } finally { setBusyId(""); }
   }
 
+  async function defineDocumentSection(document: ForeignTradeDocument) {
+    const currentScope = getDocumentScope(document);
+    const currentPages = currentScope?.page_numbers.length ? formatPageNumbers(currentScope.page_numbers) : "";
+    const value = window.prompt(
+      `Indica las páginas físicas del PDF que corresponden a ${documentTypeLabel(document.document_type)}. Puedes usar rangos como 2-5 o una lista como 2,3,5.`,
+      currentPages,
+    );
+    if (value === null) return;
+    const pageNumbers = parsePageSelection(value);
+    if (!pageNumbers.length) {
+      setError("No se reconocieron páginas válidas. Usa un formato como 2-5 o 2,3,5.");
+      return;
+    }
+    setBusyId(`pages:${document.id}`); setError(""); setMessage("Guardando las páginas verificadas...");
+    try {
+      const result = await setForeignTradeDocumentSection(document.id, pageNumbers);
+      await load();
+      setMessage(`${documentTypeLabel(document.document_type)} definido en página${result.scope.page_numbers.length === 1 ? "" : "s"} ${formatPageNumbers(result.scope.page_numbers)}. Ahora puedes analizar o descargar la sección sin reconocimiento adicional.`);
+    } catch (sectionError) {
+      setError(humanizeDocumentError(sectionError));
+    } finally { setBusyId(""); }
+  }
+
   return (
     <section className="foreign-trade-documents-layout">
       <form className="panel foreign-trade-document-upload" onSubmit={upload}>
@@ -503,6 +541,7 @@ export function ForeignTradeDocumentsPanel({
               <div className="foreign-trade-row-actions">
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
                 {isPdf && sectionAwareDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" title={sectionScope?.detected ? `Descargar solo ${documentTypeLabel(document.document_type)}` : `Detectar y descargar solo ${documentTypeLabel(document.document_type)}`} disabled={busyId === `section:${document.id}`} onClick={() => void downloadDocumentSection(document)}>{busyId === `section:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {sectionScope?.detected ? "Sección" : "Detectar sección"}</button> : null}
+                {isPdf && sectionAwareDocumentTypes.has(document.document_type) && document.parse_status !== "confirmed" ? <button className="ghost-button" type="button" title="Corregir manualmente las páginas de esta sección" disabled={isExtracting || busyId === `pages:${document.id}`} onClick={() => void defineDocumentSection(document)}>{busyId === `pages:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <ScanText size={16} />} Páginas</button> : null}
                 <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title={document.parse_status === "confirmed" ? "Cambiar el original y retirar sus datos derivados" : "Cambiar el archivo conservando su clasificación"}><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label>
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
                 {document.parse_status === "confirmed" && productExtractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Link2 size={16} /> Conciliar productos</button> : null}
@@ -1381,6 +1420,22 @@ function formatPageNumbers(pages: number[]) {
   ranges.push(start === end ? String(start) : `${start}-${end}`);
   return ranges.join(", ");
 }
+function parsePageSelection(value: string) {
+  const pages = new Set<number>();
+  for (const part of value.split(",").map((item) => item.trim()).filter(Boolean)) {
+    const range = /^(\d+)\s*-\s*(\d+)$/.exec(part);
+    if (range) {
+      const start = Number(range[1]);
+      const end = Number(range[2]);
+      if (start < 1 || end < start || end - start > 500) continue;
+      for (let page = start; page <= end; page += 1) pages.add(page);
+      continue;
+    }
+    const page = Number(part);
+    if (Number.isInteger(page) && page > 0) pages.add(page);
+  }
+  return [...pages].sort((left, right) => left - right);
+}
 function inferDocumentType(fileName: string, fallback: ForeignTradeDocumentType): ForeignTradeDocumentType {
   const normalized = fileName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   if (/rendicion|liquidacion.*agencia|cuenta.*gasto/.test(normalized)) return "agency_settlement";
@@ -1410,6 +1465,7 @@ function humanizeDocumentError(error: unknown) {
     : String(details.message || details.details || details.hint || "No se pudo procesar el documento.");
   if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase.";
   if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
+  if (/no se encontr[oó] una secci[oó]n|no se identificaron p[aá]ginas|reconocimiento/i.test(message)) return "No se pudo reconocer la sección automáticamente. Usa el botón Páginas e indica el rango físico del PDF, por ejemplo 2-5.";
   if (/confirm_foreign_trade_fund_request_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase6_fund_requests.sql.";
   if (/confirm_foreign_trade_agency_settlement_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase7_agency_settlements.sql.";
   if (/confirm_foreign_trade_freight_document/i.test(message)) return "Falta actualizar la base de datos con la migración de documentos de transporte.";

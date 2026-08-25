@@ -41,8 +41,17 @@ const documentsFunctionSource = await readFile(
 assert.match(documentsPanelSource, /detectForeignTradeDocumentSection\(documentId\)/);
 assert.match(documentsPanelSource, /Guardar y detectar/);
 assert.match(documentsFunctionSource, /route === "detect-section"/);
+assert.match(documentsFunctionSource, /route === "set-section"/);
+assert.match(documentsFunctionSource, /stored section reused/);
+assert.match(documentsFunctionSource, /manual_admin_review/);
 assert.match(documentsFunctionSource, /createScopedPdfData\(bytes, documentScope\.page_numbers/);
 assert.match(documentsFunctionSource, /extractLineRangeSafely\(lineCommon/);
+assert.match(documentsFunctionSource, /preferredStoredDocumentScope\(document, documentType\)/);
+assert.match(documentsFunctionSource, /SECCION YA RECONOCIDA Y VALIDADA/);
+assert.match(documentsPanelSource, /cancelForeignTradeDocumentExtraction\(documentId\)/);
+assert.match(documentsPanelSource, /150_000/);
+assert.match(documentsPanelSource, /setForeignTradeDocumentSection\(document\.id, pageNumbers\)/);
+assert.match(documentsPanelSource, /Páginas<\/button>/);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
