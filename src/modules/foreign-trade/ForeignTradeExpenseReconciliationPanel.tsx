@@ -29,6 +29,7 @@ import type {
 } from "../../types/foreignTrade";
 import { calculateForeignTradeReconciliation } from "./foreignTradeReconciliationEngine";
 import { hydrateActualAmountsFromCosts } from "./foreignTradeReconciliationHydration";
+import { isAgencySettlementSummaryConcept } from "./foreignTradeAgencySettlementReview";
 
 type DraftLine = SaveForeignTradeExpenseReconciliationInput["lines"][number];
 type Draft = Omit<SaveForeignTradeExpenseReconciliationInput, "lines"> & { lines: DraftLine[] };
@@ -86,7 +87,7 @@ export function ForeignTradeExpenseReconciliationPanel({
       setReconciliations(nextReconciliations);
       setDocuments(nextDocuments);
       const targetId = preferredId || selectedId;
-      const target = nextReconciliations.find((item) => item.id === targetId);
+      const target = nextReconciliations.find((item) => item.id === targetId) || nextReconciliations[0];
       if (target) {
         setSelectedId(target.id);
         setDraft(draftFromReconciliation(target, costs));
@@ -260,7 +261,7 @@ export function ForeignTradeExpenseReconciliationPanel({
         {reconciliations.map((item) => <button className={selectedId === item.id ? "active" : ""} type="button" key={item.id} onClick={() => selectReconciliation(item)}>
           <span><strong>{item.title}</strong><small>{item.agency_invoice_number ? `Factura ${item.agency_invoice_number}` : "Sin factura final"}</small></span>
           <em className={`foreign-trade-reconciliation-status ${item.status}`}>{statusLabel(item.status)}</em>
-          <b>{item.totals.refund_due_clp > 0 ? `${formatClp(item.totals.refund_due_clp)} por devolver` : formatClp(item.totals.actual_total_clp)}</b>
+          <b>{formatReconciliationListTotal(item, costs)}</b>
         </button>)}
         {!reconciliations.length ? <p>Aún no hay rendiciones. Crea una para comparar el depósito con los documentos finales.</p> : null}
       </div>
@@ -517,7 +518,7 @@ function draftFromReconciliation(item: ForeignTradeExpenseReconciliation, costs:
         actual_currency: hydrated.currency,
         actual_exchange_rate_clp: hydrated.exchangeRateClp === null ? "" : String(hydrated.exchangeRateClp),
         recoverable_tax: line.recoverable_tax,
-        include_in_costing: line.include_in_costing,
+        include_in_costing: isAgencySettlementSummaryConcept(line.concept) ? false : line.include_in_costing,
         notes: line.notes || "",
         metadata: hydrated.sourceCostLineId
           ? { ...(line.metadata || {}), autofilled_from_cost_line_id: hydrated.sourceCostLineId }
@@ -552,5 +553,15 @@ function humanizeError(error: unknown) { const message = error instanceof Error 
 
 const clpFormatter = new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 function formatClp(value: number) { return clpFormatter.format(Number(value || 0)); }
+function formatReconciliationListTotal(item: ForeignTradeExpenseReconciliation, costs: ForeignTradeCostLine[]) {
+  const calculation = calculateForeignTradeReconciliation(
+    item.remittance_amount_clp,
+    item.refund_received_clp,
+    draftFromReconciliation(item, costs).lines,
+  );
+  return calculation.refundDueClp > 0
+    ? `${formatClp(calculation.refundDueClp)} por devolver`
+    : formatClp(calculation.actualTotalClp);
+}
 const exchangeRateFormatter = new Intl.NumberFormat("es-CL", { minimumFractionDigits: 0, maximumFractionDigits: 6 });
 function formatExchangeRate(value: number) { return `$${exchangeRateFormatter.format(Number(value || 0))} CLP`; }

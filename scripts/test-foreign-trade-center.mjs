@@ -532,6 +532,11 @@ const normalizedSettlementSummary = normalizeForeignTradeAgencySettlementReview(
 });
 assert.equal(normalizedSettlementSummary.review.lines[0].include, false, "los subtotales no deben duplicar gastos reales");
 assert.equal(normalizedSettlementSummary.review.lines[0].include_in_costing, false);
+const reconciliationWithoutDuplicatedSubtotal = calculateForeignTradeReconciliation(0, 0, [
+  { concept: "Servicio CAM", line_type: "operating_expense", provision_total_clp: 0, actual_net_clp: 100, actual_vat_clp: 19, actual_total_clp: 119 },
+  { concept: "Total Desembolsos", line_type: "operating_expense", provision_total_clp: 0, actual_net_clp: 0, actual_vat_clp: 0, actual_total_clp: 119 },
+]);
+assert.equal(reconciliationWithoutDuplicatedSubtotal.actualExpensesClp, 119, "los subtotales históricos tampoco deben inflar la rendición");
 
 const freightExtraction = prepareFreightDocumentExtraction({
   general: {

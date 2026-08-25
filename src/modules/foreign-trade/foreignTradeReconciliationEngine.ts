@@ -8,6 +8,7 @@ export type ForeignTradeReconciliationLineType =
   | "adjustment";
 
 export interface ForeignTradeReconciliationAmountLine {
+  concept?: string | null;
   line_type: ForeignTradeReconciliationLineType;
   provision_total_clp: number | string | null;
   provision_amount_original?: number | string | null;
@@ -69,12 +70,14 @@ export function calculateForeignTradeReconciliation(
     );
     const provision = resolvedProvisionTotal(line, provisionConversion);
     const actual = resolvedActualTotal(line);
-    if (isTax(line.line_type)) {
-      provisionTaxes = provisionTaxes.plus(provision);
-      actualTaxes = actualTaxes.plus(actual);
-    } else {
-      provisionExpenses = provisionExpenses.plus(provision);
-      actualExpenses = actualExpenses.plus(actual);
+    if (!isInformationalSummary(line.concept)) {
+      if (isTax(line.line_type)) {
+        provisionTaxes = provisionTaxes.plus(provision);
+        actualTaxes = actualTaxes.plus(actual);
+      } else {
+        provisionExpenses = provisionExpenses.plus(provision);
+        actualExpenses = actualExpenses.plus(actual);
+      }
     }
     const statedActual = money(line.actual_total_clp);
     const statedProvision = money(line.provision_total_clp);
@@ -169,6 +172,16 @@ function impliedExchangeRate(
 
 function isTax(type: ForeignTradeReconciliationLineType) {
   return type === "customs_duty" || type === "import_vat";
+}
+
+function isInformationalSummary(value: string | null | undefined) {
+  const normalized = String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "")
+    .trim();
+  return /^(total|subtotal|suma)(desembolsos|gastos|rendicion|facturas|documentos|general)?$/.test(normalized);
 }
 
 function money(value: number | string | null | undefined) {
