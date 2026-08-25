@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import {
   EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+  EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION,
   FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION,
   FOREIGN_TRADE_EXTRACTION_VERSION,
   FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
@@ -14,6 +15,7 @@ import {
   missingExtractionRanges,
   normalizeForeignTradeDocumentScope,
   parseEmbeddedTextInvoice,
+  parseEmbeddedTextPackingList,
   prepareExtraction,
   prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
@@ -100,8 +102,15 @@ assert.match(foreignTradeApiSource, /foreign_trade_resumable_endpoint_unreachabl
 assert.match(documentsPanelSource, /No se pudo abrir la ruta pública para cargar el archivo/);
 assert.match(documentsPanelSource, /setForeignTradeDocumentSection\(document\.id, pageNumbers\)/);
 assert.match(documentsPanelSource, /Páginas<\/button>/);
+assert.match(documentsPanelSource, /Confirmar y completar empaque/);
+assert.match(documentsFunctionSource, /callEmbeddedTextPackingListExtraction/);
+assert.match(foreignTradeApiSource, /confirm_foreign_trade_packing_list_document/);
+assert.match(foreignTradeApiSource, /confirm_foreign_trade_document_with_reconciliation/);
+assert.match(foreignTradeApiSource, /confirm_foreign_trade_document/);
+assert.match(foreignTradeApiSource, /isMissingForeignTradeRpc/);
 
 assert.equal(EMBEDDED_TEXT_INVOICE_PARSER_VERSION, "embedded_invoice_text_v2");
+assert.equal(EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION, "embedded_packing_list_text_v1");
 const embeddedInvoice = parseEmbeddedTextInvoice([
   [
     "INVOICE HZ26CF296",
@@ -137,6 +146,28 @@ assert.equal(embeddedInvoice.general.order_number, "TDC12");
 assert.equal(embeddedInvoice.pageNumbers[0], 7);
 assert.match(embeddedInvoice.warnings.join(" "), /repitió los números de fila 64/);
 assert.match(embeddedInvoice.warnings.join(" "), /omitió los números de fila 40/);
+
+const embeddedPackingList = parseEmbeddedTextPackingList([[
+  "PACKING LIST HZ26CF296",
+  "DATE 29-Apr-26 Contract NO TDC12 CONT NO. MSKU3215219 SEAL NO. ML-CN6387245",
+  "1 BRAND SUPER STARS ST-2BMC 20 pcs 2 CTNS 0.400 CBM 50 KGS 48 KGS",
+  "2 BRAND SUPER STARS ST-302 3/8 5 pcs",
+  "3 BRAND SUPER STARS ST-302 1/2 5 pcs 1 CTNS 0.100 CBM 12 KGS 10 KGS",
+  "540 CTNS 25.00 CBM 6111.00 KGS 5976 KGS",
+].join("\n")], [8]);
+assert.equal(embeddedPackingList.lines.length, 3);
+assert.equal(embeddedPackingList.coverage, 1);
+assert.equal(embeddedPackingList.lines[0].box_count, 2);
+assert.equal(embeddedPackingList.lines[0].cbm_total, 0.4);
+assert.equal(embeddedPackingList.lines[0].quantity_per_box, 10);
+assert.equal(embeddedPackingList.lines[1].box_count, null);
+assert.equal(embeddedPackingList.lines[2].model, "ST-302");
+assert.equal(embeddedPackingList.documentTotals.boxes, 540);
+assert.equal(embeddedPackingList.documentTotals.cbm_total, 25);
+assert.equal(embeddedPackingList.documentTotals.gross_weight_kg, 6111);
+assert.equal(embeddedPackingList.documentTotals.net_weight_kg, 5976);
+assert.equal(embeddedPackingList.general.order_number, "TDC12");
+assert.match(embeddedPackingList.warnings.join(" "), /compartir cajas/);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -418,6 +449,13 @@ const phase12Migration = await readFile(
 );
 await db.exec(phase12Migration);
 await db.exec(phase12Migration);
+
+const phase13Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase13_packing_list_enrichment.sql", import.meta.url),
+  "utf8",
+);
+await db.exec(phase13Migration);
+await db.exec(phase13Migration);
 
 const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
   id: "00000000-0000-4000-8000-000000000101",
@@ -1091,6 +1129,87 @@ await assert.rejects(
   /foreign_trade_document_not_ready/,
   "un documento confirmado no puede materializar líneas por segunda vez",
 );
+
+const packingOperation = await db.query(
+  "insert into public.import_shipments(supplier_id,reference,title,status) values ($1,'PACKING-001','Prueba Packing List','proforma_received') returning id",
+  [supplier.rows[0].id],
+);
+const packingOperationId = packingOperation.rows[0].id;
+const packingInvoiceDocument = await db.query(`
+  insert into public.foreign_trade_documents(
+    operation_id,supplier_id,document_type,original_file_name,storage_path,mime_type,
+    file_size,parse_status,extraction_result,review_result,confirmed_at,uploaded_by
+  ) values ($1,$2,'commercial_invoice','invoice-packing.pdf',$3,'application/pdf',1024,'confirmed','{}'::jsonb,'{}'::jsonb,now(),$4)
+  returning id
+`, [packingOperationId, supplier.rows[0].id, `${packingOperationId}/invoice-packing.pdf`, adminId]);
+const packingInvoiceDocumentId = packingInvoiceDocument.rows[0].id;
+const firstPackingProduct = await db.query(
+  "select public.upsert_foreign_trade_operation_line($1::jsonb) as id",
+  [JSON.stringify({
+    operation_id: packingOperationId,
+    product_name: "Li-battery vacuum pump BRAND SUPER STARS ST-2BMC",
+    supplier_model: "ST-2BMC",
+    quantity: "20",
+    currency: "USD",
+    unit_factory_cost: "38",
+    data_source: "document",
+  })],
+);
+const secondPackingProduct = await db.query(
+  "select public.upsert_foreign_trade_operation_line($1::jsonb) as id",
+  [JSON.stringify({
+    operation_id: packingOperationId,
+    product_name: "BRAND SUPER STARS ST-302 3/8; 1/2",
+    supplier_model: "ST-302",
+    quantity: "10",
+    currency: "USD",
+    unit_factory_cost: "2",
+    data_source: "document",
+  })],
+);
+await db.query(
+  "update public.foreign_trade_operation_lines set source_document_id=$1 where id in ($2,$3)",
+  [packingInvoiceDocumentId, firstPackingProduct.rows[0].id, secondPackingProduct.rows[0].id],
+);
+const packingDocument = await db.query(`
+  insert into public.foreign_trade_documents(
+    operation_id,supplier_id,document_type,original_file_name,storage_path,mime_type,
+    file_size,parse_status,extraction_result,uploaded_by
+  ) values ($1,$2,'packing_list','packing-list.pdf',$3,'application/pdf',1024,'review_required',$4::jsonb,$5)
+  returning id
+`, [packingOperationId, supplier.rows[0].id, `${packingOperationId}/packing-list.pdf`, JSON.stringify({}), adminId]);
+const packingDocumentId = packingDocument.rows[0].id;
+const packingReview = {
+  extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
+  general: { supplier_id: supplier.rows[0].id, order_number: "TDC12", currency: "USD" },
+  document_totals: { boxes: 3, cbm_total: 0.5, gross_weight_kg: 62, net_weight_kg: 58, line_count: 3 },
+  lines: embeddedPackingList.lines.map((line) => ({ ...line, include: true })),
+  warnings: embeddedPackingList.warnings,
+};
+const packingConfirmation = await db.query(
+  "select public.confirm_foreign_trade_packing_list_document($1,$2::jsonb) as result",
+  [packingDocumentId, JSON.stringify(packingReview)],
+);
+assert.equal(packingConfirmation.rows[0].result.inserted_lines, 0);
+assert.equal(packingConfirmation.rows[0].result.updated_lines, 2);
+assert.equal(packingConfirmation.rows[0].result.unmatched_lines, 0);
+const enrichedPackingProducts = await db.query(
+  "select product_name,quantity,quantity_per_box,box_count,cbm_total,gross_weight_kg,net_weight_kg,source_snapshot from public.foreign_trade_operation_lines where operation_id=$1 order by line_number",
+  [packingOperationId],
+);
+assert.equal(enrichedPackingProducts.rows.length, 2, "Packing List no debe crear productos duplicados");
+assert.equal(Number(enrichedPackingProducts.rows[0].box_count), 2);
+assert.equal(Number(enrichedPackingProducts.rows[0].cbm_total), 0.4);
+assert.equal(Number(enrichedPackingProducts.rows[0].quantity_per_box), 10);
+assert.equal(Number(enrichedPackingProducts.rows[1].box_count), 1);
+assert.equal(Number(enrichedPackingProducts.rows[1].cbm_total), 0.1);
+assert.equal(Number(enrichedPackingProducts.rows[1].quantity_per_box), 10);
+assert.equal(enrichedPackingProducts.rows[1].source_snapshot.packing_list_document_id, packingDocumentId);
+assert.equal(
+  (await db.query("select parse_status from public.foreign_trade_documents where id=$1", [packingDocumentId])).rows[0].parse_status,
+  "confirmed",
+);
+await db.query("delete from public.import_shipments where id=$1", [packingOperationId]);
 
 await db.query("select public.upsert_foreign_trade_operation_line($1::jsonb)", [
   JSON.stringify({

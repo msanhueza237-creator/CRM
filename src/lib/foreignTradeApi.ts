@@ -763,14 +763,36 @@ export async function deleteForeignTradeOperation(operationId: string, confirmat
   return result;
 }
 
-export async function confirmForeignTradeDocument(documentId: string, review: ForeignTradeDocumentExtraction) {
+export async function confirmForeignTradeDocument(
+  documentId: string,
+  review: ForeignTradeDocumentExtraction,
+  documentType: ForeignTradeDocumentType = "proforma",
+) {
   requireSupabase();
-  const { data, error } = await supabase!.rpc("confirm_foreign_trade_document_with_reconciliation", {
+  if (documentType === "packing_list") {
+    const { data, error } = await supabase!.rpc("confirm_foreign_trade_packing_list_document", {
+      p_document_id: documentId,
+      p_review: review,
+    });
+    if (error) throw error;
+    return data as ConfirmForeignTradeDocumentResult;
+  }
+
+  const enhanced = await supabase!.rpc("confirm_foreign_trade_document_with_reconciliation", {
     p_document_id: documentId,
     p_review: review,
   });
-  if (error) throw error;
-  return data as ConfirmForeignTradeDocumentResult;
+  if (!enhanced.error) return enhanced.data as ConfirmForeignTradeDocumentResult;
+  if (!isMissingForeignTradeRpc(enhanced.error, "confirm_foreign_trade_document_with_reconciliation")) {
+    throw enhanced.error;
+  }
+
+  const fallback = await supabase!.rpc("confirm_foreign_trade_document", {
+    p_document_id: documentId,
+    p_review: review,
+  });
+  if (fallback.error) throw fallback.error;
+  return fallback.data as ConfirmForeignTradeDocumentResult;
 }
 
 export async function reconcileForeignTradeDocument(documentId: string, supplierId?: string | null) {
@@ -779,7 +801,15 @@ export async function reconcileForeignTradeDocument(documentId: string, supplier
     p_document_id: documentId,
     p_supplier_id: supplierId || null,
   });
-  if (error) throw error;
+  if (error) {
+    if (!isMissingForeignTradeRpc(error, "reconcile_foreign_trade_document")) throw error;
+    return {
+      document_id: documentId,
+      supplier_id: supplierId || null,
+      summary: { total: 0, auto_matched: 0, suggested: 0, review: 0, unmatched: 0, confirmed: 0, rejected: 0 },
+      lines: [],
+    };
+  }
   return data as ForeignTradeProductReconciliationResult;
 }
 
@@ -905,6 +935,16 @@ function requireSupabase() {
   if (!isSupabaseConfigured || !supabase) {
     throw new Error("Conecta Supabase para administrar Comercio Exterior.");
   }
+}
+
+function isMissingForeignTradeRpc(error: unknown, functionName: string) {
+  const details = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  const code = String(details.code || "");
+  const message = [details.message, details.details, details.hint].filter(Boolean).join(" ");
+  return code === "PGRST202"
+    || code === "42883"
+    || new RegExp(`(?:function|schema cache).*${functionName}`, "i").test(message)
+    || new RegExp(`${functionName}.*(?:does not exist|not found)`, "i").test(message);
 }
 
 function decimal(value: string | undefined, label: string, required = false) {

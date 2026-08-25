@@ -1,5 +1,6 @@
 import {
   EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+  EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION,
   FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION,
   FOREIGN_TRADE_EXTRACTION_VERSION,
   FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION,
@@ -11,6 +12,7 @@ import {
   missingExtractionRanges,
   normalizeForeignTradeDocumentScope,
   parseEmbeddedTextInvoice,
+  parseEmbeddedTextPackingList,
   prepareExtraction,
   prepareAgencySettlementExtraction,
   prepareFundRequestExtraction,
@@ -41,6 +43,7 @@ const allowedMimeTypes = new Set([
 const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 const OPENAI_INLINE_FILE_MAX_BYTES = 8 * 1024 * 1024;
 const deterministicInvoiceDocumentTypes = new Set(["commercial_invoice", "proforma", "purchase_order"]);
+const deterministicPackingDocumentTypes = new Set(["packing_list"]);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
@@ -48,7 +51,7 @@ Deno.serve(async (req) => {
   try {
     const rest = getRestClient();
     const route = getRoute(req.url);
-    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, embeddedInvoiceParserVersion: EMBEDDED_TEXT_INVOICE_PARSER_VERSION, fundRequestExtractionVersion: FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION, agencySettlementExtractionVersion: FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION, freightDocumentExtractionVersion: FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
+    if (route === "health") return json({ ok: true, service: "foreign-trade-documents", extractionVersion: FOREIGN_TRADE_EXTRACTION_VERSION, embeddedInvoiceParserVersion: EMBEDDED_TEXT_INVOICE_PARSER_VERSION, embeddedPackingListParserVersion: EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION, fundRequestExtractionVersion: FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION, agencySettlementExtractionVersion: FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION, freightDocumentExtractionVersion: FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION, pdfSkillVersion: FOREIGN_TRADE_PDF_SKILL_VERSION, requestId }, 200, req);
 
     const user = await authenticateRequest(req, rest);
     const profile = await getProfile(rest, user.id);
@@ -111,6 +114,18 @@ async function detectDocumentSection(rest: RestClient, documentId: string, reque
       });
       return { documentId, status: String(document.parse_status || "uploaded"), scope: reusableScope, reused: true };
     }
+  }
+  const embeddedScope = await detectEmbeddedDocumentScopeSafely(bytes, documentType, pageCount, requestId);
+  if (embeddedScope) {
+    await persistDiscoveredDocumentScope(rest, document, embeddedScope.scope, embeddedScope.model);
+    console.info("[foreign-trade-documents] embedded section detection ready", {
+      requestId,
+      documentId,
+      documentType,
+      pageNumbers: embeddedScope.scope.page_numbers,
+      parserVersion: embeddedScope.model,
+    });
+    return { documentId, status: String(document.parse_status || "uploaded"), scope: embeddedScope.scope };
   }
   const detected = await callOpenAiDocumentScopeDetection(
     bytes,
@@ -230,7 +245,10 @@ async function extractDocument(rest: RestClient, document: JsonRecord, requestId
     const embeddedInvoiceResult = mimeType === "application/pdf" && deterministicInvoiceDocumentTypes.has(documentType)
       ? await callEmbeddedTextInvoiceExtraction(bytes, documentType, requestId, storedScope)
       : null;
-    const openAiResult = embeddedInvoiceResult || (
+    const embeddedPackingResult = mimeType === "application/pdf" && deterministicPackingDocumentTypes.has(documentType)
+      ? await callEmbeddedTextPackingListExtraction(bytes, documentType, requestId, storedScope)
+      : null;
+    const openAiResult = embeddedInvoiceResult || embeddedPackingResult || (
       documentType === "fund_request"
         ? await callOpenAiFundRequestExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
         : documentType === "agency_settlement"
@@ -619,6 +637,71 @@ async function callEmbeddedTextInvoiceExtraction(
   };
 }
 
+async function callEmbeddedTextPackingListExtraction(
+  bytes: Uint8Array,
+  documentType: string,
+  requestId: string,
+  storedScope: ReturnType<typeof normalizeForeignTradeDocumentScope> | null,
+) {
+  const scopedPdf = storedScope?.detected && storedScope.page_numbers.length
+    ? await createScopedPdfData(bytes, storedScope.page_numbers, requestId)
+    : null;
+  const parsed = await extractEmbeddedTextPackingListSafely(
+    scopedPdf?.bytes || bytes,
+    scopedPdf?.originalPageNumbers || [],
+    requestId,
+  );
+  if (!parsed || parsed.coverage < 0.95 || parsed.lines.length < 5) return null;
+
+  const pageNumbers = parsed.pageNumbers.length
+    ? parsed.pageNumbers
+    : storedScope?.page_numbers || Array.from({ length: parsed.pageCount }, (_, index) => index + 1);
+  const documentScope = storedScope?.detected
+    ? storedScope
+    : normalizeForeignTradeDocumentScope({
+      selected_document_type: documentType,
+      detected: true,
+      page_start: pageNumbers[0] || 1,
+      page_end: pageNumbers[pageNumbers.length - 1] || parsed.pageCount,
+      page_numbers: pageNumbers,
+      total_pdf_pages: parsed.pageCount,
+      confidence: parsed.coverage,
+      evidence: [`${parsed.lines.length} filas de empaque verificadas por texto incrustado.`],
+      warnings: [],
+    }, documentType);
+  console.info("[foreign-trade-documents] embedded text packing list extraction ready", {
+    requestId,
+    documentType,
+    extractedLineCount: parsed.lines.length,
+    candidateCount: parsed.candidateCount,
+    coverage: parsed.coverage,
+    documentTotals: parsed.documentTotals,
+    parserVersion: EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION,
+    skippedOpenAi: true,
+  });
+  return {
+    model: EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION,
+    requestId,
+    data: {
+      extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
+      pdf_skill_version: EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION,
+      document_scope: documentScope,
+      general: parsed.general,
+      document_totals: {
+        subtotal: null,
+        total: null,
+        cbm_total: parsed.documentTotals.cbm_total,
+        gross_weight_kg: parsed.documentTotals.gross_weight_kg,
+        net_weight_kg: parsed.documentTotals.net_weight_kg,
+        boxes: parsed.documentTotals.boxes,
+        line_count: parsed.lines.length,
+      },
+      lines: parsed.lines,
+      warnings: parsed.warnings,
+    },
+  };
+}
+
 async function callOpenAiExtraction(
   bytes: Uint8Array,
   filename: string,
@@ -920,6 +1003,71 @@ async function extractEmbeddedTextInvoiceSafely(
     });
     return null;
   }
+}
+
+async function extractEmbeddedTextPackingListSafely(
+  bytes: Uint8Array,
+  originalPageNumbers: number[],
+  requestId: string,
+) {
+  try {
+    const { extractText } = await import("npm:unpdf@1.8.1");
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("La lectura del Packing List excedió 15 segundos.")), 15_000);
+    });
+    const extracted = await Promise.race([extractText(bytes, { mergePages: false }), timeout])
+      .finally(() => clearTimeout(timeoutId));
+    const pages = Array.isArray(extracted.text) ? extracted.text : [extracted.text];
+    const result = parseEmbeddedTextPackingList(pages, originalPageNumbers);
+    if (result.lines.length < 5 || result.coverage < 0.95) {
+      console.info("[foreign-trade-documents] embedded text packing list parser not applicable", {
+        requestId,
+        extractedLineCount: result.lines.length,
+        candidateCount: result.candidateCount,
+        coverage: result.coverage,
+      });
+      return null;
+    }
+    return result;
+  } catch (error) {
+    console.warn("[foreign-trade-documents] embedded text packing list parser unavailable", {
+      requestId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function detectEmbeddedDocumentScopeSafely(
+  bytes: Uint8Array,
+  documentType: string,
+  pageCount: number,
+  requestId: string,
+) {
+  const parsed = deterministicPackingDocumentTypes.has(documentType)
+    ? await extractEmbeddedTextPackingListSafely(bytes, [], requestId)
+    : deterministicInvoiceDocumentTypes.has(documentType)
+      ? await extractEmbeddedTextInvoiceSafely(bytes, [], requestId)
+      : null;
+  if (!parsed || parsed.coverage < 0.95 || parsed.lines.length < 5 || !parsed.pageNumbers.length) return null;
+  const scope = normalizeScopeForPdf(normalizeForeignTradeDocumentScope({
+    selected_document_type: documentType,
+    detected: true,
+    page_start: parsed.pageNumbers[0],
+    page_end: parsed.pageNumbers[parsed.pageNumbers.length - 1],
+    page_numbers: parsed.pageNumbers,
+    total_pdf_pages: pageCount,
+    confidence: parsed.coverage,
+    evidence: [`${parsed.lines.length} filas verificadas mediante texto incrustado.`],
+    warnings: [],
+  }, documentType), pageCount);
+  return {
+    model: deterministicPackingDocumentTypes.has(documentType)
+      ? EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION
+      : EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+    scope,
+  };
 }
 
 async function extractUnnumberedRowsSafely(

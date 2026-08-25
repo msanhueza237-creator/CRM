@@ -783,6 +783,9 @@ export interface ConfirmForeignTradeDocumentResult {
   status: "confirmed";
   reconciliation_confirmed?: number;
   reconciliation_unmatched?: number;
+  updated_lines?: number;
+  unmatched_lines?: number;
+  matched_packing_lines?: number;
 }
 
 export type ForeignTradeProductMatchStatus =

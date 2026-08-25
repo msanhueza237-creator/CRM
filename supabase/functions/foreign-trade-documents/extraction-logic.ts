@@ -59,9 +59,237 @@ export type EmbeddedInvoiceExtraction = {
 };
 
 export const EMBEDDED_TEXT_INVOICE_PARSER_VERSION = "embedded_invoice_text_v2";
+export const EMBEDDED_TEXT_PACKING_LIST_PARSER_VERSION = "embedded_packing_list_text_v1";
+
+export type EmbeddedPackingListExtraction = {
+  lines: Array<{
+    source_index: number;
+    source_page: number;
+    source_row_label: string;
+    supplier_product_code: null;
+    supplier_sku: null;
+    supplier_reference: null;
+    sku: null;
+    product_name: string;
+    description: string;
+    description_original: string;
+    description_translated: null;
+    model: string | null;
+    brand: null;
+    technical_attributes: string[];
+    quantity: number;
+    quantity_per_box: number | null;
+    box_count: number | null;
+    currency: null;
+    unit_price: null;
+    total_price: null;
+    unit_weight_kg: number | null;
+    gross_weight_kg: number | null;
+    net_weight_kg: number | null;
+    box_length_cm: null;
+    box_width_cm: null;
+    box_height_cm: null;
+    cbm_per_box: number | null;
+    cbm_total: number | null;
+    country_of_origin: null;
+    hs_code: null;
+    confidence: number;
+    warnings: string[];
+  }>;
+  candidateCount: number;
+  coverage: number;
+  pageCount: number;
+  pageNumbers: number[];
+  general: EmbeddedInvoiceExtraction["general"];
+  documentTotals: {
+    boxes: number | null;
+    cbm_total: number | null;
+    gross_weight_kg: number | null;
+    net_weight_kg: number | null;
+  };
+  warnings: string[];
+};
 
 const embeddedInvoiceRowStartPattern = /^\s*(\d{1,3})\s+(.+)$/;
 const embeddedInvoiceRowPattern = /^\s*(\d{1,3})\s+(.+?)\s+([\d,.]+)\s+([A-Za-z]+(?:\/[A-Za-z]+)?)\s+(?:US\$|USD\s*|\$)\s*([\d,.]+)\s+(?:US\$|USD\s*|\$)\s*([\d,.]+)\s*$/i;
+
+const embeddedPackingRowStartPattern = /^\s*(\d{1,3})(?:\s+(.+))?\s*$/;
+const embeddedPackingRowPattern = /^\s*(\d{1,3})\s+(.+?)\s+([\d,.]+)\s+(pcs|pairs|sets)\b(.*)$/i;
+const embeddedPackingMetricsPattern = /([\d,.]+)\s+CTNS?\s+([\d,.]+)\s+CBM\s+([\d,.]+)\s+KGS?\s+([\d,.]+)\s+KGS?/gi;
+
+export function parseEmbeddedTextPackingList(
+  pages: string[],
+  originalPageNumbers: number[] = [],
+): EmbeddedPackingListExtraction {
+  const lines: EmbeddedPackingListExtraction["lines"] = [];
+  const warnings: string[] = [];
+  let candidateCount = 0;
+
+  pages.forEach((pageText, pageIndex) => {
+    if (!/PACKING\s+LIST|装\s*箱\s*单/i.test(pageText)) return;
+    const physicalPage = originalPageNumbers[pageIndex] || pageIndex + 1;
+    const pageLines = normalizeEmbeddedPackingPageLines(pageText);
+    let pending: string | null = null;
+
+    const flushPending = () => {
+      if (!pending) return;
+      const parsed = parseEmbeddedPackingRow(pending, lines.length + 1, physicalPage);
+      if (parsed) lines.push(parsed);
+      pending = null;
+    };
+
+    for (const line of pageLines) {
+      const start = line.match(embeddedPackingRowStartPattern);
+      if (
+        start
+        && isPlausibleEmbeddedInvoiceRowLabel(start[1])
+        && !/^(?:pcs|pairs|sets|ctns?|cbm|kgs?)\b/i.test(start[2] || "")
+      ) {
+        flushPending();
+        candidateCount += 1;
+        pending = `${start[1]} ${start[2] || ""}`.trim();
+        continue;
+      }
+      if (!pending) continue;
+      if (isEmbeddedPackingDocumentBoundary(line)) {
+        flushPending();
+        continue;
+      }
+      pending = `${pending} ${line}`.replace(/\s+/g, " ").trim();
+    }
+    flushPending();
+  });
+
+  const rowsWithoutOwnMetrics = lines.filter((line) => line.box_count === null).length;
+  if (rowsWithoutOwnMetrics) {
+    warnings.push(`${rowsWithoutOwnMetrics} producto(s) no tienen empaque individual impreso; pueden compartir cajas con otras líneas y se conservaron sin distribuir valores arbitrariamente.`);
+  }
+  const documentTotals = parseEmbeddedPackingTotals(pages.join("\n"));
+  const pageNumbers = uniqueEmbeddedInvoiceNumbers(lines.map((line) => line.source_page));
+  return {
+    lines,
+    candidateCount,
+    coverage: candidateCount > 0 ? lines.length / candidateCount : 0,
+    pageCount: pages.length,
+    pageNumbers,
+    general: parseEmbeddedPackingGeneral(pages.join("\n")),
+    documentTotals,
+    warnings,
+  };
+}
+
+function parseEmbeddedPackingRow(
+  value: string,
+  sourceIndex: number,
+  sourcePage: number,
+): EmbeddedPackingListExtraction["lines"][number] | null {
+  const match = value.match(embeddedPackingRowPattern);
+  if (!match) return null;
+  const quantity = parseEmbeddedInvoiceNumber(match[3]);
+  if (quantity === null) return null;
+  const productName = match[2].replace(/\s+/g, " ").trim();
+  if (!productName) return null;
+
+  const metricGroups = [...match[5].matchAll(new RegExp(embeddedPackingMetricsPattern.source, "gi"))];
+  const boxes = sumEmbeddedPackingMetric(metricGroups, 1);
+  const cbmTotal = sumEmbeddedPackingMetric(metricGroups, 2);
+  const grossWeight = sumEmbeddedPackingMetric(metricGroups, 3);
+  const netWeight = sumEmbeddedPackingMetric(metricGroups, 4);
+  const rowWarnings = metricGroups.length
+    ? []
+    : ["La línea no tiene cajas, CBM o pesos propios impresos; puede compartir embalaje con otra línea."];
+  const model = extractEmbeddedPackingModel(productName);
+
+  return {
+    source_index: sourceIndex,
+    source_page: sourcePage,
+    source_row_label: match[1],
+    supplier_product_code: null,
+    supplier_sku: null,
+    supplier_reference: null,
+    sku: null,
+    product_name: productName,
+    description: productName,
+    description_original: productName,
+    description_translated: null,
+    model,
+    brand: null,
+    technical_attributes: [`Unidad documental: ${match[4].toLowerCase()}`],
+    quantity,
+    quantity_per_box: boxes !== null && boxes > 0 ? roundEmbeddedPackingValue(quantity / boxes, 6) : null,
+    box_count: boxes,
+    currency: null,
+    unit_price: null,
+    total_price: null,
+    unit_weight_kg: netWeight !== null && quantity > 0 ? roundEmbeddedPackingValue(netWeight / quantity, 9) : null,
+    gross_weight_kg: grossWeight,
+    net_weight_kg: netWeight,
+    box_length_cm: null,
+    box_width_cm: null,
+    box_height_cm: null,
+    cbm_per_box: cbmTotal !== null && boxes !== null && boxes > 0 ? roundEmbeddedPackingValue(cbmTotal / boxes, 9) : null,
+    cbm_total: cbmTotal,
+    country_of_origin: null,
+    hs_code: null,
+    confidence: metricGroups.length ? 0.995 : 0.94,
+    warnings: rowWarnings,
+  };
+}
+
+function normalizeEmbeddedPackingPageLines(value: string) {
+  return value
+    .replace(/KGS(?=\d{1,3}\s)/gi, "KGS\n")
+    .replace(/\u00a0/g, " ")
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+}
+
+function isEmbeddedPackingDocumentBoundary(value: string) {
+  return /^(?:杭州|HANGZHOU|INVOICE|PACKING\s+LIST|DATE|CONTRACT|TO:|CONT\s+NO\.?|SEAL\s+NO\.?|RUT:|FONO:|NO\.\s+DESCRIPTION|N\/M\s+|[\d,.]+\s+CTNS?\s+[\d,.]+\s+CBM\b)/i.test(value);
+}
+
+function sumEmbeddedPackingMetric(groups: RegExpMatchArray[], index: number) {
+  if (!groups.length) return null;
+  const values = groups.map((group) => parseEmbeddedInvoiceNumber(group[index])).filter((value): value is number => value !== null);
+  return values.length ? roundEmbeddedPackingValue(values.reduce((sum, value) => sum + value, 0), 6) : null;
+}
+
+function parseEmbeddedPackingTotals(value: string): EmbeddedPackingListExtraction["documentTotals"] {
+  const matches = [...value.matchAll(/(?:^|\n)\s*([\d,.]+)\s+CTNS?\s+([\d,.]+)\s+CBM\s+([\d,.]+)\s+KGS?\s+([\d,.]+)\s+KGS?/gim)];
+  const total = matches.at(-1);
+  return {
+    boxes: total ? parseEmbeddedInvoiceNumber(total[1]) : null,
+    cbm_total: total ? parseEmbeddedInvoiceNumber(total[2]) : null,
+    gross_weight_kg: total ? parseEmbeddedInvoiceNumber(total[3]) : null,
+    net_weight_kg: total ? parseEmbeddedInvoiceNumber(total[4]) : null,
+  };
+}
+
+function parseEmbeddedPackingGeneral(value: string): EmbeddedInvoiceExtraction["general"] {
+  const base = parseEmbeddedInvoiceGeneral(value);
+  const container = value.match(/\bCONT\s+NO\.?\s*([A-Z0-9-]+)/i)?.[1] || null;
+  const seal = value.match(/\bSEAL\s+NO\.?\s*([A-Z0-9-]+)/i)?.[1] || null;
+  const observations = [container ? `Contenedor ${container}` : "", seal ? `Sello ${seal}` : ""].filter(Boolean).join(" · ") || null;
+  return {
+    ...base,
+    currency: null,
+    observations,
+  } as EmbeddedInvoiceExtraction["general"] & { observations: string | null };
+}
+
+function extractEmbeddedPackingModel(value: string) {
+  const stModel = (value.match(/\bST[- ]?[A-Z0-9]+(?:-[A-Z0-9]+)*\b/gi) || [])
+    .find((candidate) => candidate.toUpperCase() !== "STARS");
+  return stModel?.replace(/\s+/g, "-").toUpperCase()
+    || value.match(/\b(?:BTG|QD|PCEC|CT|RI|SCV)-[A-Z0-9+-]+\b/i)?.[0]?.toUpperCase()
+    || null;
+}
+
+function roundEmbeddedPackingValue(value: number, digits: number) {
+  const factor = 10 ** digits;
+  return Math.round((value + Number.EPSILON) * factor) / factor;
+}
 
 export function parseEmbeddedTextInvoice(
   pages: string[],
@@ -267,7 +495,7 @@ function roundEmbeddedInvoiceMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v14_embedded_text_invoices";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v15_embedded_text_documents";
 export const FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION = "fund_request_v1";
 export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v1";
 export const FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION = "freight_document_v1";

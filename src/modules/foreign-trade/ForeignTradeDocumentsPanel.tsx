@@ -98,7 +98,7 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   ...expenseExtractableDocumentTypes,
 ]);
 
-const currentExtractionVersion = "pdf_skill_v13_shared_file_batches";
+const currentExtractionVersion = "pdf_skill_v15_embedded_text_documents";
 const staleExtractionTimeoutMs = 5 * 60_000;
 const currentFundRequestExtractionVersion = "fund_request_v1";
 const currentAgencySettlementExtractionVersion = "agency_settlement_v1";
@@ -661,9 +661,16 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
   const [reconciliation, setReconciliation] = useState<ForeignTradeProductReconciliationResult | null>(null);
   const [reconciliationBusy, setReconciliationBusy] = useState(true);
   const [reconciliationError, setReconciliationError] = useState("");
+  const isPackingList = document.document_type === "packing_list";
 
   useEffect(() => {
     let active = true;
+    if (isPackingList) {
+      setReconciliation(null);
+      setReconciliationBusy(false);
+      setReconciliationError("");
+      return () => { active = false; };
+    }
     setReconciliationBusy(true);
     setReconciliationError("");
     void reconcileForeignTradeDocument(document.id, review.general.supplier_id)
@@ -691,7 +698,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
       })
       .finally(() => { if (active) setReconciliationBusy(false); });
     return () => { active = false; };
-  }, [document.id, review.general.supplier_id]);
+  }, [document.id, isPackingList, review.general.supplier_id]);
 
   function setGeneral(key: keyof ForeignTradeDocumentExtraction["general"], value: string | number | null) {
     setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
@@ -714,7 +721,9 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
   async function confirm() {
     const reconciliationOnly = document.parse_status === "confirmed";
     const reviewCopy = productDocumentReviewCopy(document.document_type);
-    if (!window.confirm(reconciliationOnly
+    if (!window.confirm(isPackingList
+      ? "¿Confirmar este Packing List? Se completarán cajas, CBM y pesos de los productos ya importados desde el Invoice; no se crearán productos duplicados."
+      : reconciliationOnly
       ? "¿Guardar estas equivalencias de productos? No se duplicarán las líneas ya importadas ni se modificará el catálogo maestro."
       : `¿Confirmar esta revisión de ${reviewCopy.label} e importar las líneas seleccionadas? Tu revisión manual se considerará definitiva aunque la extracción tenga advertencias. El archivo original y la sección extraída se conservarán.`)) return;
     setBusy(true); setError("");
@@ -735,8 +744,10 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
           line_count: review.document_totals.line_count || review.lines.length,
         },
       };
-      const result = await confirmForeignTradeDocument(document.id, normalizedReview);
-      await onConfirmed(reconciliationOnly
+      const result = await confirmForeignTradeDocument(document.id, normalizedReview, document.document_type);
+      await onConfirmed(isPackingList
+        ? `${result.updated_lines || 0} producto(s) completados con datos de empaque; ${result.unmatched_lines || 0} línea(s) quedaron pendientes de vincular.`
+        : reconciliationOnly
         ? `${result.reconciliation_confirmed || 0} equivalencia(s) guardada(s); no se duplicaron productos ni líneas.`
         : `${result.inserted_lines} producto(s) importados desde la revisión confirmada.`);
     } catch (confirmError) { setError(humanizeDocumentError(confirmError)); }
@@ -783,9 +794,10 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
       <ReviewLineNumber label="Filas comerciales esperadas" value={expectedLineCount} onChange={(value) => setDocumentTotal("line_count", value)} />
     </div><p className="foreign-trade-recalculation">Cobertura: <strong>{review.lines.length}{expectedLineCount ? ` de ${expectedLineCount}` : " filas"}</strong> · Suma CBM de productos: <strong>{formatNumber(lineCbmTotal)} m³</strong>{review.document_totals.cbm_total !== null && Math.abs(lineCbmTotal - review.document_totals.cbm_total) > Math.max(0.01, review.document_totals.cbm_total * 0.02) ? " · revisa la diferencia con el total documental" : ""}</p></section>
 
-    <section className="foreign-trade-review-section"><div className="foreign-trade-review-products-heading"><div><h3>Conciliación de productos</h3><span>El catálogo maestro permanece protegido; aquí solo se confirma una equivalencia por proveedor.</span></div><div><input value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar catálogo para vincular" /><button className="ghost-button" type="button" onClick={() => void searchCatalog()}>{catalogBusy ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} Buscar</button></div></div>
+    <section className="foreign-trade-review-section"><div className="foreign-trade-review-products-heading"><div><h3>{isPackingList ? "Datos de empaque por producto" : "Conciliación de productos"}</h3><span>{isPackingList ? "Al confirmar se completarán los productos existentes del Invoice. Las filas compartidas se mantienen sin repartir datos inventados." : "El catálogo maestro permanece protegido; aquí solo se confirma una equivalencia por proveedor."}</span></div>{!isPackingList ? <div><input value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar catálogo para vincular" /><button className="ghost-button" type="button" onClick={() => void searchCatalog()}>{catalogBusy ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} Buscar</button></div> : null}</div>
       <div className="foreign-trade-match-summary">
-        {reconciliationBusy ? <span><LoaderCircle className="spin" size={14} /> Comparando con el catálogo...</span> : null}
+        {isPackingList ? <span className="success"><ShieldCheck size={14} /> No se crearán productos nuevos ni duplicados</span> : null}
+        {!isPackingList && reconciliationBusy ? <span><LoaderCircle className="spin" size={14} /> Comparando con el catálogo...</span> : null}
         {reconciliation ? <><span className="success">{reconciliation.summary.auto_matched || 0} encontrados automáticamente</span><span>{reconciliation.summary.suggested || 0} sugeridos</span><span className="warning">{reconciliation.summary.review || 0} requieren confirmación</span><span className="warning">{reconciliation.summary.unmatched || 0} sin coincidencia</span></> : null}
       </div>
       {reconciliationError ? <div className="notice-banner error"><AlertTriangle size={16} /> {reconciliationError}</div> : null}
@@ -800,7 +812,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
       }} />)}</div>
     </section>
     {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
-    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button>{document.parse_status !== "confirmed" ? <button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button> : null}<button className="primary-button" type="button" disabled={busy || !review.lines.some((line) => line.include)} title={needsRegeneration ? "Confirmar la revisión manual e importar pese a las advertencias" : undefined} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : document.parse_status === "confirmed" ? "Guardar conciliación" : "Confirmar e importar"}</button></footer>
+    <footer className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" onClick={onClose}>Cancelar</button>{document.parse_status !== "confirmed" ? <button className="ghost-button" type="button" disabled={busy} onClick={() => void onRegenerate()}><RefreshCw size={17} /> Regenerar extracción</button> : null}<button className="primary-button" type="button" disabled={busy || !review.lines.some((line) => line.include)} title={needsRegeneration ? "Confirmar la revisión manual pese a las advertencias" : undefined} onClick={() => void confirm()}><ShieldCheck size={17} /> {busy ? "Confirmando..." : isPackingList ? "Confirmar y completar empaque" : document.parse_status === "confirmed" ? "Guardar conciliación" : "Confirmar e importar"}</button></footer>
   </div></div>;
 }
 
@@ -1517,6 +1529,8 @@ function humanizeDocumentError(error: unknown) {
   if (/confirm_foreign_trade_fund_request_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase6_fund_requests.sql.";
   if (/confirm_foreign_trade_agency_settlement_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase7_agency_settlements.sql.";
   if (/confirm_foreign_trade_freight_document/i.test(message)) return "Falta actualizar la base de datos con la migración de documentos de transporte.";
+  if (/confirm_foreign_trade_packing_list_document/i.test(message)) return "Falta aplicar en Supabase la migración foreign_trade_center_phase13_packing_list_enrichment.sql.";
+  if (message.includes("foreign_trade_packing_list_without_matching_products")) return "El Packing List no encontró productos del Invoice en esta operación. Confirma primero el Commercial Invoice y luego vuelve a revisar el Packing List.";
   if (message.includes("foreign_trade_reconciliation_identity_mismatch")) return "Las referencias no coinciden. Confirma manualmente que la provisión y la rendición pertenecen al mismo despacho.";
   if (message.includes("foreign_trade_reconciliation_already_applied")) return "Esta conciliación ya fue aplicada al costeo y no puede recibir otra rendición final.";
   if (/update_foreign_trade_document_type|cancel_foreign_trade_document_extraction|delete_foreign_trade_document|schema cache|function.*does not exist|404/i.test(message)) return "Falta actualizar la base de datos de Comercio Exterior en Supabase.";
