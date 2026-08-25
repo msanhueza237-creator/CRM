@@ -2,6 +2,7 @@ import type {
   ForeignTradeAgencySettlementExtraction,
   ForeignTradeAgencySettlementLine,
   ForeignTradeCostCategory,
+  ForeignTradeExpenseReconciliationLine,
   ForeignTradeReconciliationLineType,
 } from "../../types/foreignTrade";
 
@@ -100,14 +101,20 @@ function normalizeLine(value: unknown, index: number): ForeignTradeAgencySettlem
     : amountOriginal !== null && exchangeRate !== null
       ? roundMoney(amountOriginal * exchangeRate)
       : null;
+  const concept = text(source.concept);
+  const isSummary = isAgencySettlementSummaryConcept(concept);
+  const warnings = stringArray(source.warnings);
+  if (isSummary && !warnings.includes("Subtotal informativo; no se concilia como gasto independiente.")) {
+    warnings.push("Subtotal informativo; no se concilia como gasto independiente.");
+  }
   return {
     source_index: positiveInteger(source.source_index) || index + 1,
     source_page: positiveInteger(source.source_page),
-    include: source.include !== false,
+    include: !isSummary && source.include !== false,
     reconciliation_line_id: nullableUuid(source.reconciliation_line_id),
     line_type: lineType,
     cost_category: lineType === "customs_duty" ? "duties" : lineType === "import_vat" ? "taxes" : costCategory,
-    concept: text(source.concept),
+    concept,
     provider_name: nullableText(source.provider_name),
     document_number: nullableText(source.document_number),
     document_date: nullableText(source.document_date),
@@ -118,9 +125,9 @@ function normalizeLine(value: unknown, index: number): ForeignTradeAgencySettlem
     currency: originalCurrency,
     exchange_rate_clp: exchangeRate,
     recoverable_tax: lineType === "import_vat" || source.recoverable_tax === true,
-    include_in_costing: lineType === "import_vat" ? false : source.include_in_costing !== false,
+    include_in_costing: isSummary || lineType === "import_vat" ? false : source.include_in_costing !== false,
     confidence: confidence(source.confidence),
-    warnings: stringArray(source.warnings),
+    warnings,
   };
 }
 
@@ -135,3 +142,134 @@ function confidence(value: unknown) { const parsed = nullableNumber(value); retu
 function currency(value: unknown, fallback: string) { const normalized = text(value).toUpperCase(); return /^[A-Z]{3}$/.test(normalized) ? normalized : fallback; }
 function stringArray(value: unknown) { return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean) : []; }
 function roundMoney(value: number) { return Math.round((value + Number.EPSILON) * 100) / 100; }
+
+const minimumMatchScore = 50;
+
+export function autoMatchForeignTradeAgencySettlementLines(
+  lines: ForeignTradeAgencySettlementLine[],
+  provisionLines: ForeignTradeExpenseReconciliationLine[],
+) {
+  const assignments = new Map<number, string>();
+  const usedLines = new Set<number>();
+  const usedProvisions = new Set<string>();
+
+  lines.forEach((line, index) => {
+    const existingId = line.reconciliation_line_id;
+    if (!existingId || usedProvisions.has(existingId)) return;
+    if (!provisionLines.some((candidate) => candidate.id === existingId)) return;
+    assignments.set(index, existingId);
+    usedLines.add(index);
+    usedProvisions.add(existingId);
+  });
+
+  const candidates = lines.flatMap((line, lineIndex) => {
+    if (usedLines.has(lineIndex) || isAgencySettlementSummaryConcept(line.concept)) return [];
+    return provisionLines
+      .filter((candidate) => !usedProvisions.has(candidate.id))
+      .map((candidate) => ({
+        lineIndex,
+        provisionId: candidate.id,
+        score: settlementMatchScore(line, candidate),
+      }));
+  }).sort((first, second) => second.score - first.score);
+
+  candidates.forEach((candidate) => {
+    if (candidate.score < minimumMatchScore) return;
+    if (usedLines.has(candidate.lineIndex) || usedProvisions.has(candidate.provisionId)) return;
+    assignments.set(candidate.lineIndex, candidate.provisionId);
+    usedLines.add(candidate.lineIndex);
+    usedProvisions.add(candidate.provisionId);
+  });
+
+  return lines.map((line, index) => ({
+    ...line,
+    reconciliation_line_id: assignments.get(index) || null,
+  }));
+}
+
+export function isAgencySettlementSummaryConcept(value: string) {
+  const normalized = normalizeWords(value).replace(/\s/g, "");
+  return /^(total|subtotal|suma)(desembolsos|gastos|rendicion|facturas|documentos|general)?$/.test(normalized);
+}
+
+function settlementMatchScore(
+  line: ForeignTradeAgencySettlementLine,
+  provision: ForeignTradeExpenseReconciliationLine,
+) {
+  const actualConcept = normalizeWords(line.concept);
+  const provisionConcept = normalizeWords(provision.concept);
+  const actualFamily = conceptFamily(actualConcept);
+  const provisionFamily = conceptFamily(provisionConcept);
+  let score = 0;
+
+  if (actualConcept && actualConcept === provisionConcept) score += 160;
+  if (actualFamily && provisionFamily) score += actualFamily === provisionFamily ? 90 : -90;
+  score += tokenSimilarity(actualConcept, provisionConcept) * 55;
+
+  const actualDocument = normalizeCompact(line.document_number || "");
+  const provisionDocument = normalizeCompact(provision.document_number || "");
+  if (actualDocument && provisionDocument && actualDocument === provisionDocument) score += 100;
+  if (line.cost_category === provision.cost_category) score += 20;
+  if (line.line_type === provision.line_type) score += 12;
+
+  const actualAmount = resolvedActualAmount(line);
+  const provisionAmount = finite(provision.provision_total_clp);
+  if (actualAmount > 0 && provisionAmount > 0) {
+    const relativeDifference = Math.abs(actualAmount - provisionAmount) / Math.max(actualAmount, provisionAmount);
+    if (relativeDifference <= 0.005) score += 55;
+    else if (relativeDifference <= 0.05) score += 42;
+    else if (relativeDifference <= 0.15) score += 25;
+    else if (relativeDifference <= 0.35) score += 10;
+  }
+
+  return score;
+}
+
+function conceptFamily(value: string) {
+  if (/derech|ad valorem|arancel/.test(value)) return "customs_duty";
+  if (/iva.*import|impuesto.*import/.test(value)) return "import_vat";
+  if (/gate\s*in|ingreso.*contenedor/.test(value)) return "gate_in";
+  if (/seguro|insurance/.test(value)) return "insurance";
+  if (/honorario/.test(value)) return "agency_fee";
+  if (/gasto.*despacho|despacho.*aduan/.test(value)) return "customs_dispatch";
+  if (/tarifa.*seguridad|transferencia.*contenedor|movilizaci|terminal|puerto|\bsti\b/.test(value)) return "port_service";
+  if (/flete|transporte|traslado.*contenedor/.test(value)) return "freight_transport";
+  if (/almacen|bodega/.test(value)) return "storage";
+  return null;
+}
+
+function resolvedActualAmount(line: ForeignTradeAgencySettlementLine) {
+  const stated = finite(line.actual_total_clp);
+  if (stated > 0) return stated;
+  const components = finite(line.actual_net_clp) + finite(line.actual_vat_clp);
+  if (components > 0) return components;
+  const original = finite(line.amount_original);
+  if (String(line.currency || "CLP").toUpperCase() === "CLP") return original;
+  return original * finite(line.exchange_rate_clp);
+}
+
+function tokenSimilarity(first: string, second: string) {
+  const firstTokens = new Set(first.split(" ").filter((token) => token.length >= 3));
+  const secondTokens = new Set(second.split(" ").filter((token) => token.length >= 3));
+  if (!firstTokens.size || !secondTokens.size) return 0;
+  const intersection = [...firstTokens].filter((token) => secondTokens.has(token)).length;
+  const union = new Set([...firstTokens, ...secondTokens]).size;
+  return union ? intersection / union : 0;
+}
+
+function normalizeWords(value: string) {
+  return value.normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function normalizeCompact(value: string) {
+  return normalizeWords(value).replace(/\s/g, "");
+}
+
+function finite(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}

@@ -298,27 +298,13 @@ export function ForeignTradeExpenseReconciliationPanel({
       <article className="panel foreign-trade-reconciliation-table-panel">
         <header className="foreign-trade-detail-panel-heading"><div><h2>Detalle ajustable</h2><p>Cada fila conserva proveedor, factura y página de respaldo.</p></div><div><button className="ghost-button" type="button" onClick={() => addLine("operating_expense")}><Plus size={15} /> Gasto</button><button className="ghost-button" type="button" onClick={() => addLine("customs_duty")}><Plus size={15} /> Tributo</button></div></header>
         <datalist id="foreign-trade-currencies"><option value="CLP" /><option value="USD" /><option value="EUR" /><option value="CNY" /></datalist>
-        <div className="table-scroll"><table className="foreign-trade-reconciliation-table"><thead><tr><th>Concepto y respaldo</th><th>Clasificación</th><th>Provisión y origen</th><th>Neto real CLP</th><th>IVA real CLP</th><th>Total real y origen</th><th>Diferencia</th><th>Costeo</th><th aria-label="Acciones" /></tr></thead><tbody>
+        <div className="table-scroll"><table className="foreign-trade-reconciliation-table"><thead><tr><th>Concepto y respaldo</th><th>Clasificación</th><th>Total real y origen</th><th>Neto real CLP</th><th>IVA real CLP</th><th>Provisión y origen</th><th>Diferencia</th><th>Costeo</th><th aria-label="Acciones" /></tr></thead><tbody>
           {draft.lines.map((line, index) => <tr key={line.id || `new-${index}`} className={isTax(line.line_type) ? "tax" : "expense"}>
-            <td data-label="Concepto y respaldo"><input className="concept" value={line.concept} onChange={(event) => updateLine(index, { concept: event.target.value })} placeholder="Ej. movilización puerto" /><div className="foreign-trade-reconciliation-source"><input value={line.provider_name || ""} onChange={(event) => updateLine(index, { provider_name: event.target.value })} placeholder="Proveedor" /><input value={line.document_number || ""} onChange={(event) => updateLine(index, { document_number: event.target.value })} placeholder="Factura" /><input inputMode="numeric" value={line.source_page ?? ""} onChange={(event) => updateLine(index, { source_page: event.target.value })} placeholder="Pág." /></div></td>
+            <td data-label="Concepto y respaldo"><input className="concept" value={line.concept} onChange={(event) => updateLine(index, { concept: event.target.value })} placeholder="Ej. movilización puerto" /><div className="foreign-trade-reconciliation-source"><input value={line.provider_name || ""} onChange={(event) => updateLine(index, { provider_name: event.target.value })} placeholder="Proveedor" /><input value={line.document_number || ""} onChange={(event) => updateLine(index, { document_number: event.target.value })} placeholder="Factura" /><input inputMode="numeric" value={line.source_page ?? ""} onChange={(event) => updateLine(index, { source_page: event.target.value })} placeholder="Pág." /></div><small><strong>Real: {formatClp(calculation.lineConversions[index]?.actualAppliedTotalClp || 0)}</strong> · {Number(line.provision_total_clp || 0) > 0 ? `Provisionado: ${formatClp(Number(line.provision_total_clp))}` : "Sin contraparte en la provisión"}</small></td>
             <td data-label="Clasificación"><select value={line.line_type} onChange={(event) => changeLineType(index, event.target.value as ForeignTradeReconciliationLineType)}>{lineTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={line.cost_category} onChange={(event) => updateLine(index, { cost_category: event.target.value as ForeignTradeCostCategory })}>{costCategories.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></td>
             <SourceMoneyCell
-              label="Provisión y origen"
-              totalClp={line.provision_total_clp}
-              amountOriginal={line.provision_amount_original}
-              currency={line.provision_currency}
-              exchangeRateClp={line.provision_exchange_rate_clp}
-              convertedClp={calculation.lineConversions[index]?.provisionConvertedClp ?? null}
-              impliedExchangeRateClp={calculation.lineConversions[index]?.provisionImpliedExchangeRateClp ?? null}
-              onTotalChange={(value) => updateLine(index, { provision_total_clp: value })}
-              onAmountChange={(value) => updateLine(index, { provision_amount_original: value })}
-              onCurrencyChange={(value) => updateLineCurrency(index, "provision", value)}
-              onRateChange={(value) => updateLine(index, { provision_exchange_rate_clp: value })}
-            />
-            <MoneyCell label="Neto real CLP" value={line.actual_net_clp} onChange={(value) => updateLine(index, { actual_net_clp: value })} />
-            <MoneyCell label="IVA real CLP" value={line.actual_vat_clp} onChange={(value) => updateLine(index, { actual_vat_clp: value })} />
-            <SourceMoneyCell
               label="Total real y origen"
+              fieldPrefix="real"
               totalClp={line.actual_total_clp}
               amountOriginal={line.actual_amount_original}
               currency={line.actual_currency}
@@ -332,6 +318,23 @@ export function ForeignTradeExpenseReconciliationPanel({
               onCurrencyChange={(value) => updateLineCurrency(index, "actual", value)}
               onRateChange={(value) => updateLine(index, { actual_exchange_rate_clp: value })}
               strong
+            />
+            <MoneyCell label="Neto real CLP" value={line.actual_net_clp} onChange={(value) => updateLine(index, { actual_net_clp: value })} />
+            <MoneyCell label="IVA real CLP" value={line.actual_vat_clp} onChange={(value) => updateLine(index, { actual_vat_clp: value })} />
+            <SourceMoneyCell
+              label="Provisión y origen"
+              fieldPrefix="provisionado"
+              totalClp={line.provision_total_clp}
+              amountOriginal={line.provision_amount_original}
+              currency={line.provision_currency}
+              exchangeRateClp={line.provision_exchange_rate_clp}
+              convertedClp={calculation.lineConversions[index]?.provisionConvertedClp ?? null}
+              impliedExchangeRateClp={calculation.lineConversions[index]?.provisionImpliedExchangeRateClp ?? null}
+              onTotalChange={(value) => updateLine(index, { provision_total_clp: value })}
+              onAmountChange={(value) => updateLine(index, { provision_amount_original: value })}
+              onCurrencyChange={(value) => updateLineCurrency(index, "provision", value)}
+              onRateChange={(value) => updateLine(index, { provision_exchange_rate_clp: value })}
+              emptyMessage="Este gasto no tuvo una contraparte reconocida en la provisión original."
             />
             <td data-label="Diferencia" className={calculation.lineDifferences[index] < 0 ? "negative" : "positive"}><strong>{formatClp(calculation.lineDifferences[index] || 0)}</strong><small>{calculation.lineDifferences[index] < 0 ? "Mayor gasto real" : "Saldo favorable"}</small></td>
             <td data-label="Costeo"><label className="foreign-trade-mini-check"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => updateLine(index, { include_in_costing: event.target.checked })} /> Incluir</label>{!isTax(line.line_type) ? <label className="foreign-trade-mini-check"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => updateLine(index, { recoverable_tax: event.target.checked })} /> IVA recuperable</label> : <small>Tributo separado</small>}</td>
@@ -357,6 +360,7 @@ function MoneyCell({ label, value, onChange, strong = false }: { label: string; 
 
 function SourceMoneyCell({
   label,
+  fieldPrefix,
   totalClp,
   amountOriginal,
   currency,
@@ -369,9 +373,11 @@ function SourceMoneyCell({
   onAmountChange,
   onCurrencyChange,
   onRateChange,
+  emptyMessage,
   strong = false,
 }: {
   label: string;
+  fieldPrefix: "real" | "provisionado";
   totalClp: string | number;
   amountOriginal: string | number;
   currency: string;
@@ -384,14 +390,17 @@ function SourceMoneyCell({
   onAmountChange: (value: string) => void;
   onCurrencyChange: (value: string) => void;
   onRateChange: (value: string) => void;
+  emptyMessage?: string;
   strong?: boolean;
 }) {
   const isClp = currency === "CLP";
   const hasVariance = conversionVarianceClp != null && Math.abs(conversionVarianceClp) >= 1;
+  const isEmpty = !Number(totalClp || 0) && !Number(amountOriginal || 0);
   return <td className="foreign-trade-source-money-cell" data-label={label}>
-    <label><span>Total declarado CLP</span><input className={strong ? "strong" : ""} inputMode="decimal" value={totalClp} onChange={(event) => onTotalChange(cleanMoney(event.target.value))} /></label>
+    {isEmpty && emptyMessage ? <small className="conversion-warning">{emptyMessage}</small> : null}
+    <label><span>Total {fieldPrefix} CLP</span><input className={strong ? "strong" : ""} inputMode="decimal" value={totalClp} onChange={(event) => onTotalChange(cleanMoney(event.target.value))} /></label>
     <div className="foreign-trade-source-money-grid">
-      <label><span>Monto original</span><input inputMode="decimal" value={amountOriginal} onChange={(event) => onAmountChange(cleanDecimal(event.target.value, 6))} /></label>
+      <label><span>Monto original {fieldPrefix}</span><input inputMode="decimal" value={amountOriginal} onChange={(event) => onAmountChange(cleanDecimal(event.target.value, 6))} /></label>
       <label><span>Moneda</span><input list="foreign-trade-currencies" maxLength={3} value={currency} onChange={(event) => onCurrencyChange(event.target.value)} /></label>
       <label><span>TC documento</span><input disabled={isClp} inputMode="decimal" value={isClp ? "1" : exchangeRateClp ?? ""} onChange={(event) => onRateChange(cleanDecimal(event.target.value, 6))} /></label>
     </div>

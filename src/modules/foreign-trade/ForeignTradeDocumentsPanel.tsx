@@ -61,7 +61,10 @@ import type {
   ForeignTradeSupplier,
 } from "../../types/foreignTrade";
 import { normalizeForeignTradeFundRequestReview } from "./foreignTradeFundRequestReview";
-import { normalizeForeignTradeAgencySettlementReview } from "./foreignTradeAgencySettlementReview";
+import {
+  autoMatchForeignTradeAgencySettlementLines,
+  normalizeForeignTradeAgencySettlementReview,
+} from "./foreignTradeAgencySettlementReview";
 import { normalizeForeignTradeFreightDocumentReview } from "./foreignTradeFreightDocumentReview";
 
 const documentTypes: Array<{ value: ForeignTradeDocumentType; label: string }> = [
@@ -1240,22 +1243,7 @@ function normalizeAgencySettlementLine(line: ForeignTradeAgencySettlementLine, p
 }
 
 function autoMatchSettlementLines(lines: ForeignTradeAgencySettlementLine[], provisionLines: ForeignTradeExpenseReconciliation["lines"]) {
-  const used = new Set<string>();
-  return lines.map((line) => {
-    if (line.reconciliation_line_id && provisionLines.some((candidate) => candidate.id === line.reconciliation_line_id) && !used.has(line.reconciliation_line_id)) {
-      used.add(line.reconciliation_line_id);
-      return line;
-    }
-    const available = provisionLines.filter((candidate) => !used.has(candidate.id));
-    const concept = normalizeReference(line.concept);
-    const documentNumber = normalizeReference(line.document_number || "");
-    const match = available.find((candidate) => documentNumber && normalizeReference(candidate.document_number || "") === documentNumber)
-      || available.find((candidate) => concept && normalizeReference(candidate.concept) === concept)
-      || available.find((candidate) => candidate.line_type === line.line_type && candidate.cost_category === line.cost_category)
-      || null;
-    if (match) used.add(match.id);
-    return { ...line, reconciliation_line_id: match?.id || null };
-  });
+  return autoMatchForeignTradeAgencySettlementLines(lines, provisionLines);
 }
 
 function normalizeReference(value: string) {

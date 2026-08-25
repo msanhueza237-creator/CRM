@@ -30,7 +30,11 @@ import {
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
-import { normalizeForeignTradeAgencySettlementReview } from "../src/modules/foreign-trade/foreignTradeAgencySettlementReview.ts";
+import {
+  autoMatchForeignTradeAgencySettlementLines,
+  isAgencySettlementSummaryConcept,
+  normalizeForeignTradeAgencySettlementReview,
+} from "../src/modules/foreign-trade/foreignTradeAgencySettlementReview.ts";
 import { normalizeForeignTradeFreightDocumentReview } from "../src/modules/foreign-trade/foreignTradeFreightDocumentReview.ts";
 import { hydrateActualAmountsFromCosts } from "../src/modules/foreign-trade/foreignTradeReconciliationHydration.ts";
 
@@ -504,6 +508,30 @@ const preservedInvoiceAmounts = hydrateActualAmountsFromCosts({
   actual_exchange_rate_clp: 1,
 }, []);
 assert.equal(preservedInvoiceAmounts.totalClp, 119, "los valores explícitos nunca deben reemplazarse con una inferencia");
+
+const provisionLinesForMatching = [
+  { id: "gate", concept: "GATE-IN", document_number: null, line_type: "operating_expense", cost_category: "chile_port", provision_total_clp: 304002 },
+  { id: "insurance", concept: "SEGURO CARGA", document_number: null, line_type: "operating_expense", cost_category: "insurance", provision_total_clp: 215000 },
+  { id: "freight", concept: "FLETE", document_number: null, line_type: "operating_expense", cost_category: "national_transport", provision_total_clp: 571200 },
+];
+const settlementLinesForMatching = [
+  { source_index: 1, concept: "GATE IN - MAERSK LOGISTICS & SERVICES CHILE SPA", reconciliation_line_id: null, line_type: "operating_expense", cost_category: "national_transport", document_number: "1592828", actual_total_clp: 178500, actual_net_clp: 150000, actual_vat_clp: 28500, amount_original: 178500, currency: "CLP", exchange_rate_clp: 1 },
+  { source_index: 2, concept: "SERVICIO DE TRANSPORTES - TRASLADO DE CONTENEDOR FULL 1X20", reconciliation_line_id: null, line_type: "operating_expense", cost_category: "national_transport", document_number: "2264", actual_total_clp: 571200, actual_net_clp: 480000, actual_vat_clp: 91200, amount_original: 571200, currency: "CLP", exchange_rate_clp: 1 },
+  { source_index: 3, concept: "ASESORIAS EN SEGUROS DE TRANSPORTE INTERNACIONAL", reconciliation_line_id: null, line_type: "agency_fee", cost_category: "other", document_number: "18122", actual_total_clp: 192530, actual_net_clp: 192530, actual_vat_clp: 0, amount_original: 211.8, currency: "USD", exchange_rate_clp: null },
+];
+const matchedSettlementLines = autoMatchForeignTradeAgencySettlementLines(settlementLinesForMatching, provisionLinesForMatching);
+assert.deepEqual(matchedSettlementLines.map((line) => line.reconciliation_line_id), ["gate", "freight", "insurance"]);
+assert.equal(isAgencySettlementSummaryConcept("Total Desembolsos"), true);
+const normalizedSettlementSummary = normalizeForeignTradeAgencySettlementReview({
+  extraction_version: "agency_settlement_v1",
+  document_kind: "agency_settlement",
+  general: {},
+  totals: {},
+  lines: [{ source_index: 1, concept: "Total Desembolsos", include: true, actual_total_clp: 1054711 }],
+  warnings: [],
+});
+assert.equal(normalizedSettlementSummary.review.lines[0].include, false, "los subtotales no deben duplicar gastos reales");
+assert.equal(normalizedSettlementSummary.review.lines[0].include_in_costing, false);
 
 const freightExtraction = prepareFreightDocumentExtraction({
   general: {
