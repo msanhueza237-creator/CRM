@@ -64,6 +64,11 @@ assert.match(foreignTradeApiSource, /50 \* 1024 \* 1024/);
 assert.match(foreignTradeApiSource, /onProgress: \(bytesUploaded, bytesTotal\)/);
 assert.match(foreignTradeApiSource, /foreign_trade_storage_limit_not_updated/);
 assert.match(documentsPanelSource, /Supabase todavía conserva el límite anterior de Storage/);
+assert.match(foreignTradeApiSource, /normalizeSupabaseResumableUploadUrl/);
+assert.match(foreignTradeApiSource, /candidate\.host = publicStorageUrl\.host/);
+assert.match(foreignTradeApiSource, /defaultOptions\.urlStorage\.removeUpload/);
+assert.match(foreignTradeApiSource, /foreign_trade_resumable_endpoint_unreachable/);
+assert.match(documentsPanelSource, /No se pudo abrir la ruta pública para cargar el archivo/);
 assert.match(documentsPanelSource, /setForeignTradeDocumentSection\(document\.id, pageNumbers\)/);
 assert.match(documentsPanelSource, /Páginas<\/button>/);
 

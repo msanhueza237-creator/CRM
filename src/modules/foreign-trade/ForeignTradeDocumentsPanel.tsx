@@ -1473,6 +1473,7 @@ function humanizeDocumentError(error: unknown) {
   if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase.";
   if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
   if (/foreign_trade_storage_limit_not_updated|\b413\b|maximum size|payload too large|request entity too large/i.test(message)) return "Supabase todavía conserva el límite anterior de Storage. Ejecuta la migración foreign_trade_center_phase12_large_documents.sql y vuelve a cargar el archivo.";
+  if (/foreign_trade_resumable_endpoint_unreachable|foreign_trade_resumable_endpoint_invalid/i.test(message)) return "No se pudo abrir la ruta pública para cargar el archivo. Actualiza la página y vuelve a intentarlo; si persiste, revisa SUPABASE_PUBLIC_URL y API_EXTERNAL_URL en Dokploy.";
   if (/no se encontr[oó] una secci[oó]n|no se identificaron p[aá]ginas|reconocimiento/i.test(message)) return "No se pudo reconocer la sección automáticamente. Usa el botón Páginas e indica el rango físico del PDF, por ejemplo 2-5.";
   if (/confirm_foreign_trade_fund_request_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase6_fund_requests.sql.";
   if (/confirm_foreign_trade_agency_settlement_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase7_agency_settlements.sql.";

@@ -8844,9 +8844,15 @@ th {
 }
 
 .foreign-trade-document-upload .notice-banner {
+  align-items: flex-start;
   box-sizing: border-box;
+  display: flex;
+  gap: 8px;
+  line-height: 1.45;
   max-width: 100%;
   min-width: 0;
+  overflow: hidden;
+  padding: 10px 0;
 }
 
 .foreign-trade-document-upload .notice-banner > svg {
