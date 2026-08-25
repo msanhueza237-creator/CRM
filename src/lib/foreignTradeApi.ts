@@ -14,6 +14,7 @@ import type {
   ForeignTradeAgencySettlementExtraction,
   ForeignTradeFundRequestExtraction,
   ForeignTradeFreightDocumentExtraction,
+  ForeignTradeDocumentScope,
   ForeignTradeDocumentType,
   ForeignTradeOperation,
   ForeignTradeOperationDetail,
@@ -427,6 +428,14 @@ export async function extractForeignTradeDocument(documentId: string, signal?: A
     extraction: ForeignTradeAnyDocumentExtraction;
     confidence: number | null;
   }>("extract", { document_id: documentId }, signal);
+}
+
+export async function detectForeignTradeDocumentSection(documentId: string, signal?: AbortSignal) {
+  return foreignTradeDocumentRequest<{
+    documentId: string;
+    status: string;
+    scope: ForeignTradeDocumentScope;
+  }>("detect-section", { document_id: documentId }, signal);
 }
 
 export async function updateForeignTradeDocumentType(documentId: string, documentType: ForeignTradeDocumentType) {

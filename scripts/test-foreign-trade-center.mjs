@@ -30,6 +30,20 @@ import { normalizeForeignTradeAgencySettlementReview } from "../src/modules/fore
 import { normalizeForeignTradeFreightDocumentReview } from "../src/modules/foreign-trade/foreignTradeFreightDocumentReview.ts";
 import { hydrateActualAmountsFromCosts } from "../src/modules/foreign-trade/foreignTradeReconciliationHydration.ts";
 
+const documentsPanelSource = await readFile(
+  new URL("../src/modules/foreign-trade/ForeignTradeDocumentsPanel.tsx", import.meta.url),
+  "utf8",
+);
+const documentsFunctionSource = await readFile(
+  new URL("../supabase/functions/foreign-trade-documents/index.ts", import.meta.url),
+  "utf8",
+);
+assert.match(documentsPanelSource, /detectForeignTradeDocumentSection\(documentId\)/);
+assert.match(documentsPanelSource, /Guardar y detectar/);
+assert.match(documentsFunctionSource, /route === "detect-section"/);
+assert.match(documentsFunctionSource, /createScopedPdfData\(bytes, documentScope\.page_numbers/);
+assert.match(documentsFunctionSource, /extractLineRangeSafely\(lineCommon/);
+
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
 

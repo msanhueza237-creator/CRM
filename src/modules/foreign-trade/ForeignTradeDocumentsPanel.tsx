@@ -26,6 +26,7 @@ import {
   confirmForeignTradeFundRequestDocument,
   deleteForeignTradeProductSupplierMapping,
   deleteForeignTradeDocument,
+  detectForeignTradeDocumentSection,
   downloadForeignTradeDocumentSection,
   extractForeignTradeDocument,
   getForeignTradeDocumentUrl,
@@ -187,6 +188,7 @@ export function ForeignTradeDocumentsPanel({
     const uploadErrors: string[] = [];
     const extractionErrors: string[] = [];
     let extracted = 0;
+    let sectionsDetected = 0;
     let originalsOnly = 0;
     try {
       for (let index = 0; index < pendingFiles.length; index += 1) {
@@ -219,6 +221,17 @@ export function ForeignTradeDocumentsPanel({
           activeUploadDocumentId.current = "";
           continue;
         }
+        if (isSectionAwarePdf(pending.file.name, pending.file.type, pending.documentType)) {
+          try {
+            await detectForeignTradeDocumentSection(documentId);
+            sectionsDetected += 1;
+          } catch (detectionError) {
+            extractionErrors.push(`${pending.file.name}: ${humanizeDocumentError(detectionError)}`);
+          } finally {
+            activeUploadDocumentId.current = "";
+          }
+          continue;
+        }
         try {
           await runExtraction(documentId);
           extracted += 1;
@@ -233,12 +246,15 @@ export function ForeignTradeDocumentsPanel({
       await load();
       const summary = [
         uploadedKeys.size ? `${uploadedKeys.size} original(es) guardado(s)` : "",
+        sectionsDetected ? `${sectionsDetected} sección(es) lista(s) para descargar` : "",
         extracted ? `${extracted} extracción(es) lista(s) para revisar` : "",
         originalsOnly ? `${originalsOnly} documento(s) conservado(s) como respaldo` : "",
       ].filter(Boolean).join(" · ");
       setMessage(stopBatchRequested.current
         ? `${summary || "Carga detenida"}. No se procesarán más archivos.`
-        : summary || "No se cargaron documentos.");
+        : sectionsDetected
+          ? `${summary}. Usa Sección para descargar o Analizar para leer todos sus datos.`
+          : summary || "No se cargaron documentos.");
       setError([...uploadErrors, ...extractionErrors].join(" "));
     } finally {
       activeUploadDocumentId.current = "";
@@ -376,10 +392,17 @@ export function ForeignTradeDocumentsPanel({
       await deleteForeignTradeDocument(document.id, document.parse_status === "confirmed");
       await load();
       if (extractableDocumentTypes.has(document.document_type)) {
-        setMessage("Archivo reemplazado. Analizando el nuevo original...");
-        await runExtraction(replacementId);
-        await load();
-        setMessage("Archivo reemplazado y extracción lista para revisión.");
+        if (isSectionAwarePdf(replacement.name, replacement.type, document.document_type)) {
+          setMessage("Archivo reemplazado. Detectando las páginas de la sección...");
+          await detectForeignTradeDocumentSection(replacementId);
+          await load();
+          setMessage("Archivo reemplazado y sección lista. Usa Analizar cuando necesites importar sus datos.");
+        } else {
+          setMessage("Archivo reemplazado. Analizando el nuevo original...");
+          await runExtraction(replacementId);
+          await load();
+          setMessage("Archivo reemplazado y extracción lista para revisión.");
+        }
       } else {
         setMessage("Archivo reemplazado correctamente.");
       }
@@ -447,7 +470,7 @@ export function ForeignTradeDocumentsPanel({
           <label><span>Tipo predeterminado</span><select value={documentType} disabled={Boolean(busyId)} onChange={(event) => { const nextType = event.target.value as ForeignTradeDocumentType; setDocumentType(nextType); setPendingFiles((current) => current.map((item) => ({ ...item, documentType: nextType }))); }}>{documentTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
           <div className="foreign-trade-upload-action-buttons">
             {busyId === "upload" ? <button className="ghost-button danger" type="button" onClick={() => void stopUpload()}><CircleStop size={17} /> Detener carga</button> : null}
-            <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
+            <button className="primary-button" type="submit" disabled={!pendingFiles.length || Boolean(busyId)}>{busyId === "upload" ? <LoaderCircle className="spin" size={17} /> : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? <ScanText size={17} /> : <FileUp size={17} />} {busyId === "upload" ? "Procesando..." : pendingFiles.some((item) => isSectionAwarePdf(item.file.name, item.file.type, item.documentType)) ? "Guardar y detectar" : pendingFiles.some((item) => extractableDocumentTypes.has(item.documentType)) ? "Guardar y procesar" : "Guardar originales"}</button>
           </div>
         </div>
         <p className="foreign-trade-document-type-help">Si un PDF contiene varios documentos, selecciona <strong>Commercial invoice</strong>, <strong>Packing list</strong> o <strong>Bill of lading</strong>: el lector aislará solo sus páginas y habilitará la descarga de esa sección. Usa <strong>Factura / cotización de transporte</strong> para fletes y <strong>Rendición final de agencia</strong> para paquetes de facturas aduaneras.</p>
@@ -462,12 +485,13 @@ export function ForeignTradeDocumentsPanel({
         <div className="foreign-trade-document-items">
           {documents.map((document) => {
             const isExtracting = ["queued", "extracting"].includes(document.parse_status) || extractingIds.has(document.id);
+            const isPdf = isPdfDocument(document);
             const sectionScope = getDocumentScope(document);
             const replacing = busyId === `replace:${document.id}`;
             const deleting = busyId === `delete:${document.id}`;
             const cancelling = busyId === `cancel:${document.id}`;
             return <article key={document.id}>
-              <div className="foreign-trade-document-icon">{document.mime_type === "application/pdf" ? <FileText /> : <FileSpreadsheet />}</div>
+              <div className="foreign-trade-document-icon">{isPdf ? <FileText /> : <FileSpreadsheet />}</div>
               <div className="foreign-trade-document-info">
                 <strong>{document.original_file_name}</strong>
                 <span>{documentTypeLabel(document.document_type)} · {formatFileSize(document.file_size)} · {formatDateTime(document.created_at)}</span>
@@ -478,7 +502,7 @@ export function ForeignTradeDocumentsPanel({
               <DocumentStatus document={isExtracting ? { ...document, parse_status: "extracting" } : document} />
               <div className="foreign-trade-row-actions">
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
-                {document.mime_type === "application/pdf" && sectionAwareDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" title={sectionScope?.detected ? `Descargar solo ${documentTypeLabel(document.document_type)}` : `Detectar y descargar solo ${documentTypeLabel(document.document_type)}`} disabled={busyId === `section:${document.id}`} onClick={() => void downloadDocumentSection(document)}>{busyId === `section:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {sectionScope?.detected ? "Sección" : "Detectar sección"}</button> : null}
+                {isPdf && sectionAwareDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" title={sectionScope?.detected ? `Descargar solo ${documentTypeLabel(document.document_type)}` : `Detectar y descargar solo ${documentTypeLabel(document.document_type)}`} disabled={busyId === `section:${document.id}`} onClick={() => void downloadDocumentSection(document)}>{busyId === `section:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {sectionScope?.detected ? "Sección" : "Detectar sección"}</button> : null}
                 <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title={document.parse_status === "confirmed" ? "Cambiar el original y retirar sus datos derivados" : "Cambiar el archivo conservando su clasificación"}><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label>
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
                 {document.parse_status === "confirmed" && productExtractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Link2 size={16} /> Conciliar productos</button> : null}
@@ -1304,6 +1328,12 @@ function DocumentStatus({ document }: { document: ForeignTradeDocument }) {
 function ConfidenceBadge({ value }: { value: number | null }) { const level = value === null ? "unknown" : value >= .85 ? "high" : value >= .6 ? "medium" : "low"; const label = value === null ? "Sin confianza" : `${Math.round(value * 100)}% confianza`; return <span className={`foreign-trade-confidence ${level}`}>{label}</span>; }
 function nullableNumber(value: string) { const number = Number(value); return value.trim() && Number.isFinite(number) ? number : null; }
 function documentTypeLabel(type: ForeignTradeDocumentType) { return documentTypes.find((item) => item.value === type)?.label || type; }
+function isPdfDocument(document: Pick<ForeignTradeDocument, "mime_type" | "original_file_name">) {
+  return document.mime_type.toLowerCase().includes("pdf") || /\.pdf$/i.test(document.original_file_name);
+}
+function isSectionAwarePdf(fileName: string, mimeType: string, type: ForeignTradeDocumentType) {
+  return sectionAwareDocumentTypes.has(type) && (mimeType.toLowerCase().includes("pdf") || /\.pdf$/i.test(fileName));
+}
 function productDocumentReviewCopy(type: ForeignTradeDocumentType) {
   if (type === "commercial_invoice") return { label: "Commercial Invoice", numberLabel: "Número de invoice", article: "la Commercial Invoice" };
   if (type === "packing_list") return { label: "Packing List", numberLabel: "Referencia del packing list", article: "el Packing List" };

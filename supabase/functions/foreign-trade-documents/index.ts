@@ -55,6 +55,11 @@ Deno.serve(async (req) => {
       const documentId = requiredUuid(payload.document_id, "documento");
       return json(await extractDocument(rest, documentId, requestId, req.signal), 200, req);
     }
+    if (route === "detect-section" && req.method === "POST") {
+      const payload = await readJson(req);
+      const documentId = requiredUuid(payload.document_id, "documento");
+      return json(await detectDocumentSection(rest, documentId, requestId, req.signal), 200, req);
+    }
     if (route === "download-section" && req.method === "POST") {
       const payload = await readJson(req);
       const documentId = requiredUuid(payload.document_id, "documento");
@@ -68,6 +73,43 @@ Deno.serve(async (req) => {
     return json({ error: message, requestId }, status, req);
   }
 });
+
+async function detectDocumentSection(rest: RestClient, documentId: string, requestId: string, requestSignal: AbortSignal) {
+  const documents = await selectRows(rest,
+    `foreign_trade_documents?select=id,document_type,storage_bucket,storage_path,original_file_name,mime_type,parse_status,extraction_result&id=eq.${documentId}&limit=1`,
+  );
+  const document = documents[0];
+  if (!document) throw new HttpError(404, "El documento no existe.");
+  if (!isPdfDocumentRecord(document)) throw new HttpError(400, "La detección de secciones solo está disponible para archivos PDF.");
+  const documentType = String(document.document_type || "other");
+  if (!isSectionAwareDocumentType(documentType)) throw new HttpError(400, "Esta clasificación no utiliza separación de páginas.");
+
+  const bytes = await downloadPrivateFile(rest, String(document.storage_bucket), String(document.storage_path));
+  const sourcePdf = await PDFDocument.load(bytes).catch(() => {
+    throw new HttpError(422, "El PDF original no se pudo abrir o está protegido.");
+  });
+  const pageCount = sourcePdf.getPageCount();
+  const detected = await callOpenAiDocumentScopeDetection(
+    bytes,
+    String(document.original_file_name),
+    documentType,
+    requestId,
+    requestSignal,
+  );
+  const scope = normalizeScopeForPdf(detected.scope, pageCount);
+  if (!scope.detected || !scope.page_numbers.length) {
+    throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(documentType)} dentro del PDF.`);
+  }
+  await persistDiscoveredDocumentScope(rest, document, scope, detected.model);
+  console.info("[foreign-trade-documents] section detection ready", {
+    requestId,
+    documentId,
+    documentType,
+    pageNumbers: scope.page_numbers,
+    totalPdfPages: pageCount,
+  });
+  return { documentId, status: String(document.parse_status || "uploaded"), scope };
+}
 
 async function extractDocument(rest: RestClient, documentId: string, requestId: string, requestSignal: AbortSignal) {
   const documents = await selectRows(rest,
@@ -445,14 +487,21 @@ async function callOpenAiExtraction(
   if (mimeType === "application/pdf" && !documentScope.detected) {
     throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(documentType)} dentro del PDF. Cambia la clasificación o verifica el archivo.`);
   }
+  const scopedPdf = mimeType === "application/pdf" && documentScope.detected
+    ? await createScopedPdfData(bytes, documentScope.page_numbers, requestId)
+    : null;
+  const lineCommon = scopedPdf ? { ...common, fileData: scopedPdf.fileData } : common;
+  const pageMapping = scopedPdf
+    ? scopedPdf.originalPageNumbers.map((page, index) => `${index + 1}→${page}`).join(", ")
+    : "";
   const scopeInstruction = documentScope.detected
-    ? `\n\nRESTRICCIÓN DE SECCIÓN: trabaja únicamente con las páginas PDF ${documentScope.page_numbers.join(", ")} identificadas como ${documentTypeFileLabel(documentType)}. Ignora cualquier Invoice, Packing List, B/L u otro documento ubicado fuera de esas páginas. source_page debe conservar el número físico del PDF original.`
+    ? `\n\nRESTRICCIÓN DE SECCIÓN: trabaja únicamente con las páginas PDF ${documentScope.page_numbers.join(", ")} identificadas como ${documentTypeFileLabel(documentType)}. Ignora cualquier Invoice, Packing List, B/L u otro documento ubicado fuera de esas páginas.${scopedPdf ? ` El archivo recibido en esta pasada ya fue recortado. MAPEO página del archivo→página física original: ${pageMapping}. source_page debe usar siempre la página física original indicada a la derecha del mapeo.` : " source_page debe conservar el número físico del PDF original."}`
     : "";
   const scopedSkill: ForeignTradePdfReadingSkill = {
     ...skill,
     linePrompt: (range, mode) => skill.linePrompt(range, mode) + scopeInstruction,
   };
-  const unnumberedPromise = extractUnnumberedRowsSafely(common, scopedSkill, maxTokens, scopeInstruction);
+  const unnumberedPromise = extractUnnumberedRowsSafely(lineCommon, scopedSkill, maxTokens, scopeInstruction);
   const headerTotals = asObject(headerData.document_totals);
   const expectedLineCount = Number(headerTotals.line_count || 0);
   console.info("[foreign-trade-documents] header extraction ready", {
@@ -461,7 +510,7 @@ async function callOpenAiExtraction(
   });
   const extractionTarget = expectedLineCount > 0 ? Math.min(500, expectedLineCount + 2) : expectedLineCount;
   const ranges = buildExtractionRanges(extractionTarget, lineChunkSize);
-  let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRangeSafely(common, scopedSkill, range, maxTokens, "extract"));
+  let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRangeSafely(lineCommon, scopedSkill, range, maxTokens, "extract"));
   let requestBatches = [...batches];
   let merged = mergeExtractionPasses(headerData, batches);
   console.info("[foreign-trade-documents] first line pass ready", {
@@ -480,7 +529,7 @@ async function callOpenAiExtraction(
     const recovered = await mapWithConcurrency(
       recoveryRanges,
       rangeConcurrency,
-      async (range) => extractLineRangeSafely(common, scopedSkill, range, maxTokens, "recover"),
+      async (range) => extractLineRangeSafely(lineCommon, scopedSkill, range, maxTokens, "recover"),
     );
     batches = [...batches, ...recovered];
     requestBatches = [...requestBatches, ...recovered];
@@ -498,7 +547,7 @@ async function callOpenAiExtraction(
     const verifiedBatches = await mapWithConcurrency(
       verificationRanges,
       rangeConcurrency,
-      async (range) => extractCompactLineRangeSafely(common, scopedSkill, range, maxTokens),
+      async (range) => extractCompactLineRangeSafely(lineCommon, scopedSkill, range, maxTokens),
     );
     requestBatches = [...requestBatches, ...verifiedBatches];
     const compactVerification = {
@@ -764,6 +813,31 @@ async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) 
     clearTimeout(timeout);
     input.requestSignal.removeEventListener("abort", abortFromRequest);
   }
+}
+
+async function createScopedPdfData(bytes: Uint8Array, requestedPages: number[], requestId: string) {
+  const source = await PDFDocument.load(bytes).catch(() => null);
+  if (!source) return null;
+  const pageCount = source.getPageCount();
+  const originalPageNumbers = [...new Set(requestedPages)]
+    .filter((page) => Number.isInteger(page) && page >= 1 && page <= pageCount)
+    .sort((left, right) => left - right);
+  if (!originalPageNumbers.length || originalPageNumbers.length >= pageCount) return null;
+  const scoped = await PDFDocument.create();
+  const pages = await scoped.copyPages(source, originalPageNumbers.map((page) => page - 1));
+  pages.forEach((page) => scoped.addPage(page));
+  const scopedBytes = await scoped.save();
+  console.info("[foreign-trade-documents] scoped PDF ready", {
+    requestId,
+    sourcePages: pageCount,
+    scopedPages: originalPageNumbers.length,
+    sourceBytes: bytes.byteLength,
+    scopedBytes: scopedBytes.byteLength,
+  });
+  return {
+    fileData: `data:application/pdf;base64,${bytesToBase64(scopedBytes)}`,
+    originalPageNumbers,
+  };
 }
 
 const nullableString = { anyOf: [{ type: "string", maxLength: 2000 }, { type: "null" }] };
@@ -1147,7 +1221,7 @@ async function persistDiscoveredDocumentScope(
   model: string,
 ) {
   const status = String(document.parse_status || "");
-  if (!["uploaded", "failed"].includes(status)) return;
+  if (!["uploaded", "failed", "extracting", "review_required"].includes(status)) return;
   const previous = asObject(document.extraction_result);
   await patchRows(rest, `foreign_trade_documents?id=eq.${String(document.id)}&parse_status=eq.${status}`, {
     extraction_result: {
@@ -1163,6 +1237,32 @@ async function persistDiscoveredDocumentScope(
       error: error instanceof Error ? error.message : String(error),
     });
   });
+}
+
+function isPdfDocumentRecord(document: JsonRecord) {
+  return String(document.mime_type || "").toLowerCase().includes("pdf")
+    || /\.pdf$/i.test(String(document.original_file_name || ""));
+}
+
+function isSectionAwareDocumentType(documentType: string) {
+  return ["commercial_invoice", "packing_list", "bill_of_lading"].includes(documentType);
+}
+
+function normalizeScopeForPdf(
+  rawScope: ReturnType<typeof normalizeForeignTradeDocumentScope>,
+  pageCount: number,
+) {
+  const scope = {
+    ...rawScope,
+    total_pdf_pages: pageCount,
+    page_numbers: [...new Set(rawScope.page_numbers)]
+      .filter((page) => Number.isInteger(page) && page >= 1 && page <= pageCount)
+      .sort((left, right) => left - right),
+  };
+  scope.page_start = scope.page_numbers.length ? Math.min(...scope.page_numbers) : null;
+  scope.page_end = scope.page_numbers.length ? Math.max(...scope.page_numbers) : null;
+  scope.detected = scope.detected && scope.page_numbers.length > 0;
+  return scope;
 }
 
 async function downloadPrivateFile(rest: RestClient, bucket: string, path: string) {
