@@ -23,6 +23,10 @@ import {
   createForeignTradeDocumentScopePrompt,
   createForeignTradePdfReadingSkill,
 } from "../supabase/functions/foreign-trade-documents/pdf-reading-skill.ts";
+import {
+  EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+  parseEmbeddedTextInvoice,
+} from "../supabase/functions/foreign-trade-documents/embedded-text-invoice-parser.ts";
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
@@ -58,6 +62,9 @@ assert.match(documentsPanelSource, /30_000/);
 assert.match(documentsFunctionSource, /queueDocumentExtraction/);
 assert.match(documentsFunctionSource, /queueDocumentExtraction\(rest, documentId, requestId\), 202/);
 assert.match(documentsFunctionSource, /runtime\.waitUntil\(task\)/);
+assert.match(documentsFunctionSource, /extractEmbeddedTextInvoiceSafely/);
+assert.match(documentsFunctionSource, /npm:unpdf@1\.8\.1/);
+assert.match(documentsFunctionSource, /embedded text invoice extraction ready/);
 assert.match(documentsFunctionSource, /status: "extracting"/);
 assert.match(documentsFunctionSource, /extraction accepted for background processing/);
 assert.match(documentsPanelSource, /análisis iniciado\(s\) en segundo plano/);
@@ -92,6 +99,34 @@ assert.match(foreignTradeApiSource, /foreign_trade_resumable_endpoint_unreachabl
 assert.match(documentsPanelSource, /No se pudo abrir la ruta pública para cargar el archivo/);
 assert.match(documentsPanelSource, /setForeignTradeDocumentSection\(document\.id, pageNumbers\)/);
 assert.match(documentsPanelSource, /Páginas<\/button>/);
+
+assert.equal(EMBEDDED_TEXT_INVOICE_PARSER_VERSION, "embedded_invoice_text_v1");
+const embeddedInvoice = parseEmbeddedTextInvoice([
+  [
+    "INVOICE HZ26CF296",
+    "39 Capacitor 80 440V 100 pcs $1.8000 $180.00",
+    "41 Thermostat Guards BTG-RK 100 pcs $2.1800 $218.00",
+    "64 Split A/C valve 1/2 3Way 30 pcs $4.1000 $123.00",
+    "64 Flare tube 1/2, R410 50 pcs $5.9700 $298.50",
+    "85 Universal A/C Remote Control INVERTER SPLIT 6000 TO",
+    "18000BTU 5 pcs $51.0000 $255.00",
+    "100 Window exhaust tube 130mm kit: 130mm dia.x1.5m tube,",
+    "connector, 2 seal plates 50 pcs $8.9000 $445.00",
+    "TOTAL $1,519.50",
+  ].join("\n"),
+], [7]);
+assert.equal(embeddedInvoice.lines.length, 6);
+assert.equal(embeddedInvoice.candidateCount, 6);
+assert.equal(embeddedInvoice.coverage, 1);
+assert.equal(embeddedInvoice.lines[0].source_index, 1);
+assert.equal(embeddedInvoice.lines[0].source_page, 7);
+assert.equal(embeddedInvoice.lines[1].source_row_label, "41");
+assert.equal(embeddedInvoice.lines[3].source_row_label, "64");
+assert.equal(embeddedInvoice.lines[4].product_name, "Universal A/C Remote Control INVERTER SPLIT 6000 TO 18000BTU");
+assert.equal(embeddedInvoice.lines[5].quantity, 50);
+assert.equal(embeddedInvoice.lineTotal, 1519.5);
+assert.match(embeddedInvoice.warnings.join(" "), /repitió los números de fila 64/);
+assert.match(embeddedInvoice.warnings.join(" "), /omitió los números de fila 40/);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";

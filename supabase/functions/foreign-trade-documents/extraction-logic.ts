@@ -1,6 +1,6 @@
 export type JsonRecord = Record<string, unknown>;
 
-export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v13_shared_file_batches";
+export const FOREIGN_TRADE_EXTRACTION_VERSION = "pdf_skill_v14_embedded_text_invoices";
 export const FOREIGN_TRADE_FUND_REQUEST_EXTRACTION_VERSION = "fund_request_v1";
 export const FOREIGN_TRADE_AGENCY_SETTLEMENT_EXTRACTION_VERSION = "agency_settlement_v1";
 export const FOREIGN_TRADE_FREIGHT_DOCUMENT_EXTRACTION_VERSION = "freight_document_v1";

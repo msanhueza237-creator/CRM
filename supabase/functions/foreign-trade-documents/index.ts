@@ -19,6 +19,10 @@ import {
 } from "./extraction-logic.ts";
 import { PDFDocument } from "npm:pdf-lib@1.17.1";
 import {
+  EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+  parseEmbeddedTextInvoice,
+} from "./embedded-text-invoice-parser.ts";
+import {
   FOREIGN_TRADE_PDF_SKILL_VERSION,
   assessPdfExtractionQuality,
   createForeignTradeDocumentScopePrompt,
@@ -38,6 +42,7 @@ const allowedMimeTypes = new Set([
 ]);
 const MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
 const OPENAI_INLINE_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const deterministicInvoiceDocumentTypes = new Set(["commercial_invoice", "proforma", "purchase_order"]);
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders(req) });
@@ -346,7 +351,7 @@ async function downloadDocumentSection(rest: RestClient, documentId: string, req
   sectionPdf.setTitle(`${documentTypeFileLabel(String(document.document_type || "document"))} - ${String(document.original_file_name || "documento")}`);
   const sectionBytes = await sectionPdf.save();
   const fileName = sectionFileName(String(document.original_file_name || "documento.pdf"), String(document.document_type || "document"));
-  return new Response(sectionBytes, {
+  return new Response(exactArrayBuffer(sectionBytes), {
     status: 200,
     headers: {
       ...corsHeaders(req),
@@ -632,7 +637,7 @@ async function callOpenAiExtraction(
     });
     const detectedHeaderScope = normalizeForeignTradeDocumentScope(asObject(headerResult.data).document_scope, documentType);
     const documentScope = trustedScope || detectedHeaderScope;
-    const headerData = { ...asObject(headerResult.data), document_scope: documentScope };
+    const headerData: JsonRecord = { ...asObject(headerResult.data), document_scope: documentScope };
     await onHeader?.(headerData, model);
     if (mimeType === "application/pdf" && !documentScope.detected) {
       throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(documentType)} dentro del PDF. Cambia la clasificación o verifica el archivo.`);
@@ -640,6 +645,54 @@ async function callOpenAiExtraction(
     const scopedPdf = preScopedPdf || (mimeType === "application/pdf" && documentScope.detected
       ? await createScopedPdfData(bytes, documentScope.page_numbers, requestId)
       : null);
+    const deterministicInvoice = mimeType === "application/pdf" && deterministicInvoiceDocumentTypes.has(documentType)
+      ? await extractEmbeddedTextInvoiceSafely(
+        scopedPdf?.bytes || analysisBytes,
+        scopedPdf?.originalPageNumbers || documentScope.page_numbers,
+        requestId,
+      )
+      : null;
+    if (deterministicInvoice && deterministicInvoice.coverage >= 0.95 && deterministicInvoice.lines.length >= 5) {
+      const originalTotals = asObject(headerData.document_totals);
+      const declaredTotal = numericValue(originalTotals.total);
+      const acceptableDeclaredDifference = Math.max(1, deterministicInvoice.lineTotal * 0.001);
+      const declaredTotalMatches = declaredTotal !== null
+        && Math.abs(declaredTotal - deterministicInvoice.lineTotal) <= acceptableDeclaredDifference;
+      const verifiedDocumentTotal = declaredTotalMatches ? declaredTotal : deterministicInvoice.lineTotal;
+      const totalMismatch = declaredTotal !== null && !declaredTotalMatches;
+      const directWarnings = [
+        ...stringList(headerData.warnings),
+        ...deterministicInvoice.warnings,
+        ...(totalMismatch
+          ? [`El total de cabecera ${originalTotals.total} difiere de la suma de las líneas ${deterministicInvoice.lineTotal}; se conservó la suma verificable de productos.`]
+          : []),
+      ];
+      console.info("[foreign-trade-documents] embedded text invoice extraction ready", {
+        requestId,
+        filename,
+        extractedLineCount: deterministicInvoice.lines.length,
+        candidateCount: deterministicInvoice.candidateCount,
+        coverage: deterministicInvoice.coverage,
+        lineTotal: deterministicInvoice.lineTotal,
+        parserVersion: EMBEDDED_TEXT_INVOICE_PARSER_VERSION,
+      });
+      return {
+        model: `${model}+${EMBEDDED_TEXT_INVOICE_PARSER_VERSION}`,
+        requestId: headerResult.requestId,
+        data: {
+          ...headerData,
+          document_totals: {
+            ...originalTotals,
+            subtotal: numericValue(originalTotals.subtotal) ?? verifiedDocumentTotal,
+            total: verifiedDocumentTotal,
+            line_count: deterministicInvoice.lines.length,
+          },
+          lines: deterministicInvoice.lines,
+          warnings: [...new Set(directWarnings)].slice(0, 30),
+          pdf_skill_version: `${skill.version}+${EMBEDDED_TEXT_INVOICE_PARSER_VERSION}`,
+        },
+      };
+    }
     if (!preScopedPdf && scopedPdf && temporaryFileId) {
       lineTemporaryFileId = await uploadOpenAiTemporaryFile(
         apiKey,
@@ -722,7 +775,7 @@ async function callOpenAiExtraction(
           return Array.isArray(data.warnings) ? data.warnings : [];
         }),
       };
-      const verifiedMerged = mergeCompactVerification(merged, compactVerification);
+      const verifiedMerged = mergeCompactVerification(merged, compactVerification) as typeof merged;
       const verifiedQuality = assessPdfExtractionQuality(verifiedMerged, lineChunkSize);
       if (verifiedMerged.lines.length >= merged.lines.length && verifiedQuality.score >= quality.score) {
         merged = verifiedMerged;
@@ -738,7 +791,7 @@ async function callOpenAiExtraction(
 
     const unnumberedResult = await unnumberedPromise;
     requestBatches = [...requestBatches, { start: 1, end: 500, data: { _request_id: unnumberedResult.requestId } }];
-    merged = mergeUnnumberedRows(merged, unnumberedResult.data);
+    merged = mergeUnnumberedRows(merged, unnumberedResult.data) as typeof merged;
     quality = assessPdfExtractionQuality(merged, lineChunkSize);
 
     const extractionWithSkill = {
@@ -763,6 +816,41 @@ async function callOpenAiExtraction(
   } finally {
     if (temporaryFileId) await deleteOpenAiTemporaryFile(apiKey, temporaryFileId, requestId);
     if (lineTemporaryFileId) await deleteOpenAiTemporaryFile(apiKey, lineTemporaryFileId, requestId);
+  }
+}
+
+async function extractEmbeddedTextInvoiceSafely(
+  bytes: Uint8Array,
+  originalPageNumbers: number[],
+  requestId: string,
+) {
+  try {
+    const { extractText } = await import("npm:unpdf@1.8.1");
+    const timeoutMs = 15_000;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error("La lectura de texto incrustado excedió 15 segundos.")), timeoutMs);
+    });
+    const extracted = await Promise.race([extractText(bytes, { mergePages: false }), timeout])
+      .finally(() => clearTimeout(timeoutId));
+    const pages = Array.isArray(extracted.text) ? extracted.text : [extracted.text];
+    const result = parseEmbeddedTextInvoice(pages, originalPageNumbers);
+    if (result.lines.length < 5 || result.coverage < 0.95) {
+      console.info("[foreign-trade-documents] embedded text invoice parser not applicable", {
+        requestId,
+        extractedLineCount: result.lines.length,
+        candidateCount: result.candidateCount,
+        coverage: result.coverage,
+      });
+      return null;
+    }
+    return result;
+  } catch (error) {
+    console.warn("[foreign-trade-documents] embedded text invoice parser unavailable", {
+      requestId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
   }
 }
 
@@ -1025,7 +1113,7 @@ async function uploadOpenAiTemporaryFile(
     form.append("purpose", "user_data");
     form.append("expires_after[anchor]", "created_at");
     form.append("expires_after[seconds]", "3600");
-    form.append("file", new Blob([bytes], { type: mimeType }), filename);
+  form.append("file", new Blob([exactArrayBuffer(bytes)], { type: mimeType }), filename);
     const response = await fetch("https://api.openai.com/v1/files", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -1714,6 +1802,10 @@ function bytesToBase64(bytes: Uint8Array) {
   return btoa(binary);
 }
 
+function exactArrayBuffer(bytes: Uint8Array) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
 function documentTypeFileLabel(documentType: string) {
   return ({
     commercial_invoice: "Commercial Invoice",
@@ -1745,6 +1837,17 @@ function extractOutputText(payload: JsonRecord) {
 
 function asObject(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
+}
+
+function numericValue(value: unknown) {
+  const parsed = Number(value);
+  return value !== null && value !== "" && Number.isFinite(parsed) ? parsed : null;
+}
+
+function stringList(value: unknown) {
+  return (Array.isArray(value) ? value : [])
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
 }
 
 function clampNumber(value: unknown, minimum: number, maximum: number, fallback: number) {
