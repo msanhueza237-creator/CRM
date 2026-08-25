@@ -4,6 +4,43 @@
 
 begin;
 
+-- El trigger de perfiles logisticos (fase 11) utiliza estos normalizadores.
+-- Se vuelven a declarar aqui para que la confirmacion de Packing List funcione
+-- tambien en instalaciones donde la fase 11 se aplico sin ejecutar la fase 10.
+create or replace function public.normalize_foreign_trade_product_text(p_value text)
+returns text
+language sql
+immutable
+parallel safe
+set search_path = public, pg_temp
+as $$
+  with folded as (
+    select translate(lower(coalesce(p_value, '')),
+      'áéíóúüñÁÉÍÓÚÜÑ',
+      'aeiouunAEIOUUN') value
+  ), units_joined as (
+    select regexp_replace(
+      value,
+      '([0-9]+([.,][0-9]+)?)\s*(cfm|vac|vdc|hz|kw|btu|psi|bar|hp|mm|cm|kg|ml|v|w|a|g|l)(\M|$)',
+      '\1\3',
+      'gi'
+    ) value
+    from folded
+  )
+  select nullif(trim(regexp_replace(value, '[^a-z0-9]+', ' ', 'g')), '')
+  from units_joined
+$$;
+
+create or replace function public.normalize_foreign_trade_product_code(p_value text)
+returns text
+language sql
+immutable
+parallel safe
+set search_path = public, pg_temp
+as $$
+  select nullif(upper(regexp_replace(coalesce(p_value, ''), '[^a-zA-Z0-9]+', '', 'g')), '')
+$$;
+
 create or replace function public.foreign_trade_packing_text_key(p_value text)
 returns text
 language sql
@@ -143,11 +180,22 @@ begin
         )
         or (
           v_model_key is not null
-          and public.foreign_trade_packing_model_key(concat_ws(' ', candidate.supplier_model, candidate.product_name, candidate.description)) = v_model_key
+          and (
+            public.foreign_trade_packing_model_key(candidate.supplier_model) = v_model_key
+            or public.foreign_trade_packing_model_key(candidate.product_name) = v_model_key
+            or public.foreign_trade_packing_model_key(candidate.description) = v_model_key
+          )
         )
         or (
           v_text_key is not null
-          and public.foreign_trade_packing_text_key(concat_ws(' ', candidate.product_name, candidate.description)) = v_text_key
+          and (
+            public.foreign_trade_packing_text_key(candidate.product_name) = v_text_key
+            or public.foreign_trade_packing_text_key(candidate.description) = v_text_key
+            or (
+              length(coalesce(public.foreign_trade_packing_text_key(candidate.product_name), '')) >= 12
+              and v_text_key like public.foreign_trade_packing_text_key(candidate.product_name) || '%'
+            )
+          )
         )
       )
     order by
@@ -156,7 +204,16 @@ begin
         when nullif(trim(v_line->>'supplier_sku'), '') is not null
           and lower(coalesce(candidate.supplier_sku, candidate.sku, '')) = lower(trim(v_line->>'supplier_sku')) then 950
         when v_model_key is not null
-          and public.foreign_trade_packing_model_key(concat_ws(' ', candidate.supplier_model, candidate.product_name, candidate.description)) = v_model_key then 900
+          and (
+            public.foreign_trade_packing_model_key(candidate.supplier_model) = v_model_key
+            or public.foreign_trade_packing_model_key(candidate.product_name) = v_model_key
+            or public.foreign_trade_packing_model_key(candidate.description) = v_model_key
+          ) then 900
+        when v_text_key is not null
+          and (
+            public.foreign_trade_packing_text_key(candidate.product_name) = v_text_key
+            or public.foreign_trade_packing_text_key(candidate.description) = v_text_key
+          ) then 850
         else 800
       end desc,
       case
@@ -226,7 +283,7 @@ begin
       end,
       cbm_total = coalesce(match.cbm_total, operation_line.cbm_total),
       extraction_confidence = greatest(coalesce(operation_line.extraction_confidence, 0), coalesce(match.confidence, 0)),
-      source_snapshot = operation_line.source_snapshot || jsonb_build_object(
+      source_snapshot = coalesce(operation_line.source_snapshot, '{}'::jsonb) || jsonb_build_object(
         'packing_list_document_id', p_document_id,
         'packing_list_source_indexes', match.source_indexes,
         'packing_list_quantity', match.packing_quantity,

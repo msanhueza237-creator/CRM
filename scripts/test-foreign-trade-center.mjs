@@ -454,6 +454,8 @@ const phase13Migration = await readFile(
   new URL("../supabase/foreign_trade_center_phase13_packing_list_enrichment.sql", import.meta.url),
   "utf8",
 );
+assert.match(phase13Migration, /create or replace function public\.normalize_foreign_trade_product_text\(p_value text\)/i);
+assert.match(phase13Migration, /create or replace function public\.normalize_foreign_trade_product_code\(p_value text\)/i);
 await db.exec(phase13Migration);
 await db.exec(phase13Migration);
 
@@ -1167,9 +1169,21 @@ const secondPackingProduct = await db.query(
     data_source: "document",
   })],
 );
+const thirdPackingProduct = await db.query(
+  "select public.upsert_foreign_trade_operation_line($1::jsonb) as id",
+  [JSON.stringify({
+    operation_id: packingOperationId,
+    product_name: 'Difussor whit dampers circular 8"',
+    description: 'Difussor whit dampers circular 8"',
+    quantity: "32",
+    currency: "USD",
+    unit_factory_cost: "4",
+    data_source: "document",
+  })],
+);
 await db.query(
-  "update public.foreign_trade_operation_lines set source_document_id=$1 where id in ($2,$3)",
-  [packingInvoiceDocumentId, firstPackingProduct.rows[0].id, secondPackingProduct.rows[0].id],
+  "update public.foreign_trade_operation_lines set source_document_id=$1 where id in ($2,$3,$4)",
+  [packingInvoiceDocumentId, firstPackingProduct.rows[0].id, secondPackingProduct.rows[0].id, thirdPackingProduct.rows[0].id],
 );
 const packingDocument = await db.query(`
   insert into public.foreign_trade_documents(
@@ -1183,7 +1197,21 @@ const packingReview = {
   extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
   general: { supplier_id: supplier.rows[0].id, order_number: "TDC12", currency: "USD" },
   document_totals: { boxes: 3, cbm_total: 0.5, gross_weight_kg: 62, net_weight_kg: 58, line_count: 3 },
-  lines: embeddedPackingList.lines.map((line) => ({ ...line, include: true })),
+  lines: [
+    ...embeddedPackingList.lines.map((line) => ({ ...line, include: true })),
+    {
+      source_index: 4,
+      product_name: 'Difussor whit dampers circular 8"',
+      description_original: 'Difussor whit dampers circular 8"',
+      quantity: 32,
+      box_count: 8,
+      cbm_total: 0.22,
+      gross_weight_kg: 18,
+      net_weight_kg: 16,
+      confidence: 0.98,
+      include: true,
+    },
+  ],
   warnings: embeddedPackingList.warnings,
 };
 const packingConfirmation = await db.query(
@@ -1191,13 +1219,13 @@ const packingConfirmation = await db.query(
   [packingDocumentId, JSON.stringify(packingReview)],
 );
 assert.equal(packingConfirmation.rows[0].result.inserted_lines, 0);
-assert.equal(packingConfirmation.rows[0].result.updated_lines, 2);
+assert.equal(packingConfirmation.rows[0].result.updated_lines, 3);
 assert.equal(packingConfirmation.rows[0].result.unmatched_lines, 0);
 const enrichedPackingProducts = await db.query(
   "select product_name,quantity,quantity_per_box,box_count,cbm_total,gross_weight_kg,net_weight_kg,source_snapshot from public.foreign_trade_operation_lines where operation_id=$1 order by line_number",
   [packingOperationId],
 );
-assert.equal(enrichedPackingProducts.rows.length, 2, "Packing List no debe crear productos duplicados");
+assert.equal(enrichedPackingProducts.rows.length, 3, "Packing List no debe crear productos duplicados");
 assert.equal(Number(enrichedPackingProducts.rows[0].box_count), 2);
 assert.equal(Number(enrichedPackingProducts.rows[0].cbm_total), 0.4);
 assert.equal(Number(enrichedPackingProducts.rows[0].quantity_per_box), 10);
@@ -1205,6 +1233,8 @@ assert.equal(Number(enrichedPackingProducts.rows[1].box_count), 1);
 assert.equal(Number(enrichedPackingProducts.rows[1].cbm_total), 0.1);
 assert.equal(Number(enrichedPackingProducts.rows[1].quantity_per_box), 10);
 assert.equal(enrichedPackingProducts.rows[1].source_snapshot.packing_list_document_id, packingDocumentId);
+assert.equal(Number(enrichedPackingProducts.rows[2].box_count), 8, "nombre y descripcion iguales no deben romper la conciliacion textual");
+assert.equal(Number(enrichedPackingProducts.rows[2].cbm_total), 0.22);
 assert.equal(
   (await db.query("select parse_status from public.foreign_trade_documents where id=$1", [packingDocumentId])).rows[0].parse_status,
   "confirmed",

@@ -1530,6 +1530,7 @@ function humanizeDocumentError(error: unknown) {
   if (/confirm_foreign_trade_agency_settlement_document/i.test(message)) return "Falta actualizar la base de datos con supabase/foreign_trade_center_phase7_agency_settlements.sql.";
   if (/confirm_foreign_trade_freight_document/i.test(message)) return "Falta actualizar la base de datos con la migración de documentos de transporte.";
   if (/confirm_foreign_trade_packing_list_document/i.test(message)) return "Falta aplicar en Supabase la migración foreign_trade_center_phase13_packing_list_enrichment.sql.";
+  if (/normalize_foreign_trade_product_(?:code|text)/i.test(message)) return "La confirmación de empaque encontró una dependencia de normalización pendiente. Aplica nuevamente foreign_trade_center_phase13_packing_list_enrichment.sql.";
   if (message.includes("foreign_trade_packing_list_without_matching_products")) return "El Packing List no encontró productos del Invoice en esta operación. Confirma primero el Commercial Invoice y luego vuelve a revisar el Packing List.";
   if (message.includes("foreign_trade_reconciliation_identity_mismatch")) return "Las referencias no coinciden. Confirma manualmente que la provisión y la rendición pertenecen al mismo despacho.";
   if (message.includes("foreign_trade_reconciliation_already_applied")) return "Esta conciliación ya fue aplicada al costeo y no puede recibir otra rendición final.";
