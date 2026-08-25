@@ -1,5 +1,5 @@
-import { Upload, defaultOptions } from "tus-js-client";
-import { getSupabaseFunctionUrl, getSupabaseStorageUrl, isSupabaseConfigured, supabase } from "./supabase";
+import { Upload } from "tus-js-client";
+import { getSupabaseAnonKey, getSupabaseFunctionUrl, getSupabaseStorageUrl, isSupabaseConfigured, supabase } from "./supabase";
 import type {
   CreateForeignTradeOperationInput,
   ForeignTradeAuditEvent,
@@ -55,6 +55,10 @@ const emptySummary: ForeignTradeDashboardSummary = {
 
 export const FOREIGN_TRADE_MAX_FILE_BYTES = 50 * 1024 * 1024;
 const RESUMABLE_UPLOAD_THRESHOLD_BYTES = 6 * 1024 * 1024;
+const UPLOAD_INACTIVITY_TIMEOUT_MS = 60_000;
+const UPLOAD_TOTAL_TIMEOUT_MS = 10 * 60_000;
+
+type ForeignTradeUploadStage = "preparing" | "resumable" | "compatible";
 
 function normalizeSupabaseResumableUploadUrl(uploadUrl: string | null) {
   if (!uploadUrl) return null;
@@ -404,6 +408,8 @@ export async function uploadForeignTradeDocument(input: {
   documentType: ForeignTradeDocumentType;
   file: File;
   onUploadProgress?: (progress: number) => void;
+  onUploadStage?: (stage: ForeignTradeUploadStage) => void;
+  signal?: AbortSignal;
 }) {
   requireSupabase();
   const extension = input.file.name.split(".").pop()?.toLowerCase() || "";
@@ -422,8 +428,19 @@ export async function uploadForeignTradeDocument(input: {
     .replace(/-+/g, "-")
     .slice(-180);
   const storagePath = `${input.operationId}/${crypto.randomUUID()}-${cleanName}`;
-  const fileHash = await sha256(input.file);
-  await uploadForeignTradeOriginal(storagePath, input.file, mimeType, input.onUploadProgress);
+  throwIfUploadAborted(input.signal);
+  input.onUploadStage?.("preparing");
+  const fileHashPromise = sha256(input.file);
+  await uploadForeignTradeOriginal(
+    storagePath,
+    input.file,
+    mimeType,
+    input.onUploadProgress,
+    input.onUploadStage,
+    input.signal,
+  );
+  const fileHash = await fileHashPromise;
+  throwIfUploadAborted(input.signal);
 
   try {
     const { data, error } = await supabase!.rpc("register_foreign_trade_document", {
@@ -451,26 +468,95 @@ async function uploadForeignTradeOriginal(
   file: File,
   mimeType: string,
   onProgress?: (progress: number) => void,
+  onStage?: (stage: ForeignTradeUploadStage) => void,
+  signal?: AbortSignal,
 ) {
+  const credentials = await getForeignTradeUploadCredentials();
+  throwIfUploadAborted(signal);
   if (file.size <= RESUMABLE_UPLOAD_THRESHOLD_BYTES) {
-    const { error } = await supabase!.storage
-      .from("foreign-trade-orders")
-      .upload(storagePath, file, { contentType: mimeType, upsert: false });
-    if (error) throw error;
-    onProgress?.(1);
+    onStage?.("compatible");
+    await uploadForeignTradeOriginalCompatible(storagePath, file, mimeType, credentials, onProgress, signal);
     return;
   }
 
-  const { data } = await supabase!.auth.getSession();
+  onStage?.("resumable");
+  try {
+    await uploadForeignTradeOriginalResumable(storagePath, file, mimeType, credentials, onProgress, signal);
+  } catch (error) {
+    if (isUploadAbortError(error) || /foreign_trade_storage_limit_not_updated|foreign_trade_upload_auth_failed/i.test(String(error))) {
+      throw error;
+    }
+    throwIfUploadAborted(signal);
+    onStage?.("compatible");
+    onProgress?.(0);
+    await uploadForeignTradeOriginalCompatible(storagePath, file, mimeType, credentials, onProgress, signal);
+  }
+}
+
+async function getForeignTradeUploadCredentials() {
+  const { data, error } = await supabase!.auth.getSession();
+  if (error) throw error;
   const token = data.session?.access_token;
+  const anonKey = getSupabaseAnonKey();
   if (!token) throw new Error("Tu sesión expiró. Vuelve a iniciar sesión.");
+  if (!anonKey) throw new Error("Falta configurar VITE_SUPABASE_ANON_KEY.");
+  return { token, anonKey };
+}
+
+async function uploadForeignTradeOriginalResumable(
+  storagePath: string,
+  file: File,
+  mimeType: string,
+  credentials: { token: string; anonKey: string },
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
+) {
   await new Promise<void>((resolve, reject) => {
-    let upload: Upload;
+    let settled = false;
+    let inactivityTimer = 0;
+    let totalTimer = 0;
+    let upload: Upload | null = null;
+
+    const cleanup = () => {
+      window.clearTimeout(inactivityTimer);
+      window.clearTimeout(totalTimer);
+      signal?.removeEventListener("abort", abortUpload);
+    };
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const abortUpload = () => {
+      void upload?.abort().finally(() => finish(createUploadAbortError()));
+    };
+    const timeoutUpload = (code: string) => {
+      void upload?.abort().finally(() => finish(new Error(code)));
+    };
+    const refreshInactivityTimer = () => {
+      window.clearTimeout(inactivityTimer);
+      inactivityTimer = window.setTimeout(() => timeoutUpload("foreign_trade_resumable_upload_stalled"), UPLOAD_INACTIVITY_TIMEOUT_MS);
+    };
+
+    if (signal?.aborted) {
+      finish(createUploadAbortError());
+      return;
+    }
+    signal?.addEventListener("abort", abortUpload, { once: true });
+    totalTimer = window.setTimeout(() => timeoutUpload("foreign_trade_resumable_upload_timeout"), UPLOAD_TOTAL_TIMEOUT_MS);
+    refreshInactivityTimer();
+
     upload = new Upload(file, {
       endpoint: getSupabaseStorageUrl("upload/resumable"),
-      retryDelays: [0, 3_000, 5_000, 10_000, 20_000],
-      headers: { authorization: `Bearer ${token}` },
-      uploadDataDuringCreation: true,
+      retryDelays: [0, 2_000, 5_000],
+      headers: {
+        authorization: `Bearer ${credentials.token}`,
+        apikey: credentials.anonKey,
+      },
+      uploadDataDuringCreation: false,
+      storeFingerprintForResuming: false,
       removeFingerprintOnSuccess: true,
       chunkSize: 6 * 1024 * 1024,
       metadata: {
@@ -480,41 +566,110 @@ async function uploadForeignTradeOriginal(
         cacheControl: "3600",
       },
       onUploadUrlAvailable: () => {
-        const normalizedUrl = normalizeSupabaseResumableUploadUrl(upload.url);
-        if (!normalizedUrl) throw new Error("foreign_trade_resumable_endpoint_invalid");
+        refreshInactivityTimer();
+        const normalizedUrl = normalizeSupabaseResumableUploadUrl(upload?.url || null);
+        if (!normalizedUrl || !upload) {
+          timeoutUpload("foreign_trade_resumable_endpoint_invalid");
+          return;
+        }
         upload.url = normalizedUrl;
       },
-      onProgress: (bytesUploaded, bytesTotal) => onProgress?.(bytesTotal > 0 ? bytesUploaded / bytesTotal : 0),
+      onBeforeRequest: () => refreshInactivityTimer(),
+      onAfterResponse: () => refreshInactivityTimer(),
+      onProgress: (bytesUploaded, bytesTotal) => {
+        refreshInactivityTimer();
+        onProgress?.(bytesTotal > 0 ? bytesUploaded / bytesTotal : 0);
+      },
       onError: (error) => {
         const message = String(error.message || "");
         if (/\b413\b|maximum size|payload too large|request entity too large/i.test(message)) {
-          reject(new Error("foreign_trade_storage_limit_not_updated"));
+          finish(new Error("foreign_trade_storage_limit_not_updated"));
           return;
         }
-        if (/foreign_trade_resumable_endpoint_invalid|failed to resume upload|failed to create upload|ProgressEvent|response code:\s*n\/a/i.test(message)) {
-          reject(new Error("foreign_trade_resumable_endpoint_unreachable"));
+        if (/\b401\b|\b403\b|jwt|unauthorized|forbidden/i.test(message)) {
+          finish(new Error("foreign_trade_upload_auth_failed"));
           return;
         }
-        reject(new Error(`No se pudo completar la carga reanudable: ${message}`));
+        finish(new Error(`foreign_trade_resumable_endpoint_unreachable: ${message}`));
       },
-      onSuccess: () => resolve(),
+      onSuccess: () => {
+        onProgress?.(1);
+        finish();
+      },
     });
-    void upload.findPreviousUploads()
-      .then(async (previousUploads) => {
-        let resumableUpload = null;
-        for (const previousUpload of previousUploads) {
-          const normalizedUrl = normalizeSupabaseResumableUploadUrl(previousUpload.uploadUrl);
-          if (normalizedUrl && !resumableUpload) {
-            resumableUpload = { ...previousUpload, uploadUrl: normalizedUrl };
-            continue;
-          }
-          await defaultOptions.urlStorage.removeUpload(previousUpload.urlStorageKey);
-        }
-        if (resumableUpload) upload.resumeFromPreviousUpload(resumableUpload);
-        upload.start();
-      })
-      .catch(reject);
+    upload.start();
   });
+}
+
+async function uploadForeignTradeOriginalCompatible(
+  storagePath: string,
+  file: File,
+  mimeType: string,
+  credentials: { token: string; anonKey: string },
+  onProgress?: (progress: number) => void,
+  signal?: AbortSignal,
+) {
+  throwIfUploadAborted(signal);
+  const encodedPath = storagePath.split("/").map(encodeURIComponent).join("/");
+  const uploadUrl = getSupabaseStorageUrl(`object/foreign-trade-orders/${encodedPath}`);
+  await new Promise<void>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    let settled = false;
+    const cleanup = () => signal?.removeEventListener("abort", abortUpload);
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    const abortUpload = () => request.abort();
+
+    request.open("POST", uploadUrl, true);
+    request.timeout = UPLOAD_TOTAL_TIMEOUT_MS;
+    request.setRequestHeader("Authorization", `Bearer ${credentials.token}`);
+    request.setRequestHeader("apikey", credentials.anonKey);
+    request.setRequestHeader("Content-Type", mimeType);
+    request.setRequestHeader("x-upsert", "false");
+    request.upload.onprogress = (event) => onProgress?.(event.lengthComputable && event.total > 0 ? event.loaded / event.total : 0);
+    request.onload = () => {
+      if (request.status >= 200 && request.status < 300) {
+        onProgress?.(1);
+        finish();
+        return;
+      }
+      const detail = parseStorageUploadError(request.responseText);
+      if (request.status === 413) finish(new Error("foreign_trade_storage_limit_not_updated"));
+      else if (request.status === 401 || request.status === 403) finish(new Error("foreign_trade_upload_auth_failed"));
+      else finish(new Error(`No se pudo guardar el archivo (${request.status}): ${detail}`));
+    };
+    request.onerror = () => finish(new Error("foreign_trade_compatible_upload_network_error"));
+    request.ontimeout = () => finish(new Error("foreign_trade_compatible_upload_timeout"));
+    request.onabort = () => finish(createUploadAbortError());
+    signal?.addEventListener("abort", abortUpload, { once: true });
+    request.send(file);
+  });
+}
+
+function parseStorageUploadError(responseText: string) {
+  try {
+    const payload = JSON.parse(responseText) as { message?: string; error?: string };
+    return payload.message || payload.error || "respuesta no reconocida";
+  } catch {
+    return responseText.slice(0, 240) || "respuesta vacía";
+  }
+}
+
+function createUploadAbortError() {
+  return new DOMException("Carga detenida por el usuario.", "AbortError");
+}
+
+function throwIfUploadAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw createUploadAbortError();
+}
+
+function isUploadAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
 }
 
 export async function extractForeignTradeDocument(documentId: string, signal?: AbortSignal) {

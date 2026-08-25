@@ -26,3 +26,7 @@ export function getSupabaseStorageUrl(route = "") {
   const cleanRoute = route.replace(/^\/+/, "");
   return `${supabaseUrl}/storage/v1${cleanRoute ? `/${cleanRoute}` : ""}`;
 }
+
+export function getSupabaseAnonKey() {
+  return supabaseAnonKey || "";
+}

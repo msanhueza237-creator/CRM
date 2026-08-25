@@ -132,6 +132,7 @@ export function ForeignTradeDocumentsPanel({
   const extractionControllers = useRef(new Map<string, AbortController>());
   const stopBatchRequested = useRef(false);
   const activeUploadDocumentId = useRef("");
+  const activeUploadController = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -151,6 +152,8 @@ export function ForeignTradeDocumentsPanel({
   useEffect(() => { void load(); }, [load]);
 
   useEffect(() => () => {
+    activeUploadController.current?.abort();
+    activeUploadController.current = null;
     extractionControllers.current.forEach((controller) => controller.abort());
     extractionControllers.current.clear();
   }, []);
@@ -210,8 +213,10 @@ export function ForeignTradeDocumentsPanel({
       for (let index = 0; index < pendingFiles.length; index += 1) {
         if (stopBatchRequested.current) break;
         const pending = pendingFiles[index];
-        setMessage(`Procesando documento ${index + 1} de ${pendingFiles.length}: ${pending.file.name}`);
+        setMessage(`Preparando documento ${index + 1} de ${pendingFiles.length}: ${pending.file.name}`);
         let documentId = "";
+        const uploadController = new AbortController();
+        activeUploadController.current = uploadController;
         try {
           documentId = await uploadForeignTradeDocument({
             operationId,
@@ -219,13 +224,22 @@ export function ForeignTradeDocumentsPanel({
             documentType: pending.documentType,
             file: pending.file,
             onUploadProgress: (progress) => setMessage(`Subiendo documento ${index + 1} de ${pendingFiles.length}: ${Math.round(progress * 100)}% · ${pending.file.name}`),
+            onUploadStage: (stage) => setMessage(stage === "compatible"
+              ? `Usando carga compatible para el documento ${index + 1} de ${pendingFiles.length}: ${pending.file.name}`
+              : stage === "resumable"
+                ? `Iniciando carga reanudable del documento ${index + 1} de ${pendingFiles.length}: ${pending.file.name}`
+                : `Preparando documento ${index + 1} de ${pendingFiles.length}: ${pending.file.name}`),
+            signal: uploadController.signal,
           });
           activeUploadDocumentId.current = documentId;
           uploadedKeys.add(pending.key);
           await load();
         } catch (uploadError) {
+          if (isAbortError(uploadError)) break;
           uploadErrors.push(`${pending.file.name}: ${humanizeDocumentError(uploadError)}`);
           continue;
+        } finally {
+          if (activeUploadController.current === uploadController) activeUploadController.current = null;
         }
 
         if (stopBatchRequested.current) {
@@ -277,6 +291,7 @@ export function ForeignTradeDocumentsPanel({
       setError([...uploadErrors, ...extractionErrors].join(" "));
     } finally {
       activeUploadDocumentId.current = "";
+      activeUploadController.current = null;
       stopBatchRequested.current = false;
       setBusyId("");
     }
@@ -284,8 +299,9 @@ export function ForeignTradeDocumentsPanel({
 
   async function stopUpload() {
     stopBatchRequested.current = true;
+    activeUploadController.current?.abort();
     extractionControllers.current.forEach((controller) => controller.abort());
-    setMessage("Deteniendo la carga después de conservar el original actual...");
+    setMessage("Deteniendo la transferencia actual...");
     const documentId = activeUploadDocumentId.current;
     if (!documentId) return;
     try {
@@ -1458,7 +1474,7 @@ function inferDocumentType(fileName: string, fallback: ForeignTradeDocumentType)
 function formatFileSize(bytes: number) { return bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`; }
 function formatDateTime(value: string) { return new Intl.DateTimeFormat("es-CL", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
 function formatNumber(value: number) { return new Intl.NumberFormat("es-CL", { maximumFractionDigits: 6 }).format(value); }
-function isAbortError(error: unknown) { return error instanceof DOMException && error.name === "AbortError"; }
+function isAbortError(error: unknown) { return error instanceof Error && error.name === "AbortError"; }
 function normalizeCurrencyCode(value: string | null | undefined, fallback: string) {
   const normalized = String(value || "").trim().toUpperCase();
   if (/^[A-Z]{3}$/.test(normalized)) return normalized;
@@ -1471,6 +1487,9 @@ function humanizeDocumentError(error: unknown) {
     ? error.message
     : String(details.message || details.details || details.hint || "No se pudo procesar el documento.");
   if (message.includes("OPENAI_API_KEY")) return "La extracción inteligente no está configurada en Supabase.";
+  if (/foreign_trade_upload_auth_failed/i.test(message)) return "Tu sesión del CRM venció o Storage rechazó la autorización. Cierra sesión, vuelve a entrar y repite la carga.";
+  if (/foreign_trade_resumable_upload_stalled|foreign_trade_resumable_upload_timeout|foreign_trade_compatible_upload_timeout/i.test(message)) return "La transferencia no avanzó dentro del tiempo permitido y fue cancelada; el documento no quedó registrado. Comprueba tu conexión y vuelve a intentarlo.";
+  if (/foreign_trade_compatible_upload_network_error/i.test(message)) return "Las dos rutas de carga fueron probadas, pero la conexión se interrumpió antes de guardar el documento. Comprueba la red y vuelve a intentarlo.";
   if (/excedi[oó].*tiempo|excedi[oó].*segundos|timeout|timed out/i.test(message)) return "El original quedó guardado. El análisis tardó demasiado; usa Reintentar sin volver a subir el archivo.";
   if (/foreign_trade_storage_limit_not_updated|\b413\b|maximum size|payload too large|request entity too large/i.test(message)) return "Supabase todavía conserva el límite anterior de Storage. Ejecuta la migración foreign_trade_center_phase12_large_documents.sql y vuelve a cargar el archivo.";
   if (/foreign_trade_resumable_endpoint_unreachable|foreign_trade_resumable_endpoint_invalid/i.test(message)) return "No se pudo abrir la ruta pública para cargar el archivo. Actualiza la página y vuelve a intentarlo; si persiste, revisa SUPABASE_PUBLIC_URL y API_EXTERNAL_URL en Dokploy.";
