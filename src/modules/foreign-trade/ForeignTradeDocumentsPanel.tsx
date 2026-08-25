@@ -98,7 +98,8 @@ const extractableDocumentTypes = new Set<ForeignTradeDocumentType>([
   ...expenseExtractableDocumentTypes,
 ]);
 
-const currentExtractionVersion = "pdf_skill_v12_compound_sections";
+const currentExtractionVersion = "pdf_skill_v13_shared_file_batches";
+const staleExtractionTimeoutMs = 5 * 60_000;
 const currentFundRequestExtractionVersion = "fund_request_v1";
 const currentAgencySettlementExtractionVersion = "agency_settlement_v1";
 const currentFreightDocumentExtractionVersion = "freight_document_v1";
@@ -137,8 +138,18 @@ export function ForeignTradeDocumentsPanel({
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setDocuments(await getForeignTradeDocuments(operationId));
-      setError("");
+      let loadedDocuments = await getForeignTradeDocuments(operationId);
+      const staleDocuments = loadedDocuments.filter((document) => document.parse_status === "extracting"
+        && document.extraction_started_at
+        && Date.now() - new Date(document.extraction_started_at).getTime() > staleExtractionTimeoutMs);
+      if (staleDocuments.length) {
+        await Promise.allSettled(staleDocuments.map((document) => cancelForeignTradeDocumentExtraction(document.id)));
+        loadedDocuments = await getForeignTradeDocuments(operationId);
+        setError("Se recuperó un análisis interrumpido por el servidor. El original sigue guardado y ya puedes usar Reintentar.");
+      } else {
+        setError("");
+      }
+      setDocuments(loadedDocuments);
     } catch (loadError) {
       const text = loadError instanceof Error ? loadError.message : "No se pudieron cargar los documentos.";
       setError(/foreign_trade_document_list|does not exist|404/i.test(text)
@@ -1384,7 +1395,12 @@ function extractionLines(value: ForeignTradeAnyDocumentExtraction | Record<strin
 }
 
 function DocumentStatus({ document }: { document: ForeignTradeDocument }) {
-  const content = ({ uploaded: "Cargado", queued: "En cola", extracting: "Analizando", review_required: "Revisión requerida", confirmed: "Confirmado", failed: "Error" })[document.parse_status];
+  const elapsedMinutes = document.parse_status === "extracting" && document.extraction_started_at
+    ? Math.max(0, Math.floor((Date.now() - new Date(document.extraction_started_at).getTime()) / 60_000))
+    : 0;
+  const content = document.parse_status === "extracting"
+    ? elapsedMinutes > 0 ? `Analizando · ${elapsedMinutes} min` : "Analizando"
+    : ({ uploaded: "Cargado", queued: "En cola", review_required: "Revisión requerida", confirmed: "Confirmado", failed: "Error" })[document.parse_status];
   return <span className={`foreign-trade-document-status ${document.parse_status}`}>{["queued", "extracting"].includes(document.parse_status) ? <LoaderCircle className="spin" size={13} /> : null}{content}</span>;
 }
 function ConfidenceBadge({ value }: { value: number | null }) { const level = value === null ? "unknown" : value >= .85 ? "high" : value >= .6 ? "medium" : "low"; const label = value === null ? "Sin confianza" : `${Math.round(value * 100)}% confianza`; return <span className={`foreign-trade-confidence ${level}`}>{label}</span>; }

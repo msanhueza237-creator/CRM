@@ -538,8 +538,6 @@ async function callOpenAiExtraction(
   const maxTokens = clampNumber(Deno.env.get("OPENAI_DOCUMENT_MAX_OUTPUT_TOKENS"), 2_000, 20_000, 12_000);
   const lineChunkSize = 15;
   const rangeConcurrency = Math.round(clampNumber(Deno.env.get("OPENAI_DOCUMENT_RANGE_CONCURRENCY"), 1, 8, 6));
-  const fileData = `data:${mimeType};base64,${bytesToBase64(bytes)}`;
-  const common = { apiKey, model, filename, mimeType, fileData, requestId, requestSignal, timeoutMs };
   const skill = createForeignTradePdfReadingSkill(documentType);
   const trustedScope = mimeType === "application/pdf" && storedScope?.detected
     ? storedScope
@@ -547,7 +545,32 @@ async function callOpenAiExtraction(
   const preScopedPdf = trustedScope
     ? await createScopedPdfData(bytes, trustedScope.page_numbers, requestId)
     : null;
-  const headerCommon = preScopedPdf ? { ...common, fileData: preScopedPdf.fileData } : common;
+  const analysisBytes = preScopedPdf?.bytes || bytes;
+  let temporaryFileId = "";
+  let lineTemporaryFileId = "";
+  if (mimeType === "application/pdf") {
+    temporaryFileId = await uploadOpenAiTemporaryFile(
+      apiKey,
+      analysisBytes,
+      preScopedPdf ? sectionFileName(filename, documentType) : filename,
+      mimeType,
+      requestId,
+      requestSignal,
+    );
+  }
+  const common = {
+    apiKey,
+    model,
+    filename,
+    mimeType,
+    ...(temporaryFileId
+      ? { fileId: temporaryFileId }
+      : { fileData: `data:${mimeType};base64,${bytesToBase64(analysisBytes)}` }),
+    requestId,
+    requestSignal,
+    timeoutMs,
+  };
+  const headerCommon = common;
   const trustedPageMapping = preScopedPdf
     ? preScopedPdf.originalPageNumbers.map((page, index) => `${index + 1}->${page}`).join(", ")
     : "";
@@ -566,134 +589,154 @@ async function callOpenAiExtraction(
     pdfSkillVersion: skill.version,
     reusedStoredScope: Boolean(trustedScope),
     storedScopePages: trustedScope?.page_numbers || [],
+    sharedOpenAiFile: Boolean(temporaryFileId),
+    analysisBytes: analysisBytes.byteLength,
   });
 
-  const headerResult = await callOpenAiStructuredExtraction({
-    ...headerCommon,
-    stage: "header",
-    prompt: skill.headerPrompt + trustedScopeInstruction,
-    schemaName: "foreign_trade_document_header",
-    schema: headerExtractionSchema,
-    maxTokens: Math.min(maxTokens, 5_000),
-  });
-  const detectedHeaderScope = normalizeForeignTradeDocumentScope(asObject(headerResult.data).document_scope, documentType);
-  const documentScope = trustedScope || detectedHeaderScope;
-  const headerData = { ...asObject(headerResult.data), document_scope: documentScope };
-  await onHeader?.(headerData, model);
-  if (mimeType === "application/pdf" && !documentScope.detected) {
-    throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(documentType)} dentro del PDF. Cambia la clasificación o verifica el archivo.`);
-  }
-  const scopedPdf = preScopedPdf || (mimeType === "application/pdf" && documentScope.detected
-    ? await createScopedPdfData(bytes, documentScope.page_numbers, requestId)
-    : null);
-  const lineCommon = scopedPdf ? { ...common, fileData: scopedPdf.fileData } : common;
-  const pageMapping = scopedPdf
-    ? scopedPdf.originalPageNumbers.map((page, index) => `${index + 1}→${page}`).join(", ")
-    : "";
-  const scopeInstruction = documentScope.detected
-    ? `\n\nRESTRICCIÓN DE SECCIÓN: trabaja únicamente con las páginas PDF ${documentScope.page_numbers.join(", ")} identificadas como ${documentTypeFileLabel(documentType)}. Ignora cualquier Invoice, Packing List, B/L u otro documento ubicado fuera de esas páginas.${scopedPdf ? ` El archivo recibido en esta pasada ya fue recortado. MAPEO página del archivo→página física original: ${pageMapping}. source_page debe usar siempre la página física original indicada a la derecha del mapeo.` : " source_page debe conservar el número físico del PDF original."}`
-    : "";
-  const scopedSkill: ForeignTradePdfReadingSkill = {
-    ...skill,
-    linePrompt: (range, mode) => skill.linePrompt(range, mode) + scopeInstruction,
-  };
-  const unnumberedPromise = extractUnnumberedRowsSafely(lineCommon, scopedSkill, maxTokens, scopeInstruction);
-  const headerTotals = asObject(headerData.document_totals);
-  const expectedLineCount = Number(headerTotals.line_count || 0);
-  console.info("[foreign-trade-documents] header extraction ready", {
-    requestId,
-    expectedLineCount,
-  });
-  const extractionTarget = expectedLineCount > 0 ? Math.min(500, expectedLineCount + 2) : expectedLineCount;
-  const ranges = buildExtractionRanges(extractionTarget, lineChunkSize);
-  let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRangeSafely(lineCommon, scopedSkill, range, maxTokens, "extract"));
-  let requestBatches = [...batches];
-  let merged = mergeExtractionPasses(headerData, batches);
-  console.info("[foreign-trade-documents] first line pass ready", {
-    requestId,
-    expectedLineCount,
-    extractedLineCount: merged.lines.length,
-  });
-  const recoveryRanges = missingExtractionRanges(expectedLineCount, merged.lines, lineChunkSize);
-  if (recoveryRanges.length) {
-    console.warn("[foreign-trade-documents] incomplete first pass, recovering ranges", {
+  try {
+    const headerResult = await callOpenAiStructuredExtraction({
+      ...headerCommon,
+      stage: "header",
+      prompt: skill.headerPrompt + trustedScopeInstruction,
+      schemaName: "foreign_trade_document_header",
+      schema: headerExtractionSchema,
+      maxTokens: Math.min(maxTokens, 5_000),
+      timeoutMs: Math.min(timeoutMs, 60_000),
+    });
+    const detectedHeaderScope = normalizeForeignTradeDocumentScope(asObject(headerResult.data).document_scope, documentType);
+    const documentScope = trustedScope || detectedHeaderScope;
+    const headerData = { ...asObject(headerResult.data), document_scope: documentScope };
+    await onHeader?.(headerData, model);
+    if (mimeType === "application/pdf" && !documentScope.detected) {
+      throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(documentType)} dentro del PDF. Cambia la clasificación o verifica el archivo.`);
+    }
+    const scopedPdf = preScopedPdf || (mimeType === "application/pdf" && documentScope.detected
+      ? await createScopedPdfData(bytes, documentScope.page_numbers, requestId)
+      : null);
+    if (!preScopedPdf && scopedPdf && temporaryFileId) {
+      lineTemporaryFileId = await uploadOpenAiTemporaryFile(
+        apiKey,
+        scopedPdf.bytes,
+        sectionFileName(filename, documentType),
+        mimeType,
+        requestId,
+        requestSignal,
+      );
+    }
+    const lineCommon = lineTemporaryFileId
+      ? { ...common, fileId: lineTemporaryFileId, fileData: undefined }
+      : common;
+    const pageMapping = scopedPdf
+      ? scopedPdf.originalPageNumbers.map((page, index) => `${index + 1}→${page}`).join(", ")
+      : "";
+    const scopeInstruction = documentScope.detected
+      ? `\n\nRESTRICCIÓN DE SECCIÓN: trabaja únicamente con las páginas PDF ${documentScope.page_numbers.join(", ")} identificadas como ${documentTypeFileLabel(documentType)}. Ignora cualquier Invoice, Packing List, B/L u otro documento ubicado fuera de esas páginas.${scopedPdf ? ` El archivo recibido en esta pasada ya fue recortado. MAPEO página del archivo→página física original: ${pageMapping}. source_page debe usar siempre la página física original indicada a la derecha del mapeo.` : " source_page debe conservar el número físico del PDF original."}`
+      : "";
+    const scopedSkill: ForeignTradePdfReadingSkill = {
+      ...skill,
+      linePrompt: (range, mode) => skill.linePrompt(range, mode) + scopeInstruction,
+    };
+    const unnumberedPromise = extractUnnumberedRowsSafely(lineCommon, scopedSkill, maxTokens, scopeInstruction);
+    const headerTotals = asObject(headerData.document_totals);
+    const expectedLineCount = Number(headerTotals.line_count || 0);
+    console.info("[foreign-trade-documents] header extraction ready", {
+      requestId,
+      expectedLineCount,
+    });
+    const extractionTarget = expectedLineCount > 0 ? Math.min(500, expectedLineCount + 2) : expectedLineCount;
+    const ranges = buildExtractionRanges(extractionTarget, lineChunkSize);
+    let batches = await mapWithConcurrency(ranges, rangeConcurrency, async (range) => extractLineRangeSafely(lineCommon, scopedSkill, range, maxTokens, "extract"));
+    let requestBatches = [...batches];
+    let merged = mergeExtractionPasses(headerData, batches);
+    console.info("[foreign-trade-documents] first line pass ready", {
       requestId,
       expectedLineCount,
       extractedLineCount: merged.lines.length,
-      recoveryRanges,
     });
-    const recovered = await mapWithConcurrency(
-      recoveryRanges,
-      rangeConcurrency,
-      async (range) => extractLineRangeSafely(lineCommon, scopedSkill, range, maxTokens, "recover"),
-    );
-    batches = [...batches, ...recovered];
-    requestBatches = [...requestBatches, ...recovered];
-    merged = mergeExtractionPasses(headerData, batches);
-  }
-
-  let quality = assessPdfExtractionQuality(merged, lineChunkSize);
-  if (quality.requiresVerification) {
-    console.warn("[foreign-trade-documents] quality verification started", {
-      requestId,
-      score: quality.score,
-      warnings: quality.warnings,
-    });
-    const verificationRanges = buildExtractionRanges(Math.max(extractionTarget, merged.lines.length), lineChunkSize);
-    const verifiedBatches = await mapWithConcurrency(
-      verificationRanges,
-      rangeConcurrency,
-      async (range) => extractCompactLineRangeSafely(lineCommon, scopedSkill, range, maxTokens),
-    );
-    requestBatches = [...requestBatches, ...verifiedBatches];
-    const compactVerification = {
-      lines: verifiedBatches.flatMap((batch) => {
-        const data = asObject(batch.data);
-        return Array.isArray(data.lines) ? data.lines : [];
-      }),
-      warnings: verifiedBatches.flatMap((batch) => {
-        const data = asObject(batch.data);
-        return Array.isArray(data.warnings) ? data.warnings : [];
-      }),
-    };
-    const verifiedMerged = mergeCompactVerification(merged, compactVerification);
-    const verifiedQuality = assessPdfExtractionQuality(verifiedMerged, lineChunkSize);
-    if (verifiedMerged.lines.length >= merged.lines.length && verifiedQuality.score >= quality.score) {
-      merged = verifiedMerged;
-      quality = verifiedQuality;
+    const recoveryRanges = missingExtractionRanges(expectedLineCount, merged.lines, lineChunkSize);
+    if (recoveryRanges.length) {
+      console.warn("[foreign-trade-documents] incomplete first pass, recovering ranges", {
+        requestId,
+        expectedLineCount,
+        extractedLineCount: merged.lines.length,
+        recoveryRanges,
+      });
+      const recovered = await mapWithConcurrency(
+        recoveryRanges,
+        rangeConcurrency,
+        async (range) => extractLineRangeSafely(lineCommon, scopedSkill, range, maxTokens, "recover"),
+      );
+      batches = [...batches, ...recovered];
+      requestBatches = [...requestBatches, ...recovered];
+      merged = mergeExtractionPasses(headerData, batches);
     }
-    console.info("[foreign-trade-documents] compact verification ready", JSON.stringify({
-      requestId,
-      extractedLineCount: merged.lines.length,
-      score: quality.score,
-      warnings: quality.warnings,
-    }));
+
+    let quality = assessPdfExtractionQuality(merged, lineChunkSize);
+    if (quality.requiresVerification) {
+      console.warn("[foreign-trade-documents] quality verification started", {
+        requestId,
+        score: quality.score,
+        warnings: quality.warnings,
+      });
+      const verificationRanges = buildExtractionRanges(Math.max(extractionTarget, merged.lines.length), lineChunkSize);
+      const verifiedBatches = await mapWithConcurrency(
+        verificationRanges,
+        rangeConcurrency,
+        async (range) => extractCompactLineRangeSafely(lineCommon, scopedSkill, range, maxTokens),
+      );
+      requestBatches = [...requestBatches, ...verifiedBatches];
+      const compactVerification = {
+        lines: verifiedBatches.flatMap((batch) => {
+          const data = asObject(batch.data);
+          return Array.isArray(data.lines) ? data.lines : [];
+        }),
+        warnings: verifiedBatches.flatMap((batch) => {
+          const data = asObject(batch.data);
+          return Array.isArray(data.warnings) ? data.warnings : [];
+        }),
+      };
+      const verifiedMerged = mergeCompactVerification(merged, compactVerification);
+      const verifiedQuality = assessPdfExtractionQuality(verifiedMerged, lineChunkSize);
+      if (verifiedMerged.lines.length >= merged.lines.length && verifiedQuality.score >= quality.score) {
+        merged = verifiedMerged;
+        quality = verifiedQuality;
+      }
+      console.info("[foreign-trade-documents] compact verification ready", JSON.stringify({
+        requestId,
+        extractedLineCount: merged.lines.length,
+        score: quality.score,
+        warnings: quality.warnings,
+      }));
+    }
+
+    const unnumberedResult = await unnumberedPromise;
+    requestBatches = [...requestBatches, { start: 1, end: 500, data: { _request_id: unnumberedResult.requestId } }];
+    merged = mergeUnnumberedRows(merged, unnumberedResult.data);
+    quality = assessPdfExtractionQuality(merged, lineChunkSize);
+
+    const extractionWithSkill = {
+      ...merged,
+      pdf_skill_version: skill.version,
+      warnings: [...new Set([...merged.warnings, ...quality.warnings])].slice(0, 30),
+    };
+
+    if (quality.critical) {
+      throw new HttpError(
+        502,
+        `La extracción quedó incompleta: se reconocieron ${quality.extractedLineCount} de ${quality.expectedLineCount} productos. Reintenta; el original permanece guardado.`,
+      );
+    }
+    return {
+      model,
+      requestId: [headerResult.requestId, ...requestBatches.map((batch) => String(asObject(batch.data)._request_id || ""))]
+        .filter(Boolean)
+        .join(","),
+      data: extractionWithSkill,
+    };
+  } finally {
+    if (temporaryFileId) await deleteOpenAiTemporaryFile(apiKey, temporaryFileId, requestId);
+    if (lineTemporaryFileId) await deleteOpenAiTemporaryFile(apiKey, lineTemporaryFileId, requestId);
   }
-
-  const unnumberedResult = await unnumberedPromise;
-  requestBatches = [...requestBatches, { start: 1, end: 500, data: { _request_id: unnumberedResult.requestId } }];
-  merged = mergeUnnumberedRows(merged, unnumberedResult.data);
-  quality = assessPdfExtractionQuality(merged, lineChunkSize);
-
-  const extractionWithSkill = {
-    ...merged,
-    pdf_skill_version: skill.version,
-    warnings: [...new Set([...merged.warnings, ...quality.warnings])].slice(0, 30),
-  };
-
-  if (quality.critical) {
-    throw new HttpError(
-      502,
-      `La extracción quedó incompleta: se reconocieron ${quality.extractedLineCount} de ${quality.expectedLineCount} productos. Reintenta; el original permanece guardado.`,
-    );
-  }
-  return {
-    model,
-    requestId: [headerResult.requestId, ...requestBatches.map((batch) => String(asObject(batch.data)._request_id || ""))]
-      .filter(Boolean)
-      .join(","),
-    data: extractionWithSkill,
-  };
 }
 
 async function extractUnnumberedRowsSafely(
@@ -860,53 +903,57 @@ async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) 
   else input.requestSignal.addEventListener("abort", abortFromRequest, { once: true });
   const timeout = setTimeout(() => { timedOut = true; controller.abort(); }, input.timeoutMs);
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${input.apiKey}`,
-        "Content-Type": "application/json",
-        "X-Client-Request-Id": crypto.randomUUID(),
-      },
-      body: JSON.stringify({
-        model: input.model,
-        store: false,
-        max_output_tokens: input.maxTokens,
-        input: [{
-          role: "user",
-          content: [
-            input.fileId
-              ? {
-                type: "input_file",
-                file_id: input.fileId,
-                ...(input.mimeType === "application/pdf" ? { detail: "high" } : {}),
-              }
-              : {
-                type: "input_file",
-                filename: input.filename,
-                file_data: input.fileData,
-                ...(input.mimeType === "application/pdf" ? { detail: "high" } : {}),
-              },
-            {
-              type: "input_text",
-              text: input.prompt,
-            },
-          ],
-        }],
-        text: { format: { type: "json_schema", name: input.schemaName, strict: true, schema: input.schema } },
-      }),
-      signal: controller.signal,
-    });
-    const payload = await response.json().catch(() => ({})) as JsonRecord;
-    if (!response.ok) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          "Content-Type": "application/json",
+          "X-Client-Request-Id": crypto.randomUUID(),
+        },
+        body: JSON.stringify({
+          model: input.model,
+          store: false,
+          max_output_tokens: input.maxTokens,
+          input: [{
+            role: "user",
+            content: [
+              input.fileId
+                ? { type: "input_file", file_id: input.fileId }
+                : { type: "input_file", filename: input.filename, file_data: input.fileData },
+              { type: "input_text", text: input.prompt },
+            ],
+          }],
+          text: { format: { type: "json_schema", name: input.schemaName, strict: true, schema: input.schema } },
+        }),
+        signal: controller.signal,
+      });
+      const payload = await response.json().catch(() => ({})) as JsonRecord;
+      if (response.ok) {
+        const outputText = extractOutputText(payload);
+        if (!outputText) throw new HttpError(502, "OpenAI no devolvió una extracción estructurada.");
+        return {
+          requestId: response.headers.get("x-request-id") || String(payload.id || ""),
+          data: JSON.parse(outputText) as JsonRecord,
+        };
+      }
       const apiError = asObject(payload.error);
-      throw new HttpError(response.status, String(apiError.message || "OpenAI rechazó la extracción."));
+      const retryable = response.status === 408 || response.status === 409 || response.status === 429 || response.status >= 500;
+      if (!retryable || attempt === 2) {
+        throw new HttpError(response.status, String(apiError.message || "OpenAI rechazó la extracción."));
+      }
+      const retryAfterSeconds = Number(response.headers.get("retry-after") || 0);
+      const delayMs = Math.min(8_000, Math.max(1_000, retryAfterSeconds * 1_000 || 1_500 * (attempt + 1)));
+      console.warn("[foreign-trade-documents] transient OpenAI error, retrying", {
+        requestId: input.requestId,
+        stage: input.stage,
+        status: response.status,
+        attempt: attempt + 1,
+        delayMs,
+      });
+      await waitForRetry(delayMs, controller.signal);
     }
-    const outputText = extractOutputText(payload);
-    if (!outputText) throw new HttpError(502, "OpenAI no devolvió una extracción estructurada.");
-    return {
-      requestId: response.headers.get("x-request-id") || String(payload.id || ""),
-      data: JSON.parse(outputText) as JsonRecord,
-    };
+    throw new HttpError(502, "OpenAI no completó la extracción después de los reintentos.");
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       if (!timedOut) throw new HttpError(499, "Análisis detenido por el usuario.");
@@ -917,6 +964,19 @@ async function callOpenAiStructuredExtraction(input: StructuredExtractionInput) 
     clearTimeout(timeout);
     input.requestSignal.removeEventListener("abort", abortFromRequest);
   }
+}
+
+async function waitForRetry(delayMs: number, signal: AbortSignal) {
+  if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(resolve, delayMs);
+    const abort = () => {
+      clearTimeout(timeout);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    setTimeout(() => signal.removeEventListener("abort", abort), delayMs + 1);
+  });
 }
 
 async function uploadOpenAiTemporaryFile(
@@ -952,7 +1012,11 @@ async function uploadOpenAiTemporaryFile(
     }
     const fileId = String(payload.id || "");
     if (!fileId) throw new HttpError(502, "OpenAI no devolvió el identificador del PDF temporal.");
-    console.info("[foreign-trade-documents] large PDF uploaded for section detection", {
+    if (String(payload.status || "") === "error") throw new HttpError(502, "OpenAI no pudo preparar el PDF temporal.");
+    if (String(payload.status || "") === "uploaded") {
+      await waitForOpenAiFileReady(apiKey, fileId, requestId, controller.signal);
+    }
+    console.info("[foreign-trade-documents] temporary PDF uploaded", {
       requestId,
       bytes: bytes.byteLength,
     });
@@ -967,6 +1031,23 @@ async function uploadOpenAiTemporaryFile(
     clearTimeout(timeout);
     requestSignal.removeEventListener("abort", abortFromRequest);
   }
+}
+
+async function waitForOpenAiFileReady(apiKey: string, fileId: string, requestId: string, signal: AbortSignal) {
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    await waitForRetry(1_000, signal);
+    const response = await fetch(`https://api.openai.com/v1/files/${encodeURIComponent(fileId)}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal,
+    });
+    const payload = await response.json().catch(() => ({})) as JsonRecord;
+    if (!response.ok) throw new HttpError(response.status, "No se pudo comprobar la preparación del PDF temporal.");
+    const status = String(payload.status || "");
+    if (!status || status === "processed") return;
+    if (status === "error") throw new HttpError(502, "OpenAI informó un error al preparar el PDF temporal.");
+  }
+  console.warn("[foreign-trade-documents] temporary file still reports uploaded status", { requestId, fileId });
 }
 
 async function deleteOpenAiTemporaryFile(apiKey: string, fileId: string, requestId: string) {
@@ -1005,6 +1086,7 @@ async function createScopedPdfData(bytes: Uint8Array, requestedPages: number[], 
   });
   return {
     fileData: `data:application/pdf;base64,${bytesToBase64(scopedBytes)}`,
+    bytes: scopedBytes,
     originalPageNumbers,
   };
 }
@@ -1347,16 +1429,38 @@ async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker:
 }
 
 async function setExtraction(rest: RestClient, documentId: string, status: string, payload: JsonRecord, confidence: number | null, warnings: unknown[], error: string | null, model: string | null, requestId: string) {
-  await rpc(rest, "set_foreign_trade_document_extraction", {
-    p_document_id: documentId,
-    p_status: status,
-    p_payload: payload,
-    p_confidence: confidence,
-    p_warnings: warnings,
-    p_error: error,
-    p_model: model,
-    p_request_id: requestId,
-  });
+  if (status === "extracting") {
+    await rpc(rest, "set_foreign_trade_document_extraction", {
+      p_document_id: documentId,
+      p_status: status,
+      p_payload: payload,
+      p_confidence: confidence,
+      p_warnings: warnings,
+      p_error: error,
+      p_model: model,
+      p_request_id: requestId,
+    });
+    return;
+  }
+
+  const query = `foreign_trade_documents?id=eq.${documentId}&parse_status=eq.extracting&extraction_request_id=eq.${encodeURIComponent(requestId)}`;
+  const update = status === "review_required"
+    ? {
+      parse_status: status,
+      extraction_result: payload,
+      extraction_confidence: confidence,
+      review_warnings: warnings,
+      extraction_model: model,
+      extraction_completed_at: new Date().toISOString(),
+      extraction_error: null,
+    }
+    : {
+      parse_status: "failed",
+      extraction_completed_at: new Date().toISOString(),
+      extraction_error: String(error || "Error de extracción").slice(0, 2_000),
+    };
+  const updated = await patchRowsReturning(rest, query, update);
+  if (!updated.length) throw new HttpError(409, "foreign_trade_document_request_stale_or_unavailable");
 }
 
 async function persistDetectedDocumentScope(
@@ -1495,6 +1599,18 @@ async function patchRows(rest: RestClient, path: string, payload: JsonRecord) {
   if (!response.ok) {
     throw new HttpError(response.status, `No se pudo conservar la identificación de páginas: ${(await response.text()).slice(0, 300)}`);
   }
+}
+
+async function patchRowsReturning(rest: RestClient, path: string, payload: JsonRecord) {
+  const response = await fetch(`${rest.url}/rest/v1/${path}`, {
+    method: "PATCH",
+    headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "return=representation" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new HttpError(response.status, `No se pudo actualizar el estado de extracción: ${(await response.text()).slice(0, 300)}`);
+  }
+  return await response.json().catch(() => []) as JsonRecord[];
 }
 
 async function rpc(rest: RestClient, fn: string, body: JsonRecord) {

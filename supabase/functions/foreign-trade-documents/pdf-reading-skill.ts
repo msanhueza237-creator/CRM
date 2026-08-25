@@ -4,7 +4,7 @@ import {
   type JsonRecord,
 } from "./extraction-logic.ts";
 
-export const FOREIGN_TRADE_PDF_SKILL_VERSION = "foreign_trade_pdf_reader_v2_compound_sections";
+export const FOREIGN_TRADE_PDF_SKILL_VERSION = "foreign_trade_pdf_reader_v3_shared_file_batches";
 
 export type ForeignTradePdfDocumentType =
   | "proforma"
