@@ -1,5 +1,6 @@
 import Decimal from "decimal.js";
 import { isIncludedInForeignTradeAgencyReconciliation } from "./foreignTradeAgencyPaymentScope.ts";
+import { isAgencySettlementSummaryConcept } from "./foreignTradeAgencySettlementReview.ts";
 
 export type ForeignTradeReconciliationLineType =
   | "operating_expense"
@@ -73,7 +74,7 @@ export function calculateForeignTradeReconciliation(
     );
     const provision = resolvedProvisionTotal(line, provisionConversion);
     const actual = resolvedActualTotal(line);
-    if (!isInformationalSummary(line.concept) && isIncludedInForeignTradeAgencyReconciliation(line)) {
+    if (!isAgencySettlementSummaryConcept(line.concept) && isIncludedInForeignTradeAgencyReconciliation(line)) {
       if (isTax(line.line_type)) {
         provisionTaxes = provisionTaxes.plus(provision);
         actualTaxes = actualTaxes.plus(actual);
@@ -177,16 +178,6 @@ function impliedExchangeRate(
 
 function isTax(type: ForeignTradeReconciliationLineType) {
   return type === "customs_duty" || type === "import_vat";
-}
-
-function isInformationalSummary(value: string | null | undefined) {
-  const normalized = String(value || "")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "")
-    .trim();
-  return /^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$/.test(normalized);
 }
 
 function money(value: number | string | null | undefined) {

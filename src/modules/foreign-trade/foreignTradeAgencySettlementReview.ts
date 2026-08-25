@@ -222,7 +222,7 @@ export function autoMatchForeignTradeAgencySettlementLines(
   }));
 }
 
-export function isAgencySettlementSummaryConcept(value: string) {
+export function isAgencySettlementSummaryConcept(value: string | null | undefined) {
   const normalized = normalizeWords(value).replace(/\s/g, "");
   return /^(?:(?:total|subtotal|suma)(?:desembolsos|gastos|rendicion|facturas?|documentos|general|facturaagencia|derechosaduana|aduana)?|honorarios(?:partede)?facturaagencia|remesa|pagodirecto|totalasufavor|saldoasufavor|devolucion)$/.test(normalized);
 }
@@ -329,8 +329,8 @@ function tokenSimilarity(first: string, second: string) {
   return union ? intersection / union : 0;
 }
 
-function normalizeWords(value: string) {
-  return value.normalize("NFD")
+function normalizeWords(value: string | null | undefined) {
+  return String(value || "").normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")

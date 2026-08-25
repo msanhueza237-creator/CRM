@@ -535,6 +535,27 @@ const preservedInvoiceAmounts = hydrateActualAmountsFromCosts({
 }, []);
 assert.equal(preservedInvoiceAmounts.totalClp, 119, "los valores explícitos nunca deben reemplazarse con una inferencia");
 
+const preservedInformationalSummary = hydrateActualAmountsFromCosts({
+  id: "00000000-0000-4000-8000-000000000104",
+  concept: "Honorarios (parte de Factura Agencia)",
+  metadata: { informational_summary: true, excluded_from_costing: true },
+  applied_cost_line_id: "00000000-0000-4000-8000-000000000102",
+  actual_net_clp: 0,
+  actual_vat_clp: 0,
+  actual_total_clp: 0,
+  actual_amount_original: 0,
+  actual_currency: "CLP",
+  actual_exchange_rate_clp: 1,
+}, [{
+  id: "00000000-0000-4000-8000-000000000102",
+  amount_original: 197659,
+  currency: "CLP",
+  exchange_rate_clp: 1,
+  amount_clp: 197659,
+  metadata: { gross_amount_clp: 197659 },
+}]);
+assert.equal(preservedInformationalSummary.totalClp, 0, "un subtotal documental no debe revivir desde una línea de costo histórica");
+
 const provisionLinesForMatching = [
   { id: "gate", concept: "GATE-IN", document_number: null, line_type: "operating_expense", cost_category: "chile_port", provision_total_clp: 304002 },
   { id: "insurance", concept: "SEGURO CARGA", document_number: null, line_type: "operating_expense", cost_category: "insurance", provision_total_clp: 215000 },
@@ -626,6 +647,7 @@ assert.equal(invoice25868Documentary.isRefundBalanced, true);
 const reconciliationWithoutDuplicatedSubtotal = calculateForeignTradeReconciliation(0, 0, [
   { concept: "Servicio CAM", line_type: "operating_expense", provision_total_clp: 0, actual_net_clp: 100, actual_vat_clp: 19, actual_total_clp: 119 },
   { concept: "Total Desembolsos", line_type: "operating_expense", provision_total_clp: 0, actual_net_clp: 0, actual_vat_clp: 0, actual_total_clp: 119 },
+  { concept: "Honorarios (parte de Factura Agencia)", line_type: "agency_fee", provision_total_clp: 0, actual_net_clp: 0, actual_vat_clp: 0, actual_total_clp: 197659 },
 ]);
 assert.equal(reconciliationWithoutDuplicatedSubtotal.actualExpensesClp, 119, "los subtotales históricos tampoco deben inflar la rendición");
 assert.equal(isAdCargasInternationales("ADS INTERNACIONAL CARGO SPA"), true);
