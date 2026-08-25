@@ -123,6 +123,12 @@ Ejecutar en Supabase SQL Editor, después de las migraciones que ya están en pr
 14. `supabase/foreign_trade_center_phase10_product_reconciliation.sql`
 15. `supabase/foreign_trade_center_phase11_intelligent_normalization.sql`
 16. `supabase/foreign_trade_center_phase12_large_documents.sql`
+17. `supabase/foreign_trade_center_phase13_packing_list_enrichment.sql`
+18. `supabase/foreign_trade_center_phase14_direct_supplier_payments.sql`
+
+### Pagos directos fuera de la rendición
+
+Los costos pagados directamente a un proveedor logístico se mantienen en el costo puesto en bodega, pero no se descuentan del depósito entregado a la agencia. Las facturas reconocidas como AD/ADS Cargas Internacionales se clasifican automáticamente como `direct_supplier`; la conciliación permite revisar o cambiar manualmente esta clasificación y conserva la decisión en metadata auditable.
 
 Las migraciones del módulo son idempotentes y se pueden ejecutar nuevamente. La Fase 12 amplía el bucket privado `foreign-trade-orders` y las validaciones de base de datos a 50 MB.
 

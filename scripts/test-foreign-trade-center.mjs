@@ -37,6 +37,11 @@ import {
 } from "../src/modules/foreign-trade/foreignTradeAgencySettlementReview.ts";
 import { normalizeForeignTradeFreightDocumentReview } from "../src/modules/foreign-trade/foreignTradeFreightDocumentReview.ts";
 import { hydrateActualAmountsFromCosts } from "../src/modules/foreign-trade/foreignTradeReconciliationHydration.ts";
+import {
+  isAdCargasInternationales,
+  isIncludedInForeignTradeAgencyReconciliation,
+  resolveForeignTradeAgencyPaymentScope,
+} from "../src/modules/foreign-trade/foreignTradeAgencyPaymentScope.ts";
 
 const documentsPanelSource = await readFile(
   new URL("../src/modules/foreign-trade/ForeignTradeDocumentsPanel.tsx", import.meta.url),
@@ -463,6 +468,15 @@ assert.match(phase13Migration, /create or replace function public\.normalize_for
 await db.exec(phase13Migration);
 await db.exec(phase13Migration);
 
+const phase14Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase14_direct_supplier_payments.sql", import.meta.url),
+  "utf8",
+);
+assert.match(phase14Migration, /foreign_trade_is_agency_reconciliation_line/i);
+assert.match(phase14Migration, /direct_supplier_total_clp/i);
+await db.exec(phase14Migration);
+await db.exec(phase14Migration);
+
 const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
   id: "00000000-0000-4000-8000-000000000101",
   applied_cost_line_id: "00000000-0000-4000-8000-000000000102",
@@ -537,6 +551,23 @@ const reconciliationWithoutDuplicatedSubtotal = calculateForeignTradeReconciliat
   { concept: "Total Desembolsos", line_type: "operating_expense", provision_total_clp: 0, actual_net_clp: 0, actual_vat_clp: 0, actual_total_clp: 119 },
 ]);
 assert.equal(reconciliationWithoutDuplicatedSubtotal.actualExpensesClp, 119, "los subtotales históricos tampoco deben inflar la rendición");
+assert.equal(isAdCargasInternationales("ADS INTERNACIONAL CARGO SPA"), true);
+assert.equal(isAdCargasInternationales("AD Cargas Internacionales"), true);
+assert.equal(resolveForeignTradeAgencyPaymentScope({ provider_name: "ADS" }), "direct_supplier");
+assert.equal(resolveForeignTradeAgencyPaymentScope({
+  provider_name: "ADS INTERNACIONAL CARGO SPA",
+  metadata: {
+    payment_scope: "agency",
+    exclude_from_agency_reconciliation: true,
+  },
+}), "direct_supplier", "la exclusión explícita debe prevalecer ante metadatos históricos contradictorios");
+assert.equal(isIncludedInForeignTradeAgencyReconciliation({ provider_name: "Agencia de Aduanas" }), true);
+const directSupplierReconciliation = calculateForeignTradeReconciliation(1_000_000, 0, [
+  { concept: "Honorarios", provider_name: "Agencia de Aduanas", line_type: "agency_fee", provision_total_clp: 119000, actual_net_clp: 100000, actual_vat_clp: 19000, actual_total_clp: 119000 },
+  { concept: "Flete marítimo", provider_name: "ADS INTERNACIONAL CARGO SPA", line_type: "operating_expense", provision_total_clp: 0, actual_net_clp: 4690000, actual_vat_clp: 0, actual_total_clp: 4690000 },
+]);
+assert.equal(directSupplierReconciliation.actualExpensesClp, 119000, "el pago directo no debe inflar la rendición de la agencia");
+assert.equal(directSupplierReconciliation.refundDueClp, 881000, "el saldo usa solo importes rendidos por la agencia");
 
 const freightExtraction = prepareFreightDocumentExtraction({
   general: {
@@ -1603,10 +1634,11 @@ const reconciliationList = await db.query(
   "select public.foreign_trade_expense_reconciliation_list($1) as items",
   [operationId],
 );
-assert.equal(reconciliationList.rows[0].items[0].totals.actual_expenses_clp, 2026577);
+assert.equal(reconciliationList.rows[0].items[0].totals.actual_expenses_clp, 1776377);
 assert.equal(reconciliationList.rows[0].items[0].totals.actual_taxes_clp, 16016758);
-assert.equal(reconciliationList.rows[0].items[0].totals.actual_total_clp, 18043335);
-assert.equal(reconciliationList.rows[0].items[0].totals.refund_due_clp, 176665);
+assert.equal(reconciliationList.rows[0].items[0].totals.actual_total_clp, 17793135);
+assert.equal(reconciliationList.rows[0].items[0].totals.direct_supplier_total_clp, 250200);
+assert.equal(reconciliationList.rows[0].items[0].totals.refund_due_clp, 426865);
 const savedMixedCurrencyLines = reconciliationList.rows[0].items[0].lines;
 const savedInsuranceLine = savedMixedCurrencyLines.find((line) => line.document_number === "13366");
 const savedDthcLine = savedMixedCurrencyLines.find((line) => line.document_number === "980");
@@ -1620,7 +1652,8 @@ const appliedReconciliation = await db.query(
   [reconciliationId],
 );
 assert.equal(appliedReconciliation.rows[0].result.applied_lines, 9);
-assert.equal(appliedReconciliation.rows[0].result.refund_due_clp, 176665);
+assert.equal(appliedReconciliation.rows[0].result.direct_supplier_total_clp, 250200);
+assert.equal(appliedReconciliation.rows[0].result.refund_due_clp, 426865);
 const reconciliationState = await db.query(
   "select status from public.foreign_trade_expense_reconciliations where id=$1",
   [reconciliationId],

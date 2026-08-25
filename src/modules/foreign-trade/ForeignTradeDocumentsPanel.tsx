@@ -66,6 +66,10 @@ import {
   normalizeForeignTradeAgencySettlementReview,
 } from "./foreignTradeAgencySettlementReview";
 import { normalizeForeignTradeFreightDocumentReview } from "./foreignTradeFreightDocumentReview";
+import {
+  isIncludedInForeignTradeAgencyReconciliation,
+  resolveForeignTradeAgencyPaymentScope,
+} from "./foreignTradeAgencyPaymentScope";
 
 const documentTypes: Array<{ value: ForeignTradeDocumentType; label: string }> = [
   { value: "proforma", label: "Proforma" },
@@ -957,6 +961,7 @@ function FreightDocumentLineCard({ line, onChange }: { line: ForeignTradeFreight
       <ReviewLineNumber label="Monto original" value={line.amount_original} onChange={(value) => onChange({ amount_original: value })} />
       <ReviewLineField label="Moneda original" value={line.currency} maxLength={3} onChange={(value) => onChange({ currency: (value || "").toUpperCase() })} />
       <ReviewLineNumber label="Tipo cambio a CLP" value={line.exchange_rate_clp} onChange={(value) => onChange({ exchange_rate_clp: value })} />
+      <label><span>Forma de pago</span><select value={line.payment_scope} onChange={(event) => onChange({ payment_scope: event.target.value as ForeignTradeFreightDocumentLine["payment_scope"] })}><option value="agency">Pagado mediante agencia</option><option value="direct_supplier">Pago directo al proveedor</option></select></label>
       <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => onChange({ recoverable_tax: event.target.checked })} /><span>IVA recuperable</span></label>
       <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => onChange({ include_in_costing: event.target.checked })} /><span>Incluir en costeo</span></label>
     </div>
@@ -967,6 +972,12 @@ function FreightDocumentLineCard({ line, onChange }: { line: ForeignTradeFreight
 
 function normalizeFreightDocumentLine(line: ForeignTradeFreightDocumentLine, patch: Partial<ForeignTradeFreightDocumentLine>): ForeignTradeFreightDocumentLine {
   const next = { ...line };
+  if ("provider_name" in patch && !("payment_scope" in patch)) {
+    next.payment_scope = resolveForeignTradeAgencyPaymentScope({
+      provider_name: next.provider_name,
+      concept: next.concept,
+    });
+  }
   next.currency = String(next.currency || "").trim().toUpperCase();
   if (next.currency === "CLP") next.exchange_rate_clp = 1;
   if (("net_clp" in patch || "vat_clp" in patch) && !("total_clp" in patch)) {
@@ -1114,8 +1125,10 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
 
   const selectedReconciliation = reconciliations.find((item) => item.id === reconciliationId) || null;
   const selectedLines = review.lines.filter((line) => line.include);
-  const expenses = selectedLines.filter((line) => !["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
-  const taxes = selectedLines.filter((line) => ["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
+  const agencyLines = selectedLines.filter(isIncludedInForeignTradeAgencyReconciliation);
+  const directPaymentTotal = selectedLines.filter((line) => !isIncludedInForeignTradeAgencyReconciliation(line)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
+  const expenses = agencyLines.filter((line) => !["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
+  const taxes = agencyLines.filter((line) => ["customs_duty", "import_vat"].includes(line.line_type)).reduce((sum, line) => sum + (line.actual_total_clp || 0), 0);
   const calculatedTotal = roundMoney(expenses + taxes);
   const needsRegeneration = review.extraction_version !== currentAgencySettlementExtractionVersion;
   const referencesDiffer = Boolean(selectedReconciliation?.provision_reference && review.general.reference
@@ -1189,6 +1202,7 @@ function AgencySettlementReviewDialog({ document, onClose, onRegenerate, onConfi
       <ReviewLineReadonlyNumber label="Tributos reales CLP" value={roundMoney(taxes)} />
       <ReviewLineReadonlyNumber label="Suma reconocida CLP" value={calculatedTotal} />
       <ReviewLineReadonlyNumber label="Total documento CLP" value={review.totals.document_total_clp} />
+      <ReviewLineReadonlyNumber label="Pago directo fuera de rendición" value={directPaymentTotal} />
     </div>{review.totals.document_total_clp !== null && Math.abs(calculatedTotal - review.totals.document_total_clp) > Math.max(1, review.totals.document_total_clp * 0.01) ? <p className="foreign-trade-recalculation">La suma difiere del total documental en <strong>{formatClp(Math.abs(calculatedTotal - review.totals.document_total_clp))}</strong>. Revisa líneas faltantes, notas de crédito o subtotales duplicados.</p> : null}</section>
 
     <section className="foreign-trade-review-section"><div><h3>Costos reales reconocidos</h3><span>Relaciona cada costo con su provisión. Usa “Nuevo costo real” cuando no existía en la estimación.</span></div><div className="foreign-trade-review-lines">{review.lines.map((line, index) => <AgencySettlementLineCard key={`${line.source_index}-${index}`} line={line} provisionLines={selectedReconciliation?.lines || []} onChange={(patch) => setLine(index, patch)} />)}</div></section>
@@ -1201,7 +1215,7 @@ function AgencySettlementLineCard({ line, provisionLines, onChange }: { line: Fo
   return <article className={!line.include ? "excluded" : ""}>
     <header><label><input type="checkbox" checked={line.include} onChange={(event) => onChange({ include: event.target.checked })} /><span>Costo real {line.source_index}{line.source_page ? ` · pág. ${line.source_page}` : ""}</span></label><ConfidenceBadge value={line.confidence} /></header>
     <div className="foreign-trade-form-grid">
-      <label className="wide-field"><span>Relacionar con provisión</span><select value={line.reconciliation_line_id || ""} onChange={(event) => onChange({ reconciliation_line_id: event.target.value || null })}><option value="">Nuevo costo real sin provisión equivalente</option>{provisionLines.map((item) => <option key={item.id} value={item.id}>{item.concept} · {formatClp(item.provision_total_clp)}</option>)}</select></label>
+      <label className="wide-field"><span>Relacionar con provisión</span><select disabled={line.payment_scope === "direct_supplier"} value={line.payment_scope === "direct_supplier" ? "" : line.reconciliation_line_id || ""} onChange={(event) => onChange({ reconciliation_line_id: event.target.value || null })}><option value="">{line.payment_scope === "direct_supplier" ? "No corresponde: pago directo fuera de la agencia" : "Nuevo costo real sin provisión equivalente"}</option>{provisionLines.map((item) => <option key={item.id} value={item.id}>{item.concept} · {formatClp(item.provision_total_clp)}</option>)}</select></label>
       <label className="wide-field"><span>Concepto real</span><input value={line.concept} onChange={(event) => onChange({ concept: event.target.value })} /></label>
       <label><span>Tipo</span><select value={line.line_type} onChange={(event) => onChange({ line_type: event.target.value as ForeignTradeReconciliationLineType })}>{reconciliationLineTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
       <label><span>Categoría</span><select value={line.cost_category} onChange={(event) => onChange({ cost_category: event.target.value as ForeignTradeCostCategory })}>{reconciliationCategoryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
@@ -1215,6 +1229,7 @@ function AgencySettlementLineCard({ line, provisionLines, onChange }: { line: Fo
       <ReviewLineNumber label="Monto original" value={line.amount_original} onChange={(value) => onChange({ amount_original: value })} />
       <ReviewLineField label="Moneda original" value={line.currency} maxLength={3} onChange={(value) => onChange({ currency: (value || "").toUpperCase() })} />
       <ReviewLineNumber label="Tipo cambio a CLP" value={line.exchange_rate_clp} onChange={(value) => onChange({ exchange_rate_clp: value })} />
+      <label><span>Forma de pago</span><select value={line.payment_scope} onChange={(event) => onChange({ payment_scope: event.target.value as ForeignTradeAgencySettlementLine["payment_scope"], reconciliation_line_id: event.target.value === "direct_supplier" ? null : line.reconciliation_line_id })}><option value="agency">Rendido por la agencia</option><option value="direct_supplier">Pago directo a proveedor</option></select></label>
       <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => onChange({ recoverable_tax: event.target.checked })} /><span>Impuesto recuperable</span></label>
       <label className="foreign-trade-checkbox-field"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => onChange({ include_in_costing: event.target.checked })} /><span>Incluir en costeo</span></label>
     </div>
@@ -1225,6 +1240,13 @@ function AgencySettlementLineCard({ line, provisionLines, onChange }: { line: Fo
 
 function normalizeAgencySettlementLine(line: ForeignTradeAgencySettlementLine, patch: Partial<ForeignTradeAgencySettlementLine>): ForeignTradeAgencySettlementLine {
   const next = { ...line };
+  if ("provider_name" in patch && !("payment_scope" in patch)) {
+    next.payment_scope = resolveForeignTradeAgencyPaymentScope({
+      provider_name: next.provider_name,
+      concept: next.concept,
+    });
+  }
+  if (next.payment_scope === "direct_supplier") next.reconciliation_line_id = null;
   if ("line_type" in patch) {
     if (next.line_type === "customs_duty") { next.cost_category = "duties"; next.include_in_costing = true; }
     if (next.line_type === "import_vat") { next.cost_category = "taxes"; next.recoverable_tax = true; next.include_in_costing = false; }

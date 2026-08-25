@@ -30,6 +30,11 @@ import type {
 import { calculateForeignTradeReconciliation } from "./foreignTradeReconciliationEngine";
 import { hydrateActualAmountsFromCosts } from "./foreignTradeReconciliationHydration";
 import { isAgencySettlementSummaryConcept } from "./foreignTradeAgencySettlementReview";
+import {
+  isIncludedInForeignTradeAgencyReconciliation,
+  resolveForeignTradeAgencyPaymentScope,
+  withForeignTradeAgencyPaymentScope,
+} from "./foreignTradeAgencyPaymentScope";
 
 type DraftLine = SaveForeignTradeExpenseReconciliationInput["lines"][number];
 type Draft = Omit<SaveForeignTradeExpenseReconciliationInput, "lines"> & { lines: DraftLine[] };
@@ -115,6 +120,15 @@ export function ForeignTradeExpenseReconciliationPanel({
     draft.refund_received_clp,
     draft.lines,
   ), [draft.lines, draft.refund_received_clp, draft.remittance_amount_clp]);
+  const directPaymentTotal = useMemo(() => draft.lines.reduce((sum, line, index) => (
+    isIncludedInForeignTradeAgencyReconciliation(line)
+      ? sum
+      : sum + (calculation.lineConversions[index]?.actualAppliedTotalClp || 0)
+  ), 0), [calculation.lineConversions, draft.lines]);
+  const directOperationCosts = useMemo(() => costs
+    .filter((cost) => !cost.metadata?.excluded_from_costing)
+    .filter((cost) => !isIncludedInForeignTradeAgencyReconciliation({ notes: cost.notes, metadata: cost.metadata }))
+    .reduce((sum, cost) => sum + Number(cost.amount_clp || 0), 0), [costs]);
 
   const referencesDiffer = Boolean(
     draft.provision_reference?.trim() &&
@@ -123,6 +137,7 @@ export function ForeignTradeExpenseReconciliationPanel({
   );
   const estimateCandidates = costs.filter((cost) =>
     !["duties", "taxes"].includes(cost.category) &&
+    isIncludedInForeignTradeAgencyReconciliation({ notes: cost.notes, metadata: cost.metadata }) &&
     (!cost.metadata?.excluded_from_costing || cost.id === draft.general_estimate_cost_line_id),
   );
 
@@ -154,6 +169,39 @@ export function ForeignTradeExpenseReconciliationPanel({
         }
         return next;
       }),
+    }));
+  }
+
+  function updateLineProvider(index: number, providerName: string) {
+    setDraft((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => {
+        if (lineIndex !== index) return line;
+        const paymentScope = resolveForeignTradeAgencyPaymentScope({
+          provider_name: providerName,
+          concept: line.concept,
+        });
+        return {
+          ...line,
+          provider_name: providerName,
+          metadata: withForeignTradeAgencyPaymentScope(line.metadata, paymentScope),
+        };
+      }),
+    }));
+  }
+
+  function updateLinePaymentScope(index: number, includeInAgencyReconciliation: boolean) {
+    setDraft((current) => ({
+      ...current,
+      lines: current.lines.map((line, lineIndex) => lineIndex === index
+        ? {
+          ...line,
+          metadata: withForeignTradeAgencyPaymentScope(
+            line.metadata,
+            includeInAgencyReconciliation ? "agency" : "direct_supplier",
+          ),
+        }
+        : line),
     }));
   }
 
@@ -291,17 +339,19 @@ export function ForeignTradeExpenseReconciliationPanel({
 
       <section className="foreign-trade-reconciliation-kpis">
         <ReconciliationKpi icon={<Landmark />} label="Depósito" value={formatClp(Number(draft.remittance_amount_clp || 0))} detail="Fondos entregados a la agencia" />
-        <ReconciliationKpi icon={<ReceiptText />} label="Gastos reales" value={formatClp(calculation.actualExpensesClp)} detail={`Provisión: ${formatClp(calculation.provisionExpensesClp)}`} />
+        <ReconciliationKpi icon={<ReceiptText />} label="Gastos rendidos" value={formatClp(calculation.actualExpensesClp)} detail={directPaymentTotal > 0 ? `${formatClp(directPaymentTotal)} pagados directo, fuera del saldo` : `Provisión: ${formatClp(calculation.provisionExpensesClp)}`} />
         <ReconciliationKpi icon={<FileCheck2 />} label="Tributos reales" value={formatClp(calculation.actualTaxesClp)} detail="Derechos e IVA importación" />
         <ReconciliationKpi icon={calculation.refundDueClp > 0 ? <AlertTriangle /> : <CheckCircle2 />} label={calculation.additionalPaymentClp > 0 ? "Pago adicional" : "Saldo por devolver"} value={formatClp(calculation.additionalPaymentClp || calculation.refundDueClp)} detail={calculation.refundReceivedClp ? `${formatClp(calculation.refundReceivedClp)} ya recibido` : "Pendiente de conciliación"} warning={calculation.refundDueClp > 0 || calculation.additionalPaymentClp > 0} />
       </section>
+
+      {directOperationCosts > 0 ? <div className="notice-banner success"><CheckCircle2 size={17} /><div><strong>Pagos directos separados correctamente</strong><span>{formatClp(directOperationCosts)} pagados directamente a AD/ADS Cargas siguen en el costeo de la importación y no afectan el saldo ni la devolución de esta rendición.</span></div></div> : null}
 
       <article className="panel foreign-trade-reconciliation-table-panel">
         <header className="foreign-trade-detail-panel-heading"><div><h2>Detalle ajustable</h2><p>Cada fila conserva proveedor, factura y página de respaldo.</p></div><div><button className="ghost-button" type="button" onClick={() => addLine("operating_expense")}><Plus size={15} /> Gasto</button><button className="ghost-button" type="button" onClick={() => addLine("customs_duty")}><Plus size={15} /> Tributo</button></div></header>
         <datalist id="foreign-trade-currencies"><option value="CLP" /><option value="USD" /><option value="EUR" /><option value="CNY" /></datalist>
         <div className="table-scroll"><table className="foreign-trade-reconciliation-table"><thead><tr><th>Concepto y respaldo</th><th>Clasificación</th><th>Total real y origen</th><th>Neto real CLP</th><th>IVA real CLP</th><th>Provisión y origen</th><th>Diferencia</th><th>Costeo</th><th aria-label="Acciones" /></tr></thead><tbody>
           {draft.lines.map((line, index) => <tr key={line.id || `new-${index}`} className={isTax(line.line_type) ? "tax" : "expense"}>
-            <td data-label="Concepto y respaldo"><input className="concept" value={line.concept} onChange={(event) => updateLine(index, { concept: event.target.value })} placeholder="Ej. movilización puerto" /><div className="foreign-trade-reconciliation-source"><input value={line.provider_name || ""} onChange={(event) => updateLine(index, { provider_name: event.target.value })} placeholder="Proveedor" /><input value={line.document_number || ""} onChange={(event) => updateLine(index, { document_number: event.target.value })} placeholder="Factura" /><input inputMode="numeric" value={line.source_page ?? ""} onChange={(event) => updateLine(index, { source_page: event.target.value })} placeholder="Pág." /></div><small><strong>Real: {formatClp(calculation.lineConversions[index]?.actualAppliedTotalClp || 0)}</strong> · {Number(line.provision_total_clp || 0) > 0 ? `Provisionado: ${formatClp(Number(line.provision_total_clp))}` : "Sin contraparte en la provisión"}</small></td>
+            <td data-label="Concepto y respaldo"><input className="concept" value={line.concept} onChange={(event) => updateLine(index, { concept: event.target.value })} placeholder="Ej. movilización puerto" /><div className="foreign-trade-reconciliation-source"><input value={line.provider_name || ""} onChange={(event) => updateLineProvider(index, event.target.value)} placeholder="Proveedor" /><input value={line.document_number || ""} onChange={(event) => updateLine(index, { document_number: event.target.value })} placeholder="Factura" /><input inputMode="numeric" value={line.source_page ?? ""} onChange={(event) => updateLine(index, { source_page: event.target.value })} placeholder="Pág." /></div><small><strong>Real: {formatClp(calculation.lineConversions[index]?.actualAppliedTotalClp || 0)}</strong> · {isIncludedInForeignTradeAgencyReconciliation(line) ? Number(line.provision_total_clp || 0) > 0 ? `Provisionado: ${formatClp(Number(line.provision_total_clp))}` : "Sin contraparte en la provisión" : "Pago directo: fuera de la rendición"}</small></td>
             <td data-label="Clasificación"><select value={line.line_type} onChange={(event) => changeLineType(index, event.target.value as ForeignTradeReconciliationLineType)}>{lineTypes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select><select value={line.cost_category} onChange={(event) => updateLine(index, { cost_category: event.target.value as ForeignTradeCostCategory })}>{costCategories.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></td>
             <SourceMoneyCell
               label="Total real y origen"
@@ -338,13 +388,13 @@ export function ForeignTradeExpenseReconciliationPanel({
               emptyMessage="Este gasto no tuvo una contraparte reconocida en la provisión original."
             />
             <td data-label="Diferencia" className={calculation.lineDifferences[index] < 0 ? "negative" : "positive"}><strong>{formatClp(calculation.lineDifferences[index] || 0)}</strong><small>{calculation.lineDifferences[index] < 0 ? "Mayor gasto real" : "Saldo favorable"}</small></td>
-            <td data-label="Costeo"><label className="foreign-trade-mini-check"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => updateLine(index, { include_in_costing: event.target.checked })} /> Incluir</label>{!isTax(line.line_type) ? <label className="foreign-trade-mini-check"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => updateLine(index, { recoverable_tax: event.target.checked })} /> IVA recuperable</label> : <small>Tributo separado</small>}</td>
+            <td data-label="Costeo"><label className="foreign-trade-mini-check"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => updateLine(index, { include_in_costing: event.target.checked })} /> Incluir en costo</label><label className="foreign-trade-mini-check"><input type="checkbox" checked={isIncludedInForeignTradeAgencyReconciliation(line)} onChange={(event) => updateLinePaymentScope(index, event.target.checked)} /> En rendición agencia</label>{!isIncludedInForeignTradeAgencyReconciliation(line) ? <small>Pago directo a proveedor</small> : !isTax(line.line_type) ? <label className="foreign-trade-mini-check"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => updateLine(index, { recoverable_tax: event.target.checked })} /> IVA recuperable</label> : <small>Tributo separado</small>}</td>
             <td data-label="Acciones"><button className="icon-button danger" type="button" title="Eliminar fila" aria-label={`Eliminar ${line.concept || "fila"}`} onClick={() => removeLine(index)}><Trash2 size={15} /></button></td>
           </tr>)}
         </tbody></table></div>
         {!draft.lines.length ? <div className="empty-state"><ReceiptText size={26} /><strong>Sin detalle</strong><span>Agrega los gastos y tributos indicados en la rendición.</span></div> : null}
         <footer className="foreign-trade-reconciliation-actions">
-          <div><strong>Total rendido: {formatClp(calculation.actualTotalClp)}</strong><span>Gastos {formatClp(calculation.actualExpensesClp)} · tributos {formatClp(calculation.actualTaxesClp)}</span></div>
+          <div><strong>Total rendido por agencia: {formatClp(calculation.actualTotalClp)}</strong><span>Gastos {formatClp(calculation.actualExpensesClp)} · tributos {formatClp(calculation.actualTaxesClp)}{directPaymentTotal > 0 ? ` · pago directo fuera de rendición ${formatClp(directPaymentTotal)}` : ""}</span></div>
           <button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void save()}>{busy === "save" ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Guardar revisión</button>
           <button className="primary-button" type="button" disabled={Boolean(busy)} onClick={() => void applyActualValues()}>{busy === "apply" ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />} Aplicar valores reales</button>
         </footer>
@@ -467,7 +517,7 @@ function emptyLine(type: ForeignTradeReconciliationLineType, position: number): 
     recoverable_tax: type === "import_vat",
     include_in_costing: true,
     notes: "",
-    metadata: {},
+    metadata: withForeignTradeAgencyPaymentScope({}, "agency"),
   };
 }
 
@@ -520,9 +570,12 @@ function draftFromReconciliation(item: ForeignTradeExpenseReconciliation, costs:
         recoverable_tax: line.recoverable_tax,
         include_in_costing: isAgencySettlementSummaryConcept(line.concept) ? false : line.include_in_costing,
         notes: line.notes || "",
-        metadata: hydrated.sourceCostLineId
-          ? { ...(line.metadata || {}), autofilled_from_cost_line_id: hydrated.sourceCostLineId }
-          : line.metadata || {},
+        metadata: withForeignTradeAgencyPaymentScope(
+          hydrated.sourceCostLineId
+            ? { ...(line.metadata || {}), autofilled_from_cost_line_id: hydrated.sourceCostLineId }
+            : line.metadata || {},
+          resolveForeignTradeAgencyPaymentScope(line),
+        ),
       };
     }),
   };

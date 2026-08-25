@@ -5,6 +5,10 @@ import type {
   ForeignTradeExpenseReconciliationLine,
   ForeignTradeReconciliationLineType,
 } from "../../types/foreignTrade";
+import {
+  isIncludedInForeignTradeAgencyReconciliation,
+  resolveForeignTradeAgencyPaymentScope,
+} from "./foreignTradeAgencyPaymentScope.ts";
 
 const lineTypes = new Set<ForeignTradeReconciliationLineType>([
   "operating_expense", "agency_fee", "customs_duty", "import_vat", "adjustment",
@@ -102,10 +106,19 @@ function normalizeLine(value: unknown, index: number): ForeignTradeAgencySettlem
       ? roundMoney(amountOriginal * exchangeRate)
       : null;
   const concept = text(source.concept);
+  const providerName = nullableText(source.provider_name);
+  const paymentScope = resolveForeignTradeAgencyPaymentScope({
+    provider_name: providerName,
+    concept,
+    payment_scope: source.payment_scope === "direct_supplier" ? "direct_supplier" : source.payment_scope === "agency" ? "agency" : null,
+  });
   const isSummary = isAgencySettlementSummaryConcept(concept);
   const warnings = stringArray(source.warnings);
   if (isSummary && !warnings.includes("Subtotal informativo; no se concilia como gasto independiente.")) {
     warnings.push("Subtotal informativo; no se concilia como gasto independiente.");
+  }
+  if (paymentScope === "direct_supplier" && !warnings.includes("Pago directo a AD/ADS Cargas: se incluye en el costeo, pero queda fuera de la rendición de la agencia.")) {
+    warnings.push("Pago directo a AD/ADS Cargas: se incluye en el costeo, pero queda fuera de la rendición de la agencia.");
   }
   return {
     source_index: positiveInteger(source.source_index) || index + 1,
@@ -115,7 +128,7 @@ function normalizeLine(value: unknown, index: number): ForeignTradeAgencySettlem
     line_type: lineType,
     cost_category: lineType === "customs_duty" ? "duties" : lineType === "import_vat" ? "taxes" : costCategory,
     concept,
-    provider_name: nullableText(source.provider_name),
+    provider_name: providerName,
     document_number: nullableText(source.document_number),
     document_date: nullableText(source.document_date),
     actual_net_clp: netClp,
@@ -126,6 +139,7 @@ function normalizeLine(value: unknown, index: number): ForeignTradeAgencySettlem
     exchange_rate_clp: exchangeRate,
     recoverable_tax: lineType === "import_vat" || source.recoverable_tax === true,
     include_in_costing: isSummary || lineType === "import_vat" ? false : source.include_in_costing !== false,
+    payment_scope: paymentScope,
     confidence: confidence(source.confidence),
     warnings,
   };
@@ -163,7 +177,11 @@ export function autoMatchForeignTradeAgencySettlementLines(
   });
 
   const candidates = lines.flatMap((line, lineIndex) => {
-    if (usedLines.has(lineIndex) || isAgencySettlementSummaryConcept(line.concept)) return [];
+    if (
+      usedLines.has(lineIndex) ||
+      isAgencySettlementSummaryConcept(line.concept) ||
+      !isIncludedInForeignTradeAgencyReconciliation(line)
+    ) return [];
     return provisionLines
       .filter((candidate) => !usedProvisions.has(candidate.id))
       .map((candidate) => ({

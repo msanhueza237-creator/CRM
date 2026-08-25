@@ -362,6 +362,7 @@ export interface ForeignTradeExpenseReconciliationTotals {
   actual_taxes_clp: number;
   provision_total_clp: number;
   actual_total_clp: number;
+  direct_supplier_total_clp: number;
   balance_clp: number;
   refund_due_clp: number;
   additional_payment_clp: number;
@@ -448,6 +449,7 @@ export interface ApplyForeignTradeExpenseReconciliationResult {
   reconciliation_id: string;
   applied_lines: number;
   actual_total_clp: number;
+  direct_supplier_total_clp: number;
   balance_clp: number;
   refund_due_clp: number;
 }
@@ -671,6 +673,7 @@ export interface ForeignTradeAgencySettlementLine {
   exchange_rate_clp: number | null;
   recoverable_tax: boolean;
   include_in_costing: boolean;
+  payment_scope: "agency" | "direct_supplier";
   confidence: number | null;
   warnings: string[];
 }
@@ -722,6 +725,7 @@ export interface ForeignTradeFreightDocumentLine {
   exchange_rate_clp: number | null;
   recoverable_tax: boolean;
   include_in_costing: boolean;
+  payment_scope: "agency" | "direct_supplier";
   confidence: number | null;
   warnings: string[];
 }

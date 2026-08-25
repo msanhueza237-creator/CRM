@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { isIncludedInForeignTradeAgencyReconciliation } from "./foreignTradeAgencyPaymentScope.ts";
 
 export type ForeignTradeReconciliationLineType =
   | "operating_expense"
@@ -9,6 +10,8 @@ export type ForeignTradeReconciliationLineType =
 
 export interface ForeignTradeReconciliationAmountLine {
   concept?: string | null;
+  provider_name?: string | null;
+  metadata?: Record<string, unknown> | null;
   line_type: ForeignTradeReconciliationLineType;
   provision_total_clp: number | string | null;
   provision_amount_original?: number | string | null;
@@ -70,7 +73,7 @@ export function calculateForeignTradeReconciliation(
     );
     const provision = resolvedProvisionTotal(line, provisionConversion);
     const actual = resolvedActualTotal(line);
-    if (!isInformationalSummary(line.concept)) {
+    if (!isInformationalSummary(line.concept) && isIncludedInForeignTradeAgencyReconciliation(line)) {
       if (isTax(line.line_type)) {
         provisionTaxes = provisionTaxes.plus(provision);
         actualTaxes = actualTaxes.plus(actual);
@@ -101,7 +104,9 @@ export function calculateForeignTradeReconciliation(
         ? toMoney(statedActual.minus(actualConversion))
         : null,
     });
-    return toMoney(provision.minus(actual));
+    return isIncludedInForeignTradeAgencyReconciliation(line)
+      ? toMoney(provision.minus(actual))
+      : 0;
   });
 
   const provisionTotal = provisionExpenses.plus(provisionTaxes);

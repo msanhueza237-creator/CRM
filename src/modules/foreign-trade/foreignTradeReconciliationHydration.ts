@@ -2,6 +2,7 @@ import type {
   ForeignTradeCostLine,
   ForeignTradeExpenseReconciliationLine,
 } from "../../types/foreignTrade";
+import { isIncludedInForeignTradeAgencyReconciliation } from "./foreignTradeAgencyPaymentScope.ts";
 
 export type HydratedActualAmounts = {
   netClp: number;
@@ -32,6 +33,10 @@ export function hydrateActualAmountsFromCosts(
     || costs.find((cost) => String(cost.metadata?.reconciliation_line_id || "") === line.id)
     || null;
   if (!source) return current;
+  if (
+    isIncludedInForeignTradeAgencyReconciliation(line) &&
+    !isIncludedInForeignTradeAgencyReconciliation({ notes: source.notes, metadata: source.metadata })
+  ) return current;
 
   const metadata = source.metadata || {};
   const vatClp = nonNegative(metadata.vat_amount_clp);

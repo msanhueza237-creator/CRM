@@ -3,6 +3,7 @@ import type {
   ForeignTradeFreightDocumentExtraction,
   ForeignTradeFreightDocumentLine,
 } from "../../types/foreignTrade";
+import { resolveForeignTradeAgencyPaymentScope } from "./foreignTradeAgencyPaymentScope.ts";
 
 const costCategories = new Set<ForeignTradeCostCategory>([
   "origin", "international_freight", "insurance", "chile_port", "storage",
@@ -92,13 +93,14 @@ function normalizeLine(value: unknown, index: number): ForeignTradeFreightDocume
     : amountOriginal !== null && exchangeRate !== null
       ? roundMoney(amountOriginal * exchangeRate)
       : null;
+  const providerName = nullableText(source.provider_name);
   return {
     source_index: positiveInteger(source.source_index) || index + 1,
     source_page: positiveInteger(source.source_page),
     include: source.include !== false,
     cost_category: category,
     concept: text(source.concept),
-    provider_name: nullableText(source.provider_name),
+    provider_name: providerName,
     document_number: nullableText(source.document_number),
     document_date: nullableText(source.document_date),
     net_clp: netClp,
@@ -109,6 +111,11 @@ function normalizeLine(value: unknown, index: number): ForeignTradeFreightDocume
     exchange_rate_clp: exchangeRate,
     recoverable_tax: source.recoverable_tax === true,
     include_in_costing: source.include_in_costing !== false,
+    payment_scope: resolveForeignTradeAgencyPaymentScope({
+      provider_name: providerName,
+      concept: text(source.concept),
+      payment_scope: source.payment_scope === "direct_supplier" ? "direct_supplier" : source.payment_scope === "agency" ? "agency" : null,
+    }),
     confidence: confidence(source.confidence),
     warnings: stringArray(source.warnings),
   };
