@@ -594,7 +594,8 @@ export async function downloadForeignTradeDocumentSection(documentId: string) {
   const contentDisposition = response.headers.get("content-disposition") || "";
   const fileName = /filename="([^"]+)"/i.exec(contentDisposition)?.[1] || "seccion-documento.pdf";
   const pages = (response.headers.get("x-document-pages") || "").split(",").map(Number).filter(Number.isFinite);
-  return { blob: await response.blob(), fileName, pages };
+  const totalPages = Number(response.headers.get("x-document-total-pages") || 0) || null;
+  return { blob: await response.blob(), fileName, pages, totalPages };
 }
 
 async function foreignTradeDocumentRequest<T>(route: string, body: Record<string, unknown>, signal?: AbortSignal): Promise<T> {

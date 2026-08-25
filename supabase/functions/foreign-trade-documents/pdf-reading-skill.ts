@@ -61,11 +61,7 @@ const documentProfiles: Record<string, { label: string; headerRules: string; lin
 };
 
 export function createForeignTradePdfReadingSkill(documentType: ForeignTradePdfDocumentType): ForeignTradePdfReadingSkill {
-  const profile = documentProfiles[documentType] || {
-    label: "documento de comercio exterior",
-    headerRules: "Conserva la referencia documental exactamente como aparece y no sustituyas campos ausentes.",
-    lineRules: "Respeta literalmente los encabezados y unidades de cada columna.",
-  };
+  const profile = documentProfile(documentType);
 
   return {
     version: FOREIGN_TRADE_PDF_SKILL_VERSION,
@@ -93,6 +89,21 @@ pesos, precios, cantidades ni totales. Convierte fechas inequívocas a YYYY-MM-D
 documento prevalece sobre el nombre del archivo. TOTAL CTNS, TOTAL G.W., TOTAL N.W. y TOTAL CBM son
 totales documentales. Usa null cuando un dato no aparezca. No calcules en esta pasada valores faltantes.`,
     linePrompt: (range, mode) => buildLinePrompt(profile.label, profile.lineRules, range, mode),
+  };
+}
+
+export function createForeignTradeDocumentScopePrompt(documentType: ForeignTradePdfDocumentType) {
+  const profile = documentProfile(documentType);
+  return `Examina visualmente todas las páginas físicas de este PDF compuesto y localiza exclusivamente la sección ${profile.label}.
+
+Devuelve document_scope con todas sus páginas físicas, numeradas desde 1. Incluye las páginas de continuación aunque no repitan el título, hasta que comience claramente otro documento. Excluye por completo Bill of Lading, Commercial Invoice, Packing List u otras secciones que no correspondan al tipo solicitado. No uses el nombre del archivo como evidencia. Si ${profile.label} no existe, marca detected=false y page_numbers vacío. evidence debe citar títulos, números de documento u otros encabezados realmente visibles. No extraigas productos ni montos; esta pasada solo identifica los límites de páginas para generar una descarga segura.`;
+}
+
+function documentProfile(documentType: ForeignTradePdfDocumentType) {
+  return documentProfiles[documentType] || {
+    label: "documento de comercio exterior",
+    headerRules: "Conserva la referencia documental exactamente como aparece y no sustituyas campos ausentes.",
+    lineRules: "Respeta literalmente los encabezados y unidades de cada columna.",
   };
 }
 

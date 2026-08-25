@@ -418,6 +418,7 @@ export function ForeignTradeDocumentsPanel({
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      await load();
       setMessage(`${documentTypeLabel(document.document_type)} descargado: página${result.pages.length === 1 ? "" : "s"} ${formatPageNumbers(result.pages)}.`);
     } catch (downloadError) {
       setError(humanizeDocumentError(downloadError));
@@ -477,7 +478,7 @@ export function ForeignTradeDocumentsPanel({
               <DocumentStatus document={isExtracting ? { ...document, parse_status: "extracting" } : document} />
               <div className="foreign-trade-row-actions">
                 <button className="icon-button" type="button" title="Abrir original privado" disabled={busyId === `download:${document.id}`} onClick={() => void downloadDocument(document)}>{busyId === `download:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}</button>
-                {document.mime_type === "application/pdf" && sectionAwareDocumentTypes.has(document.document_type) && sectionScope?.detected ? <button className="ghost-button" type="button" title={`Descargar solo ${documentTypeLabel(document.document_type)}`} disabled={busyId === `section:${document.id}`} onClick={() => void downloadDocumentSection(document)}>{busyId === `section:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} Sección</button> : null}
+                {document.mime_type === "application/pdf" && sectionAwareDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" title={sectionScope?.detected ? `Descargar solo ${documentTypeLabel(document.document_type)}` : `Detectar y descargar solo ${documentTypeLabel(document.document_type)}`} disabled={busyId === `section:${document.id}`} onClick={() => void downloadDocumentSection(document)}>{busyId === `section:${document.id}` ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {sectionScope?.detected ? "Sección" : "Detectar sección"}</button> : null}
                 <label className={`ghost-button foreign-trade-replace-file ${replacing ? "disabled" : ""}`} title={document.parse_status === "confirmed" ? "Cambiar el original y retirar sus datos derivados" : "Cambiar el archivo conservando su clasificación"}><FileUp size={16} /> {replacing ? "Cambiando..." : "Cambiar"}<input disabled={replacing || deleting} type="file" accept=".pdf,.xls,.xlsx,.csv,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" onChange={(event) => { const replacement = event.target.files?.[0] || null; event.currentTarget.value = ""; void replaceDocument(document, replacement); }} /></label>
                 {document.parse_status === "review_required" ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Eye size={16} /> Revisar</button> : null}
                 {document.parse_status === "confirmed" && productExtractableDocumentTypes.has(document.document_type) ? <button className="ghost-button" type="button" onClick={() => setReviewDocument(document)}><Link2 size={16} /> Conciliar productos</button> : null}

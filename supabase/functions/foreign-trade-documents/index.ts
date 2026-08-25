@@ -21,6 +21,7 @@ import { PDFDocument } from "npm:pdf-lib@1.17.1";
 import {
   FOREIGN_TRADE_PDF_SKILL_VERSION,
   assessPdfExtractionQuality,
+  createForeignTradeDocumentScopePrompt,
   createForeignTradePdfReadingSkill,
   type ForeignTradePdfReadingSkill,
 } from "./pdf-reading-skill.ts";
@@ -57,7 +58,7 @@ Deno.serve(async (req) => {
     if (route === "download-section" && req.method === "POST") {
       const payload = await readJson(req);
       const documentId = requiredUuid(payload.document_id, "documento");
-      return await downloadDocumentSection(rest, documentId, req);
+      return await downloadDocumentSection(rest, documentId, requestId, req);
     }
     throw new HttpError(404, "Ruta no encontrada.");
   } catch (error) {
@@ -92,7 +93,19 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
         ? await callOpenAiAgencySettlementExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
         : documentType === "freight_quote"
           ? await callOpenAiFreightDocumentExtraction(bytes, String(document.original_file_name), mimeType, requestId, requestSignal)
-          : await callOpenAiExtraction(bytes, String(document.original_file_name), mimeType, documentType, requestId, requestSignal);
+          : await callOpenAiExtraction(
+            bytes,
+            String(document.original_file_name),
+            mimeType,
+            documentType,
+            requestId,
+            requestSignal,
+            async (header, model) => {
+              const scope = normalizeForeignTradeDocumentScope(header.document_scope, documentType);
+              if (!scope.detected) return;
+              await persistDetectedDocumentScope(rest, documentId, requestId, scope, model);
+            },
+          );
     const prepared = documentType === "fund_request"
       ? prepareFundRequestExtraction(openAiResult.data)
       : documentType === "agency_settlement"
@@ -141,20 +154,14 @@ async function extractDocument(rest: RestClient, documentId: string, requestId: 
   }
 }
 
-async function downloadDocumentSection(rest: RestClient, documentId: string, req: Request) {
+async function downloadDocumentSection(rest: RestClient, documentId: string, requestId: string, req: Request) {
   const documents = await selectRows(rest,
-    `foreign_trade_documents?select=id,document_type,storage_bucket,storage_path,original_file_name,mime_type,extraction_result,review_result&id=eq.${documentId}&limit=1`,
+    `foreign_trade_documents?select=id,document_type,storage_bucket,storage_path,original_file_name,mime_type,parse_status,extraction_result,review_result&id=eq.${documentId}&limit=1`,
   );
   const document = documents[0];
   if (!document) throw new HttpError(404, "El documento no existe.");
   if (String(document.mime_type || "").toLowerCase() !== "application/pdf") {
     throw new HttpError(400, "La descarga por sección está disponible únicamente para archivos PDF.");
-  }
-  const reviewScope = normalizeForeignTradeDocumentScope(asObject(document.review_result).document_scope, String(document.document_type || "other"));
-  const extractionScope = normalizeForeignTradeDocumentScope(asObject(document.extraction_result).document_scope, String(document.document_type || "other"));
-  const scope = reviewScope.detected ? reviewScope : extractionScope;
-  if (!scope.detected || !scope.page_numbers.length) {
-    throw new HttpError(409, "Todavía no se identificaron las páginas de esta sección. Regenera el análisis con la clasificación correcta.");
   }
 
   const bytes = await downloadPrivateFile(rest, String(document.storage_bucket), String(document.storage_path));
@@ -165,6 +172,33 @@ async function downloadDocumentSection(rest: RestClient, documentId: string, req
     throw new HttpError(422, "El PDF no se pudo dividir. Puede estar cifrado o dañado; el original permanece disponible.");
   }
   const pageCount = sourcePdf.getPageCount();
+  const reviewScope = normalizeForeignTradeDocumentScope(asObject(document.review_result).document_scope, String(document.document_type || "other"));
+  const extractionScope = normalizeForeignTradeDocumentScope(asObject(document.extraction_result).document_scope, String(document.document_type || "other"));
+  let scope = reviewScope.detected ? reviewScope : extractionScope;
+  if (!scope.detected || !scope.page_numbers.length) {
+    const detected = await callOpenAiDocumentScopeDetection(
+      bytes,
+      String(document.original_file_name || "documento.pdf"),
+      String(document.document_type || "other"),
+      requestId,
+      req.signal,
+    );
+    scope = {
+      ...detected.scope,
+      total_pdf_pages: pageCount,
+      page_numbers: detected.scope.page_numbers.filter((page) => page >= 1 && page <= pageCount),
+    };
+    scope.page_start = scope.page_numbers.length ? Math.min(...scope.page_numbers) : null;
+    scope.page_end = scope.page_numbers.length ? Math.max(...scope.page_numbers) : null;
+    scope.detected = scope.detected && scope.page_numbers.length > 0;
+    if (scope.detected) {
+      await persistDiscoveredDocumentScope(rest, document, scope, detected.model);
+    }
+  }
+  if (!scope.detected || !scope.page_numbers.length) {
+    throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(String(document.document_type || "document"))} dentro del PDF.`);
+  }
+
   const pageNumbers = scope.page_numbers.filter((page) => page >= 1 && page <= pageCount);
   if (!pageNumbers.length) throw new HttpError(422, "Las páginas detectadas no existen en el PDF original. Regenera el análisis.");
 
@@ -182,8 +216,48 @@ async function downloadDocumentSection(rest: RestClient, documentId: string, req
       "Content-Disposition": `attachment; filename="${fileName}"`,
       "Cache-Control": "private, no-store",
       "X-Document-Pages": pageNumbers.join(","),
+      "X-Document-Total-Pages": String(pageCount),
     },
   });
+}
+
+async function callOpenAiDocumentScopeDetection(
+  bytes: Uint8Array,
+  filename: string,
+  documentType: string,
+  requestId: string,
+  requestSignal: AbortSignal,
+) {
+  const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
+  if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
+  const model = Deno.env.get("OPENAI_DOCUMENT_MODEL")?.trim()
+    || Deno.env.get("OPENAI_TEXT_MODEL")?.trim()
+    || "gpt-4.1-mini";
+  const configuredTimeout = clampNumber(Deno.env.get("OPENAI_DOCUMENT_REQUEST_TIMEOUT_MS"), 30_000, 300_000, 180_000);
+  const result = await callOpenAiStructuredExtraction({
+    apiKey,
+    model,
+    filename,
+    mimeType: "application/pdf",
+    fileData: `data:application/pdf;base64,${bytesToBase64(bytes)}`,
+    requestId,
+    requestSignal,
+    timeoutMs: Math.min(configuredTimeout, 90_000),
+    maxTokens: 1_800,
+    stage: "document-scope",
+    schemaName: "foreign_trade_document_scope_only",
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["document_scope"],
+      properties: { document_scope: documentScopeSchema },
+    },
+    prompt: createForeignTradeDocumentScopePrompt(documentType),
+  });
+  return {
+    model,
+    scope: normalizeForeignTradeDocumentScope(asObject(result.data).document_scope, documentType),
+  };
 }
 
 async function callOpenAiFundRequestExtraction(bytes: Uint8Array, filename: string, mimeType: string, requestId: string, requestSignal: AbortSignal) {
@@ -324,7 +398,15 @@ La salida debe corresponder exactamente al esquema solicitado.`,
   return { model, requestId: result.requestId, data: result.data };
 }
 
-async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeType: string, documentType: string, requestId: string, requestSignal: AbortSignal) {
+async function callOpenAiExtraction(
+  bytes: Uint8Array,
+  filename: string,
+  mimeType: string,
+  documentType: string,
+  requestId: string,
+  requestSignal: AbortSignal,
+  onHeader?: (header: JsonRecord, model: string) => Promise<void>,
+) {
   const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
   if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
   const model = Deno.env.get("OPENAI_DOCUMENT_MODEL")?.trim()
@@ -359,6 +441,7 @@ async function callOpenAiExtraction(bytes: Uint8Array, filename: string, mimeTyp
   });
   const documentScope = normalizeForeignTradeDocumentScope(asObject(headerResult.data).document_scope, documentType);
   const headerData = { ...asObject(headerResult.data), document_scope: documentScope };
+  await onHeader?.(headerData, model);
   if (mimeType === "application/pdf" && !documentScope.detected) {
     throw new HttpError(422, `No se encontró una sección ${documentTypeFileLabel(documentType)} dentro del PDF. Cambia la clasificación o verifica el archivo.`);
   }
@@ -1033,6 +1116,55 @@ async function setExtraction(rest: RestClient, documentId: string, status: strin
   });
 }
 
+async function persistDetectedDocumentScope(
+  rest: RestClient,
+  documentId: string,
+  requestId: string,
+  scope: ReturnType<typeof normalizeForeignTradeDocumentScope>,
+  model: string,
+) {
+  const query = `foreign_trade_documents?id=eq.${documentId}&parse_status=eq.extracting&extraction_request_id=eq.${encodeURIComponent(requestId)}`;
+  await patchRows(rest, query, {
+    extraction_result: {
+      extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
+      pdf_skill_version: FOREIGN_TRADE_PDF_SKILL_VERSION,
+      document_scope: scope,
+    },
+    extraction_model: model,
+  }).catch((error) => {
+    console.warn("[foreign-trade-documents] early document scope was not persisted", {
+      requestId,
+      documentId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
+async function persistDiscoveredDocumentScope(
+  rest: RestClient,
+  document: JsonRecord,
+  scope: ReturnType<typeof normalizeForeignTradeDocumentScope>,
+  model: string,
+) {
+  const status = String(document.parse_status || "");
+  if (!["uploaded", "failed"].includes(status)) return;
+  const previous = asObject(document.extraction_result);
+  await patchRows(rest, `foreign_trade_documents?id=eq.${String(document.id)}&parse_status=eq.${status}`, {
+    extraction_result: {
+      ...previous,
+      extraction_version: FOREIGN_TRADE_EXTRACTION_VERSION,
+      pdf_skill_version: FOREIGN_TRADE_PDF_SKILL_VERSION,
+      document_scope: scope,
+    },
+    extraction_model: model,
+  }).catch((error) => {
+    console.warn("[foreign-trade-documents] discovered document scope was not persisted", {
+      documentId: String(document.id),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+}
+
 async function downloadPrivateFile(rest: RestClient, bucket: string, path: string) {
   const encodedPath = path.split("/").map(encodeURIComponent).join("/");
   const response = await fetch(`${rest.url}/storage/v1/object/${encodeURIComponent(bucket)}/${encodedPath}`, {
@@ -1063,6 +1195,17 @@ async function selectRows(rest: RestClient, path: string): Promise<JsonRecord[]>
   const response = await fetch(`${rest.url}/rest/v1/${path}`, { headers: serviceHeaders(rest) });
   if (!response.ok) throw new HttpError(response.status, `No se pudieron leer los datos privados: ${(await response.text()).slice(0, 300)}`);
   return await response.json() as JsonRecord[];
+}
+
+async function patchRows(rest: RestClient, path: string, payload: JsonRecord) {
+  const response = await fetch(`${rest.url}/rest/v1/${path}`, {
+    method: "PATCH",
+    headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "return=minimal" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new HttpError(response.status, `No se pudo conservar la identificación de páginas: ${(await response.text()).slice(0, 300)}`);
+  }
 }
 
 async function rpc(rest: RestClient, fn: string, body: JsonRecord) {
@@ -1106,7 +1249,7 @@ function corsHeaders(req: Request) {
     "Access-Control-Allow-Origin": origin === configuredOrigin || localOrigin ? origin : configuredOrigin,
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-request-id",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Expose-Headers": "Content-Disposition, X-Document-Pages",
+    "Access-Control-Expose-Headers": "Content-Disposition, X-Document-Pages, X-Document-Total-Pages",
   };
 }
 

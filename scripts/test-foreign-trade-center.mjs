@@ -20,6 +20,7 @@ import {
 import {
   FOREIGN_TRADE_PDF_SKILL_VERSION,
   assessPdfExtractionQuality,
+  createForeignTradeDocumentScopePrompt,
   createForeignTradePdfReadingSkill,
 } from "../supabase/functions/foreign-trade-documents/pdf-reading-skill.ts";
 import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
@@ -895,6 +896,10 @@ assert.match(pdfSkill.linePrompt({ start: 31, end: 60 }, "verify"), /source_page
 const billOfLadingSkill = createForeignTradePdfReadingSkill("bill_of_lading");
 assert.match(billOfLadingSkill.headerPrompt, /bill of lading/i);
 assert.match(billOfLadingSkill.headerPrompt, /omitir por completo/i);
+const invoiceScopePrompt = createForeignTradeDocumentScopePrompt("commercial_invoice");
+assert.match(invoiceScopePrompt, /páginas de continuación/i);
+assert.match(invoiceScopePrompt, /excluye por completo Bill of Lading/i);
+assert.match(invoiceScopePrompt, /page_numbers vacío/i);
 const qualityExtraction = {
   document_totals: { total: 40, boxes: 4, gross_weight_kg: 8, cbm_total: 0.2, line_count: 2 },
   lines: [
