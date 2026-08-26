@@ -865,6 +865,22 @@ export interface ForeignTradeProductReconciliationResult {
   lines: ForeignTradeProductReconciliationLine[];
 }
 
+export interface ForeignTradeOperationProductReconciliationLine extends ForeignTradeProductReconciliationLine {
+  document_name: string;
+  document_type: ForeignTradeDocumentType;
+  supplier_name: string | null;
+  suggested_product_name: string | null;
+  suggested_product_sku: string | null;
+  selected_product_name: string | null;
+  selected_product_sku: string | null;
+}
+
+export interface ForeignTradeOperationProductReconciliationResult {
+  operation_id: string;
+  summary: Record<ForeignTradeProductMatchStatus | "total", number>;
+  lines: ForeignTradeOperationProductReconciliationLine[];
+}
+
 export interface ConfirmForeignTradeFundRequestResult {
   document_id: string;
   operation_id: string;

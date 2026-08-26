@@ -34,6 +34,7 @@ import type {
   AutoFinalizeForeignTradeReconciliationResult,
   ForeignTradeExpenseReconciliation,
   ForeignTradeProductReconciliationResult,
+  ForeignTradeOperationProductReconciliationResult,
   SaveForeignTradeExpenseReconciliationInput,
   UpdateForeignTradeOperationInput,
 } from "../types/foreignTrade";
@@ -812,12 +813,20 @@ export async function confirmForeignTradeDocument(
 ) {
   requireSupabase();
   if (documentType === "packing_list") {
-    const { data, error } = await supabase!.rpc("confirm_foreign_trade_packing_list_document", {
+    const enhanced = await supabase!.rpc("confirm_foreign_trade_packing_list_with_reconciliation", {
       p_document_id: documentId,
       p_review: review,
     });
-    if (error) throw error;
-    return data as ConfirmForeignTradeDocumentResult;
+    if (!enhanced.error) return enhanced.data as ConfirmForeignTradeDocumentResult;
+    if (!isMissingForeignTradeRpc(enhanced.error, "confirm_foreign_trade_packing_list_with_reconciliation")) {
+      throw enhanced.error;
+    }
+    const fallback = await supabase!.rpc("confirm_foreign_trade_packing_list_document", {
+      p_document_id: documentId,
+      p_review: review,
+    });
+    if (fallback.error) throw fallback.error;
+    return fallback.data as ConfirmForeignTradeDocumentResult;
   }
 
   const enhanced = await supabase!.rpc("confirm_foreign_trade_document_with_reconciliation", {
@@ -853,6 +862,22 @@ export async function reconcileForeignTradeDocument(documentId: string, supplier
     };
   }
   return data as ForeignTradeProductReconciliationResult;
+}
+
+export async function getForeignTradeOperationProductReconciliation(operationId: string) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("foreign_trade_operation_product_reconciliation", {
+    p_operation_id: operationId,
+  });
+  if (error) {
+    if (!isMissingForeignTradeRpc(error, "foreign_trade_operation_product_reconciliation")) throw error;
+    return {
+      operation_id: operationId,
+      summary: { total: 0, auto_matched: 0, suggested: 0, review: 0, unmatched: 0, confirmed: 0, rejected: 0 },
+      lines: [],
+    } as ForeignTradeOperationProductReconciliationResult;
+  }
+  return data as ForeignTradeOperationProductReconciliationResult;
 }
 
 export async function deleteForeignTradeProductSupplierMapping(mappingId: string) {

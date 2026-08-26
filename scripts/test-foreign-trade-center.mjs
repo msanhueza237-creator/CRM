@@ -549,6 +549,16 @@ assert.match(phase16Migration, /save_foreign_trade_costing_scenario/i);
 await db.exec(phase16Migration);
 await db.exec(phase16Migration);
 
+const phase17Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase17_supplier_product_matching.sql", import.meta.url),
+  "utf8",
+);
+assert.match(phase17Migration, /foreign_trade_operation_product_reconciliation/i);
+assert.match(phase17Migration, /confirm_foreign_trade_packing_list_with_reconciliation/i);
+assert.match(phase17Migration, /integration_records[\s\S]*provider = 'facto'/i);
+await db.exec(phase17Migration);
+await db.exec(phase17Migration);
+
 const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
   id: "00000000-0000-4000-8000-000000000101",
   applied_cost_line_id: "00000000-0000-4000-8000-000000000102",
@@ -2154,7 +2164,8 @@ const similarDocument = await createMatchDocument(matchSupplierA, {
   description: "Recuperadora RCM 100 220V",
 });
 const similarMatch = await reconcileMatchDocument(similarDocument.documentId, matchSupplierA);
-assert.equal(similarMatch.lines[0].status, "suggested");
+assert.ok(["suggested", "review"].includes(similarMatch.lines[0].status), "una descripción similar debe sugerirse sin confirmarse automáticamente");
+assert.equal(similarMatch.lines[0].candidates[0].product_id, exactProductId);
 assert.equal(similarMatch.lines[0].selected_product_id, null);
 
 // 3. Modelo sin columna SKU: el modelo exacto puede actuar como codigo fuerte.
@@ -2262,10 +2273,139 @@ const afterForgetDocument = await createMatchDocument(matchSupplierA, {
 const afterForgetMatch = await reconcileMatchDocument(afterForgetDocument.documentId, matchSupplierA);
 assert.notEqual(afterForgetMatch.lines[0].matching_method, "learned_mapping", "una equivalencia eliminada no debe reutilizarse");
 
+// 9. El codigo puede venir incrustado en la descripcion y los atributos incompatibles se detectan.
+assert.equal(
+  (await db.query(
+    "select public.foreign_trade_extract_product_code($1::jsonb) as code",
+    [JSON.stringify({ description_original: "Bomba de vacio profesional ST-361 4CFM 220V" })],
+  )).rows[0].code,
+  "ST-361",
+);
+assert.equal(
+  Number((await db.query(
+    "select public.foreign_trade_technical_conflict_count('Bomba 4CFM 220V','Bomba 6CFM 220V') as conflicts",
+  )).rows[0].conflicts),
+  1,
+  "un caudal distinto debe impedir una conciliacion silenciosa",
+);
+
+// 10. Dos candidatos equivalentes quedan pendientes de revision humana.
+const ambiguousProductA = await createMatchProduct("AMB-A", "Valvula solenoide universal prueba");
+const ambiguousProductB = await createMatchProduct("AMB-B", "Valvula solenoide universal prueba");
+const ambiguousDocument = await createMatchDocument(matchSupplierA, {
+  supplier_product_code: null,
+  supplier_sku: null,
+  supplier_reference: null,
+  model: null,
+  product_name: "Valvula solenoide universal prueba",
+  description: null,
+});
+const ambiguousMatch = await reconcileMatchDocument(ambiguousDocument.documentId, matchSupplierA);
+assert.equal(ambiguousMatch.lines[0].status, "review");
+assert.equal(ambiguousMatch.lines[0].selected_product_id, null);
+assert.ok(ambiguousMatch.lines[0].candidates.length >= 2);
+
+// 11. La bandeja de la operacion conserva documento, pagina y fila de origen.
+const operationReconciliation = (await db.query(
+  "select public.foreign_trade_operation_product_reconciliation($1) as result",
+  [similarDocument.operationId],
+)).rows[0].result;
+assert.equal(Number(operationReconciliation.summary.total), 1);
+assert.match(operationReconciliation.lines[0].document_name, /^match-/);
+assert.equal(operationReconciliation.lines[0].document_type, "proforma");
+assert.equal(operationReconciliation.lines[0].source_page, 1);
+assert.equal(operationReconciliation.lines[0].source_row_label, "1");
+
+// 12. Facto aporta alias de busqueda sin transformarse en un segundo maestro.
+await db.exec(`
+  create table public.integration_records (
+    id uuid primary key default gen_random_uuid(),
+    provider text not null,
+    external_id text not null,
+    payload jsonb not null default '{}'::jsonb
+  )
+`);
+await db.query(
+  "insert into public.integration_records(provider,external_id,payload) values ('facto',$1,$2::jsonb)",
+  ["FACTO-MOTOR-220", JSON.stringify({ sku: "MOTOR-220", name: "Alias Facto Ventilador XZQ" })],
+);
+const factoCatalog = (await db.query(
+  "select public.foreign_trade_product_catalog('XZQ',10) as result",
+)).rows[0].result;
+assert.equal(factoCatalog.length, 1);
+assert.equal(factoCatalog[0].id, voltage220ProductId);
+
+// 13. Packing List completa embalaje de la linea conciliada sin duplicarla.
+const packingExtraction = {
+  extraction_version: "pdf_skill_v11_product_reconciliation",
+  general: { supplier_id: matchSupplierA, currency: "USD" },
+  lines: [{
+    source_index: 1,
+    source_page: 2,
+    source_row_label: "PK-1",
+    include: true,
+    remember_link: true,
+    content_product_id: exactProductId,
+    supplier_product_code: "RCM-100",
+    product_name: "Recuperadora RCM 100 220V",
+    description: "Recuperadora RCM 100 220V",
+    quantity: 1,
+    box_count: 1,
+    cbm_total: 0.125,
+    gross_weight_kg: 12,
+    net_weight_kg: 10,
+    confidence: 0.99,
+  }],
+  document_totals: { line_count: 1 },
+  warnings: [],
+};
+const reconciliationPackingDocument = await db.query(`
+  insert into public.foreign_trade_documents(
+    operation_id,supplier_id,document_type,original_file_name,storage_path,mime_type,
+    file_size,parse_status,extraction_result,uploaded_by
+  ) values ($1,$2,'packing_list',$3,$4,'application/pdf',1024,'review_required',$5::jsonb,$6)
+  returning id
+`, [
+  exactDocument.operationId,
+  matchSupplierA,
+  `packing-${crypto.randomUUID()}.pdf`,
+  `${exactDocument.operationId}/${crypto.randomUUID()}.pdf`,
+  JSON.stringify(packingExtraction),
+  adminId,
+]);
+const operationLinesBeforePacking = Number((await db.query(
+  "select count(*) as count from public.foreign_trade_operation_lines where operation_id=$1",
+  [exactDocument.operationId],
+)).rows[0].count);
+const reconciliationPackingConfirmation = (await db.query(
+  "select public.confirm_foreign_trade_packing_list_with_reconciliation($1,$2::jsonb) as result",
+  [reconciliationPackingDocument.rows[0].id, JSON.stringify(packingExtraction)],
+)).rows[0].result;
+assert.equal(Number(reconciliationPackingConfirmation.reconciliation_confirmed), 1);
+assert.equal(Number(reconciliationPackingConfirmation.updated_lines), 1);
+const enrichedPackingLine = (await db.query(
+  "select box_count,cbm_total,gross_weight_kg,net_weight_kg from public.foreign_trade_operation_lines where operation_id=$1 and content_product_id=$2",
+  [exactDocument.operationId, exactProductId],
+)).rows[0];
+assert.equal(Number(enrichedPackingLine.box_count), 1);
+assert.equal(Number(enrichedPackingLine.cbm_total), 0.125);
+assert.equal(Number(enrichedPackingLine.gross_weight_kg), 12);
+assert.equal(Number((await db.query(
+  "select count(*) as count from public.foreign_trade_operation_lines where operation_id=$1",
+  [exactDocument.operationId],
+)).rows[0].count), operationLinesBeforePacking, "Packing List no debe crear productos duplicados");
+
 await db.query("delete from public.import_shipments where supplier_id in ($1,$2)", [matchSupplierA, matchSupplierB]);
 await db.query("delete from public.supplier_products where supplier_id in ($1,$2)", [matchSupplierA, matchSupplierB]);
 await db.query("delete from public.suppliers where id in ($1,$2)", [matchSupplierA, matchSupplierB]);
-await db.query("delete from public.content_products where id in ($1,$2,$3,$4)", [exactProductId, voltage110ProductId, voltage220ProductId, vacuumProductId]);
+await db.query("delete from public.content_products where id in ($1,$2,$3,$4,$5,$6)", [
+  exactProductId,
+  voltage110ProductId,
+  voltage220ProductId,
+  vacuumProductId,
+  ambiguousProductA,
+  ambiguousProductB,
+]);
 
 const lifecycleOperation = await db.query(
   "select public.create_foreign_trade_operation($1::jsonb) as id",

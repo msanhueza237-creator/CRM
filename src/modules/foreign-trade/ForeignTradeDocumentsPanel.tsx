@@ -9,6 +9,7 @@ import {
   FileText,
   FileUp,
   Link2,
+  ListChecks,
   LoaderCircle,
   RefreshCw,
   ScanText,
@@ -33,6 +34,7 @@ import {
   getForeignTradeDocumentUrl,
   getForeignTradeDocuments,
   getForeignTradeExpenseReconciliations,
+  getForeignTradeOperationProductReconciliation,
   reconcileForeignTradeDocument,
   searchForeignTradeCatalog,
   setForeignTradeDocumentSection,
@@ -57,6 +59,7 @@ import type {
   ForeignTradeFreightDocumentLine,
   ForeignTradeProductReconciliationLine,
   ForeignTradeProductReconciliationResult,
+  ForeignTradeOperationProductReconciliationResult,
   ForeignTradeReconciliationLineType,
   ForeignTradeSupplier,
 } from "../../types/foreignTrade";
@@ -138,6 +141,8 @@ export function ForeignTradeDocumentsPanel({
   const [error, setError] = useState("");
   const [reviewDocument, setReviewDocument] = useState<ForeignTradeDocument | null>(null);
   const [extractingIds, setExtractingIds] = useState<Set<string>>(() => new Set());
+  const [operationReconciliation, setOperationReconciliation] = useState<ForeignTradeOperationProductReconciliationResult | null>(null);
+  const [operationReconciliationBusy, setOperationReconciliationBusy] = useState(false);
   const extractionControllers = useRef(new Map<string, AbortController>());
   const stopBatchRequested = useRef(false);
   const activeUploadDocumentId = useRef("");
@@ -158,6 +163,13 @@ export function ForeignTradeDocumentsPanel({
         setError("");
       }
       setDocuments(loadedDocuments);
+      try {
+        setOperationReconciliation(await getForeignTradeOperationProductReconciliation(operationId));
+      } catch {
+        // La bandeja es complementaria: un problema de permisos o una migracion
+        // pendiente no debe impedir consultar ni recuperar los documentos.
+        setOperationReconciliation(null);
+      }
     } catch (loadError) {
       const text = loadError instanceof Error ? loadError.message : "No se pudieron cargar los documentos.";
       setError(/foreign_trade_document_list|does not exist|404/i.test(text)
@@ -167,6 +179,28 @@ export function ForeignTradeDocumentsPanel({
       setLoading(false);
     }
   }, [operationId]);
+
+  async function refreshOperationReconciliation() {
+    setOperationReconciliationBusy(true); setError(""); setMessage("Comparando productos de los documentos con el catálogo maestro...");
+    try {
+      const candidates = documents.filter((document) => productExtractableDocumentTypes.has(document.document_type)
+        && ["review_required", "confirmed"].includes(document.parse_status)
+        && Array.isArray((document.extraction_result as ForeignTradeDocumentExtraction | null)?.lines));
+      const results = await Promise.allSettled(candidates.map((document) => reconcileForeignTradeDocument(document.id, document.supplier_id || supplierId)));
+      const rejected = results.filter((result) => result.status === "rejected");
+      setOperationReconciliation(await getForeignTradeOperationProductReconciliation(operationId));
+      if (rejected.length) {
+        const reason = rejected[0].status === "rejected" ? humanizeDocumentError(rejected[0].reason) : "";
+        setError(`${rejected.length} documento(s) no pudieron conciliarse. ${reason}`.trim());
+      } else {
+        setMessage(`${candidates.length} documento(s) comparados. Revisa únicamente las equivalencias pendientes.`);
+      }
+    } catch (reconciliationError) {
+      setError(humanizeDocumentError(reconciliationError));
+    } finally {
+      setOperationReconciliationBusy(false);
+    }
+  }
 
   useEffect(() => { void load(); }, [load]);
 
@@ -534,6 +568,16 @@ export function ForeignTradeDocumentsPanel({
 
   return (
     <section className="foreign-trade-documents-layout">
+      <ProductReconciliationInbox
+        result={operationReconciliation}
+        busy={operationReconciliationBusy}
+        onRefresh={refreshOperationReconciliation}
+        onReview={(documentId) => {
+          const document = documents.find((item) => item.id === documentId);
+          if (document) setReviewDocument(document);
+          else setError("El documento de origen ya no está disponible en esta operación.");
+        }}
+      />
       <form className="panel foreign-trade-document-upload" onSubmit={upload}>
         <div className="foreign-trade-detail-panel-heading">
           <div><h2>Cargar documento privado</h2><p>El original se conserva y ningún dato se oficializa sin tu revisión.</p></div>
@@ -616,6 +660,57 @@ export function ForeignTradeDocumentsPanel({
   );
 }
 
+function ProductReconciliationInbox({
+  result,
+  busy,
+  onRefresh,
+  onReview,
+}: {
+  result: ForeignTradeOperationProductReconciliationResult | null;
+  busy: boolean;
+  onRefresh: () => Promise<void>;
+  onReview: (documentId: string) => void;
+}) {
+  const lines = result?.lines || [];
+  const pending = lines.filter((line) => !["confirmed", "rejected"].includes(line.status));
+  const summary = result?.summary;
+  return <section className="panel foreign-trade-product-inbox">
+    <div className="foreign-trade-detail-panel-heading">
+      <div><h2>Productos por conciliar</h2><p>Bandeja única de Proformas, Invoice y Packing List. El maestro permanece protegido.</p></div>
+      <button className="ghost-button" type="button" disabled={busy} onClick={() => void onRefresh()}>{busy ? <LoaderCircle className="spin" size={17} /> : <RefreshCw size={17} />} {busy ? "Comparando..." : "Analizar documentos"}</button>
+    </div>
+    <div className="foreign-trade-product-inbox-summary">
+      <span><strong>{pending.length}</strong> Pendientes</span>
+      <span className="success"><strong>{summary?.confirmed || 0}</strong> Confirmados</span>
+      <span><strong>{summary?.auto_matched || 0}</strong> Reconocidos</span>
+      <span className="warning"><strong>{summary?.unmatched || 0}</strong> Sin coincidencia</span>
+    </div>
+    {!lines.length ? <div className="empty-state compact"><ListChecks size={25} /><strong>Sin comparaciones todavía</strong><span>Analiza los documentos para identificar equivalencias por proveedor antes de importar.</span></div> : null}
+    {pending.length ? <div className="foreign-trade-product-inbox-items">{pending.slice(0, 30).map((line) => {
+      const candidateName = line.selected_product_name || line.suggested_product_name || line.candidates?.[0]?.name || null;
+      const confidence = line.confidence === null ? null : Math.round(Number(line.confidence) * 100);
+      return <article key={line.id}>
+        <div className="foreign-trade-product-inbox-source">
+          <strong>{line.supplier_product_code || line.supplier_sku || line.supplier_model || `Línea ${line.source_index}`}</strong>
+          <span>{line.original_description || "Sin descripción original"}</span>
+          {line.translated_description ? <small>{line.translated_description}</small> : null}
+        </div>
+        <div className="foreign-trade-product-inbox-document">
+          <strong>{line.document_name}</strong>
+          <span>{documentTypeLabel(line.document_type)}{line.source_page ? ` · pág. ${line.source_page}` : ""}{line.supplier_name ? ` · ${line.supplier_name}` : ""}</span>
+        </div>
+        <div className="foreign-trade-product-inbox-candidate">
+          <span className={`foreign-trade-match-status ${line.status}`}>{productMatchStatusLabel(line.status)}{confidence === null ? "" : ` · ${confidence}%`}</span>
+          <strong>{candidateName || "Sin candidato confiable"}</strong>
+          {line.match_reasons?.filter(Boolean).slice(0, 2).map((reason) => <small key={reason || "reason"}>{reason}</small>)}
+        </div>
+        <button className="ghost-button" type="button" onClick={() => onReview(line.document_id)}><Eye size={16} /> Revisar</button>
+      </article>;
+    })}</div> : lines.length ? <div className="notice-banner success"><CheckCircle2 size={17} /> Todos los productos conciliados tienen una decisión registrada.</div> : null}
+    {pending.length > 30 ? <p className="foreign-trade-product-inbox-more">Se muestran 30 de {pending.length} pendientes. Confirma un documento para continuar con los siguientes.</p> : null}
+  </section>;
+}
+
 function SupportingDocumentReviewDialog({
   document,
   onClose,
@@ -673,12 +768,6 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
 
   useEffect(() => {
     let active = true;
-    if (isPackingList) {
-      setReconciliation(null);
-      setReconciliationBusy(false);
-      setReconciliationError("");
-      return () => { active = false; };
-    }
     setReconciliationBusy(true);
     setReconciliationError("");
     void reconcileForeignTradeDocument(document.id, review.general.supplier_id)
@@ -706,7 +795,7 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
       })
       .finally(() => { if (active) setReconciliationBusy(false); });
     return () => { active = false; };
-  }, [document.id, isPackingList, review.general.supplier_id]);
+  }, [document.id, review.general.supplier_id]);
 
   function setGeneral(key: keyof ForeignTradeDocumentExtraction["general"], value: string | number | null) {
     setReview((current) => ({ ...current, general: { ...current.general, [key]: value } }));
@@ -802,10 +891,10 @@ function DocumentReviewDialog({ document, suppliers, onClose, onRegenerate, onCo
       <ReviewLineNumber label="Filas comerciales esperadas" value={expectedLineCount} onChange={(value) => setDocumentTotal("line_count", value)} />
     </div><p className="foreign-trade-recalculation">Cobertura: <strong>{review.lines.length}{expectedLineCount ? ` de ${expectedLineCount}` : " filas"}</strong> · Suma CBM de productos: <strong>{formatNumber(lineCbmTotal)} m³</strong>{review.document_totals.cbm_total !== null && Math.abs(lineCbmTotal - review.document_totals.cbm_total) > Math.max(0.01, review.document_totals.cbm_total * 0.02) ? " · revisa la diferencia con el total documental" : ""}</p></section>
 
-    <section className="foreign-trade-review-section"><div className="foreign-trade-review-products-heading"><div><h3>{isPackingList ? "Datos de empaque por producto" : "Conciliación de productos"}</h3><span>{isPackingList ? "Al confirmar se completarán los productos existentes del Invoice. Las filas compartidas se mantienen sin repartir datos inventados." : "El catálogo maestro permanece protegido; aquí solo se confirma una equivalencia por proveedor."}</span></div>{!isPackingList ? <div><input value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar catálogo para vincular" /><button className="ghost-button" type="button" onClick={() => void searchCatalog()}>{catalogBusy ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} Buscar</button></div> : null}</div>
+    <section className="foreign-trade-review-section"><div className="foreign-trade-review-products-heading"><div><h3>{isPackingList ? "Conciliación y empaque por producto" : "Conciliación de productos"}</h3><span>{isPackingList ? "Vincula cada fila al producto del Invoice; al confirmar solo se completarán cajas, CBM y pesos, sin crear duplicados." : "El catálogo maestro permanece protegido; aquí solo se confirma una equivalencia por proveedor."}</span></div><div><input value={catalogSearch} onChange={(event) => setCatalogSearch(event.target.value)} placeholder="Buscar catálogo para vincular" /><button className="ghost-button" type="button" onClick={() => void searchCatalog()}>{catalogBusy ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} Buscar</button></div></div>
       <div className="foreign-trade-match-summary">
         {isPackingList ? <span className="success"><ShieldCheck size={14} /> No se crearán productos nuevos ni duplicados</span> : null}
-        {!isPackingList && reconciliationBusy ? <span><LoaderCircle className="spin" size={14} /> Comparando con el catálogo...</span> : null}
+        {reconciliationBusy ? <span><LoaderCircle className="spin" size={14} /> Comparando con el catálogo...</span> : null}
         {reconciliation ? <><span className="success">{reconciliation.summary.auto_matched || 0} encontrados automáticamente</span><span>{reconciliation.summary.suggested || 0} sugeridos</span><span className="warning">{reconciliation.summary.review || 0} requieren confirmación</span><span className="warning">{reconciliation.summary.unmatched || 0} sin coincidencia</span></> : null}
       </div>
       {reconciliationError ? <div className="notice-banner error"><AlertTriangle size={16} /> {reconciliationError}</div> : null}
