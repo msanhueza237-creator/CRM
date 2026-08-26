@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { AlertTriangle, Calculator, CheckCircle2, Landmark, PackageCheck, Save, WalletCards } from "lucide-react";
+import { useMemo, useRef, useState } from "react";
+import { AlertTriangle, Calculator, CheckCircle2, ChevronLeft, ChevronRight, Landmark, PackageCheck, Save, WalletCards } from "lucide-react";
 import { saveForeignTradeCostingScenario } from "../../lib/foreignTradeApi";
 import type {
   ForeignTradeCostParameter,
@@ -41,6 +41,16 @@ export function ForeignTradeCostingPanel({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
+  const costingTableScrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollCostingTable = (direction: -1 | 1) => {
+    const container = costingTableScrollRef.current;
+    if (!container) return;
+    container.scrollBy({
+      behavior: "smooth",
+      left: direction * Math.max(480, container.clientWidth * 0.72),
+    });
+  };
 
   const settings = useMemo(() => ({
     exchangeRateClp: numberValue(form.exchangeRateClp),
@@ -205,9 +215,15 @@ export function ForeignTradeCostingPanel({
       ) : null}
 
       <section className="panel foreign-trade-costing-table-panel">
-        <div className="foreign-trade-detail-panel-heading"><div><h2>Tabla dinámica por producto</h2><p>Ajusta derecho y rentabilidad individualmente. Los precios se recalculan de inmediato.</p></div></div>
+        <div className="foreign-trade-detail-panel-heading">
+          <div><h2>Tabla dinámica por producto</h2><p>Ajusta derecho y rentabilidad individualmente. Los precios se recalculan de inmediato.</p></div>
+          <div className="foreign-trade-table-navigation" aria-label="Desplazar columnas de la tabla">
+            <button className="icon-button" type="button" title="Ver columnas anteriores" aria-label="Ver columnas anteriores" onClick={() => scrollCostingTable(-1)}><ChevronLeft size={18} /></button>
+            <button className="icon-button" type="button" title="Ver columnas siguientes" aria-label="Ver columnas siguientes" onClick={() => scrollCostingTable(1)}><ChevronRight size={18} /></button>
+          </div>
+        </div>
         {result.lines.length ? (
-          <div className="table-scroll">
+          <div className="table-scroll foreign-trade-costing-table-scroll" ref={costingTableScrollRef} tabIndex={0} aria-label="Costeo completo por producto">
             <table className="foreign-trade-costing-table">
               <thead><tr><th>Producto</th><th>Cantidad</th><th>CIF asignado</th><th>Derecho</th><th>IVA import.</th><th>Gastos</th><th>Costo unitario</th><th>Venta proyectada</th><th>Objetivo</th><th>Precio neto</th><th>Margen</th></tr></thead>
               <tbody>{result.lines.map((line) => (
