@@ -27,7 +27,7 @@ import {
   createForeignTradeDocumentScopePrompt,
   createForeignTradePdfReadingSkill,
 } from "../supabase/functions/foreign-trade-documents/pdf-reading-skill.ts";
-import { calculateForeignTradeCosting } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
+import { calculateForeignTradeCosting, calculateForeignTradeQuote } from "../src/modules/foreign-trade/foreignTradeCostEngine.ts";
 import { calculateForeignTradeReconciliation } from "../src/modules/foreign-trade/foreignTradeReconciliationEngine.ts";
 import { normalizeForeignTradeFundRequestReview } from "../src/modules/foreign-trade/foreignTradeFundRequestReview.ts";
 import {
@@ -73,6 +73,39 @@ assert.match(foreignTradeCostingExportSource, /addWorksheet\("Resumen"/);
 assert.match(foreignTradeCostingExportSource, /addWorksheet\("Productos"/);
 assert.match(foreignTradeCostingExportSource, /addWorksheet\("Gastos"/);
 assert.match(foreignTradeCostingExportSource, /result\.lines\.forEach/);
+
+const quickQuote = calculateForeignTradeQuote({
+  unitPriceUsd: 5,
+  quantity: 100,
+  exchangeRateClp: 1000,
+  incoterm: "FOB",
+  originPercent: 0,
+  internationalFreightPercent: 10,
+  insurancePercent: 1,
+  chilePortPercent: 3,
+  storagePercent: 0,
+  customsAgencyPercent: 2,
+  nationalTransportPercent: 3,
+  inspectionPercent: 0,
+  certificatePercent: 0,
+  otherExpensesPercent: 2,
+  fixedExpensesClp: 0,
+  dutyPercent: 6,
+  importVatPercent: 19,
+  importVatRecoverable: true,
+  salesVatPercent: 19,
+  pricingMethod: "markup_on_cost",
+  targetPercent: 45,
+});
+assert.equal(quickQuote.quotedUnitClp, 5000);
+assert.equal(quickQuote.cifUnitClp, 5550);
+assert.equal(quickQuote.dutyUnitClp, 333);
+assert.equal(quickQuote.operatingExpensesUnitClp, 555);
+assert.equal(quickQuote.landedUnitClp, 6438);
+assert.equal(quickQuote.cashRequirementUnitClp, 7555.77);
+assert.equal(quickQuote.netSaleUnitClp, 9335.1);
+assert.equal(quickQuote.finalSaleUnitClp, 11108.77);
+assert.equal(quickQuote.markupPercent, 45);
 assert.match(foreignTradeApiSource, /cl_import_cost_v3_invoice_floor/);
 assert.match(documentsPanelSource, /detectForeignTradeDocumentSection\(documentId\)/);
 assert.match(documentsPanelSource, /Guardar y analizar/);

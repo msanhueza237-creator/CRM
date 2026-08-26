@@ -148,6 +148,343 @@
   flex: 0 0 auto;
 }
 
+.foreign-trade-calculator-heading {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1rem 1.1rem;
+}
+
+.foreign-trade-calculator-heading > div {
+  display: grid;
+  gap: .28rem;
+  min-width: 0;
+}
+
+.foreign-trade-calculator-heading h2,
+.foreign-trade-calculator-section h3,
+.foreign-trade-calculator-breakdown h3,
+.foreign-trade-calculator-batch h3 {
+  margin: 0;
+}
+
+.foreign-trade-calculator-heading p {
+  color: #6b7f84;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.foreign-trade-calculator-eyebrow {
+  align-items: center;
+  color: #087d87;
+  display: flex;
+  font-size: .69rem;
+  font-weight: 900;
+  gap: .38rem;
+  text-transform: uppercase;
+}
+
+.foreign-trade-calculator-layout {
+  align-items: start;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 420px);
+}
+
+.foreign-trade-calculator-form,
+.foreign-trade-calculator-results {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.foreign-trade-calculator-results {
+  position: sticky;
+  top: 1rem;
+}
+
+.foreign-trade-calculator-section {
+  display: grid;
+  gap: .9rem;
+  padding: 1rem;
+}
+
+.foreign-trade-calculator-section-heading {
+  align-items: center;
+  border-bottom: 1px solid #dce6e8;
+  color: #087d87;
+  display: flex;
+  gap: .65rem;
+  padding-bottom: .72rem;
+}
+
+.foreign-trade-calculator-section-heading > div {
+  display: grid;
+  gap: .14rem;
+}
+
+.foreign-trade-calculator-section-heading h3 {
+  color: #173f46;
+  font-size: .96rem;
+}
+
+.foreign-trade-calculator-section-heading span {
+  color: #71858a;
+  font-size: .66rem;
+}
+
+.foreign-trade-calculator-fields {
+  display: grid;
+  gap: .78rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.foreign-trade-calculator-fields > label,
+.foreign-trade-calculator-reference > label {
+  display: grid;
+  gap: .35rem;
+  min-width: 0;
+}
+
+.foreign-trade-calculator-fields > label.wide {
+  grid-column: 1 / -1;
+}
+
+.foreign-trade-calculator-fields > label > span,
+.foreign-trade-calculator-reference label > span {
+  color: #405b61;
+  font-size: .68rem;
+  font-weight: 900;
+}
+
+.foreign-trade-calculator-input {
+  align-items: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.foreign-trade-calculator-input input,
+.foreign-trade-calculator-reference select {
+  background: #fff;
+  border: 1px solid #cbdadd;
+  border-radius: 5px;
+  color: #173f46;
+  min-height: 42px;
+  min-width: 0;
+  padding: .62rem .7rem;
+  width: 100%;
+}
+
+.foreign-trade-calculator-input small {
+  align-items: center;
+  background: #edf3f4;
+  border: 1px solid #cbdadd;
+  border-left: 0;
+  border-radius: 0 5px 5px 0;
+  color: #526d72;
+  display: flex;
+  font-size: .63rem;
+  font-weight: 900;
+  padding: 0 .65rem;
+  white-space: nowrap;
+}
+
+.foreign-trade-calculator-input:has(small) input {
+  border-radius: 5px 0 0 5px;
+}
+
+.foreign-trade-calculator-input input:disabled {
+  background: #f1f4f5;
+  color: #849599;
+}
+
+.foreign-trade-calculator-reference {
+  align-items: end;
+  display: grid;
+  gap: .75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.foreign-trade-calculator-status {
+  align-items: center;
+  color: #18725f;
+  display: flex;
+  font-size: .7rem;
+  gap: .4rem;
+}
+
+.foreign-trade-calculator-status.error {
+  color: #a33d31;
+}
+
+.foreign-trade-calculator-choice {
+  background: #edf3f4;
+  border: 1px solid #d3e0e2;
+  border-radius: 6px;
+  display: grid;
+  gap: 3px;
+  grid-auto-columns: 1fr;
+  grid-auto-flow: column;
+  padding: 3px;
+}
+
+.foreign-trade-calculator-choice button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  color: #526d72;
+  font-size: .7rem;
+  font-weight: 900;
+  min-height: 38px;
+  padding: .5rem .65rem;
+}
+
+.foreign-trade-calculator-choice button.active {
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 55, 62, .13);
+  color: #087d87;
+}
+
+.foreign-trade-calculator-toggle {
+  align-items: center;
+  color: #405b61;
+  display: flex;
+  font-size: .72rem;
+  font-weight: 800;
+  gap: .55rem;
+}
+
+.foreign-trade-calculator-toggle input {
+  height: 18px;
+  width: 18px;
+}
+
+.foreign-trade-calculator-result-primary {
+  background: #0d7d87;
+  border: 1px solid #086b74;
+  border-radius: 7px;
+  color: #fff;
+  display: grid;
+  gap: .24rem;
+  padding: 1.2rem;
+}
+
+.foreign-trade-calculator-result-primary span {
+  font-size: .7rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.foreign-trade-calculator-result-primary strong {
+  font-size: 2rem;
+  line-height: 1.1;
+}
+
+.foreign-trade-calculator-result-primary small {
+  color: #d7f1f2;
+  font-size: .68rem;
+}
+
+.foreign-trade-calculator-result-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  padding: 0;
+}
+
+.foreign-trade-calculator-result-grid > div {
+  display: grid;
+  gap: .23rem;
+  min-width: 0;
+  padding: .85rem;
+}
+
+.foreign-trade-calculator-result-grid > div:nth-child(odd) {
+  border-right: 1px solid #dce6e8;
+}
+
+.foreign-trade-calculator-result-grid > div:nth-child(-n + 2) {
+  border-bottom: 1px solid #dce6e8;
+}
+
+.foreign-trade-calculator-result-grid svg {
+  color: #087d87;
+}
+
+.foreign-trade-calculator-result-grid span,
+.foreign-trade-calculator-result-grid small {
+  color: #71858a;
+  font-size: .62rem;
+}
+
+.foreign-trade-calculator-result-grid strong {
+  color: #173f46;
+  font-size: .92rem;
+  overflow-wrap: anywhere;
+}
+
+.foreign-trade-calculator-breakdown,
+.foreign-trade-calculator-batch {
+  padding: 1rem;
+}
+
+.foreign-trade-calculator-breakdown h3,
+.foreign-trade-calculator-batch h3 {
+  color: #173f46;
+  font-size: .92rem;
+  margin-bottom: .65rem;
+}
+
+.foreign-trade-calculator-breakdown dl {
+  margin: 0;
+}
+
+.foreign-trade-calculator-breakdown dl > div,
+.foreign-trade-calculator-batch > div {
+  align-items: center;
+  border-top: 1px solid #e1e9ea;
+  display: flex;
+  gap: .75rem;
+  justify-content: space-between;
+  min-height: 42px;
+}
+
+.foreign-trade-calculator-breakdown dt,
+.foreign-trade-calculator-batch span {
+  color: #526d72;
+  display: grid;
+  font-size: .67rem;
+  gap: .12rem;
+}
+
+.foreign-trade-calculator-breakdown dt small {
+  color: #87979a;
+  font-size: .58rem;
+}
+
+.foreign-trade-calculator-breakdown dd,
+.foreign-trade-calculator-batch strong {
+  color: #173f46;
+  font-size: .72rem;
+  font-weight: 900;
+  margin: 0;
+  text-align: right;
+}
+
+.foreign-trade-calculator-breakdown dl > div.strong {
+  background: #f0f7f5;
+  border-left: 3px solid #208c78;
+  margin-inline: -.35rem;
+  padding-inline: .55rem .35rem;
+}
+
+.foreign-trade-calculator-results .notice-banner > div {
+  display: grid;
+  gap: .22rem;
+}
+
 @media (max-width: 720px) {
   .foreign-trade-table-navigation {
     display: none;
@@ -392,6 +729,63 @@
   .foreign-trade-tax-records > div:first-child span {
     line-height: 1.4;
     overflow-wrap: anywhere;
+  }
+
+  .foreign-trade-calculator-heading {
+    align-items: stretch;
+    display: grid;
+    padding: .85rem;
+  }
+
+  .foreign-trade-calculator-heading .ghost-button {
+    width: 100%;
+  }
+
+  .foreign-trade-calculator-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-calculator-results {
+    position: static;
+  }
+
+  .foreign-trade-calculator-section {
+    padding: .8rem;
+  }
+
+  .foreign-trade-calculator-fields,
+  .foreign-trade-calculator-reference {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-calculator-reference .ghost-button {
+    width: 100%;
+  }
+
+  .foreign-trade-calculator-input input,
+  .foreign-trade-calculator-reference select {
+    min-height: 46px;
+  }
+
+  .foreign-trade-calculator-choice {
+    grid-auto-flow: row;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .foreign-trade-calculator-section:last-child .foreign-trade-calculator-choice {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .foreign-trade-calculator-result-primary {
+    padding: 1rem;
+  }
+
+  .foreign-trade-calculator-result-primary strong {
+    font-size: 1.7rem;
+  }
+
+  .foreign-trade-calculator-result-grid > div {
+    min-height: 110px;
   }
 }
 

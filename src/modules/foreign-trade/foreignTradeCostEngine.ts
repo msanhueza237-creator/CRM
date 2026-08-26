@@ -64,6 +64,66 @@ export interface ForeignTradeCostingResult {
   lines: ForeignTradeCostingLineResult[];
 }
 
+export type ForeignTradeQuoteIncoterm = "EXW" | "FOB" | "CIF";
+
+export interface ForeignTradeQuoteInput {
+  unitPriceUsd: number;
+  quantity: number;
+  exchangeRateClp: number;
+  incoterm: ForeignTradeQuoteIncoterm;
+  originPercent: number;
+  internationalFreightPercent: number;
+  insurancePercent: number;
+  chilePortPercent: number;
+  storagePercent: number;
+  customsAgencyPercent: number;
+  nationalTransportPercent: number;
+  inspectionPercent: number;
+  certificatePercent: number;
+  otherExpensesPercent: number;
+  fixedExpensesClp: number;
+  dutyPercent: number;
+  importVatPercent: number;
+  importVatRecoverable: boolean;
+  salesVatPercent: number;
+  pricingMethod: ForeignTradePricingMethod;
+  targetPercent: number;
+}
+
+export interface ForeignTradeQuoteResult {
+  quotedTotalClp: number;
+  factoryTotalClp: number;
+  originTotalClp: number;
+  fobTotalClp: number;
+  internationalFreightTotalClp: number;
+  insuranceTotalClp: number;
+  cifTotalClp: number;
+  dutyTotalClp: number;
+  importVatTotalClp: number;
+  operatingExpensesTotalClp: number;
+  landedTotalClp: number;
+  cashRequirementTotalClp: number;
+  projectedNetSalesClp: number;
+  projectedFinalSalesClp: number;
+  projectedProfitClp: number;
+  quotedUnitClp: number;
+  fobUnitClp: number;
+  cifUnitClp: number;
+  dutyUnitClp: number;
+  importVatUnitClp: number;
+  operatingExpensesUnitClp: number;
+  landedUnitClp: number;
+  cashRequirementUnitClp: number;
+  netSaleUnitClp: number;
+  salesVatUnitClp: number;
+  finalSaleUnitClp: number;
+  profitUnitClp: number;
+  markupPercent: number;
+  marginPercent: number;
+  localExpenses: Array<{ key: string; label: string; percent: number; totalClp: number; unitClp: number }>;
+  warnings: string[];
+}
+
 type CostMetadata = {
   amount_basis?: "net" | "gross";
   vat_rate_percent?: number | string;
@@ -228,6 +288,102 @@ export function calculateForeignTradeCosting(
   };
 }
 
+export function calculateForeignTradeQuote(input: ForeignTradeQuoteInput): ForeignTradeQuoteResult {
+  const quantity = positive(input.quantity);
+  const exchangeRate = positive(input.exchangeRateClp);
+  const quotedTotal = positive(input.unitPriceUsd).times(quantity).times(exchangeRate);
+  const warnings: string[] = [];
+
+  if (!quantity.gt(0)) warnings.push("Ingresa una cantidad mayor que cero.");
+  if (!exchangeRate.gt(0)) warnings.push("Ingresa un tipo de cambio USD/CLP válido.");
+  if (!positive(input.unitPriceUsd).gt(0)) warnings.push("Ingresa el precio unitario cotizado en USD.");
+
+  const origin = input.incoterm === "EXW"
+    ? quotedTotal.times(boundedPercent(input.originPercent)).div(HUNDRED)
+    : ZERO;
+  const fob = input.incoterm === "EXW" ? quotedTotal.plus(origin) : quotedTotal;
+  const internationalFreight = input.incoterm === "CIF"
+    ? ZERO
+    : fob.times(boundedPercent(input.internationalFreightPercent)).div(HUNDRED);
+  const insurance = input.incoterm === "CIF"
+    ? ZERO
+    : fob.times(boundedPercent(input.insurancePercent)).div(HUNDRED);
+  const cif = input.incoterm === "CIF" ? quotedTotal : fob.plus(internationalFreight).plus(insurance);
+  const duty = cif.times(boundedPercent(input.dutyPercent)).div(HUNDRED);
+  const importVat = cif.plus(duty).times(boundedPercent(input.importVatPercent)).div(HUNDRED);
+
+  const localDefinitions = [
+    ["chile_port", "Puerto y desconsolidación", input.chilePortPercent],
+    ["storage", "Almacenaje", input.storagePercent],
+    ["customs_agency", "Agencia de aduana", input.customsAgencyPercent],
+    ["national_transport", "Transporte a bodega", input.nationalTransportPercent],
+    ["inspection", "Inspecciones", input.inspectionPercent],
+    ["certificate", "Certificados", input.certificatePercent],
+    ["other", "Otros gastos", input.otherExpensesPercent],
+  ] as const;
+  const localExpenses = localDefinitions.map(([key, label, rawPercent]) => {
+    const percent = boundedPercent(rawPercent);
+    const total = cif.times(percent).div(HUNDRED);
+    return {
+      key,
+      label,
+      percent: toPercent(percent),
+      totalClp: toMoney(total),
+      unitClp: toMoney(perUnit(total, quantity)),
+    };
+  });
+  const percentageExpenses = sumDecimals(localExpenses.map((expense) => positive(expense.totalClp)));
+  const fixedExpenses = positive(input.fixedExpensesClp);
+  const operatingExpenses = percentageExpenses.plus(fixedExpenses);
+  const landed = cif
+    .plus(duty)
+    .plus(operatingExpenses)
+    .plus(input.importVatRecoverable ? ZERO : importVat);
+  const cashRequirement = cif.plus(duty).plus(importVat).plus(operatingExpenses);
+  const targetPercent = boundedTargetPercent(input.targetPercent, input.pricingMethod);
+  const landedUnit = perUnit(landed, quantity);
+  const netSaleUnit = salePrice(landedUnit, targetPercent, input.pricingMethod);
+  const salesVatUnit = netSaleUnit.times(boundedPercent(input.salesVatPercent)).div(HUNDRED);
+  const finalSaleUnit = netSaleUnit.plus(salesVatUnit);
+  const profitUnit = netSaleUnit.minus(landedUnit);
+  const markup = landedUnit.gt(0) ? profitUnit.div(landedUnit).times(HUNDRED) : ZERO;
+  const margin = netSaleUnit.gt(0) ? profitUnit.div(netSaleUnit).times(HUNDRED) : ZERO;
+
+  return {
+    quotedTotalClp: toMoney(quotedTotal),
+    factoryTotalClp: toMoney(quotedTotal),
+    originTotalClp: toMoney(origin),
+    fobTotalClp: toMoney(fob),
+    internationalFreightTotalClp: toMoney(internationalFreight),
+    insuranceTotalClp: toMoney(insurance),
+    cifTotalClp: toMoney(cif),
+    dutyTotalClp: toMoney(duty),
+    importVatTotalClp: toMoney(importVat),
+    operatingExpensesTotalClp: toMoney(operatingExpenses),
+    landedTotalClp: toMoney(landed),
+    cashRequirementTotalClp: toMoney(cashRequirement),
+    projectedNetSalesClp: toMoney(netSaleUnit.times(quantity)),
+    projectedFinalSalesClp: toMoney(finalSaleUnit.times(quantity)),
+    projectedProfitClp: toMoney(profitUnit.times(quantity)),
+    quotedUnitClp: toMoney(perUnit(quotedTotal, quantity)),
+    fobUnitClp: toMoney(perUnit(fob, quantity)),
+    cifUnitClp: toMoney(perUnit(cif, quantity)),
+    dutyUnitClp: toMoney(perUnit(duty, quantity)),
+    importVatUnitClp: toMoney(perUnit(importVat, quantity)),
+    operatingExpensesUnitClp: toMoney(perUnit(operatingExpenses, quantity)),
+    landedUnitClp: toMoney(landedUnit),
+    cashRequirementUnitClp: toMoney(perUnit(cashRequirement, quantity)),
+    netSaleUnitClp: toMoney(netSaleUnit),
+    salesVatUnitClp: toMoney(salesVatUnit),
+    finalSaleUnitClp: toMoney(finalSaleUnit),
+    profitUnitClp: toMoney(profitUnit),
+    markupPercent: toPercent(markup),
+    marginPercent: toPercent(margin),
+    localExpenses,
+    warnings,
+  };
+}
+
 function lineBaseClp(line: ForeignTradeOperationLine, exchangeRate: Decimal) {
   const total = Decimal.max(
     positive(line.fob_total),
@@ -309,6 +465,10 @@ function salePrice(cost: Decimal, targetPercent: Decimal, method: ForeignTradePr
     return divisor.gt(0) ? cost.div(divisor) : ZERO;
   }
   return cost.times(new Decimal(1).plus(targetPercent.div(HUNDRED)));
+}
+
+function perUnit(total: Decimal, quantity: Decimal) {
+  return quantity.gt(0) ? total.div(quantity) : ZERO;
 }
 
 function sumCostCategory(costs: ForeignTradeCostLine[], category: ForeignTradeCostLine["category"]) {

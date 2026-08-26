@@ -36,10 +36,12 @@ import type {
 } from "../../types/foreignTrade";
 import { useForeignTradeCenter } from "./useForeignTradeCenter";
 import { ForeignTradeOperationDetail } from "./ForeignTradeOperationDetail";
+import { ForeignTradeQuoteCalculator } from "./ForeignTradeQuoteCalculator";
 import { ForeignTradeSupplierDialog } from "./ForeignTradeSupplierDialog";
 
 const views = [
   { id: "dashboard", label: "Resumen", icon: Landmark },
+  { id: "calculator", label: "Calculadora", icon: Calculator },
   { id: "operations", label: "Operaciones", icon: Ship },
   { id: "suppliers", label: "Proveedores", icon: UsersRound },
   { id: "settings", label: "Configuración", icon: Settings2 },
@@ -137,6 +139,7 @@ export function ForeignTradeCenterPage() {
       {!error ? (
         <>
           {activeView === "dashboard" ? <ForeignTradeOverview data={data} onNavigate={navigate} onNew={openOperation} onOpen={openOperationDetail} /> : null}
+          {activeView === "calculator" ? <ForeignTradeQuoteCalculator data={data} /> : null}
           {activeView === "operations" && selectedOperationId ? <ForeignTradeOperationDetail operationId={selectedOperationId} statuses={data.statuses} suppliers={data.suppliers} costParameters={data.costParameters} onBack={() => navigate("operations")} onDelete={removeOperation} onChanged={refresh} /> : null}
           {activeView === "operations" && !selectedOperationId ? <ForeignTradeOperations data={data} onNew={openOperation} onOpen={openOperationDetail} onDelete={removeOperation} /> : null}
           {activeView === "suppliers" ? <ForeignTradeSuppliers suppliers={data.suppliers} onNew={() => setSupplierDialog("new")} onEdit={setSupplierDialog} /> : null}
@@ -186,6 +189,7 @@ function ForeignTradeOverview({
         </div>
         <div>
           <button className="primary-button" type="button" onClick={() => onNew("simulation")}><Calculator size={18} /> Nueva simulación</button>
+          <button className="ghost-button" type="button" onClick={() => onNavigate("calculator")}><CircleDollarSign size={18} /> Calcular cotización</button>
           <button className="ghost-button" type="button" onClick={() => onNew("proforma")}><FileSearch size={18} /> Registrar proforma</button>
         </div>
       </section>
