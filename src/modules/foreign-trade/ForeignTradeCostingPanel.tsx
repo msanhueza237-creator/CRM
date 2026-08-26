@@ -225,15 +225,16 @@ export function ForeignTradeCostingPanel({
         {result.lines.length ? (
           <div className="table-scroll foreign-trade-costing-table-scroll" ref={costingTableScrollRef} tabIndex={0} aria-label="Costeo completo por producto">
             <table className="foreign-trade-costing-table">
-              <thead><tr><th>Producto</th><th>Cantidad</th><th>CIF asignado</th><th>Derecho</th><th>IVA import.</th><th>Gastos</th><th>Costo unitario</th><th>Venta proyectada</th><th>Objetivo</th><th>Precio neto</th><th>Margen</th></tr></thead>
+              <thead><tr><th>Producto</th><th>Cantidad</th><th>Costo factura</th><th>CIF asignado</th><th>Derecho</th><th>IVA import.</th><th>Gastos</th><th>Costo unitario</th><th>Venta proyectada</th><th>Objetivo</th><th>Precio neto</th><th>Margen</th></tr></thead>
               <tbody>{result.lines.map((line) => (
                 <tr key={line.lineId}>
                   <td data-label="Producto"><strong>{line.productName}</strong><small>{line.sku || "Sin SKU"}</small></td>
                   <td data-label="Cantidad">{formatNumber(line.quantity)}</td>
-                  <td data-label="CIF asignado">{formatClp(line.cifClp)}</td>
+                  <td data-label="Costo factura"><strong>{formatClp(line.invoiceUnitClp)}</strong><small>{formatClp(line.invoiceTotalClp)} total</small></td>
+                  <td data-label="CIF asignado">{formatClp(line.cifClp)}<small>{formatClp(line.quantity ? line.cifClp / line.quantity : 0)} por unidad</small></td>
                   <td data-label="Derecho"><div className="foreign-trade-table-percent"><input aria-label={`Derecho de ${line.productName}`} inputMode="decimal" value={form.lineDutyPercent[line.lineId] ?? form.generalDutyPercent} onChange={(event) => setForm({ ...form, lineDutyPercent: { ...form.lineDutyPercent, [line.lineId]: event.target.value } })} /><b>%</b></div><small>{formatClp(line.dutyClp)}</small></td>
                   <td data-label="IVA importación">{formatClp(line.importVatClp)}<small>{form.importVatRecoverable ? "Crédito" : "Costo"}</small></td>
-                  <td data-label="Gastos">{formatClp(line.allocatedExpensesClp)}</td>
+                  <td data-label="Gastos">{formatClp(line.allocatedExpensesClp)}<small>{formatClp(line.quantity ? line.allocatedExpensesClp / line.quantity : 0)} por unidad</small></td>
                   <td data-label="Costo unitario"><strong>{formatClp(line.landedUnitClp)}</strong></td>
                   <td data-label="Venta proyectada"><strong>{formatClp(line.finalSaleUnitClp)}</strong><small>Precio final con IVA</small></td>
                   <td data-label="Objetivo"><div className="foreign-trade-table-percent"><input aria-label={`Objetivo de ${line.productName}`} inputMode="decimal" value={form.lineTargetPercent[line.lineId] ?? form.targetPercent} onChange={(event) => setForm({ ...form, lineTargetPercent: { ...form.lineTargetPercent, [line.lineId]: event.target.value } })} /><b>%</b></div></td>

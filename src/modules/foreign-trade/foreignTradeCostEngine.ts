@@ -23,6 +23,8 @@ export interface ForeignTradeCostingLineResult {
   productName: string;
   sku: string | null;
   quantity: number;
+  invoiceTotalClp: number;
+  invoiceUnitClp: number;
   cifClp: number;
   dutyPercent: number;
   dutyClp: number;
@@ -100,19 +102,29 @@ export function calculateForeignTradeCosting(
     missingInputs.push("Hay productos sin cantidad o valor FOB/fábrica suficiente.");
   }
 
+  const merchandiseTotal = sumDecimals(merchandiseBases);
   const allLinesHaveCif = lines.length > 0 && lines.every((line) => positive(line.cif_total).gt(0));
   const lineCifValues = lines.map((line) => convertToClp(line.cif_total, line.currency, exchangeRate));
+  const allLineCifsRespectInvoice = allLinesHaveCif
+    && lineCifValues.every((cif, index) => cif.gte(merchandiseBases[index] || ZERO));
   const cifComponents = activeCosts
     .filter((cost) => CIF_COMPONENT_CATEGORIES.has(cost.category))
     .reduce((sum, cost) => sum.plus(positive(cost.amount_clp)), ZERO);
   const configuredCif = positive(settings.cifOverrideOriginal).times(exchangeRate);
-  const customsCif = configuredCif.gt(0)
+  const requestedCustomsCif = configuredCif.gt(0)
     ? configuredCif
     : allLinesHaveCif
       ? sumDecimals(lineCifValues)
-      : sumDecimals(merchandiseBases).plus(cifComponents);
+      : merchandiseTotal.plus(cifComponents);
+  const customsCif = Decimal.max(requestedCustomsCif, merchandiseTotal);
 
   if (!customsCif.gt(0)) missingInputs.push("Falta el CIF o los componentes necesarios para calcularlo.");
+  if (requestedCustomsCif.lt(merchandiseTotal)) {
+    missingInputs.push("El CIF informado era menor que el valor de factura; se conservó el costo real de la mercadería.");
+  }
+  if (allLinesHaveCif && !allLineCifsRespectInvoice) {
+    missingInputs.push("Hay CIF individuales menores que su valor de factura; se protegió el costo invoice y se redistribuyó solo el incremento CIF.");
+  }
 
   const documentedDuty = sumCostCategory(activeCosts, "duties");
   const documentedImportVat = sumCostCategory(activeCosts, "taxes");
@@ -126,11 +138,15 @@ export function calculateForeignTradeCosting(
 
   const cifAllocationBases = allLinesHaveCif ? lineCifValues : merchandiseBases;
   const baseShares = allocationShares(lines, merchandiseBases, cifAllocationBases, settings.allocationMethod);
-  const cifByLine = configuredCif.lte(0) && allLinesHaveCif
+  const additionalCif = Decimal.max(customsCif.minus(merchandiseTotal), ZERO);
+  const cifByLine = configuredCif.lte(0) && allLineCifsRespectInvoice
     ? lineCifValues
-    : baseShares.map((share) => customsCif.times(share));
+    : merchandiseBases.map((invoiceBase, index) => (
+      invoiceBase.plus(additionalCif.times(baseShares[index] || ZERO))
+    ));
 
   const lineResults = lines.map((line, lineIndex) => {
+    const invoiceTotal = merchandiseBases[lineIndex] || ZERO;
     const cif = cifByLine[lineIndex] || ZERO;
     const dutyPercent = boundedPercent(settings.lineDutyPercent[line.id] ?? settings.generalDutyPercent);
     const duty = cif.times(dutyPercent).div(HUNDRED);
@@ -146,6 +162,7 @@ export function calculateForeignTradeCosting(
       .plus(allocatedExpenses)
       .plus(settings.importVatRecoverable ? ZERO : importVat);
     const quantity = positive(line.quantity);
+    const invoiceUnit = quantity.gt(0) ? invoiceTotal.div(quantity) : ZERO;
     const landedUnit = quantity.gt(0) ? landed.div(quantity) : ZERO;
     const targetPercent = boundedTargetPercent(settings.lineTargetPercent[line.id] ?? settings.targetPercent, settings.pricingMethod);
     const netSaleUnit = salePrice(landedUnit, targetPercent, settings.pricingMethod);
@@ -159,6 +176,8 @@ export function calculateForeignTradeCosting(
       productName: line.product_name,
       sku: line.sku,
       quantity: toNumber(quantity),
+      invoiceTotalClp: toMoney(invoiceTotal),
+      invoiceUnitClp: toMoney(invoiceUnit),
       cifClp: toMoney(cif),
       dutyPercent: toPercent(dutyPercent),
       dutyClp: toMoney(duty),
@@ -203,18 +222,18 @@ export function calculateForeignTradeCosting(
     projectedMarginPercent: toPercent(projectedMargin),
     documentedDutyClp: toMoney(documentedDuty),
     documentedImportVatClp: toMoney(documentedImportVat),
-    cifAllocationEstimated: settings.allocationMethod === "cif_value" && !allLinesHaveCif,
+    cifAllocationEstimated: settings.allocationMethod === "cif_value" && (!allLinesHaveCif || !allLineCifsRespectInvoice),
     missingInputs,
     lines: lineResults,
   };
 }
 
 function lineBaseClp(line: ForeignTradeOperationLine, exchangeRate: Decimal) {
-  const total = positive(line.fob_total).gt(0)
-    ? positive(line.fob_total)
-    : positive(line.exw_total).gt(0)
-      ? positive(line.exw_total)
-      : positive(line.unit_factory_cost).times(positive(line.quantity));
+  const total = Decimal.max(
+    positive(line.fob_total),
+    positive(line.exw_total),
+    positive(line.unit_factory_cost).times(positive(line.quantity)),
+  );
   return convertToClp(total, line.currency, exchangeRate);
 }
 

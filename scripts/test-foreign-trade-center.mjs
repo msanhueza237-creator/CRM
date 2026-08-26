@@ -778,6 +778,65 @@ assert.equal(cifAllocatedCosting.lines[1].allocatedExpensesClp, 375, "la linea c
 assert.equal(cifAllocatedCosting.landedTotalClp, 4500, "el costo en bodega suma CIF y gastos locales sin duplicar flete internacional");
 assert.equal(cifAllocatedCosting.cifAllocationEstimated, false, "con CIF por linea la distribucion no debe marcarse estimada");
 
+const invoiceFloorCosting = calculateForeignTradeCosting([
+  { id: "invoice-floor-a", product_name: "Difusor 8", sku: null, quantity: 32, currency: "USD", unit_factory_cost: 3.8 },
+  { id: "invoice-floor-b", product_name: "Producto economico", sku: null, quantity: 100, currency: "USD", unit_factory_cost: 1 },
+], [
+  { id: "invoice-floor-freight", operation_line_id: null, category: "international_freight", name: "Flete internacional", amount_clp: 22000, allocation_method: "operation", recoverable_tax: false, metadata: {} },
+  { id: "invoice-floor-local", operation_line_id: null, category: "national_transport", name: "Flete nacional", amount_clp: 13200, allocation_method: "operation", recoverable_tax: false, metadata: {} },
+], {
+  exchangeRateClp: 990,
+  cifOverrideOriginal: null,
+  generalDutyPercent: 0,
+  importVatPercent: 19,
+  salesVatPercent: 19,
+  importVatRecoverable: true,
+  pricingMethod: "margin_on_sale",
+  targetPercent: 45,
+  allocationMethod: "units",
+  lineDutyPercent: {},
+  lineTargetPercent: {},
+});
+assert.equal(invoiceFloorCosting.lines[0].invoiceUnitClp, 3762, "el costo unitario de factura debe conservar USD 3,80 por CLP 990");
+assert.ok(invoiceFloorCosting.lines[0].cifClp >= 121.6 * 990, "distribuir por unidades nunca puede bajar el CIF de la linea bajo su factura");
+assert.ok(invoiceFloorCosting.lines[0].landedUnitClp > 3762, "los gastos locales deben aumentar el costo unitario de factura");
+assert.equal(
+  invoiceFloorCosting.lines.reduce((sum, line) => sum + line.cifClp, 0),
+  invoiceFloorCosting.cifClp,
+  "el CIF protegido por linea debe seguir cuadrando con el total de la operacion",
+);
+
+for (const allocationMethod of ["fob_value", "cif_value", "units", "weight", "cbm", "combined"]) {
+  const protectedCosting = calculateForeignTradeCosting([
+    { id: `${allocationMethod}-a`, product_name: "Producto de mayor costo", sku: null, quantity: 32, currency: "USD", unit_factory_cost: 3.8, gross_weight_kg: 80, cbm_total: 2 },
+    { id: `${allocationMethod}-b`, product_name: "Producto de menor costo", sku: null, quantity: 100, currency: "USD", unit_factory_cost: 1, gross_weight_kg: 20, cbm_total: 8 },
+  ], [
+    { id: `${allocationMethod}-freight`, operation_line_id: null, category: "international_freight", name: "Flete internacional", amount_clp: 22000, allocation_method: "operation", recoverable_tax: false, metadata: {} },
+  ], {
+    exchangeRateClp: 990,
+    cifOverrideOriginal: null,
+    generalDutyPercent: 0,
+    importVatPercent: 19,
+    salesVatPercent: 19,
+    importVatRecoverable: true,
+    pricingMethod: "margin_on_sale",
+    targetPercent: 45,
+    allocationMethod,
+    lineDutyPercent: {},
+    lineTargetPercent: {},
+  });
+  for (const line of protectedCosting.lines) {
+    assert.ok(
+      line.cifClp + 0.01 >= line.invoiceTotalClp,
+      `${allocationMethod}: ningun producto puede recibir un CIF menor que su costo de factura`,
+    );
+  }
+  assert.ok(
+    Math.abs(protectedCosting.lines.reduce((sum, line) => sum + line.cifClp, 0) - protectedCosting.cifClp) <= 0.02,
+    `${allocationMethod}: la distribucion protegida debe cuadrar con el CIF total`,
+  );
+}
+
 const invoiceReconciliation = calculateForeignTradeReconciliation(18220000, 0, [
   { line_type: "agency_fee", provision_total_clp: 655322, actual_net_clp: 402233, actual_vat_clp: 76424, actual_total_clp: 478657 },
   { line_type: "operating_expense", provision_total_clp: 528544, actual_net_clp: 444155, actual_vat_clp: 84389, actual_total_clp: 528544 },
