@@ -1,9 +1,10 @@
 import {
   type SocialChannelCode,
+  type SocialConnectionStatus,
   SocialPublishError,
   createSocialAdapter,
 } from "./social-adapters.ts";
-import { ensureBrandHashtag, ensureOfficialWebsiteCta } from "./social-publishing-logic.ts";
+import { ensureBrandHashtag, ensureOfficialWebsiteCta, normalizeSocialImageUrls } from "./social-publishing-logic.ts";
 import { findSimilarDraft, nextScheduleAt, selectRotatedProduct } from "./content-logic.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -219,9 +220,14 @@ async function checkConnections(rest: RestClient) {
   const socialConnected = instagram.connected || facebook.connected;
   const socialStatus = socialConnected ? "connected" :
     instagram.status === "error" || facebook.status === "error" ? "error" : "pending_configuration";
-  const socialMessage = socialConnected
-    ? "Meta Social disponible para los canales validados."
-    : "Falta conectar Instagram y Facebook desde Administracion > Integraciones.";
+  const disconnectedMessages = [instagram, facebook]
+    .filter((connection) => !connection.connected)
+    .map((connection) => connection.message);
+  const socialMessage = instagram.connected && facebook.connected
+    ? "Instagram y Facebook estan conectados mediante Meta Social."
+    : socialConnected
+      ? `Meta Social esta conectado parcialmente. ${disconnectedMessages.join(" ")}`
+      : disconnectedMessages.join(" ") || "Falta conectar Instagram y Facebook desde Administracion > Integraciones.";
   await patchRows(rest, "integration_connections", "provider=eq.meta_social", {
     enabled: socialConnected,
     status: socialStatus,
@@ -239,6 +245,36 @@ async function checkConnections(rest: RestClient) {
     });
   }
   return { tiendanube: tiendanubeRows[0] || null, instagram, facebook };
+}
+
+async function persistSocialConnectionFailure(
+  rest: RestClient,
+  channel: SocialChannelCode,
+  connection: SocialConnectionStatus,
+) {
+  const checkedAt = new Date().toISOString();
+  const sharedTokenExpired = connection.errorCode === "meta_access_token_expired";
+  await patchRows(
+    rest,
+    "content_channels",
+    sharedTokenExpired ? "code=in.(instagram,facebook)" : `code=eq.${channel}`,
+    {
+      enabled: false,
+      last_checked_at: checkedAt,
+      last_error: connection.message,
+    },
+  );
+  const remainingChannels = sharedTokenExpired ? [] : await selectRows(
+    rest,
+    "content_channels?select=id&enabled=eq.true&code=in.(instagram,facebook)&limit=2",
+  );
+  const partiallyConnected = remainingChannels.length > 0;
+  await patchRows(rest, "integration_connections", "provider=eq.meta_social", {
+    enabled: partiallyConnected,
+    status: partiallyConnected ? "connected" : "error",
+    message: partiallyConnected ? `Meta Social esta conectado parcialmente. ${connection.message}` : connection.message,
+    last_checked_at: checkedAt,
+  });
 }
 
 async function generateContent(
@@ -311,6 +347,7 @@ async function generateContent(
   }
 
   const groupId = crypto.randomUUID();
+  const mediaUrls = productImageUrls(product);
   const rows: JsonRecord[] = [];
   for (const variant of generation.variants) {
     const channel = channelMap.get(variant.channel);
@@ -328,8 +365,8 @@ async function generateContent(
       cta: brandedCta,
       body: variant.body,
       hashtags: brandedHashtags,
-      image_url: String(product.primary_image_url || "") || null,
-      source_facts: facts,
+      image_url: mediaUrls[0] || null,
+      source_facts: { ...facts, media_urls: mediaUrls },
       missing_facts: [],
       content_fingerprint: await sha256(`${variant.channel}|${normalizeForFingerprint(variant.body)}`),
       model_name: generation.model,
@@ -511,7 +548,7 @@ async function runWorker(rest: RestClient, limit: number, requestId: string) {
           job_id: job.id,
           event_type: "metrics_sync_failed",
           level: "warning",
-          message,
+          message: `No se pudieron actualizar las metricas de una publicacion anterior. No fue un intento de publicar contenido. ${message}`,
           metadata: { code, retryable, attempt: job.attempts },
           correlation_id: job.correlation_id || requestIdToUuid(requestId),
           actor_type: "worker",
@@ -551,21 +588,29 @@ async function processJob(rest: RestClient, job: JsonRecord, requestId: string):
     throw new SocialPublishError("Canal social invalido.", "invalid_social_channel", false, 422);
   }
   const products = publication.product_id
-    ? await selectRows(rest, `content_products?select=product_url&id=eq.${publication.product_id}&limit=1`)
+    ? await selectRows(rest, `content_products?select=product_url,images,primary_image_url&id=eq.${publication.product_id}&limit=1`)
     : [];
+  const mediaUrls = publicationImageUrls(publication, products[0]);
   await patchRows(rest, "content_publications", `id=eq.${publicationId}`, {
     status: "publishing", error_code: null, error_message: null,
   });
   const adapter = createSocialAdapter(String(channel.code) as SocialChannelCode);
   const connection = await adapter.validateConnection();
   if (!connection.connected) {
-    throw new SocialPublishError(connection.message, "meta_social_not_connected", false, 409);
+    await persistSocialConnectionFailure(rest, String(channel.code) as SocialChannelCode, connection);
+    throw new SocialPublishError(
+      connection.message,
+      connection.errorCode || "meta_social_not_connected",
+      connection.retryable ?? false,
+      connection.httpStatus || 409,
+    );
   }
   const result = await adapter.createPost({
     body: String(publication.body || ""),
     cta: String(publication.cta || "") || null,
     hashtags: stringArray(publication.hashtags, 30),
-    imageUrl: String(publication.image_url || "") || null,
+    imageUrl: mediaUrls[0] || null,
+    imageUrls: mediaUrls,
     productUrl: String(products[0]?.product_url || "") || null,
     idempotencyKey: String(publication.idempotency_key || `publish:${publicationId}`),
   });
@@ -610,11 +655,17 @@ async function enqueueDueSchedules(rest: RestClient) {
 }
 
 async function enqueueMetricJobs(rest: RestClient) {
+  const enabledChannels = await selectRows(
+    rest,
+    "content_channels?select=id&enabled=eq.true&code=in.(instagram,facebook)",
+  );
+  const enabledChannelIds = new Set(enabledChannels.map((channel) => String(channel.id)));
+  if (!enabledChannelIds.size) return 0;
   const since = new Date(Date.now() - 90 * 86_400_000).toISOString();
   const published = await selectRows(
     rest,
-    `content_publications?select=id,correlation_id&status=eq.published&external_id=not.is.null&published_at=gte.${encodeURIComponent(since)}&limit=500`,
-  );
+    `content_publications?select=id,channel_id,correlation_id&status=eq.published&external_id=not.is.null&published_at=gte.${encodeURIComponent(since)}&limit=500`,
+  ).then((rows) => rows.filter((publication) => enabledChannelIds.has(String(publication.channel_id))));
   if (!published.length) return 0;
   const dayKey = new Date().toISOString().slice(0, 10);
   await insertIgnoreRows(rest, "content_jobs", published.map((publication) => ({
@@ -639,12 +690,23 @@ async function processMetricsSync(rest: RestClient, job: JsonRecord, requestId: 
   if (!publication || publication.status !== "published" || !publication.external_id) {
     return { skipped: true, reason: "publication_not_published" };
   }
-  const channels = await selectRows(rest, `content_channels?select=code,name&id=eq.${publication.channel_id}&limit=1`);
+  const channels = await selectRows(rest, `content_channels?select=code,name,enabled&id=eq.${publication.channel_id}&limit=1`);
   const channel = channels[0];
   if (!channel || !allowedChannels.has(String(channel.code) as SocialChannelCode)) {
     throw new SocialPublishError("Canal inválido para consultar métricas.", "invalid_metrics_channel", false, 422);
   }
+  if (channel.enabled !== true) return { skipped: true, reason: "channel_not_connected" };
   const adapter = createSocialAdapter(String(channel.code) as SocialChannelCode);
+  const connection = await adapter.validateConnection();
+  if (!connection.connected) {
+    await persistSocialConnectionFailure(rest, String(channel.code) as SocialChannelCode, connection);
+    throw new SocialPublishError(
+      connection.message,
+      connection.errorCode || "meta_social_not_connected",
+      connection.retryable ?? false,
+      connection.httpStatus || 409,
+    );
+  }
   const metrics = await adapter.getMetrics(String(publication.external_id));
   const interactions = Number(metrics.likes || 0) + Number(metrics.comments || 0) + Number(metrics.shares || 0) + Number(metrics.saves || 0);
   const denominator = Number(metrics.reach || metrics.impressions || 0);
@@ -742,6 +804,7 @@ async function processAutomationTick(rest: RestClient, job: JsonRecord, requestI
   if (!verification.valid) throw new HttpError(422, `La generación automática no superó la revisión factual: ${verification.unsupportedClaims.join("; ")}.`);
 
   const groupId = crypto.randomUUID();
+  const mediaUrls = productImageUrls(selected);
   const automatic = schedule.operation_mode === "autopilot";
   const channelMap = new Map(activeChannels.map((channel) => [String(channel.code), channel]));
   const channelsById = new Map(activeChannels.map((channel) => [String(channel.id), channel]));
@@ -762,8 +825,8 @@ async function processAutomationTick(rest: RestClient, job: JsonRecord, requestI
       cta: brandedCta,
       body: variant.body,
       hashtags: brandedHashtags,
-      image_url: selected.primary_image_url,
-      source_facts: facts,
+      image_url: mediaUrls[0] || null,
+      source_facts: { ...facts, media_urls: mediaUrls },
       missing_facts: [],
       content_fingerprint: await sha256(`${variant.channel}|${normalizeForFingerprint(variant.body)}`),
       model_name: generation.model,
@@ -1014,6 +1077,26 @@ function buildProductFacts(product: JsonRecord): JsonRecord {
     product_url: product.product_url,
     image_url: product.primary_image_url,
   };
+}
+
+function productImageUrls(product?: JsonRecord) {
+  if (!product) return [];
+  const images = Array.isArray(product.images)
+    ? product.images.map((image) => {
+      if (typeof image === "string") return image;
+      return String(asObject(image).src || "");
+    })
+    : [];
+  return normalizeSocialImageUrls(images, product.primary_image_url);
+}
+
+function publicationImageUrls(publication: JsonRecord, product?: JsonRecord) {
+  const sourceFacts = asObject(publication.source_facts);
+  const frozenUrls = Array.isArray(sourceFacts.media_urls) ? sourceFacts.media_urls : [];
+  return normalizeSocialImageUrls(
+    [...frozenUrls, ...productImageUrls(product)],
+    publication.image_url,
+  );
 }
 
 async function history(

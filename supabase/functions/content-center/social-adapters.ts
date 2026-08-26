@@ -3,6 +3,9 @@ import {
   classifyInstagramContainerStatus,
   isFacebookPublishPermissionMissing,
   isInstagramMediaNotReady,
+  isMetaAccessTokenExpired,
+  metaAccessTokenExpiredMessage,
+  normalizeSocialImageUrls,
 } from "./social-publishing-logic.ts";
 
 export type SocialChannelCode = "instagram" | "facebook";
@@ -13,6 +16,9 @@ export type SocialConnectionStatus = {
   message: string;
   accountId?: string;
   accountName?: string;
+  errorCode?: string;
+  retryable?: boolean;
+  httpStatus?: number;
 };
 
 export type SocialPostInput = {
@@ -20,6 +26,7 @@ export type SocialPostInput = {
   cta?: string | null;
   hashtags: string[];
   imageUrl?: string | null;
+  imageUrls?: string[];
   productUrl?: string | null;
   idempotencyKey: string;
 };
@@ -293,7 +300,8 @@ export class InstagramAdapter extends MetaAdapterBase {
 
   async createPost(input: SocialPostInput): Promise<SocialPostResult> {
     if (this.missing(this.config.instagramAccountId)) throw missingConfiguration();
-    if (!input.imageUrl) {
+    const imageUrls = normalizeSocialImageUrls(input.imageUrls, input.imageUrl);
+    if (!imageUrls.length) {
       throw new SocialPublishError(
         "Instagram requiere una imagen publica para esta publicacion.",
         "instagram_image_required",
@@ -301,17 +309,49 @@ export class InstagramAdapter extends MetaAdapterBase {
         422,
       );
     }
-    const container = await graphRequest(this.config, `${this.config.instagramAccountId}/media`, {
-      method: "POST",
-      params: { image_url: input.imageUrl, caption: buildSocialCaption(input) },
-    });
-    const creationId = String(container.id || "");
+    const caption = buildSocialCaption(input);
+    const childIds: string[] = [];
+    let creationId = "";
+
+    if (imageUrls.length === 1) {
+      const container = await graphRequest(this.config, `${this.config.instagramAccountId}/media`, {
+        method: "POST",
+        params: { image_url: imageUrls[0], caption },
+      });
+      creationId = String(container.id || "");
+    } else {
+      for (const imageUrl of imageUrls) {
+        const child = await graphRequest(this.config, `${this.config.instagramAccountId}/media`, {
+          method: "POST",
+          params: { image_url: imageUrl, is_carousel_item: "true" },
+        });
+        const childId = String(child.id || "");
+        if (!childId) {
+          throw new SocialPublishError("Meta no devolvio una imagen del carrusel de Instagram.", "instagram_carousel_child_missing", true);
+        }
+        childIds.push(childId);
+      }
+      await Promise.all(childIds.map((childId) => waitForInstagramContainer(this.config, childId)));
+      const carousel = await graphRequest(this.config, `${this.config.instagramAccountId}/media`, {
+        method: "POST",
+        params: {
+          media_type: "CAROUSEL",
+          children: childIds.join(","),
+          caption,
+        },
+      });
+      creationId = String(carousel.id || "");
+    }
+
     if (!creationId) throw new SocialPublishError("Meta no devolvio el contenedor de Instagram.", "instagram_container_missing", true);
     await waitForInstagramContainer(this.config, creationId);
     const published = await publishInstagramContainer(this.config, this.config.instagramAccountId, creationId);
     const externalId = String(published.id || "");
     if (!externalId) throw new SocialPublishError("Meta no confirmo la publicacion de Instagram.", "instagram_publish_missing", true);
-    return { externalId, raw: { container_id: creationId, media_id: externalId } };
+    return {
+      externalId,
+      raw: { container_id: creationId, child_container_ids: childIds, media_id: externalId, image_count: imageUrls.length },
+    };
   }
 }
 
@@ -339,17 +379,39 @@ export class FacebookAdapter extends MetaAdapterBase {
   async createPost(input: SocialPostInput): Promise<SocialPostResult> {
     if (this.missing(this.config.facebookPageId)) throw missingConfiguration();
     const text = buildSocialCaption(input);
+    const imageUrls = normalizeSocialImageUrls(input.imageUrls, input.imageUrl);
     let data: Record<string, unknown>;
     try {
-      data = input.imageUrl
-        ? await graphRequest(this.config, `${this.config.facebookPageId}/photos`, {
+      if (imageUrls.length > 1) {
+        const photoIds: string[] = [];
+        for (const imageUrl of imageUrls) {
+          const photo = await graphRequest(this.config, `${this.config.facebookPageId}/photos`, {
+            method: "POST",
+            params: { url: imageUrl, published: "false" },
+          });
+          const photoId = String(photo.id || "");
+          if (!photoId) {
+            throw new SocialPublishError("Meta no devolvio una imagen del carrusel de Facebook.", "facebook_carousel_photo_missing", true);
+          }
+          photoIds.push(photoId);
+        }
+        const params: Record<string, string> = { message: text };
+        photoIds.forEach((photoId, index) => {
+          params[`attached_media[${index}]`] = JSON.stringify({ media_fbid: photoId });
+        });
+        data = await graphRequest(this.config, `${this.config.facebookPageId}/feed`, { method: "POST", params });
+        data.photo_ids = photoIds;
+      } else if (imageUrls.length === 1) {
+        data = await graphRequest(this.config, `${this.config.facebookPageId}/photos`, {
           method: "POST",
-          params: { url: input.imageUrl, caption: text, published: "true" },
-        })
-        : await graphRequest(this.config, `${this.config.facebookPageId}/feed`, {
+          params: { url: imageUrls[0], caption: text, published: "true" },
+        });
+      } else {
+        data = await graphRequest(this.config, `${this.config.facebookPageId}/feed`, {
           method: "POST",
           params: { message: text, ...(input.productUrl ? { link: input.productUrl } : {}) },
         });
+      }
     } catch (error) {
       if (isFacebookPublishPermissionMissing(error)) {
         throw new SocialPublishError(
@@ -363,7 +425,7 @@ export class FacebookAdapter extends MetaAdapterBase {
     }
     const externalId = String(data.post_id || data.id || "");
     if (!externalId) throw new SocialPublishError("Meta no confirmo la publicacion de Facebook.", "facebook_publish_missing", true);
-    return { externalId, raw: { post_id: externalId } };
+    return { externalId, raw: { ...data, post_id: externalId, image_count: imageUrls.length } };
   }
 }
 
@@ -380,10 +442,17 @@ function pendingConnection(channel: string): SocialConnectionStatus {
 }
 
 function failedConnection(channel: string, error: unknown): SocialConnectionStatus {
+  const tokenExpired = isMetaAccessTokenExpired(error);
+  const publishError = error instanceof SocialPublishError ? error : null;
   return {
     connected: false,
     status: "error",
-    message: error instanceof Error ? `${channel}: ${error.message}` : `${channel}: no se pudo validar la conexion.`,
+    message: tokenExpired
+      ? metaAccessTokenExpiredMessage(channel)
+      : error instanceof Error ? `${channel}: ${error.message}` : `${channel}: no se pudo validar la conexion.`,
+    errorCode: tokenExpired ? "meta_access_token_expired" : publishError?.code || "meta_connection_failed",
+    retryable: tokenExpired ? false : publishError?.retryable ?? true,
+    httpStatus: publishError?.status || 502,
   };
 }
 

@@ -49,6 +49,15 @@ El token de Meta debe pertenecer a una aplicación autorizada para administrar l
 
 Para publicar en Facebook, el token de usuario debe incluir `pages_show_list`, `pages_read_engagement` y `pages_manage_posts`. Después se debe consultar `/me/accounts?fields=id,name,access_token,tasks,instagram_business_account` y guardar en `META_SOCIAL_ACCESS_TOKEN` el `access_token` de la página, no el token de usuario temporal. La página debe incluir la tarea `CREATE_CONTENT`. Si Meta no permite solicitar `pages_manage_posts`, habilitar ese permiso o caso de uso en el panel de la aplicación y completar App Review cuando la aplicación vaya a ser usada por personas que no tengan un rol en ella.
 
+El catálogo conserva la galería completa de cada producto. Al generar un borrador se fija una lista deduplicada de hasta 10 imágenes HTTPS y la vista previa permite recorrerlas antes de aprobar. Instagram publica esa lista como carrusel nativo y Facebook como publicación con múltiples fotos. Los borradores anteriores que solo guardaban la imagen principal recuperan la galería desde el producto sincronizado al momento de publicar.
+
+No usar el token temporal de una hora generado por Graph API Explorer para automatizaciones. Un token de larga duración también debe supervisarse y reemplazarse cuando Meta lo invalide. Si el Centro de Contenido detecta el error 190 o el mensaje `Session has expired`, deshabilita ambos canales, detiene nuevas consultas de métricas y muestra una alerta en el calendario. Después de actualizar el secreto:
+
+1. Volver a desplegar el servicio de Edge Functions para aplicar el nuevo secreto.
+2. Entrar a `Administración > Instagram y Facebook` y ejecutar `Probar conexión real`.
+3. Comprobar que ambos canales aparezcan conectados.
+4. Revisar las publicaciones fallidas y usar `Publicar` manualmente. El sistema no publica contenido vencido de forma silenciosa.
+
 ## Scheduler en Dokploy
 
 Crear una tarea cada minuto que realice una solicitud `POST` a:
@@ -71,6 +80,8 @@ Cuerpo:
 ```
 
 La ejecución puede repetirse sin duplicar publicaciones: los trabajos usan claves idempotentes y leases. Existe una ventana residual propia de APIs externas si Meta publica correctamente y el proceso se interrumpe antes de guardar el ID externo; revisar el historial antes de reintentar manualmente un caso incierto.
+
+Los eventos `metrics_sync_*` son consultas diarias sobre publicaciones ya existentes. No representan intentos de publicar contenido en una fecha sin programación.
 
 ## Operación inicial
 

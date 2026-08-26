@@ -9,6 +9,8 @@ import {
 } from "../../lib/contentCenterApi";
 import type { ContentChannelCode, ContentPublication } from "../../types/content";
 import { useAuth } from "../auth/AuthContext";
+import { ContentMediaGallery } from "./ContentMediaGallery";
+import { getProductMediaUrls, getPublicationMediaUrls } from "./contentMedia";
 import type { ContentCenterData } from "./useContentCenter";
 
 interface Props {
@@ -200,11 +202,12 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
         {generated.map((publication) => {
           const channel = data.bootstrap?.channels.find((item) => item.id === publication.channel_id);
           const publicationProduct = data.products.find((item) => item.id === publication.product_id);
+          const publicationImages = getPublicationMediaUrls(publication, publicationProduct);
           const isAdmin = user?.role === "administrador";
           return (
             <article className="content-draft-card" key={publication.id}>
               <div className="content-draft-card-heading"><span>{channel?.code === "instagram" ? <Instagram size={18} /> : <Facebook size={18} />}{channel?.name || "Red social"}</span><span className={`content-state ${publication.status}`}>{statusLabel(publication.status)}</span></div>
-              {publication.image_url ? <div className="content-draft-media"><img src={publication.image_url} alt={publicationProduct?.name || "Producto"} /></div> : null}
+              <ContentMediaGallery images={publicationImages} alt={publicationProduct?.name || "Producto"} />
               <div className="content-draft-copy"><p>{publication.body}</p>{publication.hashtags.length ? <div className="content-hashtags">{publication.hashtags.map((tag) => <span key={tag}>#{tag}</span>)}</div> : null}{publication.cta ? <strong>{publication.cta}</strong> : null}</div>
               <div className="content-draft-footer"><small>Modelo: {publication.model_name || "IA configurada"} · hechos verificados antes de guardar</small>
               {isAdmin && ["draft", "pending_approval"].includes(publication.status) ? <div className="content-review-actions"><button className="primary-button" type="button" disabled={Boolean(busy)} onClick={() => void approve(publication)}><CheckCircle2 size={17} /> {busy === `approve-${publication.id}` ? "Aprobando..." : "Aprobar"}</button><button className="ghost-button danger" type="button" disabled={Boolean(busy)} onClick={() => void reject(publication)}><XCircle size={17} /> {busy === `reject-${publication.id}` ? "Desaprobando..." : "Desaprobar"}</button>{publication.id === alternativeActionPublicationId && canTryAnotherProduct ? <button className="ghost-button content-alternative-action" type="button" disabled={Boolean(busy)} onClick={() => void tryAnotherProduct()}><RefreshCw size={17} /> {busy === "alternative" ? "Buscando alternativa..." : "Probar otro producto"}</button> : null}</div> : null}
@@ -220,7 +223,8 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
 }
 
 function ProductFacts({ product }: { product: ContentCenterData["products"][number] }) {
-  return <div className="content-fact-source"><ShieldCheck size={18} /><div><strong>Fuente autorizada</strong><span>{product.name} · {product.sku || "sin SKU"} · {formatMoney(product.promotional_price ?? product.price)} · stock {product.stock ?? "no informado"}</span></div></div>;
+  const imageCount = getProductMediaUrls(product).length;
+  return <div className="content-fact-source"><ShieldCheck size={18} /><div><strong>Fuente autorizada</strong><span>{product.name} · {product.sku || "sin SKU"} · {formatMoney(product.promotional_price ?? product.price)} · stock {product.stock ?? "no informado"} · {imageCount} {imageCount === 1 ? "imagen" : "imágenes"} para la publicación</span></div></div>;
 }
 
 function statusLabel(status: string) {

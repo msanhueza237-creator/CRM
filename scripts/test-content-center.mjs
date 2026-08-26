@@ -14,6 +14,9 @@ import {
   ensureOfficialWebsiteCta,
   isFacebookPublishPermissionMissing,
   isInstagramMediaNotReady,
+  isMetaAccessTokenExpired,
+  metaAccessTokenExpiredMessage,
+  normalizeSocialImageUrls,
 } from "../supabase/functions/content-center/social-publishing-logic.ts";
 
 const db = new PGlite();
@@ -69,7 +72,11 @@ const productPayload = {
   handle: { es: "bomba-de-vacio-st-4bmc" },
   categories: [{ name: { es: "Herramientas" } }],
   brand: "Super Stars",
-  images: [{ src: "https://cdn.example.test/st-4bmc.jpg" }],
+  images: [
+    { src: "https://cdn.example.test/st-4bmc.jpg" },
+    { src: "https://cdn.example.test/st-4bmc-detail.jpg" },
+    { src: "https://cdn.example.test/st-4bmc-box.jpg" },
+  ],
   variants: [{ sku: "ST-4BMC", price: "299990.00", promotional_price: "279990.00", stock: "7" }],
   published: true,
   updated_at: "2026-08-20T12:00:00Z",
@@ -95,12 +102,13 @@ await db.query(
 
 const firstSync = await db.query("select * from public.sync_content_products_from_tiendanube()");
 assert.deepEqual(firstSync.rows[0], { synchronized: 2, incomplete: 0 });
-const normalized = await db.query("select external_id,sku,name,category,price,promotional_price,stock,has_stock,product_url,sync_status from public.content_products where external_id='101'");
+const normalized = await db.query("select external_id,sku,name,category,price,promotional_price,stock,has_stock,product_url,images,sync_status from public.content_products where external_id='101'");
 assert.equal(normalized.rows.length, 1);
 assert.equal(normalized.rows[0].sku, "ST-4BMC");
 assert.equal(normalized.rows[0].stock, 7);
 assert.equal(normalized.rows[0].has_stock, true);
 assert.equal(normalized.rows[0].product_url, "https://climactiva.cl/productos/bomba-de-vacio-st-4bmc");
+assert.equal(normalized.rows[0].images.length, 3, "debe conservar la galeria completa de Tiendanube");
 const infiniteStock = await db.query("select stock,has_stock from public.content_products where external_id='102'");
 assert.deepEqual(infiniteStock.rows[0], { stock: 0, has_stock: true }, "el stock ilimitado debe seguir disponible");
 
@@ -169,6 +177,13 @@ assert.equal(
   true,
 );
 assert.equal(isFacebookPublishPermissionMissing(new Error("Meta rechazo la operacion.")), false);
+assert.equal(
+  isMetaAccessTokenExpired(Object.assign(new Error("Error validating access token: Session has expired."), { code: "meta_190" })),
+  true,
+  "el error 190 de Meta debe identificarse como token vencido",
+);
+assert.equal(isMetaAccessTokenExpired(new Error("Meta rechazo la operacion.")), false);
+assert.match(metaAccessTokenExpiredMessage("Instagram"), /META_SOCIAL_ACCESS_TOKEN/);
 assert.deepEqual(
   ensureBrandHashtag(["Refrigeracion", "#climactiva", "Refrigeracion"]),
   ["Refrigeracion", "ClimaActiva"],
@@ -184,6 +199,36 @@ assert.equal(
   "Contenido verificado\n\nCompra ahora\nVisita https://climactiva.cl\n\n#ClimaActiva",
   "la publicacion final siempre debe dirigir al sitio y conservar la marca",
 );
+assert.deepEqual(
+  normalizeSocialImageUrls(
+    [
+      "https://cdn.example.test/one.jpg",
+      "https://cdn.example.test/two.jpg",
+      "https://cdn.example.test/one.jpg",
+      "http://cdn.example.test/insecure.jpg",
+    ],
+    "https://cdn.example.test/fallback.jpg",
+  ),
+  [
+    "https://cdn.example.test/one.jpg",
+    "https://cdn.example.test/two.jpg",
+    "https://cdn.example.test/fallback.jpg",
+  ],
+  "el carrusel debe conservar orden, eliminar duplicados y aceptar solo imagenes publicas HTTPS",
+);
+assert.equal(
+  normalizeSocialImageUrls(Array.from({ length: 12 }, (_, index) => `https://cdn.example.test/${index}.jpg`)).length,
+  10,
+  "Instagram admite hasta 10 imagenes por carrusel",
+);
+
+const socialAdapterSource = await readFile(
+  new URL("../supabase/functions/content-center/social-adapters.ts", import.meta.url),
+  "utf8",
+);
+assert.match(socialAdapterSource, /media_type:\s*"CAROUSEL"/);
+assert.match(socialAdapterSource, /is_carousel_item:\s*"true"/);
+assert.match(socialAdapterSource, /attached_media\[\$\{index\}\]/);
 
 await db.close();
 console.log("Centro de Contenido: esquema, catálogo, cola y rotación verificados.");

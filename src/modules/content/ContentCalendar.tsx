@@ -1,5 +1,5 @@
 import { FormEvent, useMemo, useState } from "react";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock3, List, Plus, RefreshCw } from "lucide-react";
+import { AlertTriangle, CalendarDays, ChevronLeft, ChevronRight, Clock3, List, Plus, RefreshCw, Settings } from "lucide-react";
 import { supabase } from "../../lib/supabase";
 import { useAuth } from "../auth/AuthContext";
 import type { ContentPublication } from "../../types/content";
@@ -18,6 +18,7 @@ export function ContentCalendar({ data }: { data: ContentCenterData }) {
   const [showScheduleForm, setShowScheduleForm] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const metaConnection = data.bootstrap?.connections.find((connection) => connection.provider === "meta_social");
 
   const entries = useMemo(() => data.publications.filter((item) => {
     if (!item.scheduled_at && !item.published_at) return false;
@@ -57,6 +58,7 @@ export function ContentCalendar({ data }: { data: ContentCenterData }) {
 
   return (
     <div className="content-view-stack">
+      {metaConnection?.status !== "connected" ? <div className="notice-banner error content-connection-alert"><AlertTriangle size={18} /><div><strong>Publicacion automatica detenida</strong><span>{metaConnection?.message || "Meta Social no esta conectado. Las publicaciones programadas no podran salir hasta reactivar la conexion."}</span></div><a className="ghost-button" href="/administracion"><Settings size={16} /> Ir a Integraciones</a></div> : null}
       <section className="content-calendar-toolbar panel">
         <div className="content-segmented"><button className={mode === "month" ? "active" : ""} type="button" onClick={() => setMode("month")}><CalendarDays size={17} /> Mes</button><button className={mode === "week" ? "active" : ""} type="button" onClick={() => setMode("week")}><CalendarDays size={17} /> Semana</button><button className={mode === "list" ? "active" : ""} type="button" onClick={() => setMode("list")}><List size={17} /> Lista</button></div>
         <div className="content-calendar-navigation">{mode !== "list" ? <><button className="icon-button" type="button" onClick={() => move(-1)} aria-label="Anterior"><ChevronLeft size={18} /></button><strong>{title}</strong><button className="icon-button" type="button" onClick={() => move(1)} aria-label="Siguiente"><ChevronRight size={18} /></button></> : <strong>{title}</strong>}</div>

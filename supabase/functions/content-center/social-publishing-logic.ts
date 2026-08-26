@@ -6,6 +6,30 @@ export type InstagramContainerState = {
 
 export const OFFICIAL_WEBSITE_URL = "https://climactiva.cl";
 export const OFFICIAL_BRAND_HASHTAG = "ClimaActiva";
+export const MAX_SOCIAL_CAROUSEL_IMAGES = 10;
+
+export function normalizeSocialImageUrls(
+  imageUrls: unknown,
+  fallbackImageUrl?: unknown,
+  limit = MAX_SOCIAL_CAROUSEL_IMAGES,
+) {
+  const candidates = [
+    ...(Array.isArray(imageUrls) ? imageUrls : []),
+    fallbackImageUrl,
+  ];
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+
+  for (const candidate of candidates) {
+    const value = typeof candidate === "string" ? candidate.trim() : "";
+    if (!/^https:\/\//i.test(value) || seen.has(value)) continue;
+    seen.add(value);
+    normalized.push(value);
+    if (normalized.length >= Math.max(1, limit)) break;
+  }
+
+  return normalized;
+}
 
 export function ensureOfficialWebsiteCta(value: string) {
   const cta = value.trim();
@@ -65,4 +89,16 @@ export function isInstagramMediaNotReady(error: unknown) {
 export function isFacebookPublishPermissionMissing(error: unknown) {
   const message = error instanceof Error ? error.message : String(error || "");
   return /pages_manage_posts/i.test(message);
+}
+
+export function isMetaAccessTokenExpired(error: unknown) {
+  const details = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  const code = String(details.code || "");
+  const message = error instanceof Error ? error.message : String(error || "");
+  return code === "meta_190" ||
+    /session has expired|error validating access token|access token.*(?:expired|invalid)/i.test(message);
+}
+
+export function metaAccessTokenExpiredMessage(channel: string) {
+  return `${channel}: el token de Meta Social vencio o dejo de ser valido. Genera un token de pagina de larga duracion, actualiza META_SOCIAL_ACCESS_TOKEN en Supabase/Dokploy y vuelve a comprobar la conexion.`;
 }
