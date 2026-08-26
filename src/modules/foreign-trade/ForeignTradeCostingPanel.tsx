@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from "react";
-import { AlertTriangle, Calculator, CheckCircle2, ChevronLeft, ChevronRight, Landmark, PackageCheck, Save, WalletCards } from "lucide-react";
+import { AlertTriangle, Calculator, CheckCircle2, ChevronLeft, ChevronRight, FileSpreadsheet, Landmark, PackageCheck, Save, WalletCards } from "lucide-react";
 import { saveForeignTradeCostingScenario } from "../../lib/foreignTradeApi";
 import type {
   ForeignTradeCostParameter,
@@ -12,6 +12,7 @@ import {
   type ForeignTradeAllocationMethod,
   type ForeignTradePricingMethod,
 } from "./foreignTradeCostEngine";
+import { exportForeignTradeCostingExcel } from "./foreignTradeCostingExport";
 
 type CostingForm = {
   exchangeRateClp: string;
@@ -39,6 +40,7 @@ export function ForeignTradeCostingPanel({
   const baseline = detail.scenarios.find((scenario) => scenario.status === "baseline") || detail.scenarios[0] || null;
   const [form, setForm] = useState<CostingForm>(() => initialForm(detail, baseline, costParameters));
   const [saving, setSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const costingTableScrollRef = useRef<HTMLDivElement>(null);
@@ -124,6 +126,20 @@ export function ForeignTradeCostingPanel({
         : message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function exportExcel() {
+    setExporting(true);
+    setError("");
+    setSaved("");
+    try {
+      await exportForeignTradeCostingExcel({ detail, result, settings });
+      setSaved(`Excel generado con ${result.lines.length} productos y ${detail.costs.length} registros de costos.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -250,7 +266,10 @@ export function ForeignTradeCostingPanel({
       {result.missingInputs.length ? <div className="notice-banner warning"><AlertTriangle size={18} /><div><strong>Datos pendientes</strong><span>{result.missingInputs.join(" ")}</span></div></div> : null}
       {error ? <div className="notice-banner error"><AlertTriangle size={18} /> {error}</div> : null}
       {saved ? <div className="notice-banner success"><CheckCircle2 size={18} /> {saved}</div> : null}
-      <div className="foreign-trade-costing-actions"><button className="primary-button" type="button" disabled={saving || !settings.exchangeRateClp} onClick={() => void saveScenario()}><Save size={17} /> {saving ? "Guardando..." : "Guardar escenario"}</button></div>
+      <div className="foreign-trade-costing-actions" style={{ flexWrap: "wrap", gap: ".65rem" }}>
+        <button className="ghost-button" style={{ flex: "1 1 190px", justifyContent: "center" }} type="button" disabled={saving || exporting || !result.lines.length} onClick={() => void exportExcel()}><FileSpreadsheet size={17} /> {exporting ? "Generando Excel..." : "Exportar Excel"}</button>
+        <button className="primary-button" type="button" disabled={saving || exporting || !settings.exchangeRateClp} onClick={() => void saveScenario()}><Save size={17} /> {saving ? "Guardando..." : "Guardar escenario"}</button>
+      </div>
     </div>
   );
 }

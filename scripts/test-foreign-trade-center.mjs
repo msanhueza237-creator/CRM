@@ -56,6 +56,22 @@ const foreignTradeApiSource = await readFile(
   new URL("../src/lib/foreignTradeApi.ts", import.meta.url),
   "utf8",
 );
+const foreignTradeCostingPanelSource = await readFile(
+  new URL("../src/modules/foreign-trade/ForeignTradeCostingPanel.tsx", import.meta.url),
+  "utf8",
+);
+const foreignTradeCostingExportSource = await readFile(
+  new URL("../src/modules/foreign-trade/foreignTradeCostingExport.ts", import.meta.url),
+  "utf8",
+);
+assert.match(foreignTradeCostingPanelSource, /Exportar Excel/);
+assert.match(foreignTradeCostingPanelSource, /line_duty_percent: settings\.lineDutyPercent/);
+assert.match(foreignTradeCostingPanelSource, /line_target_percent: settings\.lineTargetPercent/);
+assert.match(foreignTradeCostingExportSource, /addWorksheet\("Resumen"/);
+assert.match(foreignTradeCostingExportSource, /addWorksheet\("Productos"/);
+assert.match(foreignTradeCostingExportSource, /addWorksheet\("Gastos"/);
+assert.match(foreignTradeCostingExportSource, /result\.lines\.forEach/);
+assert.match(foreignTradeApiSource, /cl_import_cost_v3_invoice_floor/);
 assert.match(documentsPanelSource, /detectForeignTradeDocumentSection\(documentId\)/);
 assert.match(documentsPanelSource, /Guardar y analizar/);
 assert.match(documentsPanelSource, /await runExtraction\(documentId\)/);
