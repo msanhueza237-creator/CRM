@@ -65,6 +65,8 @@ const foreignTradeCostingExportSource = await readFile(
   "utf8",
 );
 assert.match(foreignTradeCostingPanelSource, /Exportar Excel/);
+assert.match(foreignTradeCostingPanelSource, /foreign-trade-mobile-costing-records/);
+assert.match(foreignTradeCostingPanelSource, /<strong>\{line\.productName\}<\/strong>/);
 assert.match(foreignTradeCostingPanelSource, /line_duty_percent: settings\.lineDutyPercent/);
 assert.match(foreignTradeCostingPanelSource, /line_target_percent: settings\.lineTargetPercent/);
 assert.match(foreignTradeCostingExportSource, /addWorksheet\("Resumen"/);

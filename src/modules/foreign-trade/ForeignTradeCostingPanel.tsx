@@ -239,27 +239,51 @@ export function ForeignTradeCostingPanel({
           </div>
         </div>
         {result.lines.length ? (
-          <div className="table-scroll foreign-trade-costing-table-scroll" ref={costingTableScrollRef} tabIndex={0} aria-label="Costeo completo por producto">
-            <table className="foreign-trade-costing-table">
-              <thead><tr><th>Producto</th><th>Cantidad</th><th>Costo factura</th><th>CIF asignado</th><th>Derecho</th><th>IVA import.</th><th>Gastos</th><th>Costo unitario</th><th>Venta proyectada</th><th>Objetivo</th><th>Precio neto</th><th>Margen</th></tr></thead>
-              <tbody>{result.lines.map((line) => (
-                <tr key={line.lineId}>
-                  <td data-label="Producto"><strong>{line.productName}</strong><small>{line.sku || "Sin SKU"}</small></td>
-                  <td data-label="Cantidad">{formatNumber(line.quantity)}</td>
-                  <td data-label="Costo factura"><strong>{formatClp(line.invoiceUnitClp)}</strong><small>{formatClp(line.invoiceTotalClp)} total</small></td>
-                  <td data-label="CIF asignado">{formatClp(line.cifClp)}<small>{formatClp(line.quantity ? line.cifClp / line.quantity : 0)} por unidad</small></td>
-                  <td data-label="Derecho"><div className="foreign-trade-table-percent"><input aria-label={`Derecho de ${line.productName}`} inputMode="decimal" value={form.lineDutyPercent[line.lineId] ?? form.generalDutyPercent} onChange={(event) => setForm({ ...form, lineDutyPercent: { ...form.lineDutyPercent, [line.lineId]: event.target.value } })} /><b>%</b></div><small>{formatClp(line.dutyClp)}</small></td>
-                  <td data-label="IVA importación">{formatClp(line.importVatClp)}<small>{form.importVatRecoverable ? "Crédito" : "Costo"}</small></td>
-                  <td data-label="Gastos">{formatClp(line.allocatedExpensesClp)}<small>{formatClp(line.quantity ? line.allocatedExpensesClp / line.quantity : 0)} por unidad</small></td>
-                  <td data-label="Costo unitario"><strong>{formatClp(line.landedUnitClp)}</strong></td>
-                  <td data-label="Venta proyectada"><strong>{formatClp(line.finalSaleUnitClp)}</strong><small>Precio final con IVA</small></td>
-                  <td data-label="Objetivo"><div className="foreign-trade-table-percent"><input aria-label={`Objetivo de ${line.productName}`} inputMode="decimal" value={form.lineTargetPercent[line.lineId] ?? form.targetPercent} onChange={(event) => setForm({ ...form, lineTargetPercent: { ...form.lineTargetPercent, [line.lineId]: event.target.value } })} /><b>%</b></div></td>
-                  <td data-label="Precio neto">{formatClp(line.netSaleUnitClp)}<small>Utilidad {formatClp(line.profitUnitClp)}</small></td>
-                  <td data-label="Margen">{formatPercent(line.marginPercent)}<small>Markup {formatPercent(line.markupPercent)}</small></td>
-                </tr>
-              ))}</tbody>
-            </table>
-          </div>
+          <>
+            <div className="table-scroll foreign-trade-costing-table-scroll foreign-trade-desktop-records" ref={costingTableScrollRef} tabIndex={0} aria-label="Costeo completo por producto">
+              <table className="foreign-trade-costing-table">
+                <thead><tr><th>Producto</th><th>Cantidad</th><th>Costo factura</th><th>CIF asignado</th><th>Derecho</th><th>IVA import.</th><th>Gastos</th><th>Costo unitario</th><th>Venta proyectada</th><th>Objetivo</th><th>Precio neto</th><th>Margen</th></tr></thead>
+                <tbody>{result.lines.map((line) => (
+                  <tr key={line.lineId}>
+                    <td data-label="Producto"><strong>{line.productName}</strong><small>{line.sku || "Sin SKU"}</small></td>
+                    <td data-label="Cantidad">{formatNumber(line.quantity)}</td>
+                    <td data-label="Costo factura"><strong>{formatClp(line.invoiceUnitClp)}</strong><small>{formatClp(line.invoiceTotalClp)} total</small></td>
+                    <td data-label="CIF asignado">{formatClp(line.cifClp)}<small>{formatClp(line.quantity ? line.cifClp / line.quantity : 0)} por unidad</small></td>
+                    <td data-label="Derecho"><div className="foreign-trade-table-percent"><input aria-label={`Derecho de ${line.productName}`} inputMode="decimal" value={form.lineDutyPercent[line.lineId] ?? form.generalDutyPercent} onChange={(event) => setForm({ ...form, lineDutyPercent: { ...form.lineDutyPercent, [line.lineId]: event.target.value } })} /><b>%</b></div><small>{formatClp(line.dutyClp)}</small></td>
+                    <td data-label="IVA importación">{formatClp(line.importVatClp)}<small>{form.importVatRecoverable ? "Crédito" : "Costo"}</small></td>
+                    <td data-label="Gastos">{formatClp(line.allocatedExpensesClp)}<small>{formatClp(line.quantity ? line.allocatedExpensesClp / line.quantity : 0)} por unidad</small></td>
+                    <td data-label="Costo unitario"><strong>{formatClp(line.landedUnitClp)}</strong></td>
+                    <td data-label="Venta proyectada"><strong>{formatClp(line.finalSaleUnitClp)}</strong><small>Precio final con IVA</small></td>
+                    <td data-label="Objetivo"><div className="foreign-trade-table-percent"><input aria-label={`Objetivo de ${line.productName}`} inputMode="decimal" value={form.lineTargetPercent[line.lineId] ?? form.targetPercent} onChange={(event) => setForm({ ...form, lineTargetPercent: { ...form.lineTargetPercent, [line.lineId]: event.target.value } })} /><b>%</b></div></td>
+                    <td data-label="Precio neto">{formatClp(line.netSaleUnitClp)}<small>Utilidad {formatClp(line.profitUnitClp)}</small></td>
+                    <td data-label="Margen">{formatPercent(line.marginPercent)}<small>Markup {formatPercent(line.markupPercent)}</small></td>
+                  </tr>
+                ))}</tbody>
+              </table>
+            </div>
+            <div className="foreign-trade-mobile-records foreign-trade-mobile-costing-records" role="list" aria-label="Costeo por producto">
+              {result.lines.map((line) => (
+                <article className="foreign-trade-mobile-record-card foreign-trade-mobile-costing-card" role="listitem" key={line.lineId}>
+                  <header className="foreign-trade-mobile-record-header">
+                    <span className="foreign-trade-mobile-record-icon"><PackageCheck size={20} /></span>
+                    <div><strong>{line.productName}</strong><small>{line.sku || "Sin SKU"}</small></div>
+                  </header>
+                  <div className="foreign-trade-mobile-record-metrics">
+                    <MobileCostMetric label="Cantidad" value={formatNumber(line.quantity)} />
+                    <MobileCostMetric label="Costo factura unit." value={formatClp(line.invoiceUnitClp)} detail={`${formatClp(line.invoiceTotalClp)} total`} />
+                    <MobileCostMetric label="CIF unitario" value={formatClp(line.quantity ? line.cifClp / line.quantity : 0)} detail={`${formatClp(line.cifClp)} total`} />
+                    <MobileCostMetric label="IVA importación" value={formatClp(line.importVatClp)} detail={form.importVatRecoverable ? "Crédito fiscal" : "Incorporado al costo"} />
+                    <MobileCostMetric label="Gastos unitarios" value={formatClp(line.quantity ? line.allocatedExpensesClp / line.quantity : 0)} detail={`${formatClp(line.allocatedExpensesClp)} total`} />
+                    <MobileCostMetric label="Costo en bodega unit." value={formatClp(line.landedUnitClp)} detail={`${formatClp(line.landedTotalClp)} total`} />
+                    <MobileCostMetric label="Venta proyectada" value={formatClp(line.finalSaleUnitClp)} detail="Precio final con IVA" />
+                    <MobileCostMetric label="Precio neto" value={formatClp(line.netSaleUnitClp)} detail={`Utilidad ${formatClp(line.profitUnitClp)}`} />
+                    <div className="foreign-trade-mobile-costing-input"><span>Derecho</span><div className="foreign-trade-table-percent"><input aria-label={`Derecho de ${line.productName}`} inputMode="decimal" value={form.lineDutyPercent[line.lineId] ?? form.generalDutyPercent} onChange={(event) => setForm({ ...form, lineDutyPercent: { ...form.lineDutyPercent, [line.lineId]: event.target.value } })} /><b>%</b></div><small>{formatClp(line.dutyClp)}</small></div>
+                    <div className="foreign-trade-mobile-costing-input"><span>Objetivo</span><div className="foreign-trade-table-percent"><input aria-label={`Objetivo de ${line.productName}`} inputMode="decimal" value={form.lineTargetPercent[line.lineId] ?? form.targetPercent} onChange={(event) => setForm({ ...form, lineTargetPercent: { ...form.lineTargetPercent, [line.lineId]: event.target.value } })} /><b>%</b></div><small>Margen {formatPercent(line.marginPercent)} · markup {formatPercent(line.markupPercent)}</small></div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </>
         ) : <div className="empty-state"><Calculator size={26} /><strong>Agrega productos para calcular</strong><span>La distribución y el precio se mostrarán aquí.</span></div>}
       </section>
 
@@ -304,6 +328,10 @@ function CostingKpi({ label, value, detail, tone = "neutral" }: { label: string;
 
 function CostFormulaStep({ label, value, detail, strong = false }: { label: string; value: string; detail: string; strong?: boolean }) {
   return <div className={strong ? "total" : ""}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function MobileCostMetric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return <div><span>{label}</span><strong>{value}</strong>{detail ? <small>{detail}</small> : null}</div>;
 }
 
 function summarizeCosts(names: string[]) {

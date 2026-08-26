@@ -356,6 +356,39 @@
     color: #087b85;
   }
 
+  .foreign-trade-mobile-costing-records {
+    padding-top: .15rem;
+  }
+
+  .foreign-trade-mobile-costing-card .foreign-trade-mobile-record-header {
+    background: #f8fbfb;
+    grid-template-columns: 48px minmax(0, 1fr);
+  }
+
+  .foreign-trade-mobile-costing-card .foreign-trade-mobile-record-header strong {
+    display: block;
+    font-size: .82rem;
+  }
+
+  .foreign-trade-mobile-costing-card .foreign-trade-mobile-record-header small {
+    display: block;
+  }
+
+  .foreign-trade-mobile-costing-card .foreign-trade-mobile-record-metrics strong {
+    display: block;
+  }
+
+  .foreign-trade-mobile-costing-input .foreign-trade-table-percent {
+    justify-self: start;
+    margin-top: .12rem;
+  }
+
+  .foreign-trade-mobile-costing-input input {
+    background: #fff;
+    color: #24474e;
+    font-size: .75rem;
+  }
+
   .foreign-trade-tax-records > div:first-child span {
     line-height: 1.4;
     overflow-wrap: anywhere;
