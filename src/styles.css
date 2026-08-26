@@ -8631,6 +8631,30 @@ th {
   }
 }
 
+.foreign-trade-edit-operation-dialog {
+  max-width: 920px;
+}
+
+@media (max-width: 720px) {
+  .foreign-trade-detail-header > div:last-child {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+}
+
+@media (max-width: 420px) {
+  .foreign-trade-detail-header > div:last-child {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .foreign-trade-detail-header > div:last-child .foreign-trade-status {
+    grid-column: 1 / -1;
+  }
+
+  .foreign-trade-detail-header > div:last-child .ghost-button:first-of-type {
+    grid-column: 1 / -1;
+  }
+}
+
 /* Centro de Comercio Exterior: documentos y revisión asistida */
 .foreign-trade-document-scope {
   color: #527078;

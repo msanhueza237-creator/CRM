@@ -21,6 +21,7 @@ import {
   deleteForeignTradeCostLine,
   deleteForeignTradeOperationLine,
   searchForeignTradeCatalog,
+  updateForeignTradeOperation,
   upsertForeignTradeCostLine,
   upsertForeignTradeOperationLine,
 } from "../../lib/foreignTradeApi";
@@ -36,6 +37,7 @@ import type {
   ForeignTradeSupplier,
   UpsertForeignTradeCostLineInput,
   UpsertForeignTradeOperationLineInput,
+  UpdateForeignTradeOperationInput,
 } from "../../types/foreignTrade";
 import { useForeignTradeOperation } from "./useForeignTradeOperation";
 import { ForeignTradeDocumentsPanel } from "./ForeignTradeDocumentsPanel";
@@ -81,6 +83,7 @@ export function ForeignTradeOperationDetail({
   const [tab, setTab] = useState<DetailTab>("summary");
   const [lineDialog, setLineDialog] = useState<ForeignTradeOperationLine | "new" | null>(null);
   const [costDialog, setCostDialog] = useState<ForeignTradeCostLine | "new" | null>(null);
+  const [editingOperation, setEditingOperation] = useState(false);
   const [notice, setNotice] = useState("");
 
   async function changed(message: string) {
@@ -102,7 +105,7 @@ export function ForeignTradeOperationDetail({
       <header className="foreign-trade-detail-header">
         <button className="icon-button" type="button" title="Volver a operaciones" onClick={onBack}><ArrowLeft size={19} /></button>
         <div><span>{operation.reference}</span><h2>{operation.title}</h2><p>{supplier?.name || "Sin proveedor asignado"} · {operation.incoterm || "Incoterm pendiente"}</p></div>
-        <div><span className={`foreign-trade-status ${status?.color || "neutral"}`}>{status?.name || operation.status}</span><button className="ghost-button" type="button" disabled={loading} onClick={() => void refresh()}><RefreshCw className={loading ? "spin" : ""} size={16} /> Actualizar</button><button className="icon-button danger" type="button" title="Eliminar operación y todos sus datos relacionados" onClick={() => void onDelete(operation)}><Trash2 size={17} /></button></div>
+        <div><span className={`foreign-trade-status ${status?.color || "neutral"}`}>{status?.name || operation.status}</span><button className="ghost-button" type="button" onClick={() => setEditingOperation(true)}><Edit3 size={16} /> Editar operación</button><button className="ghost-button" type="button" disabled={loading} onClick={() => void refresh()}><RefreshCw className={loading ? "spin" : ""} size={16} /> Actualizar</button><button className="icon-button danger" type="button" title="Eliminar operación y todos sus datos relacionados" onClick={() => void onDelete(operation)}><Trash2 size={17} /></button></div>
       </header>
 
       {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}
@@ -128,12 +131,15 @@ export function ForeignTradeOperationDetail({
           </section>
           <section className="foreign-trade-detail-columns">
             <article className="panel foreign-trade-facts-panel">
-              <div className="panel-heading"><div><h2>Datos de la operación</h2><span>Supuestos congelados al registrarla</span></div></div>
+              <div className="panel-heading"><div><h2>Datos de la operación</h2><span>Información oficial y auditable</span></div><button className="icon-button" type="button" title="Editar datos de la operación" onClick={() => setEditingOperation(true)}><Edit3 size={17} /></button></div>
               <dl>
+                <Fact label="Tipo" value={operationTypeLabel(operation.operation_type)} />
+                <Fact label="Fecha de orden" value={formatDate(operation.order_date)} />
                 <Fact label="Tipo de cambio" value={operation.exchange_rate_clp ? `$${formatDecimal(operation.exchange_rate_clp)} CLP` : "Falta configurar"} />
                 <Fact label="Origen" value={operation.origin_port || "No informado"} />
                 <Fact label="Destino" value={operation.destination_port || "No informado"} />
-                <Fact label="Transporte" value={operation.transport_type} />
+                <Fact label="Transporte" value={transportTypeLabel(operation.transport_type)} />
+                <Fact label="Incoterm" value={operation.incoterm || "No informado"} />
                 <Fact label="Salida estimada" value={formatDate(operation.estimated_departure)} />
                 <Fact label="Llegada estimada" value={formatDate(operation.estimated_arrival)} />
               </dl>
@@ -173,6 +179,90 @@ export function ForeignTradeOperationDetail({
 
       {lineDialog ? <OperationLineDialog operationId={operationId} supplierAvailable={Boolean(operation.supplier_id)} line={lineDialog === "new" ? null : lineDialog} onClose={() => setLineDialog(null)} onSaved={async () => { setLineDialog(null); await changed("Producto guardado con trazabilidad."); }} /> : null}
       {costDialog ? <CostLineDialog operationId={operationId} defaultRate={operation.exchange_rate_clp} cost={costDialog === "new" ? null : costDialog} lines={detail.lines} onClose={() => setCostDialog(null)} onSaved={async () => { setCostDialog(null); await changed("Gasto guardado en su moneda original."); }} /> : null}
+      {editingOperation ? <EditOperationDialog operation={operation} statuses={statuses} suppliers={suppliers} onClose={() => setEditingOperation(false)} onSaved={async () => { setEditingOperation(false); await changed("Datos de la operación actualizados y auditados."); }} /> : null}
+    </div>
+  );
+}
+
+function EditOperationDialog({
+  operation,
+  statuses,
+  suppliers,
+  onClose,
+  onSaved,
+}: {
+  operation: ForeignTradeOperation;
+  statuses: ForeignTradeOperationStatus[];
+  suppliers: ForeignTradeSupplier[];
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [form, setForm] = useState<UpdateForeignTradeOperationInput>({
+    id: operation.id,
+    title: operation.title,
+    reference: operation.reference,
+    operationType: operation.operation_type,
+    supplierId: operation.supplier_id || "",
+    status: operation.status,
+    transportType: operation.transport_type as UpdateForeignTradeOperationInput["transportType"],
+    originPort: operation.origin_port || "",
+    destinationPort: operation.destination_port || "",
+    baseCurrency: operation.base_currency,
+    exchangeRateClp: valueString(operation.exchange_rate_clp),
+    exchangeRateSource: operation.exchange_rate_source,
+    incoterm: operation.incoterm || "",
+    targetContainerCbm: valueString(operation.target_container_cbm),
+    valueUsd: valueString(operation.value_usd, "0"),
+    orderDate: dateInputValue(operation.order_date),
+    estimatedDeparture: dateInputValue(operation.estimated_departure),
+    estimatedArrival: dateInputValue(operation.estimated_arrival),
+    notes: operation.notes || "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await updateForeignTradeOperation(form);
+      await onSaved();
+    } catch (submitError) {
+      setError(humanizeWriteError(submitError instanceof Error ? submitError.message : "No se pudo actualizar la operación."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="foreign-trade-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <form className="foreign-trade-operation-dialog foreign-trade-edit-operation-dialog" role="dialog" aria-modal="true" aria-labelledby="foreign-trade-edit-operation-title" onSubmit={submit}>
+        <div className="foreign-trade-dialog-heading"><div><span>Registro privado y auditable</span><h2 id="foreign-trade-edit-operation-title">Editar operación</h2></div><button className="icon-button" type="button" title="Cerrar" onClick={onClose}><X size={18} /></button></div>
+        <div className="foreign-trade-form-grid">
+          <label className="wide-field"><span>Nombre de la operación</span><input autoFocus required maxLength={180} value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} /></label>
+          <label><span>Referencia</span><input required maxLength={80} value={form.reference || ""} onChange={(event) => setForm({ ...form, reference: event.target.value })} /></label>
+          <label><span>Tipo</span><select value={form.operationType} onChange={(event) => setForm({ ...form, operationType: event.target.value as UpdateForeignTradeOperationInput["operationType"] })}><option value="simulation">Simulación</option><option value="quotation">Cotización</option><option value="proforma">Proforma</option><option value="purchase_order">Orden de compra</option><option value="shipment">Importación</option></select></label>
+          <label><span>Proveedor</span><select value={form.supplierId || ""} onChange={(event) => setForm({ ...form, supplierId: event.target.value })}><option value="">Sin proveedor</option>{suppliers.filter((supplier) => supplier.active || supplier.id === operation.supplier_id).map((supplier) => <option value={supplier.id} key={supplier.id}>{supplier.name}</option>)}</select></label>
+          <label><span>Estado</span><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>{statuses.filter((item) => item.active || item.code === operation.status).map((item) => <option value={item.code} key={item.code}>{item.name}</option>)}</select></label>
+          <label><span>Transporte</span><select value={form.transportType} onChange={(event) => setForm({ ...form, transportType: event.target.value as UpdateForeignTradeOperationInput["transportType"] })}><option value="sea">Marítimo</option><option value="air">Aéreo</option><option value="land">Terrestre</option><option value="multimodal">Multimodal</option></select></label>
+          <label><span>Incoterm</span><input maxLength={20} value={form.incoterm || ""} onChange={(event) => setForm({ ...form, incoterm: event.target.value })} placeholder="EXW, FOB, CIF..." /></label>
+          <label><span>Puerto o ciudad de origen</span><input value={form.originPort || ""} onChange={(event) => setForm({ ...form, originPort: event.target.value })} /></label>
+          <label><span>Puerto o ciudad de destino</span><input value={form.destinationPort || ""} onChange={(event) => setForm({ ...form, destinationPort: event.target.value })} /></label>
+          <label><span>Fecha de orden</span><input type="date" value={form.orderDate || ""} onChange={(event) => setForm({ ...form, orderDate: event.target.value })} /></label>
+          <label><span>Salida estimada</span><input type="date" value={form.estimatedDeparture || ""} onChange={(event) => setForm({ ...form, estimatedDeparture: event.target.value })} /></label>
+          <label><span>Llegada estimada</span><input type="date" value={form.estimatedArrival || ""} onChange={(event) => setForm({ ...form, estimatedArrival: event.target.value })} /></label>
+          <label><span>Moneda base</span><input required maxLength={3} value={form.baseCurrency} onChange={(event) => setForm({ ...form, baseCurrency: event.target.value })} /></label>
+          <label><span>Tipo de cambio CLP</span><input inputMode="decimal" value={form.exchangeRateClp || ""} onChange={(event) => setForm({ ...form, exchangeRateClp: event.target.value })} placeholder="Ej. 990" /></label>
+          <label><span>Origen del tipo de cambio</span><select value={form.exchangeRateSource} onChange={(event) => setForm({ ...form, exchangeRateSource: event.target.value as UpdateForeignTradeOperationInput["exchangeRateSource"] })}><option value="manual">Manual</option><option value="current">Actual</option><option value="conservative">Conservador</option><option value="custom">Personalizado</option></select></label>
+          <label><span>Valor informado</span><input inputMode="decimal" value={form.valueUsd || ""} onChange={(event) => setForm({ ...form, valueUsd: event.target.value })} /></label>
+          <label><span>Capacidad objetivo m³</span><input inputMode="decimal" value={form.targetContainerCbm || ""} onChange={(event) => setForm({ ...form, targetContainerCbm: event.target.value })} /></label>
+          <label className="wide-field"><span>Notas y supuestos</span><textarea value={form.notes || ""} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Información interna de la operación." /></label>
+        </div>
+        <p className="foreign-trade-calculation-note">Los escenarios de costeo ya guardados conservan sus supuestos históricos. Esta edición actualiza la ficha oficial y queda registrada en Auditoría.</p>
+        {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}
+        <div className="foreign-trade-dialog-actions"><button className="ghost-button" type="button" disabled={busy} onClick={onClose}>Cancelar</button><button className="primary-button" type="submit" disabled={busy}><Save size={17} /> {busy ? "Guardando..." : "Guardar cambios"}</button></div>
+      </form>
     </div>
   );
 }
@@ -425,6 +515,7 @@ function getMissingInputs(lines: ForeignTradeOperationLine[], costs: ForeignTrad
 
 function humanizeWriteError(message: string) {
   if (message.includes("foreign_trade_forbidden")) return "Tu usuario no tiene permiso para modificar esta información.";
+  if (message.includes("duplicate key") || message.includes("import_shipments_reference")) return "Ya existe otra operación con esa referencia.";
   if (message.includes("supplier_link_incomplete")) return "Para recordar el vínculo necesitas proveedor, producto de catálogo y SKU CRM.";
   if (message.includes("foreign_trade_invalid")) return "Revisa los campos obligatorios y los valores numéricos.";
   if (message.includes("not_found")) return "El registro ya no existe o no pertenece a esta operación.";
@@ -433,6 +524,7 @@ function humanizeWriteError(message: string) {
 function costCategoryLabel(category: ForeignTradeCostCategory) { return costCategories.find((item) => item.value === category)?.label || category; }
 function allocationLabel(value: ForeignTradeCostLine["allocation_method"]) { return ({ operation: "Criterio general", fob_value: "Por FOB", cif_value: "Por CIF", units: "Por unidades", weight: "Por peso", cbm: "Por CBM", manual: "Manual", combined: "Combinado" })[value]; }
 function valueString(value: number | null | undefined, fallback = "") { return value === null || value === undefined ? fallback : String(value); }
+function dateInputValue(value: string | null) { return value ? value.slice(0, 10) : ""; }
 function normalizeDecimal(value?: string) { return String(value || "").trim().replace(",", ".") || "0"; }
 
 const decimalFormatter = new Intl.NumberFormat("es-CL", { maximumFractionDigits: 3 });
@@ -441,3 +533,5 @@ function formatDecimal(value: number) { return decimalFormatter.format(Number(va
 function formatClp(value: number) { return clpFormatter.format(Number(value || 0)); }
 function formatMoney(value: number, currency: string) { try { return new Intl.NumberFormat("es-CL", { style: "currency", currency: currency || "USD", maximumFractionDigits: 4 }).format(Number(value || 0)); } catch { return `${formatDecimal(value)} ${currency}`; } }
 function formatDate(value: string | null) { return value ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium" }).format(new Date(value)) : "Sin fecha"; }
+function operationTypeLabel(value: ForeignTradeOperation["operation_type"]) { return ({ simulation: "Simulación", quotation: "Cotización", proforma: "Proforma", purchase_order: "Orden de compra", shipment: "Importación" })[value]; }
+function transportTypeLabel(value: string) { return ({ sea: "Marítimo", air: "Aéreo", land: "Terrestre", multimodal: "Multimodal" } as Record<string, string>)[value] || value; }

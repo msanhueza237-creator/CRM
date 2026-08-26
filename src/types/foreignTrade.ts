@@ -154,6 +154,13 @@ export interface CreateForeignTradeOperationInput {
   notes?: string;
 }
 
+export interface UpdateForeignTradeOperationInput extends CreateForeignTradeOperationInput {
+  id: string;
+  orderDate?: string;
+  estimatedDeparture?: string;
+  estimatedArrival?: string;
+}
+
 export type ForeignTradeDataSource = "real" | "document" | "configured" | "estimated" | "simulated";
 
 export interface ForeignTradeCatalogProduct {

@@ -35,6 +35,7 @@ import type {
   ForeignTradeExpenseReconciliation,
   ForeignTradeProductReconciliationResult,
   SaveForeignTradeExpenseReconciliationInput,
+  UpdateForeignTradeOperationInput,
 } from "../types/foreignTrade";
 
 const emptySummary: ForeignTradeDashboardSummary = {
@@ -151,6 +152,47 @@ export async function createForeignTradeOperation(input: CreateForeignTradeOpera
   const { data, error } = await supabase.rpc("create_foreign_trade_operation", { p_payload: payload });
   if (error) throw error;
   return String(data);
+}
+
+export async function updateForeignTradeOperation(input: UpdateForeignTradeOperationInput) {
+  requireSupabase();
+  if (input.title.trim().length < 3 || input.title.trim().length > 180) {
+    throw new Error("foreign_trade_invalid_title");
+  }
+  if (!input.reference?.trim()) throw new Error("foreign_trade_invalid_reference");
+
+  const authResult = await supabase!.auth.getUser();
+  if (authResult.error) throw authResult.error;
+
+  const payload = {
+    supplier_id: input.supplierId || null,
+    reference: input.reference.trim().toUpperCase(),
+    title: input.title.trim(),
+    operation_type: input.operationType,
+    transport_type: input.transportType,
+    origin_port: input.originPort?.trim() || null,
+    destination_port: input.destinationPort?.trim() || null,
+    status: input.status,
+    value_usd: decimalOrNull(input.valueUsd) || "0",
+    base_currency: currencyInput(input.baseCurrency, "moneda base"),
+    exchange_rate_clp: decimalOrNull(input.exchangeRateClp),
+    exchange_rate_source: input.exchangeRateSource,
+    exchange_rate_observed_at: input.exchangeRateClp?.trim() ? new Date().toISOString() : null,
+    incoterm: input.incoterm?.trim().toUpperCase() || null,
+    target_container_cbm: decimalOrNull(input.targetContainerCbm),
+    order_date: input.orderDate || null,
+    estimated_departure: input.estimatedDeparture || null,
+    estimated_arrival: input.estimatedArrival || null,
+    notes: input.notes?.trim() || null,
+    source_label: "configured",
+    updated_by: authResult.data.user?.id || null,
+  };
+
+  const { error } = await supabase!
+    .from("import_shipments")
+    .update(payload)
+    .eq("id", input.id);
+  if (error) throw error;
 }
 
 export async function getForeignTradeOperationDetail(operationId: string): Promise<ForeignTradeOperationDetail> {
