@@ -2,7 +2,7 @@ import Decimal from "decimal.js";
 import type { ForeignTradeCostLine, ForeignTradeOperationLine } from "../../types/foreignTrade";
 
 export type ForeignTradePricingMethod = "markup_on_cost" | "margin_on_sale";
-export type ForeignTradeAllocationMethod = "fob_value" | "units" | "weight" | "cbm" | "combined";
+export type ForeignTradeAllocationMethod = "fob_value" | "cif_value" | "units" | "weight" | "cbm" | "combined";
 
 export interface ForeignTradeCostingSettings {
   exchangeRateClp: number;
@@ -44,6 +44,7 @@ export interface ForeignTradeCostingResult {
   dutyClp: number;
   importVatClp: number;
   operatingExpensesNetClp: number;
+  operatingExpensesEconomicClp: number;
   operatingExpensesVatClp: number;
   recoverableExpenseVatClp: number;
   recoverableVatClp: number;
@@ -56,6 +57,7 @@ export interface ForeignTradeCostingResult {
   projectedMarginPercent: number;
   documentedDutyClp: number;
   documentedImportVatClp: number;
+  cifAllocationEstimated: boolean;
   missingInputs: string[];
   lines: ForeignTradeCostingLineResult[];
 }
@@ -117,11 +119,13 @@ export function calculateForeignTradeCosting(
   const operatingCosts = activeCosts.filter((cost) => !NON_EXPENSE_CATEGORIES.has(cost.category));
   const operatingBreakdowns = operatingCosts.map(costBreakdown);
   const operatingNet = sumDecimals(operatingBreakdowns.map((item) => item.net));
+  const operatingEconomic = sumDecimals(operatingBreakdowns.map((item) => item.economic));
   const operatingVat = sumDecimals(operatingBreakdowns.map((item) => item.vat));
   const operatingGross = sumDecimals(operatingBreakdowns.map((item) => item.gross));
   const recoverableExpenseVat = sumDecimals(operatingBreakdowns.map((item) => item.recoverableVat));
 
-  const baseShares = allocationShares(lines, merchandiseBases, settings.allocationMethod);
+  const cifAllocationBases = allLinesHaveCif ? lineCifValues : merchandiseBases;
+  const baseShares = allocationShares(lines, merchandiseBases, cifAllocationBases, settings.allocationMethod);
   const cifByLine = configuredCif.lte(0) && allLinesHaveCif
     ? lineCifValues
     : baseShares.map((share) => customsCif.times(share));
@@ -135,7 +139,7 @@ export function calculateForeignTradeCosting(
       const breakdown = operatingBreakdowns[costIndex];
       if (cost.operation_line_id) return cost.operation_line_id === line.id ? sum.plus(breakdown.economic) : sum;
       const method = normalizeAllocationMethod(cost.allocation_method, settings.allocationMethod);
-      return sum.plus(breakdown.economic.times(allocationShares(lines, merchandiseBases, method)[lineIndex] || ZERO));
+      return sum.plus(breakdown.economic.times(allocationShares(lines, merchandiseBases, cifAllocationBases, method)[lineIndex] || ZERO));
     }, ZERO);
     const landed = cif
       .plus(duty)
@@ -186,6 +190,7 @@ export function calculateForeignTradeCosting(
     dutyClp: toMoney(duty),
     importVatClp: toMoney(importVat),
     operatingExpensesNetClp: toMoney(operatingNet),
+    operatingExpensesEconomicClp: toMoney(operatingEconomic),
     operatingExpensesVatClp: toMoney(operatingVat),
     recoverableExpenseVatClp: toMoney(recoverableExpenseVat),
     recoverableVatClp: toMoney(recoverableImportVat.plus(recoverableExpenseVat)),
@@ -198,6 +203,7 @@ export function calculateForeignTradeCosting(
     projectedMarginPercent: toPercent(projectedMargin),
     documentedDutyClp: toMoney(documentedDuty),
     documentedImportVatClp: toMoney(documentedImportVat),
+    cifAllocationEstimated: settings.allocationMethod === "cif_value" && !allLinesHaveCif,
     missingInputs,
     lines: lineResults,
   };
@@ -240,10 +246,12 @@ function costBreakdown(cost: ForeignTradeCostLine): CostBreakdown {
 function allocationShares(
   lines: ForeignTradeOperationLine[],
   merchandiseBases: Decimal[],
+  cifBases: Decimal[],
   method: ForeignTradeAllocationMethod,
 ) {
   const vectors: Record<Exclude<ForeignTradeAllocationMethod, "combined">, Decimal[]> = {
     fob_value: merchandiseBases,
+    cif_value: cifBases,
     units: lines.map((line) => positive(line.quantity)),
     weight: lines.map((line) => positive(line.gross_weight_kg)),
     cbm: lines.map((line) => positive(line.cbm_total)),
@@ -269,7 +277,7 @@ function normalizeAllocationMethod(
   method: ForeignTradeCostLine["allocation_method"],
   fallback: ForeignTradeAllocationMethod,
 ): ForeignTradeAllocationMethod {
-  if (["fob_value", "units", "weight", "cbm", "combined"].includes(method)) {
+  if (["fob_value", "cif_value", "units", "weight", "cbm", "combined"].includes(method)) {
     return method as ForeignTradeAllocationMethod;
   }
   return fallback;

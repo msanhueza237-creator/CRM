@@ -489,6 +489,15 @@ assert.match(phase15Migration, /metadata->>'documentary_summary_amount_clp'/i, "
 await db.exec(phase15Migration);
 await db.exec(phase15Migration);
 
+const phase16Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase16_cif_allocation.sql", import.meta.url),
+  "utf8",
+);
+assert.match(phase16Migration, /cif_value/i);
+assert.match(phase16Migration, /save_foreign_trade_costing_scenario/i);
+await db.exec(phase16Migration);
+await db.exec(phase16Migration);
+
 const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
   id: "00000000-0000-4000-8000-000000000101",
   applied_cost_line_id: "00000000-0000-4000-8000-000000000102",
@@ -742,6 +751,32 @@ assert.ok(
   Math.abs(pdfCosting.lines[0].netSaleUnitClp - pdfCosting.lines[0].landedUnitClp * 1.45) < 0.02,
   "un objetivo de 45% como markup debe aplicarse sobre costo",
 );
+
+const cifAllocatedCosting = calculateForeignTradeCosting([
+  { id: "cif-a", product_name: "Producto CIF A", sku: "A", quantity: 10, currency: "CLP", fob_total: 500, cif_total: 1000 },
+  { id: "cif-b", product_name: "Producto CIF B", sku: "B", quantity: 10, currency: "CLP", fob_total: 500, cif_total: 3000 },
+], [
+  { id: "national", operation_line_id: null, category: "national_transport", name: "Flete nacional", amount_clp: 400, allocation_method: "operation", recoverable_tax: false, metadata: {} },
+  { id: "agency", operation_line_id: null, category: "customs_agency", name: "Agencia", amount_clp: 100, allocation_method: "operation", recoverable_tax: true, metadata: { vat_rate_percent: 19 } },
+  { id: "ocean", operation_line_id: null, category: "international_freight", name: "Flete internacional ya incluido en CIF", amount_clp: 900, allocation_method: "operation", recoverable_tax: false, metadata: {} },
+], {
+  exchangeRateClp: 1,
+  cifOverrideOriginal: null,
+  generalDutyPercent: 0,
+  importVatPercent: 0,
+  salesVatPercent: 0,
+  importVatRecoverable: true,
+  pricingMethod: "markup_on_cost",
+  targetPercent: 0,
+  allocationMethod: "cif_value",
+  lineDutyPercent: {},
+  lineTargetPercent: {},
+});
+assert.equal(cifAllocatedCosting.operatingExpensesEconomicClp, 500, "el flete nacional y la agencia deben incorporarse al costo economico");
+assert.equal(cifAllocatedCosting.lines[0].allocatedExpensesClp, 125, "los gastos deben repartirse por participacion CIF");
+assert.equal(cifAllocatedCosting.lines[1].allocatedExpensesClp, 375, "la linea con 75% del CIF debe absorber 75% de gastos");
+assert.equal(cifAllocatedCosting.landedTotalClp, 4500, "el costo en bodega suma CIF y gastos locales sin duplicar flete internacional");
+assert.equal(cifAllocatedCosting.cifAllocationEstimated, false, "con CIF por linea la distribucion no debe marcarse estimada");
 
 const invoiceReconciliation = calculateForeignTradeReconciliation(18220000, 0, [
   { line_type: "agency_fee", provision_total_clp: 655322, actual_net_clp: 402233, actual_vat_clp: 76424, actual_total_clp: 478657 },

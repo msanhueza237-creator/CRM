@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, Calculator, CheckCircle2, Landmark, Save, WalletCards } from "lucide-react";
+import { AlertTriangle, Calculator, CheckCircle2, Landmark, PackageCheck, Save, WalletCards } from "lucide-react";
 import { saveForeignTradeCostingScenario } from "../../lib/foreignTradeApi";
 import type {
   ForeignTradeCostParameter,
@@ -60,6 +60,11 @@ export function ForeignTradeCostingPanel({
     () => calculateForeignTradeCosting(detail.lines, detail.costs, settings),
     [detail.costs, detail.lines, settings],
   );
+  const includedOperatingCosts = useMemo(() => detail.costs.filter((cost) => (
+    !Boolean(cost.metadata?.excluded_from_costing)
+    && !["merchandise", "duties", "taxes", "international_freight", "insurance"].includes(cost.category)
+    && Number(cost.amount_clp || 0) > 0
+  )), [detail.costs]);
 
   const hasConfiguredLegalRates = ["cl_general_ad_valorem", "cl_import_vat", "cl_sales_vat"]
     .every((code) => costParameters.some((parameter) => parameter.code === code && parameter.active));
@@ -133,7 +138,7 @@ export function ForeignTradeCostingPanel({
           <label><span>Derecho ad valorem general</span><div className="foreign-trade-percent-input"><input inputMode="decimal" value={form.generalDutyPercent} onChange={(event) => setForm({ ...form, generalDutyPercent: event.target.value })} /><b>%</b></div></label>
           <label><span>IVA importación</span><div className="foreign-trade-percent-input"><input inputMode="decimal" value={form.importVatPercent} onChange={(event) => setForm({ ...form, importVatPercent: event.target.value })} /><b>%</b></div></label>
           <label><span>IVA de venta</span><div className="foreign-trade-percent-input"><input inputMode="decimal" value={form.salesVatPercent} onChange={(event) => setForm({ ...form, salesVatPercent: event.target.value })} /><b>%</b></div></label>
-          <label><span>Distribuir costos por</span><select value={form.allocationMethod} onChange={(event) => setForm({ ...form, allocationMethod: event.target.value as ForeignTradeAllocationMethod })}><option value="fob_value">Valor FOB</option><option value="units">Unidades</option><option value="weight">Peso bruto</option><option value="cbm">CBM</option><option value="combined">Combinación equilibrada</option></select></label>
+          <label><span>Distribuir CIF y costos por</span><select value={form.allocationMethod} onChange={(event) => setForm({ ...form, allocationMethod: event.target.value as ForeignTradeAllocationMethod })}><option value="fob_value">Valor FOB</option><option value="cif_value">Valor CIF</option><option value="units">Unidades</option><option value="weight">Peso bruto</option><option value="cbm">CBM</option><option value="combined">Combinación equilibrada</option></select></label>
         </div>
 
         <div className="foreign-trade-pricing-controls">
@@ -150,6 +155,7 @@ export function ForeignTradeCostingPanel({
             ? "Ejemplo: 45% agrega 45% al costo. El margen sobre la venta resultante será menor."
             : "Ejemplo: 45% fija la utilidad como 45% del precio neto de venta."}
         </p>
+        {result.cifAllocationEstimated ? <p className="foreign-trade-calculation-note warning"><AlertTriangle size={16} /> No todos los productos tienen CIF individual. La participación CIF se estima temporalmente con la proporción FOB hasta completar esos datos.</p> : null}
       </section>
 
       <section className="foreign-trade-costing-kpis">
@@ -165,6 +171,28 @@ export function ForeignTradeCostingPanel({
         <div><WalletCards size={20} /><span><b>IVA recuperable total</b><strong>{formatClp(result.recoverableVatClp)}</strong></span></div>
         <div><Calculator size={20} /><span><b>Fondos adicionales estimados</b><strong>{formatClp(result.customsFundingClp)}</strong><small>Derechos + IVA importación + gastos brutos</small></span></div>
         <div><WalletCards size={20} /><span><b>Necesidad total de caja</b><strong>{formatClp(result.totalCashRequirementClp)}</strong><small>Incluye CIF</small></span></div>
+      </section>
+
+      <section className="panel foreign-trade-cost-composition">
+        <div className="foreign-trade-detail-panel-heading">
+          <div><h2>Cómo se forma el costo del producto</h2><p>La tabla distribuye cada componente y evita sumar dos veces el flete internacional o el seguro.</p></div>
+          <PackageCheck size={22} />
+        </div>
+        <div className="foreign-trade-cost-formula" aria-label="Fórmula de costo puesto en bodega">
+          <CostFormulaStep label="CIF aduanero" value={formatClp(result.cifClp)} detail="Mercadería + flete internacional + seguro" />
+          <span aria-hidden="true">+</span>
+          <CostFormulaStep label="Derechos" value={formatClp(result.dutyClp)} detail="Calculados sobre CIF" />
+          <span aria-hidden="true">+</span>
+          <CostFormulaStep label="Gastos locales" value={formatClp(result.operatingExpensesEconomicClp)} detail="Neto + IVA no recuperable" />
+          {!form.importVatRecoverable ? <><span aria-hidden="true">+</span><CostFormulaStep label="IVA importación" value={formatClp(result.importVatClp)} detail="Solo cuando no es recuperable" /></> : null}
+          <span aria-hidden="true">=</span>
+          <CostFormulaStep label="Costo en bodega" value={formatClp(result.landedTotalClp)} detail="Base de la rentabilidad y del precio" strong />
+        </div>
+        <div className="foreign-trade-cost-inclusion-note">
+          <strong>{includedOperatingCosts.length ? "Sí, estos gastos están incluidos en los productos:" : "No hay gastos locales activos para distribuir."}</strong>
+          {includedOperatingCosts.length ? <span>{summarizeCosts(includedOperatingCosts.map((cost) => cost.name))}</span> : null}
+          <small>El IVA recuperable se muestra como necesidad de caja y crédito fiscal, pero no aumenta el costo económico ni reduce artificialmente el margen.</small>
+        </div>
       </section>
 
       {result.documentedDutyClp || result.documentedImportVatClp ? (
@@ -238,12 +266,22 @@ function CostingKpi({ label, value, detail, tone = "neutral" }: { label: string;
   return <article className={tone}><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
 }
 
+function CostFormulaStep({ label, value, detail, strong = false }: { label: string; value: string; detail: string; strong?: boolean }) {
+  return <div className={strong ? "total" : ""}><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function summarizeCosts(names: string[]) {
+  const unique = [...new Set(names.map((name) => name.trim()).filter(Boolean))];
+  const visible = unique.slice(0, 5);
+  return `${visible.join(", ")}${unique.length > visible.length ? ` y ${unique.length - visible.length} más` : ""}.`;
+}
+
 function parameterValue(parameters: ForeignTradeCostParameter[], code: string) {
   return parameters.find((parameter) => parameter.code === code && parameter.active)?.numeric_value ?? 0;
 }
 
 function normalizeAllocation(value?: ForeignTradeScenario["allocation_method"]): ForeignTradeAllocationMethod {
-  return value && ["fob_value", "units", "weight", "cbm", "combined"].includes(value)
+  return value && ["fob_value", "cif_value", "units", "weight", "cbm", "combined"].includes(value)
     ? value as ForeignTradeAllocationMethod
     : "fob_value";
 }

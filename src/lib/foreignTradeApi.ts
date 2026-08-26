@@ -294,7 +294,7 @@ export async function saveForeignTradeCostingScenario(input: SaveForeignTradeCos
     projected_profit_clp: input.projectedProfitClp,
     projected_margin_percent: input.projectedMarginPercent,
     missing_inputs: input.missingInputs,
-    calculation_version: "cl_import_cost_v1",
+    calculation_version: "cl_import_cost_v2",
   };
   const { data, error } = await supabase!.rpc("save_foreign_trade_costing_scenario", { p_payload: payload });
   if (error) throw error;

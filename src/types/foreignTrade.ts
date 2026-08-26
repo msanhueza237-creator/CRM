@@ -240,7 +240,7 @@ export interface ForeignTradeCostLine {
   currency: string;
   exchange_rate_clp: number | null;
   amount_clp: number | null;
-  allocation_method: "operation" | "fob_value" | "units" | "weight" | "cbm" | "manual" | "combined";
+  allocation_method: "operation" | "fob_value" | "cif_value" | "units" | "weight" | "cbm" | "manual" | "combined";
   source_type: ForeignTradeDataSource;
   recoverable_tax: boolean;
   notes: string | null;
@@ -280,7 +280,7 @@ export interface ForeignTradeScenario {
   status: "draft" | "baseline" | "archived";
   exchange_rate_clp: number;
   exchange_rate_source: ForeignTradeExchangeRateSource;
-  allocation_method: "fob_value" | "units" | "weight" | "cbm" | "manual" | "combined";
+  allocation_method: "fob_value" | "cif_value" | "units" | "weight" | "cbm" | "manual" | "combined";
   target_margin_percent: number | null;
   minimum_margin_percent: number | null;
   merchandise_total_original: number | null;

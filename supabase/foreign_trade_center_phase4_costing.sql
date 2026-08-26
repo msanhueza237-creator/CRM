@@ -165,7 +165,7 @@ begin
   if v_status not in ('draft', 'baseline') then raise exception 'foreign_trade_invalid_scenario_status'; end if;
   if v_rate is null or v_rate <= 0 then raise exception 'foreign_trade_invalid_exchange_rate'; end if;
   if v_rate_source not in ('manual','current','conservative','custom') then raise exception 'foreign_trade_invalid_exchange_rate_source'; end if;
-  if v_allocation not in ('fob_value','units','weight','cbm','combined') then raise exception 'foreign_trade_invalid_allocation'; end if;
+  if v_allocation not in ('fob_value','cif_value','units','weight','cbm','combined') then raise exception 'foreign_trade_invalid_allocation'; end if;
   if jsonb_typeof(v_assumptions) <> 'object' then raise exception 'foreign_trade_invalid_assumptions'; end if;
 
   v_costing := coalesce(v_assumptions->'costing', '{}'::jsonb);

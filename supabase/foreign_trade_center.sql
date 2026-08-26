@@ -340,7 +340,7 @@ create table if not exists public.foreign_trade_scenarios (
   exchange_rate_source text not null default 'manual'
     check (exchange_rate_source in ('manual','current','conservative','custom')),
   allocation_method text not null default 'fob_value'
-    check (allocation_method in ('fob_value','units','weight','cbm','manual','combined')),
+    check (allocation_method in ('fob_value','cif_value','units','weight','cbm','manual','combined')),
   allocation_weights jsonb not null default '{}'::jsonb,
   target_margin_percent numeric(9,6),
   minimum_margin_percent numeric(9,6),
@@ -389,7 +389,7 @@ create table if not exists public.foreign_trade_cost_lines (
   exchange_rate_clp numeric(18,6),
   amount_clp numeric(20,6),
   allocation_method text not null default 'operation'
-    check (allocation_method in ('operation','fob_value','units','weight','cbm','manual','combined')),
+    check (allocation_method in ('operation','fob_value','cif_value','units','weight','cbm','manual','combined')),
   source_type text not null default 'configured'
     check (source_type in ('real','document','configured','estimated','simulated')),
   recoverable_tax boolean not null default false,
