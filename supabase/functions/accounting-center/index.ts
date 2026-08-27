@@ -190,7 +190,6 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
   const fromDate = requiredDate(payload.fromDate);
   const toDate = requiredDate(payload.toDate);
   if (fromDate > toDate) throw new HttpError(400, "La fecha inicial no puede ser posterior a la fecha final.");
-  const resources = ["documents", "purchase_documents", "document_details", "purchase_document_details"];
   const run = (await insertRows(rest, "accounting_facto_sync_runs", [{
     entity_id: entityId,
     from_date: fromDate,
@@ -202,31 +201,6 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
   const runId = String(run.id);
 
   try {
-    const records = await selectAllRows(rest,
-      `integration_records?select=id,resource,external_id,payload,observed_at,updated_at&provider=eq.facto&resource=in.(${resources.join(",")})&order=updated_at.asc`,
-    );
-    const prepared = records.map((record) => {
-      const resource = String(record.resource);
-      const purchase = resource.includes("purchase");
-      const externalId = String(record.external_id || record.id);
-      const normalized = normalizeFactoDocument(asObject(record.payload), purchase, externalId);
-      return {
-        record,
-        resource,
-        purchase,
-        externalId,
-        normalized,
-        canonicalKey: `facto:${purchase ? "purchase" : "sale"}:${externalId}`,
-      };
-    });
-    const selectedByKey = new Map<string, typeof prepared[number]>();
-    for (const item of prepared) {
-      const selected = selectedByKey.get(item.canonicalKey);
-      const itemScore = (item.resource.includes("details") ? 2 : 0) + (item.record.payload ? 1 : 0);
-      const selectedScore = selected ? (selected.resource.includes("details") ? 2 : 0) + (selected.record.payload ? 1 : 0) : -1;
-      if (!selected || itemScore >= selectedScore) selectedByKey.set(item.canonicalKey, item);
-    }
-
     const existingSources = await selectAllRows(rest,
       `accounting_source_documents?select=id,source_key,external_id,document_type&entity_id=eq.${entityId}&source_type=eq.FACTO&order=created_at.asc`,
     );
@@ -247,135 +221,175 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
     let receivables = 0;
     let payables = 0;
     let controls = 0;
+    let sourceRecords = 0;
+    let backups = 0;
+    let observedFrom: string | null = null;
+    let observedTo: string | null = null;
+    const includedCanonical = new Set<string>();
     const sourceDocumentByCanonical = new Map<string, string>();
-    const workItems: Array<(typeof prepared)[number] & { sourceKey: string; previous: JsonRecord | undefined }> = [];
-    for (const item of selectedByKey.values()) {
-      const { normalized } = item;
-      if (!normalized.issuedOn || normalized.issuedOn < fromDate || normalized.issuedOn > toDate) {
-        skipped += 1;
-        if (!normalized.issuedOn) inconsistent += 1;
-        continue;
+    // Detail resources are processed before summaries so the richer payload wins
+    // without keeping the complete Facto history in the Edge Function memory.
+    const orderedResources = ["document_details", "documents", "purchase_document_details", "purchase_documents"];
+    const pageSize = 100;
+    for (const resource of orderedResources) {
+      for (let offset = 0; offset < 50000; offset += pageSize) {
+        const page = await selectRows(rest,
+          `integration_records?select=id,resource,external_id,payload,observed_at,updated_at&provider=eq.facto&resource=eq.${resource}&order=updated_at.asc&limit=${pageSize}&offset=${offset}`,
+        );
+        if (!page.length) break;
+        sourceRecords += page.length;
+        const now = new Date().toISOString();
+        const pageItems = page.map((record) => {
+          const purchase = resource.includes("purchase");
+          const externalId = String(record.external_id || record.id);
+          const normalized = normalizeFactoDocument(asObject(record.payload), purchase, externalId);
+          const canonicalKey = `facto:${purchase ? "purchase" : "sale"}:${externalId}`;
+          const observedAt = dateTimeValue(record.observed_at);
+          if (observedAt && (!observedFrom || observedAt < observedFrom)) observedFrom = observedAt;
+          if (observedAt && (!observedTo || observedAt > observedTo)) observedTo = observedAt;
+          let decision = "included";
+          if (!normalized.issuedOn) decision = "invalid";
+          else if (normalized.issuedOn < fromDate || normalized.issuedOn > toDate) decision = "out_of_range";
+          else if (includedCanonical.has(canonicalKey)) decision = "superseded";
+          return { record, resource, purchase, externalId, normalized, canonicalKey, decision };
+        });
+
+        const includedItems = pageItems.filter((item) => item.decision === "included");
+        const sourceKeyByCanonical = new Map<string, string>();
+        for (const item of includedItems) {
+          includedCanonical.add(item.canonicalKey);
+          accepted += 1;
+          const directionKey = `${item.purchase ? "purchase" : "sale"}:${item.externalId}`;
+          const previous = existingByKey.get(item.canonicalKey) || existingByExternal.get(directionKey);
+          const sourceKey = previous ? String(previous.source_key) : item.canonicalKey;
+          sourceKeyByCanonical.set(item.canonicalKey, sourceKey);
+          if (previous) updated += 1;
+          else inserted += 1;
+          if (item.normalized.errors.length) inconsistent += 1;
+        }
+        for (const item of pageItems) {
+          if (item.decision === "invalid") {
+            inconsistent += 1;
+            skipped += 1;
+          } else if (item.decision === "out_of_range") skipped += 1;
+        }
+
+        const sourceBatch = includedItems.map(({ record, externalId, normalized, canonicalKey }) => ({
+          entity_id: entityId,
+          source_type: "FACTO",
+          source_id: String(record.id),
+          source_key: sourceKeyByCanonical.get(canonicalKey) || canonicalKey,
+          document_type: normalized.documentType,
+          external_id: externalId,
+          folio: normalized.folio,
+          counterpart_tax_id: normalized.taxId,
+          counterpart_name: normalized.counterpart,
+          issued_on: normalized.issuedOn,
+          due_on: normalized.dueOn,
+          currency: normalized.currency,
+          exchange_rate: normalized.exchangeRate,
+          net_amount: normalized.net,
+          tax_amount: normalized.tax,
+          exempt_amount: normalized.exempt,
+          total_amount: normalized.total,
+          total_clp: normalized.totalClp,
+          status: normalized.errors.length ? "inconsistent" : "validated",
+          data_quality: normalized.errors.length ? "inconsistent" : "validated",
+          raw_payload: record.payload || {},
+          source_created_at: normalized.sourceCreatedAt,
+          source_updated_at: record.updated_at,
+          observed_at: record.observed_at,
+          updated_at: now,
+        }));
+        const savedSources = sourceBatch.length
+          ? await upsertRowsSelected(rest, "accounting_source_documents", sourceBatch, "entity_id,source_type,source_key", "id,source_key,external_id,document_type")
+          : [];
+        const sourceByKey = new Map(savedSources.map((source) => [String(source.source_key), source]));
+        const receivableRows: JsonRecord[] = [];
+        const payableRows: JsonRecord[] = [];
+        for (const item of includedItems) {
+          const sourceKey = sourceKeyByCanonical.get(item.canonicalKey) || item.canonicalKey;
+          const source = sourceByKey.get(sourceKey);
+          if (!source) {
+            controls += 1;
+            continue;
+          }
+          sourceDocumentByCanonical.set(item.canonicalKey, String(source.id));
+          existingByKey.set(sourceKey, source);
+          existingByExternal.set(`${item.purchase ? "purchase" : "sale"}:${item.externalId}`, source);
+          const { normalized } = item;
+          if (normalized.totalClp <= 0 || !normalized.counterpart) {
+            controls += 1;
+            continue;
+          }
+          const common = {
+            entity_id: entityId,
+            source_document_id: source.id,
+            document_number: normalized.folio || item.externalId,
+            issued_on: normalized.issuedOn,
+            due_on: normalized.dueOn,
+            currency: normalized.currency,
+            exchange_rate: normalized.exchangeRate,
+            original_amount: normalized.total,
+            original_amount_clp: normalized.totalClp,
+            updated_at: now,
+          };
+          if (item.purchase) {
+            payableRows.push({ ...common, supplier_tax_id: normalized.taxId, supplier_name: normalized.counterpart });
+          } else {
+            receivableRows.push({ ...common, customer_tax_id: normalized.taxId, customer_name: normalized.counterpart });
+          }
+        }
+        if (receivableRows.length) {
+          await upsertRowsSelected(rest, "accounting_receivables", receivableRows, "entity_id,source_document_id", "id");
+          receivables += receivableRows.length;
+        }
+        if (payableRows.length) {
+          await upsertRowsSelected(rest, "accounting_payables", payableRows, "entity_id,source_document_id", "id");
+          payables += payableRows.length;
+        }
+
+        const backupRows: JsonRecord[] = [];
+        for (const item of pageItems) {
+          backupRows.push({
+            run_id: runId,
+            integration_record_id: item.record.id,
+            resource: item.resource,
+            external_id: item.externalId,
+            canonical_key: item.canonicalKey,
+            document_date: item.normalized.issuedOn,
+            observed_at: item.record.observed_at,
+            payload_hash: await sha256Text(JSON.stringify(item.record.payload || {})),
+            raw_payload: item.record.payload || {},
+            decision: item.decision,
+            source_document_id: sourceDocumentByCanonical.get(item.canonicalKey) || null,
+            validation_errors: item.normalized.errors,
+          });
+        }
+        if (backupRows.length) await insertRows(rest, "accounting_facto_sync_records", backupRows);
+        backups += backupRows.length;
+        await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
+          source_records: sourceRecords,
+          in_range_records: accepted,
+          inserted_records: inserted,
+          updated_records: updated,
+          skipped_records: skipped,
+          inconsistent_records: inconsistent,
+          receivables,
+          payables,
+          source_observed_from: observedFrom,
+          source_observed_to: observedTo,
+          updated_at: new Date().toISOString(),
+          summary: { request_id: requestId, source: "integration_records/facto", accounting_policy: "document_only", backups, controls, current_resource: resource, current_offset: offset },
+        });
+        if (page.length < pageSize) break;
       }
-      const previous = existingByKey.get(item.canonicalKey) || existingByExternal.get(`${item.purchase ? "purchase" : "sale"}:${item.externalId}`);
-      const sourceKey = previous ? String(previous.source_key) : item.canonicalKey;
-      workItems.push({ ...item, sourceKey, previous });
-      accepted += 1;
-      if (previous) updated += 1;
-      else inserted += 1;
-      if (normalized.errors.length) inconsistent += 1;
     }
 
-    const sourceRows: JsonRecord[] = [];
-    const now = new Date().toISOString();
-    for (let index = 0; index < workItems.length; index += 100) {
-      const batch = workItems.slice(index, index + 100).map(({ record, externalId, normalized, sourceKey }) => ({
-        entity_id: entityId,
-        source_type: "FACTO",
-        source_id: String(record.id),
-        source_key: sourceKey,
-        document_type: normalized.documentType,
-        external_id: externalId,
-        folio: normalized.folio,
-        counterpart_tax_id: normalized.taxId,
-        counterpart_name: normalized.counterpart,
-        issued_on: normalized.issuedOn,
-        due_on: normalized.dueOn,
-        currency: normalized.currency,
-        exchange_rate: normalized.exchangeRate,
-        net_amount: normalized.net,
-        tax_amount: normalized.tax,
-        exempt_amount: normalized.exempt,
-        total_amount: normalized.total,
-        total_clp: normalized.totalClp,
-        status: normalized.errors.length ? "inconsistent" : "validated",
-        data_quality: normalized.errors.length ? "inconsistent" : "validated",
-        raw_payload: record.payload,
-        source_created_at: normalized.sourceCreatedAt,
-        source_updated_at: record.updated_at,
-        observed_at: record.observed_at,
-        updated_at: now,
-      }));
-      sourceRows.push(...await upsertRows(rest, "accounting_source_documents", batch, "entity_id,source_type,source_key"));
-    }
-    const sourceByKey = new Map(sourceRows.map((source) => [String(source.source_key), source]));
-    const receivableRows: JsonRecord[] = [];
-    const payableRows: JsonRecord[] = [];
-    for (const item of workItems) {
-      const source = sourceByKey.get(item.sourceKey);
-      if (!source) continue;
-      sourceDocumentByCanonical.set(item.canonicalKey, String(source.id));
-      const { normalized } = item;
-      if (normalized.totalClp <= 0 || !normalized.counterpart) {
-        controls += 1;
-        continue;
-      }
-      const row = item.purchase ? {
-        entity_id: entityId,
-        source_document_id: source.id,
-        supplier_tax_id: normalized.taxId,
-        supplier_name: normalized.counterpart,
-        document_number: normalized.folio || item.externalId,
-        issued_on: normalized.issuedOn,
-        due_on: normalized.dueOn,
-        currency: normalized.currency,
-        exchange_rate: normalized.exchangeRate,
-        original_amount: normalized.total,
-        original_amount_clp: normalized.totalClp,
-        updated_at: now,
-      } : {
-        entity_id: entityId,
-        source_document_id: source.id,
-        customer_tax_id: normalized.taxId,
-        customer_name: normalized.counterpart,
-        document_number: normalized.folio || item.externalId,
-        issued_on: normalized.issuedOn,
-        due_on: normalized.dueOn,
-        currency: normalized.currency,
-        exchange_rate: normalized.exchangeRate,
-        original_amount: normalized.total,
-        original_amount_clp: normalized.totalClp,
-        updated_at: now,
-      };
-      if (item.purchase) payableRows.push(row);
-      else receivableRows.push(row);
-    }
-    for (let index = 0; index < receivableRows.length; index += 100) {
-      await upsertRows(rest, "accounting_receivables", receivableRows.slice(index, index + 100), "entity_id,source_document_id");
-    }
-    for (let index = 0; index < payableRows.length; index += 100) {
-      await upsertRows(rest, "accounting_payables", payableRows.slice(index, index + 100), "entity_id,source_document_id");
-    }
-    receivables = receivableRows.length;
-    payables = payableRows.length;
-
-    const backupRows: JsonRecord[] = await Promise.all(prepared.map(async (item) => {
-      const selected = selectedByKey.get(item.canonicalKey) === item;
-      const inRange = Boolean(item.normalized.issuedOn && item.normalized.issuedOn >= fromDate && item.normalized.issuedOn <= toDate);
-      const decision = !item.normalized.issuedOn ? "invalid" : !inRange ? "out_of_range" : selected ? "included" : "superseded";
-      return {
-        run_id: runId,
-        integration_record_id: item.record.id,
-        resource: item.resource,
-        external_id: item.externalId,
-        canonical_key: item.canonicalKey,
-        document_date: item.normalized.issuedOn,
-        observed_at: item.record.observed_at,
-        payload_hash: await sha256Text(JSON.stringify(item.record.payload || {})),
-        raw_payload: item.record.payload || {},
-        decision,
-        source_document_id: sourceDocumentByCanonical.get(item.canonicalKey) || null,
-        validation_errors: item.normalized.errors,
-      };
-    }));
-    for (let index = 0; index < backupRows.length; index += 100) {
-      await insertRows(rest, "accounting_facto_sync_records", backupRows.slice(index, index + 100));
-    }
-
-    const observed = records.map((record) => dateTimeValue(record.observed_at)).filter(Boolean).sort() as string[];
     const status = inconsistent > 0 ? "partial" : "completed";
     await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
       status,
-      source_records: records.length,
+      source_records: sourceRecords,
       in_range_records: accepted,
       inserted_records: inserted,
       updated_records: updated,
@@ -383,15 +397,15 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
       inconsistent_records: inconsistent,
       receivables,
       payables,
-      source_observed_from: observed[0] || null,
-      source_observed_to: observed[observed.length - 1] || null,
+      source_observed_from: observedFrom,
+      source_observed_to: observedTo,
       completed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       summary: {
         request_id: requestId,
         source: "integration_records/facto",
         accounting_policy: "document_only",
-        backups: backupRows.length,
+        backups,
         controls,
       },
     });
@@ -399,9 +413,9 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
     await insertRows(rest, "accounting_audit_events", [{
       entity_id: entityId, actor_id: profile.id, action: "facto.history_synced", entity_type: "facto_sync_run",
       entity_id_text: runId, correlation_id: requestIdToUuid(requestId),
-      new_value: { from_date: fromDate, to_date: toDate, source_records: records.length, accepted, inserted, updated, skipped, inconsistent, receivables, payables, backups: backupRows.length },
+      new_value: { from_date: fromDate, to_date: toDate, source_records: sourceRecords, accepted, inserted, updated, skipped, inconsistent, receivables, payables, backups },
     }]);
-    return { runId, status, fromDate, toDate, read: records.length, accepted, inserted, updated, skipped, inconsistent, receivables, payables, controls, backups: backupRows.length };
+    return { runId, status, fromDate, toDate, read: sourceRecords, accepted, inserted, updated, skipped, inconsistent, receivables, payables, controls, backups };
   } catch (error) {
     await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
       status: "failed",
@@ -926,6 +940,17 @@ async function upsertRows(rest: RestClient, table: string, rows: JsonRecord[], o
   const response = await fetch(`${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
     method: "POST",
     headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: `${ignore ? "resolution=ignore-duplicates" : "resolution=merge-duplicates"},return=representation` },
+    body: JSON.stringify(rows),
+  });
+  if (!response.ok) throw new HttpError(response.status, `Error consolidando ${table}: ${(await response.text()).slice(0, 400)}`);
+  return await response.json() as JsonRecord[];
+}
+
+async function upsertRowsSelected(rest: RestClient, table: string, rows: JsonRecord[], onConflict: string, select: string) {
+  if (!rows.length) return [];
+  const response = await fetch(`${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}&select=${encodeURIComponent(select)}`, {
+    method: "POST",
+    headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=representation" },
     body: JSON.stringify(rows),
   });
   if (!response.ok) throw new HttpError(response.status, `Error consolidando ${table}: ${(await response.text()).slice(0, 400)}`);
