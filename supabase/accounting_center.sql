@@ -7,6 +7,12 @@
 
 alter type public.app_role add value if not exists 'finanzas';
 
+-- PostgreSQL no permite usar un valor nuevo de un enum hasta confirmar la
+-- transaccion que lo creo. Supabase Studio puede ejecutar el archivo completo
+-- en una sola sesion, por lo que esta confirmacion debe ser explicita antes de
+-- insertar los permisos del rol finanzas.
+commit;
+
 begin;
 
 create extension if not exists pgcrypto;
