@@ -4,11 +4,17 @@ import { PGlite } from "@electric-sql/pglite";
 
 const migration = (await readFile(new URL("../supabase/accounting_center.sql", import.meta.url), "utf8"))
   .replace(/create extension if not exists pgcrypto;/i, "");
+const factoHistoryMigration = await readFile(new URL("../supabase/accounting_facto_history.sql", import.meta.url), "utf8");
 const edgeSource = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
 const parserSource = await readFile(new URL("../supabase/functions/accounting-center/bank-parsers.ts", import.meta.url), "utf8");
 const pageSource = await readFile(new URL("../src/modules/accounting/AccountingCenterPage.tsx", import.meta.url), "utf8");
 
 assert.match(edgeSource, /route === "facto\/sync"/);
+assert.match(edgeSource, /accounting_facto_sync_runs/);
+assert.match(edgeSource, /accounting_facto_sync_records/);
+assert.match(edgeSource, /fromDate/);
+assert.match(edgeSource, /selectAllRows/);
+assert.match(edgeSource, /facto:.*purchase.*sale|facto:.*sale.*purchase/);
 assert.match(edgeSource, /route === "foreign-trade\/sync"/);
 assert.match(edgeSource, /route === "accounts\/create"/);
 assert.match(edgeSource, /route === "imports\/preview"/);
@@ -25,6 +31,8 @@ assert.match(pageSource, /Estado de Resultados/);
 assert.match(pageSource, /Flujo de Caja bancario/);
 assert.match(pageSource, /Nueva cuenta/);
 assert.match(pageSource, /Factura, pago, movimiento bancario, conciliación y asiento/);
+assert.match(pageSource, /Carga histórica con respaldo/);
+assert.match(pageSource, /2026-01-01/);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -77,10 +85,21 @@ await db.exec(`
 const transactionStart = migration.indexOf("begin;");
 await db.exec(migration.slice(0, transactionStart));
 await db.exec(migration.slice(transactionStart));
+await db.exec(factoHistoryMigration);
 
 const entity = await db.query(`select id from public.accounting_entities where tax_id='77.724.382-9'`);
 assert.equal(entity.rows.length, 1);
 const entityId = entity.rows[0].id;
+
+const syncRun = await db.query(`
+  insert into public.accounting_facto_sync_runs(entity_id,from_date,to_date,status,requested_by)
+  values ($1,'2026-01-01','2026-08-27','completed',$2)
+  returning id
+`, [entityId, adminId]);
+assert.ok(syncRun.rows[0].id);
+const syncRange = await db.query(`select to_char(from_date,'YYYY-MM-DD') from_date,to_char(to_date,'YYYY-MM-DD') to_date,status from public.accounting_facto_sync_runs where id=$1`, [syncRun.rows[0].id]);
+assert.equal(syncRange.rows[0].from_date, "2026-01-01");
+assert.equal(syncRange.rows[0].to_date, "2026-08-27");
 
 const accounts = await db.query(`
   select id, code from public.accounting_accounts

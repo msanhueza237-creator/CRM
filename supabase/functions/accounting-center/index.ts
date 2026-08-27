@@ -30,7 +30,7 @@ Deno.serve(async (request) => {
     }
     if (route === "facto/sync" && request.method === "POST") {
       requirePermission(profile, "import");
-      return json(await syncFacto(rest, profile, requestId), 200, request);
+      return json(await syncFacto(rest, profile, requestId, await readJson(request)), 200, request);
     }
     if (route === "foreign-trade/sync" && request.method === "POST") {
       requirePermission(profile, "import");
@@ -112,7 +112,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   const entity = entities[0];
   if (!entity) throw new HttpError(409, "Falta aplicar la migración accounting_center.sql.");
   const entityId = String(entity.id);
-  const [accounts, periods, bankAccounts, bankTransactions, sources, entries, receivables, payables, checks, controls, batches] = await Promise.all([
+  const [accounts, periods, bankAccounts, bankTransactions, sources, entries, receivables, payables, checks, controls, batches, factoSyncRuns] = await Promise.all([
     selectRows(rest, `accounting_accounts?select=*&entity_id=eq.${entityId}&order=code.asc`),
     selectRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
@@ -124,11 +124,12 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     selectRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
     selectRows(rest, `accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
     selectRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=50`),
+    selectRows(rest, `accounting_facto_sync_runs?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=24`),
   ]);
   const summary = await rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: new Date().toISOString().slice(0, 10) });
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, sources, entries,
-    receivables, payables, checks, controls, batches, summary,
+    receivables, payables, checks, controls, batches, factoSyncRuns, summary,
     profile: { role: profile.role, permissions: [...rolePermissions[profile.role]] },
   };
 }
@@ -182,102 +183,234 @@ async function createAccount(rest: RestClient, profile: Profile, payload: JsonRe
   return { id: String(account.id) };
 }
 
-async function syncFacto(rest: RestClient, profile: Profile, requestId: string) {
+async function syncFacto(rest: RestClient, profile: Profile, requestId: string, payload: JsonRecord) {
   const entity = (await selectRows(rest, "accounting_entities?select=id&active=eq.true&order=created_at.asc&limit=1"))[0];
   if (!entity) throw new HttpError(409, "Falta aplicar la migración contable.");
   const entityId = String(entity.id);
-  const resources = ["documents", "purchase_documents", "document_details", "purchase_document_details", "payments", "inventory_snapshots"];
-  const records = await selectRows(rest,
-    `integration_records?select=id,resource,external_id,payload,observed_at,updated_at&provider=eq.facto&resource=in.(${resources.join(",")})&order=updated_at.asc&limit=5000`,
-  );
-  let accepted = 0;
-  let receivables = 0;
-  let payables = 0;
-  let controls = 0;
-  for (const record of records) {
-    const resource = String(record.resource);
-    if (!["documents", "purchase_documents", "document_details", "purchase_document_details"].includes(resource)) continue;
-    const payload = asObject(record.payload);
-    const purchase = resource.includes("purchase");
-    const externalId = String(record.external_id);
-    const sourceKey = `${resource}:${externalId}`;
-    const normalized = normalizeFactoDocument(payload, purchase, externalId);
-    const sourceRows = await upsertRows(rest, "accounting_source_documents", [{
-      entity_id: entityId,
-      source_type: "FACTO",
-      source_id: String(record.id),
-      source_key: sourceKey,
-      document_type: normalized.documentType,
-      external_id: externalId,
-      folio: normalized.folio,
-      counterpart_tax_id: normalized.taxId,
-      counterpart_name: normalized.counterpart,
-      issued_on: normalized.issuedOn,
-      due_on: normalized.dueOn,
-      currency: normalized.currency,
-      exchange_rate: normalized.exchangeRate,
-      net_amount: normalized.net,
-      tax_amount: normalized.tax,
-      exempt_amount: normalized.exempt,
-      total_amount: normalized.total,
-      total_clp: normalized.totalClp,
-      status: normalized.errors.length ? "inconsistent" : "validated",
-      data_quality: normalized.errors.length ? "inconsistent" : "validated",
-      raw_payload: payload,
-      source_created_at: normalized.sourceCreatedAt,
-      source_updated_at: record.updated_at,
-      observed_at: record.observed_at,
-      updated_at: new Date().toISOString(),
-    }], "entity_id,source_type,source_key");
-    const source = sourceRows[0];
-    if (!source) continue;
-    accepted += 1;
-    if (normalized.totalClp <= 0 || !normalized.issuedOn || !normalized.counterpart) {
-      controls += 1;
-      continue;
+  const fromDate = requiredDate(payload.fromDate);
+  const toDate = requiredDate(payload.toDate);
+  if (fromDate > toDate) throw new HttpError(400, "La fecha inicial no puede ser posterior a la fecha final.");
+  const resources = ["documents", "purchase_documents", "document_details", "purchase_document_details"];
+  const run = (await insertRows(rest, "accounting_facto_sync_runs", [{
+    entity_id: entityId,
+    from_date: fromDate,
+    to_date: toDate,
+    status: "running",
+    requested_by: profile.id,
+    summary: { request_id: requestId, source: "integration_records/facto", accounting_policy: "document_only" },
+  }]))[0];
+  const runId = String(run.id);
+
+  try {
+    const records = await selectAllRows(rest,
+      `integration_records?select=id,resource,external_id,payload,observed_at,updated_at&provider=eq.facto&resource=in.(${resources.join(",")})&order=updated_at.asc`,
+    );
+    const prepared = records.map((record) => {
+      const resource = String(record.resource);
+      const purchase = resource.includes("purchase");
+      const externalId = String(record.external_id || record.id);
+      const normalized = normalizeFactoDocument(asObject(record.payload), purchase, externalId);
+      return {
+        record,
+        resource,
+        purchase,
+        externalId,
+        normalized,
+        canonicalKey: `facto:${purchase ? "purchase" : "sale"}:${externalId}`,
+      };
+    });
+    const selectedByKey = new Map<string, typeof prepared[number]>();
+    for (const item of prepared) {
+      const selected = selectedByKey.get(item.canonicalKey);
+      const itemScore = (item.resource.includes("details") ? 2 : 0) + (item.record.payload ? 1 : 0);
+      const selectedScore = selected ? (selected.resource.includes("details") ? 2 : 0) + (selected.record.payload ? 1 : 0) : -1;
+      if (!selected || itemScore >= selectedScore) selectedByKey.set(item.canonicalKey, item);
     }
-    const subledgerTable = purchase ? "accounting_payables" : "accounting_receivables";
-    const row = purchase ? {
-      entity_id: entityId,
-      source_document_id: source.id,
-      supplier_tax_id: normalized.taxId,
-      supplier_name: normalized.counterpart,
-      document_number: normalized.folio || externalId,
-      issued_on: normalized.issuedOn,
-      due_on: normalized.dueOn,
-      currency: normalized.currency,
-      exchange_rate: normalized.exchangeRate,
-      original_amount: normalized.total,
-      original_amount_clp: normalized.totalClp,
-      updated_at: new Date().toISOString(),
-    } : {
-      entity_id: entityId,
-      source_document_id: source.id,
-      customer_tax_id: normalized.taxId,
-      customer_name: normalized.counterpart,
-      document_number: normalized.folio || externalId,
-      issued_on: normalized.issuedOn,
-      due_on: normalized.dueOn,
-      currency: normalized.currency,
-      exchange_rate: normalized.exchangeRate,
-      original_amount: normalized.total,
-      original_amount_clp: normalized.totalClp,
-      updated_at: new Date().toISOString(),
-    };
-    await upsertRows(rest, subledgerTable, [row], "entity_id,source_document_id");
-    if (purchase) {
-      payables += 1;
-    } else {
-      receivables += 1;
+
+    const existingSources = await selectAllRows(rest,
+      `accounting_source_documents?select=id,source_key,external_id,document_type&entity_id=eq.${entityId}&source_type=eq.FACTO&order=created_at.asc`,
+    );
+    const existingByKey = new Map(existingSources.map((source) => [String(source.source_key), source]));
+    const existingByExternal = new Map<string, JsonRecord>();
+    for (const source of existingSources) {
+      const externalId = String(source.external_id || "");
+      const purchase = String(source.source_key || "").includes("purchase") || String(source.document_type || "").includes("purchase");
+      const directionKey = `${purchase ? "purchase" : "sale"}:${externalId}`;
+      if (externalId && !existingByExternal.has(directionKey)) existingByExternal.set(directionKey, source);
     }
+
+    let accepted = 0;
+    let inserted = 0;
+    let updated = 0;
+    let skipped = 0;
+    let inconsistent = 0;
+    let receivables = 0;
+    let payables = 0;
+    let controls = 0;
+    const sourceDocumentByCanonical = new Map<string, string>();
+    const workItems: Array<(typeof prepared)[number] & { sourceKey: string; previous: JsonRecord | undefined }> = [];
+    for (const item of selectedByKey.values()) {
+      const { normalized } = item;
+      if (!normalized.issuedOn || normalized.issuedOn < fromDate || normalized.issuedOn > toDate) {
+        skipped += 1;
+        if (!normalized.issuedOn) inconsistent += 1;
+        continue;
+      }
+      const previous = existingByKey.get(item.canonicalKey) || existingByExternal.get(`${item.purchase ? "purchase" : "sale"}:${item.externalId}`);
+      const sourceKey = previous ? String(previous.source_key) : item.canonicalKey;
+      workItems.push({ ...item, sourceKey, previous });
+      accepted += 1;
+      if (previous) updated += 1;
+      else inserted += 1;
+      if (normalized.errors.length) inconsistent += 1;
+    }
+
+    const sourceRows: JsonRecord[] = [];
+    const now = new Date().toISOString();
+    for (let index = 0; index < workItems.length; index += 100) {
+      const batch = workItems.slice(index, index + 100).map(({ record, externalId, normalized, sourceKey }) => ({
+        entity_id: entityId,
+        source_type: "FACTO",
+        source_id: String(record.id),
+        source_key: sourceKey,
+        document_type: normalized.documentType,
+        external_id: externalId,
+        folio: normalized.folio,
+        counterpart_tax_id: normalized.taxId,
+        counterpart_name: normalized.counterpart,
+        issued_on: normalized.issuedOn,
+        due_on: normalized.dueOn,
+        currency: normalized.currency,
+        exchange_rate: normalized.exchangeRate,
+        net_amount: normalized.net,
+        tax_amount: normalized.tax,
+        exempt_amount: normalized.exempt,
+        total_amount: normalized.total,
+        total_clp: normalized.totalClp,
+        status: normalized.errors.length ? "inconsistent" : "validated",
+        data_quality: normalized.errors.length ? "inconsistent" : "validated",
+        raw_payload: record.payload,
+        source_created_at: normalized.sourceCreatedAt,
+        source_updated_at: record.updated_at,
+        observed_at: record.observed_at,
+        updated_at: now,
+      }));
+      sourceRows.push(...await upsertRows(rest, "accounting_source_documents", batch, "entity_id,source_type,source_key"));
+    }
+    const sourceByKey = new Map(sourceRows.map((source) => [String(source.source_key), source]));
+    const receivableRows: JsonRecord[] = [];
+    const payableRows: JsonRecord[] = [];
+    for (const item of workItems) {
+      const source = sourceByKey.get(item.sourceKey);
+      if (!source) continue;
+      sourceDocumentByCanonical.set(item.canonicalKey, String(source.id));
+      const { normalized } = item;
+      if (normalized.totalClp <= 0 || !normalized.counterpart) {
+        controls += 1;
+        continue;
+      }
+      const row = item.purchase ? {
+        entity_id: entityId,
+        source_document_id: source.id,
+        supplier_tax_id: normalized.taxId,
+        supplier_name: normalized.counterpart,
+        document_number: normalized.folio || item.externalId,
+        issued_on: normalized.issuedOn,
+        due_on: normalized.dueOn,
+        currency: normalized.currency,
+        exchange_rate: normalized.exchangeRate,
+        original_amount: normalized.total,
+        original_amount_clp: normalized.totalClp,
+        updated_at: now,
+      } : {
+        entity_id: entityId,
+        source_document_id: source.id,
+        customer_tax_id: normalized.taxId,
+        customer_name: normalized.counterpart,
+        document_number: normalized.folio || item.externalId,
+        issued_on: normalized.issuedOn,
+        due_on: normalized.dueOn,
+        currency: normalized.currency,
+        exchange_rate: normalized.exchangeRate,
+        original_amount: normalized.total,
+        original_amount_clp: normalized.totalClp,
+        updated_at: now,
+      };
+      if (item.purchase) payableRows.push(row);
+      else receivableRows.push(row);
+    }
+    for (let index = 0; index < receivableRows.length; index += 100) {
+      await upsertRows(rest, "accounting_receivables", receivableRows.slice(index, index + 100), "entity_id,source_document_id");
+    }
+    for (let index = 0; index < payableRows.length; index += 100) {
+      await upsertRows(rest, "accounting_payables", payableRows.slice(index, index + 100), "entity_id,source_document_id");
+    }
+    receivables = receivableRows.length;
+    payables = payableRows.length;
+
+    const backupRows: JsonRecord[] = await Promise.all(prepared.map(async (item) => {
+      const selected = selectedByKey.get(item.canonicalKey) === item;
+      const inRange = Boolean(item.normalized.issuedOn && item.normalized.issuedOn >= fromDate && item.normalized.issuedOn <= toDate);
+      const decision = !item.normalized.issuedOn ? "invalid" : !inRange ? "out_of_range" : selected ? "included" : "superseded";
+      return {
+        run_id: runId,
+        integration_record_id: item.record.id,
+        resource: item.resource,
+        external_id: item.externalId,
+        canonical_key: item.canonicalKey,
+        document_date: item.normalized.issuedOn,
+        observed_at: item.record.observed_at,
+        payload_hash: await sha256Text(JSON.stringify(item.record.payload || {})),
+        raw_payload: item.record.payload || {},
+        decision,
+        source_document_id: sourceDocumentByCanonical.get(item.canonicalKey) || null,
+        validation_errors: item.normalized.errors,
+      };
+    }));
+    for (let index = 0; index < backupRows.length; index += 100) {
+      await insertRows(rest, "accounting_facto_sync_records", backupRows.slice(index, index + 100));
+    }
+
+    const observed = records.map((record) => dateTimeValue(record.observed_at)).filter(Boolean).sort() as string[];
+    const status = inconsistent > 0 ? "partial" : "completed";
+    await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
+      status,
+      source_records: records.length,
+      in_range_records: accepted,
+      inserted_records: inserted,
+      updated_records: updated,
+      skipped_records: skipped,
+      inconsistent_records: inconsistent,
+      receivables,
+      payables,
+      source_observed_from: observed[0] || null,
+      source_observed_to: observed[observed.length - 1] || null,
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      summary: {
+        request_id: requestId,
+        source: "integration_records/facto",
+        accounting_policy: "document_only",
+        backups: backupRows.length,
+        controls,
+      },
+    });
+    await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+    await insertRows(rest, "accounting_audit_events", [{
+      entity_id: entityId, actor_id: profile.id, action: "facto.history_synced", entity_type: "facto_sync_run",
+      entity_id_text: runId, correlation_id: requestIdToUuid(requestId),
+      new_value: { from_date: fromDate, to_date: toDate, source_records: records.length, accepted, inserted, updated, skipped, inconsistent, receivables, payables, backups: backupRows.length },
+    }]);
+    return { runId, status, fromDate, toDate, read: records.length, accepted, inserted, updated, skipped, inconsistent, receivables, payables, controls, backups: backupRows.length };
+  } catch (error) {
+    await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
+      status: "failed",
+      error_message: error instanceof Error ? error.message.slice(0, 1000) : "Error inesperado.",
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    }).catch(() => []);
+    throw error;
   }
-  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
-  await insertRows(rest, "accounting_audit_events", [{
-    entity_id: entityId, actor_id: profile.id, action: "facto.synced", entity_type: "integration",
-    entity_id_text: "facto", correlation_id: requestIdToUuid(requestId),
-    new_value: { records: records.length, accepted, receivables, payables, controls },
-  }]);
-  return { read: records.length, accepted, receivables, payables, controls };
 }
 
 async function syncForeignTrade(rest: RestClient, profile: Profile, requestId: string) {
@@ -684,30 +817,37 @@ async function report(rest: RestClient, url: URL) {
 }
 
 function normalizeFactoDocument(payload: JsonRecord, purchase: boolean, externalId: string) {
-  const counterpartObject = asObject(first(payload, ["customer","client","supplier","provider","receptor","emisor"]));
-  const currency = String(first(payload, ["currency","moneda","currency_code"]) || "CLP").toUpperCase().slice(0, 3);
-  const rate = numeric(first(payload, ["exchange_rate","tipo_cambio","dolar"])) || (currency === "CLP" ? 1 : 0);
-  const net = numeric(first(payload, ["net","net_amount","monto_neto","total_neto"]));
-  const tax = numeric(first(payload, ["tax","vat","iva","monto_iva"]));
-  const exempt = numeric(first(payload, ["exempt","exempt_amount","monto_exento"]));
-  const total = numeric(first(payload, ["total","total_amount","monto_total","amount"]));
-  const counterpart = String(first(counterpartObject, ["name","business_name","razon_social"]) || first(payload, purchase ? ["supplier_name","provider_name","razon_social"] : ["customer_name","client_name","razon_social"]) || "").trim();
+  const document = {
+    ...payload,
+    ...asObject(payload.data),
+    ...asObject(payload.document),
+    ...asObject(payload.header),
+    ...asObject(asObject(payload.data).document),
+  };
+  const counterpartObject = asObject(first(document, ["customer","client","supplier","provider","receptor","emisor"]));
+  const currency = String(first(document, ["currency","moneda","currency_code"]) || "CLP").toUpperCase().slice(0, 3);
+  const rate = numeric(first(document, ["exchange_rate","tipo_cambio","dolar"])) || (currency === "CLP" ? 1 : 0);
+  const net = numeric(first(document, ["net","net_amount","monto_neto","total_neto"]));
+  const tax = numeric(first(document, ["tax","vat","iva","monto_iva"]));
+  const exempt = numeric(first(document, ["exempt","exempt_amount","monto_exento"]));
+  const total = numeric(first(document, ["total","total_amount","monto_total","amount"]));
+  const counterpart = String(first(counterpartObject, ["name","business_name","razon_social"]) || first(document, purchase ? ["supplier_name","provider_name","razon_social"] : ["customer_name","client_name","razon_social"]) || "").trim();
   const errors: string[] = [];
   if (!counterpart) errors.push("counterpart_missing");
   if (!total) errors.push("total_missing");
   if (currency !== "CLP" && !rate) errors.push("exchange_rate_missing");
   return {
-    documentType: String(first(payload, ["document_type","type","tipo_documento"]) || (purchase ? "purchase_invoice" : "sales_invoice")),
-    folio: String(first(payload, ["folio","number","document_number","numero"]) || externalId),
-    taxId: String(first(counterpartObject, ["tax_id","rut","document_number"]) || first(payload, purchase ? ["supplier_tax_id","provider_tax_id","rut"] : ["customer_tax_id","client_tax_id","rut"]) || ""),
+    documentType: String(first(document, ["document_type","type","tipo_documento"]) || (purchase ? "purchase_invoice" : "sales_invoice")),
+    folio: String(first(document, ["folio","number","document_number","numero"]) || externalId),
+    taxId: String(first(counterpartObject, ["tax_id","rut","document_number"]) || first(document, purchase ? ["supplier_tax_id","provider_tax_id","rut"] : ["customer_tax_id","client_tax_id","rut"]) || ""),
     counterpart,
-    issuedOn: dateValue(first(payload, ["issued_on","issue_date","date","fecha_emision","fecha"])),
-    dueOn: dateValue(first(payload, ["due_on","due_date","fecha_vencimiento"])),
+    issuedOn: dateValue(first(document, ["issued_on","issue_date","date","fecha_emision","fecha"])),
+    dueOn: dateValue(first(document, ["due_on","due_date","fecha_vencimiento"])),
     currency,
     exchangeRate: rate || 1,
     net, tax, exempt, total,
     totalClp: total * (rate || 1),
-    sourceCreatedAt: dateTimeValue(first(payload, ["created_at","createdAt","fecha_creacion"])),
+    sourceCreatedAt: dateTimeValue(first(document, ["created_at","createdAt","fecha_creacion"])),
     errors,
   };
 }
@@ -761,6 +901,17 @@ async function selectRows(rest: RestClient, path: string): Promise<JsonRecord[]>
   const response = await fetch(`${rest.url}/rest/v1/${path}`, { headers: serviceHeaders(rest) });
   if (!response.ok) throw new HttpError(response.status, `Error leyendo contabilidad: ${(await response.text()).slice(0, 400)}`);
   return await response.json() as JsonRecord[];
+}
+
+async function selectAllRows(rest: RestClient, path: string, pageSize = 1000): Promise<JsonRecord[]> {
+  const rows: JsonRecord[] = [];
+  const separator = path.includes("?") ? "&" : "?";
+  for (let offset = 0; offset < 50000; offset += pageSize) {
+    const page = await selectRows(rest, `${path}${separator}limit=${pageSize}&offset=${offset}`);
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
 }
 
 async function insertRows(rest: RestClient, table: string, rows: JsonRecord[]) {
@@ -856,12 +1007,21 @@ function numeric(value: unknown) {
   return Number.isFinite(number) ? number : 0;
 }
 function first(object: JsonRecord, keys: string[]) { for (const key of keys) if (object[key] !== undefined && object[key] !== null && object[key] !== "") return object[key]; return null; }
-function dateValue(value: unknown) { const text = String(value || "").slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null; }
+function dateValue(value: unknown) {
+  const text = String(value || "").trim();
+  const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const local = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/);
+  if (local) return `${local[3]}-${local[2].padStart(2, "0")}-${local[1].padStart(2, "0")}`;
+  const parsed = Date.parse(text);
+  return Number.isNaN(parsed) ? null : new Date(parsed).toISOString().slice(0, 10);
+}
 function dateTimeValue(value: unknown) { const parsed = Date.parse(String(value || "")); return Number.isNaN(parsed) ? null : new Date(parsed).toISOString(); }
 function validCurrency(value: unknown) { const text = String(value || "").trim().toUpperCase(); return /^[A-Z]{3}$/.test(text) ? text : null; }
 function normalizeText(value: string) { return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
 function sourceType(profile: string) { return profile === "banco_estado" ? "BANCO_ESTADO" : profile === "mercado_pago" ? "MERCADO_PAGO" : "SCOTIABANK"; }
 async function sha256Bytes(bytes: Uint8Array) { const digest = await crypto.subtle.digest("SHA-256", bytes); return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join(""); }
+async function sha256Text(value: string) { return sha256Bytes(new TextEncoder().encode(value)); }
 function requestIdToUuid(value: string) { return /^[0-9a-f-]{36}$/i.test(value) ? value : crypto.randomUUID(); }
 
 class HttpError extends Error { constructor(public status: number, message: string) { super(message); } }

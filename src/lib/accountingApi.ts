@@ -1,6 +1,7 @@
 import { getSupabaseFunctionUrl, isSupabaseConfigured, supabase } from "./supabase";
 import type {
   AccountingBootstrap,
+  AccountingFactoSyncResult,
   AccountingImportPreview,
   AccountingJournalDraft,
   AccountingReconciliationCandidate,
@@ -33,8 +34,8 @@ export function getAccountingBootstrap() {
   return accountingRequest<AccountingBootstrap>("bootstrap");
 }
 
-export function syncAccountingFacto() {
-  return accountingRequest<{ accepted: number; receivables: number; payables: number; controls: number }>("facto/sync", { method: "POST", body: {} });
+export function syncAccountingFacto(input: { fromDate: string; toDate: string }) {
+  return accountingRequest<AccountingFactoSyncResult>("facto/sync", { method: "POST", body: input });
 }
 
 export function syncAccountingForeignTrade() {

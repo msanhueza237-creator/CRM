@@ -160,6 +160,43 @@ export interface AccountingImportBatch {
   created_at: string;
 }
 
+export interface AccountingFactoSyncRun {
+  id: string;
+  from_date: string;
+  to_date: string;
+  status: "running" | "completed" | "partial" | "failed" | "cancelled";
+  source_records: number;
+  in_range_records: number;
+  inserted_records: number;
+  updated_records: number;
+  skipped_records: number;
+  inconsistent_records: number;
+  receivables: number;
+  payables: number;
+  source_observed_from: string | null;
+  source_observed_to: string | null;
+  error_message: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface AccountingFactoSyncResult {
+  runId: string;
+  status: AccountingFactoSyncRun["status"];
+  fromDate: string;
+  toDate: string;
+  read: number;
+  accepted: number;
+  inserted: number;
+  updated: number;
+  skipped: number;
+  inconsistent: number;
+  receivables: number;
+  payables: number;
+  controls: number;
+  backups: number;
+}
+
 export interface AccountingSummary {
   as_of: string;
   bank_clp: number;
@@ -188,6 +225,7 @@ export interface AccountingBootstrap {
   checks: AccountingCheck[];
   controls: AccountingControlFinding[];
   batches: AccountingImportBatch[];
+  factoSyncRuns: AccountingFactoSyncRun[];
   summary: AccountingSummary;
   profile: { role: AccountingRole; permissions: string[] };
 }
