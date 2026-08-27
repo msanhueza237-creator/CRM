@@ -593,10 +593,11 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
       rest,
       `accounting_exchange_rates?select=rate,rate_date,source,status&from_currency=eq.${preview.currency}&to_currency=eq.CLP${latestTransactionDate ? `&rate_date=lte.${latestTransactionDate}` : ""}&order=rate_date.desc,created_at.desc&limit=1`,
     ))[0] || null;
-  const existingFingerprints = preview.rows.length
-    ? await selectRows(rest, `accounting_bank_transactions?select=fingerprint&bank_account_id=eq.${bankAccount.id}&fingerprint=in.(${preview.rows.map((row) => row.fingerprint).join(",")})`)
-    : [];
-  const duplicateSet = new Set(existingFingerprints.map((row) => String(row.fingerprint)));
+  const duplicateSet = await existingBankFingerprints(
+    rest,
+    String(bankAccount.id),
+    preview.rows.map((row) => row.fingerprint),
+  );
   const valid = preview.rows.filter((row) => !row.errors.length && !duplicateSet.has(row.fingerprint));
   const invalid = preview.rows.filter((row) => row.errors.length);
   const duplicates = preview.rows.filter((row) => duplicateSet.has(row.fingerprint));
@@ -630,6 +631,24 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
     summary: { total: preview.rows.length, new: valid.length, duplicates: duplicates.length, errors: invalid.length },
     rows: preview.rows.slice(0, 300),
   };
+}
+
+async function existingBankFingerprints(rest: RestClient, bankAccountId: string, fingerprints: string[]) {
+  const duplicateSet = new Set<string>();
+  const uniqueFingerprints = [...new Set(fingerprints.filter(Boolean))];
+
+  // PostgREST receives filters in the URL. Large bank statements can easily
+  // exceed the proxy URI limit when every SHA-256 fingerprint is sent at once.
+  for (let index = 0; index < uniqueFingerprints.length; index += 40) {
+    const chunk = uniqueFingerprints.slice(index, index + 40);
+    const rows = await selectRows(
+      rest,
+      `accounting_bank_transactions?select=fingerprint&bank_account_id=eq.${bankAccountId}&fingerprint=in.(${chunk.join(",")})`,
+    );
+    rows.forEach((row) => duplicateSet.add(String(row.fingerprint)));
+  }
+
+  return duplicateSet;
 }
 
 async function previewFactoExcel(rest: RestClient, profile: Profile, payload: JsonRecord) {

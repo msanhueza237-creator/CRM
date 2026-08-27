@@ -35,6 +35,8 @@ assert.match(controlsRefreshFix, /accounting_refresh_controls/);
 assert.match(edgeSource, /route === "foreign-trade\/sync"/);
 assert.match(edgeSource, /route === "accounts\/create"/);
 assert.match(edgeSource, /route === "imports\/preview"/);
+assert.match(edgeSource, /existingBankFingerprints/);
+assert.match(edgeSource, /index \+= 40/);
 assert.match(edgeSource, /suggestedExchangeRate/);
 assert.match(edgeSource, /Ingresa un tipo de cambio .*\/CLP válido/);
 assert.match(edgeSource, /route === "reconciliation\/confirm"/);
@@ -61,6 +63,7 @@ assert.match(pageSource, /Documentos pendientes \/ impagos/);
 assert.match(pageSource, /Cheques Facto · flujo BancoEstado/);
 assert.match(pageSource, /Importar cartola real/);
 assert.match(pageSource, /Descargar cartola original/);
+assert.match(pageSource, /accounting-bank-history/);
 assert.match(pageSource, /Se conservará el monto original y se guardará su equivalente contable en CLP/);
 
 const db = new PGlite();

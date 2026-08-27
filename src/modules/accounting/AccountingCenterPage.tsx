@@ -382,7 +382,53 @@ function BankImportView({ data, busy, runAction }: ActionViewProps) {
     } catch (caught) { setLocalError(caught instanceof Error ? caught.message : "No se pudo analizar la cartola."); }
   }
   const bankBatches = data.batches.filter((batch) => ["SCOTIABANK", "BANCO_ESTADO", "MERCADO_PAGO"].includes(batch.source_type));
-  return <div className="accounting-bank-layout"><section className="panel accounting-import-card"><div className="accounting-panel-heading"><div><p>Evidencia bancaria original</p><h2>Importar cartola real</h2><span>Scotiabank, BancoEstado y Mercado Pago tienen lectores independientes. Los movimientos de caja Facto se cargan en Fuentes.</span></div><Upload size={24} /></div><label>Institución / formato<select value={profile} onChange={(event) => setProfile(event.target.value as typeof profile)}><option value="auto">Detectar automáticamente</option><option value="scotiabank">Scotiabank</option><option value="banco_estado">BancoEstado</option><option value="mercado_pago">Mercado Pago</option></select></label><label className="accounting-file-drop"><FileSpreadsheet size={30} /><strong>{file?.name || "Selecciona una cartola Excel"}</strong><span>XLS, XLSX o CSV · se conserva el original</span><input accept=".xls,.xlsx,.csv" type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>{localError ? <div className="accounting-local-error"><AlertTriangle size={16} />{localError}</div> : null}<button className="primary-button" disabled={!file || Boolean(busy)} type="button" onClick={() => void prepare()}><Search size={17} /> Previsualizar y validar</button></section><section className="panel accounting-import-history"><div className="accounting-panel-heading"><div><p>Auditoría bancaria</p><h2>Cartolas importadas</h2></div></div>{bankBatches.length ? <div className="accounting-history-list">{bankBatches.map((batch) => <article key={batch.id}><FileSpreadsheet className="accounting-history-icon" size={18} /><div className="accounting-history-main"><strong title={batch.file_name}>{batch.file_name}</strong><span>{humanize(batch.source_type)} · {dateTime(batch.created_at)}</span></div><small>{batch.new_count} nuevos · {batch.duplicate_count} duplicados</small><div className="accounting-history-actions"><Status value={humanize(batch.status)} tone={batch.status === "imported" ? "success" : batch.status === "failed" ? "danger" : "review"} />{batch.storage_path ? <button aria-label={`Descargar ${batch.file_name}`} className="icon-button" title="Descargar cartola original" type="button" onClick={() => void runAction(`download-${batch.id}`, () => downloadAccountingEvidence(batch.storage_path!, batch.file_name), "Cartola descargada.")}><Download size={16} /></button> : null}</div></article>)}</div> : <Empty icon={FileSpreadsheet} text="Aún no hay cartolas bancarias importadas." />}</section>{preview ? <ImportPreviewDialog preview={preview} busy={busy} close={() => setPreview(null)} runAction={runAction} /> : null}</div>;
+  return <div className="accounting-bank-layout">
+    <section className="panel accounting-import-card">
+      <div className="accounting-panel-heading">
+        <div>
+          <p>Evidencia bancaria original</p>
+          <h2>Importar cartola real</h2>
+          <span>Scotiabank, BancoEstado y Mercado Pago tienen lectores independientes. Los movimientos de caja Facto se cargan en Fuentes.</span>
+        </div>
+        <Upload size={24} />
+      </div>
+      <label>Institución / formato
+        <select value={profile} onChange={(event) => setProfile(event.target.value as typeof profile)}>
+          <option value="auto">Detectar automáticamente</option>
+          <option value="scotiabank">Scotiabank</option>
+          <option value="banco_estado">BancoEstado</option>
+          <option value="mercado_pago">Mercado Pago</option>
+        </select>
+      </label>
+      <label className="accounting-file-drop">
+        <FileSpreadsheet size={30} />
+        <strong>{file?.name || "Selecciona una cartola Excel"}</strong>
+        <span>XLS, XLSX o CSV · se conserva el original</span>
+        <input accept=".xls,.xlsx,.csv" type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+      </label>
+      {localError ? <div className="accounting-local-error"><AlertTriangle size={16} />{localError}</div> : null}
+      <button className="primary-button" disabled={!file || Boolean(busy)} type="button" onClick={() => void prepare()}><Search size={17} /> Previsualizar y validar</button>
+    </section>
+
+    <section className="panel accounting-import-history accounting-bank-history">
+      <div className="accounting-panel-heading">
+        <div><p>Auditoría bancaria</p><h2>Cartolas importadas</h2></div>
+      </div>
+      {bankBatches.length ? <div className="accounting-history-list">{bankBatches.map((batch) => <article key={batch.id}>
+        <FileSpreadsheet className="accounting-history-icon" size={18} />
+        <div className="accounting-history-main">
+          <strong title={batch.file_name}>{batch.file_name}</strong>
+          <span>{humanize(batch.source_type)} · {dateTime(batch.created_at)}</span>
+        </div>
+        <small>{batch.new_count} nuevos · {batch.duplicate_count} duplicados</small>
+        <div className="accounting-history-actions">
+          <Status value={humanize(batch.status)} tone={batch.status === "imported" ? "success" : batch.status === "failed" ? "danger" : "review"} />
+          {batch.storage_path ? <button aria-label={`Descargar ${batch.file_name}`} className="icon-button" title="Descargar cartola original" type="button" onClick={() => void runAction(`download-${batch.id}`, () => downloadAccountingEvidence(batch.storage_path!, batch.file_name), "Cartola descargada.")}><Download size={16} /></button> : null}
+        </div>
+      </article>)}</div> : <Empty icon={FileSpreadsheet} text="Aún no hay cartolas bancarias importadas." />}
+    </section>
+    {preview ? <ImportPreviewDialog preview={preview} busy={busy} close={() => setPreview(null)} runAction={runAction} /> : null}
+  </div>;
 }
 
 function ImportPreviewDialog({ preview, busy, close, runAction }: { preview: AccountingImportPreview; busy: string; close: () => void; runAction: ActionRunner }) {

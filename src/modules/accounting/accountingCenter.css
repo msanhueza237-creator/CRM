@@ -606,6 +606,45 @@
 .accounting-bank-layout,
 .accounting-reconcile-layout { align-items: start; }
 
+.accounting-bank-layout {
+  grid-template-columns: minmax(0, 1.35fr) minmax(380px, 0.85fr);
+}
+
+.accounting-bank-history {
+  overflow: hidden;
+  padding: 18px;
+}
+
+.accounting-bank-history .accounting-panel-heading h2 {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.accounting-bank-history .accounting-history-list article {
+  grid-template-areas:
+    "icon main actions"
+    ". meta actions";
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  align-items: start;
+  gap: 5px 10px;
+}
+
+.accounting-bank-history .accounting-history-icon { grid-area: icon; margin-top: 2px; }
+.accounting-bank-history .accounting-history-main { grid-area: main; }
+.accounting-bank-history .accounting-history-list article > small { grid-area: meta; }
+.accounting-bank-history .accounting-history-actions {
+  grid-area: actions;
+  align-self: center;
+  width: auto;
+}
+
+.accounting-bank-history .accounting-history-main strong {
+  max-width: 100%;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 .accounting-file-drop {
   display: grid;
   place-items: center;
@@ -819,6 +858,17 @@
   .accounting-history-list article > small,
   .accounting-history-list article > .accounting-history-actions { grid-column: 2; }
   .accounting-history-actions { width: 100%; justify-content: space-between; }
+  .accounting-bank-history .accounting-history-list article {
+    grid-template-areas:
+      "icon main"
+      ". meta"
+      ". actions";
+    grid-template-columns: 20px minmax(0, 1fr);
+  }
+  .accounting-bank-history .accounting-history-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
   .accounting-currency-conversion { grid-template-columns: 1fr; }
   .accounting-findings-list article > b { margin-left: 0; }
 }
