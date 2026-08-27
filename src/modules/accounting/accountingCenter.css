@@ -80,6 +80,63 @@
 .accounting-facto-history article small { color: var(--muted); }
 .accounting-facto-history article p { margin: 0; }
 
+.accounting-facto-support-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.78fr) minmax(0, 1.22fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.accounting-profile-help,
+.accounting-table-note {
+  margin: 8px 0 0;
+  color: var(--accounting-muted);
+  font-size: 0.84rem;
+}
+
+.accounting-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(230px, 1.6fr) repeat(4, minmax(135px, 0.8fr));
+  gap: 10px;
+  align-items: end;
+  margin: 16px 0;
+  padding: 14px;
+  border: 1px solid var(--accounting-line);
+  border-radius: 6px;
+  background: var(--accounting-soft);
+}
+
+.accounting-filter-grid > label:not(.accounting-search),
+.accounting-import-card > label:not(.accounting-file-drop) {
+  display: grid;
+  gap: 6px;
+  color: var(--accounting-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.accounting-filter-grid input,
+.accounting-filter-grid select,
+.accounting-import-card select { min-height: 42px; }
+
+.accounting-history-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.accounting-review-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accounting-warn);
+  color: #795007;
+  background: #fff8e8;
+}
+
 @media (max-width: 760px) {
   .accounting-facto-range { grid-template-columns: 1fr 1fr; }
   .accounting-facto-range .primary-button { grid-column: 1 / -1; width: 100%; }
@@ -605,6 +662,9 @@
   .accounting-bank-layout,
   .accounting-reconcile-layout { grid-template-columns: 1fr; }
   .accounting-form-grid.report { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
+  .accounting-facto-support-grid { grid-template-columns: 1fr; }
+  .accounting-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .accounting-filter-grid .accounting-search { grid-column: 1 / -1; }
 }
 
 @media (max-width: 720px) {
@@ -626,6 +686,8 @@
   .accounting-entry-line { grid-template-columns: 1fr; }
   .accounting-entry-line .small-command { justify-self: end; }
   .accounting-preview-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .accounting-filter-grid { grid-template-columns: 1fr; padding: 11px; }
+  .accounting-filter-grid .accounting-search { grid-column: auto; }
   .accounting-modal-backdrop { padding: 0; place-items: end center; }
   .accounting-modal { width: 100%; max-height: calc(100dvh - 24px); border-radius: 6px 6px 0 0; padding: 16px; }
   .accounting-modal-actions { position: sticky; bottom: -16px; z-index: 2; margin: 16px -16px -16px; padding: 12px 16px; background: #fff; border-top: 1px solid var(--accounting-line); }
@@ -678,6 +740,7 @@
   .accounting-center-table td > .accounting-status { justify-self: end; }
   .accounting-source-list article,
   .accounting-history-list article { align-items: flex-start; flex-direction: column; }
+  .accounting-history-actions { width: 100%; justify-content: space-between; }
   .accounting-findings-list article > b { margin-left: 0; }
 }
 

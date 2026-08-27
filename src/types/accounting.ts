@@ -104,6 +104,10 @@ export interface AccountingReceivable {
   original_amount_clp: number;
   paid_amount_clp: number;
   balance_clp: number;
+  reported_paid_amount_clp: number | null;
+  reported_balance_clp: number | null;
+  reported_at: string | null;
+  reported_source_batch_id: string | null;
   status: string;
   currency: string;
 }
@@ -118,6 +122,10 @@ export interface AccountingPayable {
   original_amount_clp: number;
   paid_amount_clp: number;
   balance_clp: number;
+  reported_paid_amount_clp: number | null;
+  reported_balance_clp: number | null;
+  reported_at: string | null;
+  reported_source_batch_id: string | null;
   status: string;
   currency: string;
 }
@@ -132,6 +140,31 @@ export interface AccountingCheck {
   due_on: string;
   deposited_on: string | null;
   status: string;
+  settlement_bank_account_id: string | null;
+  source_status: string | null;
+  import_batch_id: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface AccountingPaymentEvent {
+  id: string;
+  source_document_id: string | null;
+  receivable_id: string | null;
+  payable_id: string | null;
+  import_batch_id: string;
+  expected_bank_account_id: string | null;
+  event_date: string;
+  event_time: string | null;
+  direction: "receipt" | "payment" | "adjustment";
+  document_type: string | null;
+  document_number: string | null;
+  payment_method: string | null;
+  responsible: string | null;
+  amount_clp: number;
+  signed_amount_clp: number;
+  source_profile: string;
+  matching_status: "unmatched" | "linked" | "suggested" | "reconciled" | "ignored";
+  metadata: Record<string, unknown>;
 }
 
 export interface AccountingControlFinding {
@@ -152,6 +185,7 @@ export interface AccountingImportBatch {
   source_type: string;
   import_profile: string;
   file_name: string;
+  storage_path: string | null;
   status: string;
   row_count: number;
   new_count: number;
@@ -202,10 +236,13 @@ export interface AccountingSummary {
   bank_clp: number;
   bank_usd_clp: number;
   receivables: number;
+  receivables_confirmed: number;
   receivables_overdue: number;
   payables: number;
+  payables_confirmed: number;
   payables_overdue: number;
   checks_portfolio: number;
+  payment_events_pending: number;
   unmatched_bank: number;
   open_controls: number;
   pending_entries: number;
@@ -223,6 +260,7 @@ export interface AccountingBootstrap {
   receivables: AccountingReceivable[];
   payables: AccountingPayable[];
   checks: AccountingCheck[];
+  paymentEvents: AccountingPaymentEvent[];
   controls: AccountingControlFinding[];
   batches: AccountingImportBatch[];
   factoSyncRuns: AccountingFactoSyncRun[];
@@ -251,6 +289,39 @@ export interface AccountingImportPreview {
   bankAccount: AccountingBankAccount;
   summary: { total: number; new: number; duplicates: number; errors: number };
   rows: AccountingImportPreviewRow[];
+}
+
+export type AccountingFactoExcelProfile =
+  | "facto_unpaid_documents"
+  | "facto_checks_banco_estado"
+  | "facto_cash"
+  | "facto_cash_scotiabank"
+  | "facto_cash_mercado_pago";
+
+export interface AccountingFactoExcelPreviewRow {
+  row_number: number;
+  kind: "document_balance" | "check" | "payment_event";
+  fingerprint: string;
+  errors: string[];
+  data: Record<string, unknown>;
+}
+
+export interface AccountingFactoExcelPreview {
+  batch: AccountingImportBatch;
+  profile: AccountingFactoExcelProfile;
+  warnings: string[];
+  summary: { total: number; new: number; duplicates: number; errors: number; [key: string]: unknown };
+  rows: AccountingFactoExcelPreviewRow[];
+}
+
+export interface AccountingFactoExcelResult {
+  imported: number;
+  linked: number;
+  unmatched: number;
+  duplicates: number;
+  invalid: number;
+  status: string;
+  existing?: boolean;
 }
 
 export interface AccountingReconciliationCandidate {

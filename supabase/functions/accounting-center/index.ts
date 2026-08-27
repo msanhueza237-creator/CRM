@@ -1,4 +1,5 @@
 import { parseBankWorkbook } from "./bank-parsers.ts";
+import { parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-parsers.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -31,6 +32,14 @@ Deno.serve(async (request) => {
     if (route === "facto/sync" && request.method === "POST") {
       requirePermission(profile, "import");
       return json(await syncFacto(rest, profile, requestId, await readJson(request)), 200, request);
+    }
+    if (route === "facto-excel/preview" && request.method === "POST") {
+      requirePermission(profile, "import");
+      return json(await previewFactoExcel(rest, profile, await readJson(request)), 201, request);
+    }
+    if (route === "facto-excel/confirm" && request.method === "POST") {
+      requirePermission(profile, "import");
+      return json(await confirmFactoExcel(rest, profile, requestId, await readJson(request)), 200, request);
     }
     if (route === "foreign-trade/sync" && request.method === "POST") {
       requirePermission(profile, "import");
@@ -112,24 +121,25 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   const entity = entities[0];
   if (!entity) throw new HttpError(409, "Falta aplicar la migración accounting_center.sql.");
   const entityId = String(entity.id);
-  const [accounts, periods, bankAccounts, bankTransactions, sources, entries, receivables, payables, checks, controls, batches, factoSyncRuns] = await Promise.all([
+  const [accounts, periods, bankAccounts, bankTransactions, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns] = await Promise.all([
     selectRows(rest, `accounting_accounts?select=*&entity_id=eq.${entityId}&order=code.asc`),
     selectRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
     selectRows(rest, `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&order=transaction_date.desc&limit=250`),
-    selectRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast&limit=250`),
+    selectRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast&limit=1000`),
     selectRows(rest, `accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
     selectRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
     selectRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
     selectRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
+    selectRows(rest, `accounting_payment_events?select=*&entity_id=eq.${entityId}&order=event_date.desc,event_time.desc.nullslast&limit=2000`),
     selectRows(rest, `accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
-    selectRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=50`),
+    selectRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
     selectRows(rest, `accounting_facto_sync_runs?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=24`),
   ]);
   const summary = await rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: new Date().toISOString().slice(0, 10) });
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, sources, entries,
-    receivables, payables, checks, controls, batches, factoSyncRuns, summary,
+    receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, summary,
     profile: { role: profile.role, permissions: [...rolePermissions[profile.role]] },
   };
 }
@@ -606,6 +616,253 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
   return { batch, bankAccount, summary: { total: preview.rows.length, new: valid.length, duplicates: duplicates.length, errors: invalid.length }, rows: preview.rows.slice(0, 300) };
 }
 
+async function previewFactoExcel(rest: RestClient, profile: Profile, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  const storagePath = requiredText(payload.storagePath, 800);
+  const fileName = requiredText(payload.fileName, 220);
+  const requestedProfile = requiredText(payload.profile, 80);
+  const bytes = await downloadStorage(rest, storagePath);
+  const fileHash = await sha256Bytes(bytes);
+  const preview = await parseFactoExcelWorkbook(bytes, requestedProfile);
+  const existingBatch = await selectRows(rest,
+    `accounting_import_batches?select=id,status,created_at&entity_id=eq.${entityId}&source_type=eq.${preview.source_type}&file_hash=eq.${fileHash}&limit=1`,
+  );
+  if (existingBatch.length) throw new HttpError(409, "Este respaldo Facto ya fue cargado. El original anterior permanece guardado y no se duplicó.");
+
+  const duplicateSet = await existingFactoExcelDuplicates(rest, entityId, preview);
+  const valid = preview.rows.filter((row) => !row.errors.length && !duplicateSet.has(row.fingerprint));
+  const invalid = preview.rows.filter((row) => row.errors.length);
+  const duplicates = preview.rows.filter((row) => !row.errors.length && duplicateSet.has(row.fingerprint));
+  const batch = (await insertRows(rest, "accounting_import_batches", [{
+    entity_id: entityId,
+    source_type: preview.source_type,
+    import_profile: preview.profile,
+    status: "previewed",
+    file_name: fileName,
+    storage_path: storagePath,
+    file_hash: fileHash,
+    row_count: preview.rows.length,
+    new_count: valid.length,
+    duplicate_count: duplicates.length,
+    error_count: invalid.length,
+    summary: { ...preview.summary, warnings: preview.warnings, evidence_kind: "facto_excel" },
+    imported_by: profile.id,
+  }]))[0];
+  await insertRows(rest, "accounting_import_rows", preview.rows.map((row) => ({
+    batch_id: batch.id,
+    row_number: row.row_number,
+    fingerprint: row.fingerprint,
+    status: row.errors.length ? "invalid" : duplicateSet.has(row.fingerprint) ? "duplicate" : "new",
+    normalized_data: { kind: row.kind, ...row.data },
+    validation_errors: row.errors,
+  })));
+  return {
+    batch,
+    profile: preview.profile,
+    warnings: preview.warnings,
+    summary: { total: preview.rows.length, new: valid.length, duplicates: duplicates.length, errors: invalid.length, ...preview.summary },
+    rows: preview.rows.slice(0, 500),
+  };
+}
+
+async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: string, payload: JsonRecord) {
+  const batchId = requiredUuid(payload.batchId);
+  const batch = (await selectRows(rest, `accounting_import_batches?select=*&id=eq.${batchId}&limit=1`))[0];
+  if (!batch) throw new HttpError(404, "Respaldo Facto no encontrado.");
+  if (!["COLLECTIONS", "PAYMENTS", "CHECKS"].includes(String(batch.source_type))) {
+    throw new HttpError(400, "Este archivo no corresponde a un respaldo complementario de Facto.");
+  }
+  if (batch.status === "imported" || batch.status === "partial") {
+    return { imported: Number(batch.new_count || 0), existing: true, summary: asObject(batch.summary) };
+  }
+
+  const entityId = String(batch.entity_id);
+  const importRows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&status=eq.new&order=row_number.asc`);
+  const sourceDocuments = await selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO`);
+  const receivables = await selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}`);
+  const payables = await selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}`);
+  const receivableBySource = new Map(receivables.map((row) => [String(row.source_document_id), row]));
+  const payableBySource = new Map(payables.map((row) => [String(row.source_document_id), row]));
+  let imported = 0;
+  let linked = 0;
+  let unmatched = 0;
+  let duplicates = 0;
+  const duplicateImportRowIds: string[] = [];
+
+  if (String(batch.source_type) === "COLLECTIONS") {
+    for (const row of importRows) {
+      const data = asObject(row.normalized_data);
+      const source = findFactoSourceDocument(sourceDocuments, data);
+      const target = source
+        ? String(data.direction) === "sale" ? receivableBySource.get(String(source.id)) : payableBySource.get(String(source.id))
+        : null;
+      if (!target) {
+        unmatched += 1;
+        continue;
+      }
+      const reportedPaid = Math.max(0, numeric(data.reported_paid_clp));
+      const reportedBalance = Math.max(0, numeric(data.reported_balance_clp));
+      const dueOn = String(target.due_on || "");
+      const status = reportedBalance <= 1
+        ? "paid"
+        : reportedPaid > 0
+        ? "partial"
+        : dueOn && dueOn < new Date().toISOString().slice(0, 10)
+        ? "overdue"
+        : "pending";
+      const table = String(data.direction) === "sale" ? "accounting_receivables" : "accounting_payables";
+      await patchRows(rest, table, `id=eq.${target.id}`, {
+        reported_paid_amount_clp: reportedPaid,
+        reported_balance_clp: reportedBalance,
+        reported_at: new Date().toISOString(),
+        reported_source_batch_id: batchId,
+        status,
+        updated_at: new Date().toISOString(),
+      });
+      imported += 1;
+      linked += 1;
+    }
+  } else if (String(batch.source_type) === "CHECKS") {
+    const settlementAccount = await expectedBankAccount(rest, entityId, "BancoEstado");
+    const existingChecks = await selectAllRows(rest,
+      `accounting_checks?select=bank_name,check_number&entity_id=eq.${entityId}`,
+    );
+    const existingCheckKeys = new Set(existingChecks.map((row) => checkBusinessKey(row.bank_name, row.check_number)));
+    const checkRows = importRows.flatMap((row) => {
+      const data = asObject(row.normalized_data);
+      const businessKey = checkBusinessKey(data.issuer_bank, data.check_number);
+      if (existingCheckKeys.has(businessKey)) {
+        duplicates += 1;
+        duplicateImportRowIds.push(String(row.id));
+        return [];
+      }
+      existingCheckKeys.add(businessKey);
+      const source = findFactoSourceDocument(sourceDocuments, {
+        direction: "sale",
+        document_type: "sales_invoice",
+        document_number: data.source_document_number,
+        counterpart_tax_id: data.customer_tax_id,
+      });
+      const receivable = source ? receivableBySource.get(String(source.id)) : null;
+      if (receivable) linked += 1;
+      else unmatched += 1;
+      return [{
+        entity_id: entityId,
+        receivable_id: receivable?.id || null,
+        customer_name: String(data.customer_name || data.issuer_name || "Cliente sin identificar"),
+        bank_name: String(data.issuer_bank || "Banco emisor no informado"),
+        check_number: String(data.check_number || ""),
+        amount_clp: numeric(data.amount_clp),
+        received_on: data.received_on,
+        due_on: data.due_on || null,
+        status: "portfolio",
+        import_batch_id: batchId,
+        source_row_id: row.id,
+        settlement_bank_account_id: settlementAccount?.id || null,
+        source_status: data.source_status || null,
+        notes: "Cheque informado por Facto; pendiente de confirmar en cartola BancoEstado.",
+        metadata: {
+          expected_settlement_institution: "BancoEstado",
+          issuer_tax_id: data.issuer_tax_id || null,
+          detail: data.detail || null,
+          source_document_number: data.source_document_number || null,
+        },
+        updated_at: new Date().toISOString(),
+      }];
+    });
+    const created = await upsertRows(rest, "accounting_checks", checkRows, "entity_id,bank_name,check_number", true);
+    imported = created.length;
+    duplicates += Math.max(0, checkRows.length - created.length);
+  } else {
+    const profileName = String(batch.import_profile || "facto_cash");
+    const paymentRows: JsonRecord[] = [];
+    const existingEvents = await selectAllRows(rest,
+      `accounting_payment_events?select=fingerprint&entity_id=eq.${entityId}`,
+    );
+    const existingFingerprints = new Set(existingEvents.map((row) => String(row.fingerprint)));
+    const expectedAccounts = new Map<string, JsonRecord | null>();
+    for (const row of importRows) {
+      const data = asObject(row.normalized_data);
+      const fingerprint = String(row.fingerprint || "");
+      if (existingFingerprints.has(fingerprint)) {
+        duplicates += 1;
+        duplicateImportRowIds.push(String(row.id));
+        continue;
+      }
+      existingFingerprints.add(fingerprint);
+      const source = findFactoSourceDocument(sourceDocuments, data);
+      const receivable = source && String(data.direction) === "receipt" ? receivableBySource.get(String(source.id)) : null;
+      const payable = source && String(data.direction) === "payment" ? payableBySource.get(String(source.id)) : null;
+      const institution = optionalText(data.expected_institution, 80);
+      if (institution && !expectedAccounts.has(institution)) {
+        expectedAccounts.set(institution, await expectedBankAccount(rest, entityId, institution));
+      }
+      const expectedAccount = institution ? expectedAccounts.get(institution) || null : null;
+      if (source) linked += 1;
+      else unmatched += 1;
+      paymentRows.push({
+        entity_id: entityId,
+        source_document_id: source?.id || null,
+        receivable_id: receivable?.id || null,
+        payable_id: payable?.id || null,
+        import_batch_id: batchId,
+        source_row_id: row.id,
+        expected_bank_account_id: expectedAccount?.id || null,
+        event_date: data.event_date,
+        event_time: data.event_time || null,
+        direction: data.direction,
+        document_type: data.document_type || null,
+        document_number: data.document_number || null,
+        payment_method: data.payment_method || null,
+        responsible: data.responsible || null,
+        amount_clp: numeric(data.amount_clp),
+        signed_amount_clp: numeric(data.signed_amount_clp),
+        source_profile: profileName,
+        fingerprint,
+        matching_status: source ? "linked" : "unmatched",
+        metadata: { expected_institution: institution || null, evidence: "Facto Excel" },
+        updated_at: new Date().toISOString(),
+      });
+    }
+    const created = await upsertRows(rest, "accounting_payment_events", paymentRows, "entity_id,fingerprint", true);
+    imported = created.length;
+    duplicates += Math.max(0, paymentRows.length - created.length);
+  }
+
+  const invalid = Number(batch.error_count || 0);
+  const status = invalid || unmatched ? "partial" : "imported";
+  const finalSummary = {
+    ...asObject(batch.summary),
+    imported,
+    linked,
+    unmatched,
+    duplicates,
+    confirmed_at: new Date().toISOString(),
+  };
+  await patchRows(rest, "accounting_import_batches", `id=eq.${batchId}`, {
+    status,
+    new_count: imported,
+    duplicate_count: Number(batch.duplicate_count || 0) + duplicates,
+    summary: finalSummary,
+    updated_at: new Date().toISOString(),
+  });
+  if (duplicateImportRowIds.length) {
+    await patchRows(rest, "accounting_import_rows", `id=in.(${duplicateImportRowIds.join(",")})`, { status: "duplicate" });
+  }
+  await patchRows(rest, "accounting_import_rows", `batch_id=eq.${batchId}&status=eq.new`, { status: "imported" });
+  await insertRows(rest, "accounting_audit_events", [{
+    entity_id: entityId,
+    actor_id: profile.id,
+    action: "facto_excel.confirmed",
+    entity_type: "import_batch",
+    entity_id_text: batchId,
+    correlation_id: requestIdToUuid(requestId),
+    new_value: { source_type: batch.source_type, import_profile: batch.import_profile, imported, linked, unmatched, duplicates, invalid },
+  }]);
+  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+  return { imported, linked, unmatched, duplicates, invalid, status, summary: finalSummary };
+}
+
 async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRecord) {
   const batchId = requiredUuid(payload.batchId);
   const batch = (await selectRows(rest, `accounting_import_batches?select=*&id=eq.${batchId}&limit=1`))[0];
@@ -908,6 +1165,85 @@ function factoDocumentType(document: JsonRecord, purchase: boolean) {
   return String(first(document, ["document_type", "type", "tipo_documento"]) || `${direction}_invoice`);
 }
 
+function findFactoSourceDocument(documents: JsonRecord[], data: JsonRecord) {
+  const folio = normalizeDocumentNumber(data.document_number || data.source_document_number);
+  if (!folio) return null;
+  const documentType = String(data.document_type || "");
+  const direction = String(data.direction || "");
+  const taxId = normalizeTaxForMatch(data.counterpart_tax_id || data.customer_tax_id);
+  const candidates = documents
+    .filter((row) => normalizeDocumentNumber(row.folio) === folio)
+    .map((row) => {
+      let score = 1;
+      const rowType = String(row.document_type || "");
+      if (documentType && rowType === documentType) score += 5;
+      if (direction === "sale" && rowType.startsWith("sales_")) score += 3;
+      if (direction === "purchase" && rowType.startsWith("purchase_")) score += 3;
+      const rowTaxId = normalizeTaxForMatch(row.counterpart_tax_id);
+      if (taxId && rowTaxId === taxId) score += 4;
+      return { row, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  return candidates[0]?.row || null;
+}
+
+async function existingFactoExcelDuplicates(
+  rest: RestClient,
+  entityId: string,
+  preview: FactoExcelPreview,
+) {
+  const duplicateFingerprints = new Set<string>();
+  if (preview.source_type === "PAYMENTS") {
+    const existing = await selectAllRows(rest,
+      `accounting_payment_events?select=fingerprint&entity_id=eq.${entityId}`,
+    );
+    const fingerprints = new Set(existing.map((row) => String(row.fingerprint)));
+    for (const row of preview.rows) {
+      if (fingerprints.has(row.fingerprint)) duplicateFingerprints.add(row.fingerprint);
+    }
+  } else if (preview.source_type === "CHECKS") {
+    const existing = await selectAllRows(rest,
+      `accounting_checks?select=bank_name,check_number&entity_id=eq.${entityId}`,
+    );
+    const keys = new Set(existing.map((row) => checkBusinessKey(row.bank_name, row.check_number)));
+    for (const row of preview.rows) {
+      if (keys.has(checkBusinessKey(row.data.issuer_bank, row.data.check_number))) {
+        duplicateFingerprints.add(row.fingerprint);
+      }
+    }
+  }
+  return duplicateFingerprints;
+}
+
+function checkBusinessKey(bankName: unknown, checkNumber: unknown) {
+  return `${normalizeText(bankName)}|${normalizeDocumentNumber(checkNumber)}`;
+}
+
+function normalizeDocumentNumber(value: unknown) {
+  return String(value ?? "").trim().replace(/\.0+$/, "").replace(/[^a-z0-9-]/gi, "").toUpperCase();
+}
+
+function normalizeTaxForMatch(value: unknown) {
+  return String(value ?? "").toUpperCase().replace(/[^0-9K]/g, "");
+}
+
+async function expectedBankAccount(rest: RestClient, entityId: string, institution: string) {
+  const normalized = normalizeText(institution);
+  const canonical = normalized.includes("mercado")
+    ? "Mercado Pago"
+    : normalized.includes("estado")
+    ? "BancoEstado"
+    : normalized.includes("scotia")
+    ? "Scotiabank"
+    : institution;
+  const existing = await selectRows(rest,
+    `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&institution=eq.${encodeURIComponent(canonical)}&currency=eq.CLP&active=eq.true&order=created_at.asc&limit=1`,
+  );
+  if (existing[0]) return existing[0];
+  const source = canonical === "BancoEstado" ? "BANCO_ESTADO" : canonical === "Mercado Pago" ? "MERCADO_PAGO" : "SCOTIABANK";
+  return await bankAccountForBatch(rest, entityId, source, "Pendiente cartola Facto", "CLP");
+}
+
 async function ensureBankAccount(rest: RestClient, entityId: string, preview: { profile: string; currency: string; account_hint: string }) {
   const source = sourceType(preview.profile);
   return await bankAccountForBatch(rest, entityId, source, preview.account_hint, preview.currency);
@@ -1095,9 +1431,9 @@ function dateValue(value: unknown) {
 }
 function dateTimeValue(value: unknown) { const parsed = Date.parse(String(value || "")); return Number.isNaN(parsed) ? null : new Date(parsed).toISOString(); }
 function validCurrency(value: unknown) { const text = String(value || "").trim().toUpperCase(); return /^[A-Z]{3}$/.test(text) ? text : null; }
-function normalizeText(value: string) { return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
+function normalizeText(value: unknown) { return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
 function sourceType(profile: string) { return profile === "banco_estado" ? "BANCO_ESTADO" : profile === "mercado_pago" ? "MERCADO_PAGO" : "SCOTIABANK"; }
-async function sha256Bytes(bytes: Uint8Array) { const digest = await crypto.subtle.digest("SHA-256", bytes); return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join(""); }
+async function sha256Bytes(bytes: Uint8Array) { const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer); return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join(""); }
 async function sha256Text(value: string) { return sha256Bytes(new TextEncoder().encode(value)); }
 function requestIdToUuid(value: string) { return /^[0-9a-f-]{36}$/i.test(value) ? value : crypto.randomUUID(); }
 

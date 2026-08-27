@@ -2,6 +2,9 @@ import { getSupabaseFunctionUrl, isSupabaseConfigured, supabase } from "./supaba
 import type {
   AccountingBootstrap,
   AccountingFactoSyncResult,
+  AccountingFactoExcelPreview,
+  AccountingFactoExcelProfile,
+  AccountingFactoExcelResult,
   AccountingImportPreview,
   AccountingJournalDraft,
   AccountingReconciliationCandidate,
@@ -36,6 +39,26 @@ export function getAccountingBootstrap() {
 
 export function syncAccountingFacto(input: { fromDate: string; toDate: string }) {
   return accountingRequest<AccountingFactoSyncResult>("facto/sync", { method: "POST", body: input });
+}
+
+export function previewAccountingFactoExcel(input: {
+  entityId: string;
+  profile: AccountingFactoExcelProfile;
+  storagePath: string;
+  fileName: string;
+}) {
+  return accountingRequest<AccountingFactoExcelPreview>("facto-excel/preview", { method: "POST", body: input });
+}
+
+export function confirmAccountingFactoExcel(batchId: string) {
+  return accountingRequest<AccountingFactoExcelResult>("facto-excel/confirm", { method: "POST", body: { batchId } });
+}
+
+export async function downloadAccountingEvidence(storagePath: string, fileName: string) {
+  if (!isSupabaseConfigured || !supabase) throw new Error("Conecta Supabase para descargar respaldos.");
+  const { data, error } = await supabase.storage.from("accounting-evidence").download(storagePath);
+  if (error || !data) throw new Error(`No se pudo descargar el respaldo: ${error?.message || "archivo no disponible"}`);
+  downloadBlob(data, fileName);
 }
 
 export function syncAccountingForeignTrade() {

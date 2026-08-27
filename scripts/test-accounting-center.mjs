@@ -5,12 +5,19 @@ import { PGlite } from "@electric-sql/pglite";
 const migration = (await readFile(new URL("../supabase/accounting_center.sql", import.meta.url), "utf8"))
   .replace(/create extension if not exists pgcrypto;/i, "");
 const factoHistoryMigration = await readFile(new URL("../supabase/accounting_facto_history.sql", import.meta.url), "utf8");
+const factoExcelMigration = await readFile(new URL("../supabase/accounting_facto_excel_imports.sql", import.meta.url), "utf8");
 const controlsRefreshFix = await readFile(new URL("../supabase/accounting_control_findings_refresh_fix.sql", import.meta.url), "utf8");
 const edgeSource = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
 const parserSource = await readFile(new URL("../supabase/functions/accounting-center/bank-parsers.ts", import.meta.url), "utf8");
+const factoExcelParserSource = await readFile(new URL("../supabase/functions/accounting-center/facto-excel-parsers.ts", import.meta.url), "utf8");
 const pageSource = await readFile(new URL("../src/modules/accounting/AccountingCenterPage.tsx", import.meta.url), "utf8");
 
 assert.match(edgeSource, /route === "facto\/sync"/);
+assert.match(edgeSource, /route === "facto-excel\/preview"/);
+assert.match(edgeSource, /route === "facto-excel\/confirm"/);
+assert.match(edgeSource, /accounting_payment_events/);
+assert.match(edgeSource, /existingFactoExcelDuplicates/);
+assert.match(edgeSource, /expectedBankAccount\(rest, entityId, "BancoEstado"\)/);
 assert.match(edgeSource, /accounting_facto_sync_runs/);
 assert.match(edgeSource, /accounting_facto_sync_records/);
 assert.match(edgeSource, /fromDate/);
@@ -36,6 +43,11 @@ assert.match(parserSource, /banco_estado/);
 assert.match(parserSource, /scotiabank/);
 assert.match(parserSource, /mercado_pago/);
 assert.match(parserSource, /fingerprint/);
+assert.match(factoExcelParserSource, /facto_unpaid_documents/);
+assert.match(factoExcelParserSource, /facto_checks_banco_estado/);
+assert.match(factoExcelParserSource, /facto_cash_scotiabank/);
+assert.match(factoExcelParserSource, /facto_cash_mercado_pago/);
+assert.match(factoExcelParserSource, /nota de credito/);
 assert.match(pageSource, /Balance de 8 columnas/);
 assert.match(pageSource, /Estado de Resultados/);
 assert.match(pageSource, /Flujo de Caja bancario/);
@@ -43,6 +55,9 @@ assert.match(pageSource, /Nueva cuenta/);
 assert.match(pageSource, /Factura, pago, movimiento bancario, conciliación y asiento/);
 assert.match(pageSource, /Carga histórica con respaldo/);
 assert.match(pageSource, /2026-01-01/);
+assert.match(pageSource, /Documentos pendientes \/ impagos/);
+assert.match(pageSource, /Cheques Facto · flujo BancoEstado/);
+assert.match(pageSource, /Importar cartola real/);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";
@@ -96,6 +111,7 @@ const transactionStart = migration.indexOf("begin;");
 await db.exec(migration.slice(0, transactionStart));
 await db.exec(migration.slice(transactionStart));
 await db.exec(factoHistoryMigration);
+await db.exec(factoExcelMigration);
 
 const entity = await db.query(`select id from public.accounting_entities where tax_id='77.724.382-9'`);
 assert.equal(entity.rows.length, 1);
@@ -118,6 +134,84 @@ const accounts = await db.query(`
 assert.equal(accounts.rows.length, 2);
 const bankId = accounts.rows.find((row) => row.code === "1.1.02").id;
 const salesId = accounts.rows.find((row) => row.code === "4.1.01").id;
+
+const sourceDocument = await db.query(`
+  insert into public.accounting_source_documents(
+    entity_id,source_type,source_key,document_type,folio,counterpart_name,issued_on,total_amount,total_clp
+  ) values ($1,'FACTO','test:invoice:100','sales_invoice','100','Cliente prueba','2026-01-10',119000,119000)
+  returning id
+`, [entityId]);
+const sourceDocumentId = sourceDocument.rows[0].id;
+const receivable = await db.query(`
+  insert into public.accounting_receivables(
+    entity_id,source_document_id,customer_name,document_number,issued_on,original_amount,original_amount_clp
+  ) values ($1,$2,'Cliente prueba','100','2026-01-10',119000,119000)
+  returning id
+`, [entityId, sourceDocumentId]);
+const receivableId = receivable.rows[0].id;
+const paymentBatch = await db.query(`
+  insert into public.accounting_import_batches(
+    entity_id,source_type,import_profile,status,file_name,file_hash,row_count,new_count,imported_by
+  ) values ($1,'PAYMENTS','facto_cash','previewed','Movimiento de caja.xlsx','payment-hash',1,1,$2)
+  returning id
+`, [entityId, adminId]);
+const paymentBatchId = paymentBatch.rows[0].id;
+const paymentRow = await db.query(`
+  insert into public.accounting_import_rows(batch_id,row_number,fingerprint,status,normalized_data)
+  values ($1,2,'payment-fingerprint','imported','{"kind":"payment_event"}'::jsonb)
+  returning id
+`, [paymentBatchId]);
+await db.query(`
+  insert into public.accounting_payment_events(
+    entity_id,source_document_id,receivable_id,import_batch_id,source_row_id,event_date,direction,
+    amount_clp,signed_amount_clp,source_profile,fingerprint,matching_status
+  ) values ($1,$2,$3,$4,$5,'2026-01-20','receipt',50000,50000,'facto_cash','payment-fingerprint','linked')
+`, [entityId, sourceDocumentId, receivableId, paymentBatchId, paymentRow.rows[0].id]);
+await assert.rejects(
+  db.query(`
+    insert into public.accounting_payment_events(
+      entity_id,source_document_id,receivable_id,import_batch_id,source_row_id,event_date,direction,
+      amount_clp,signed_amount_clp,source_profile,fingerprint
+    ) values ($1,$2,$3,$4,$5,'2026-01-20','receipt',50000,50000,'facto_cash_scotiabank','payment-fingerprint')
+  `, [entityId, sourceDocumentId, receivableId, paymentBatchId, paymentRow.rows[0].id]),
+  /unique|duplicate/i,
+);
+await db.query(`
+  update public.accounting_receivables
+  set reported_paid_amount_clp=50000, reported_balance_clp=69000, reported_source_batch_id=$2
+  where id=$1
+`, [receivableId, paymentBatchId]);
+
+const bancoEstado = await db.query(`
+  insert into public.accounting_bank_accounts(
+    entity_id,institution,account_name,account_number_masked,currency,ledger_account_id
+  ) values ($1,'BancoEstado','Pendiente cartola Facto','Pendiente cartola Facto','CLP',$2)
+  returning id
+`, [entityId, bankId]);
+const checkBatch = await db.query(`
+  insert into public.accounting_import_batches(
+    entity_id,source_type,import_profile,status,file_name,file_hash,row_count,new_count,imported_by
+  ) values ($1,'CHECKS','facto_checks_banco_estado','imported','Listado_cheques.xlsx','check-hash',1,1,$2)
+  returning id
+`, [entityId, adminId]);
+const checkRow = await db.query(`
+  insert into public.accounting_import_rows(batch_id,row_number,fingerprint,status,normalized_data)
+  values ($1,2,'check-fingerprint','imported','{"kind":"check"}'::jsonb)
+  returning id
+`, [checkBatch.rows[0].id]);
+await db.query(`
+  insert into public.accounting_checks(
+    entity_id,receivable_id,customer_name,bank_name,check_number,amount_clp,received_on,due_on,
+    import_batch_id,source_row_id,settlement_bank_account_id,source_status,metadata
+  ) values ($1,$2,'Cliente prueba','Santander','12345',50000,'2026-01-20','2026-02-20',$3,$4,$5,'Inactivo',
+    '{"expected_settlement_institution":"BancoEstado"}'::jsonb)
+`, [entityId, receivableId, checkBatch.rows[0].id, checkRow.rows[0].id, bancoEstado.rows[0].id]);
+const expectedSettlement = await db.query(`
+  select c.bank_name,b.institution,c.metadata->>'expected_settlement_institution' expected
+  from public.accounting_checks c join public.accounting_bank_accounts b on b.id=c.settlement_bank_account_id
+  where c.entity_id=$1
+`, [entityId]);
+assert.deepEqual(expectedSettlement.rows[0], { bank_name: "Santander", institution: "BancoEstado", expected: "BancoEstado" });
 
 const payload = {
   entity_id: entityId,
@@ -193,6 +287,9 @@ assert.equal(original.rows[0].status, "reversed");
 
 const summary = await db.query(`select public.accounting_dashboard_summary($1::uuid,'2026-01-31') as value`, [entityId]);
 assert.equal(summary.rows.length, 1);
+assert.equal(Number(summary.rows[0].value.receivables), 69000);
+assert.equal(Number(summary.rows[0].value.receivables_confirmed), 119000);
+assert.equal(Number(summary.rows[0].value.payment_events_pending), 1);
 
 const january = await db.query(`select id from public.accounting_periods where entity_id=$1 and starts_on='2026-01-01'`, [entityId]);
 await db.query(`select public.accounting_close_period($1::uuid,'Cierre de prueba')`, [january.rows[0].id]);
