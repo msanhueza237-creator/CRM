@@ -2,11 +2,13 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 
+export type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
+
 interface AppUser {
   id: string;
   email: string;
   name: string;
-  role: "administrador" | "vendedor" | "visualizador";
+  role: AppRole;
 }
 
 interface AuthContextValue {
@@ -48,7 +50,7 @@ async function mapSessionWithProfile(session: Session | null): Promise<AppUser |
     .maybeSingle();
   if (error || !data) return fallback;
 
-  const role = ["administrador", "vendedor", "visualizador"].includes(String(data.role))
+  const role = ["administrador", "finanzas", "vendedor", "visualizador"].includes(String(data.role))
     ? (String(data.role) as AppUser["role"])
     : fallback.role;
   return {

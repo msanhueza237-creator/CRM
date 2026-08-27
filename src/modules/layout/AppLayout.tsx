@@ -14,17 +14,19 @@ import {
   Settings,
   Ship,
   Snowflake,
+  WalletCards,
 } from "lucide-react";
-import { useAuth } from "../auth/AuthContext";
+import { useAuth, type AppRole } from "../auth/AuthContext";
 
-const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard; adminOnly?: boolean }> = [
+const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard; roles?: AppRole[] }> = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/empresas", label: "Empresas", icon: Building2 },
   { to: "/prospeccion", label: "Prospeccion", icon: Radar },
   { to: "/agentes", label: "Agentes", icon: Bot },
   { to: "/campanas", label: "Campanas", icon: Megaphone },
   { to: "/contenido", label: "Centro de Contenido", icon: Palette },
-  { to: "/comercio-exterior", label: "Comercio Exterior", icon: Ship, adminOnly: true },
+  { to: "/comercio-exterior", label: "Comercio Exterior", icon: Ship, roles: ["administrador"] },
+  { to: "/finanzas-contabilidad", label: "Finanzas", icon: WalletCards, roles: ["administrador", "finanzas"] },
   { to: "/copiloto", label: "Copiloto", icon: Bot },
   { to: "/informes", label: "Informes", icon: BarChart3 },
   { to: "/plantillas", label: "Plantillas", icon: FileText },
@@ -57,7 +59,7 @@ export function AppLayout() {
         </div>
 
         <nav ref={navigationRef} aria-label="Navegacion principal">
-          {navItems.filter((item) => !item.adminOnly || user?.role === "administrador").map((item) => (
+          {navItems.filter((item) => !item.roles || (user && item.roles.includes(user.role))).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

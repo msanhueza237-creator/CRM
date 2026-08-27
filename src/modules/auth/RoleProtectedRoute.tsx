@@ -1,7 +1,5 @@
 import { Navigate } from "react-router-dom";
-import { useAuth } from "./AuthContext";
-
-type AppRole = "administrador" | "vendedor" | "visualizador";
+import { useAuth, type AppRole } from "./AuthContext";
 
 export function RoleProtectedRoute({ roles, children }: { roles: AppRole[]; children: React.ReactNode }) {
   const { user } = useAuth();

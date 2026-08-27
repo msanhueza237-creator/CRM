@@ -17,6 +17,7 @@ import { AgentDashboardPage } from "./modules/agents/AgentDashboardPage";
 import { ReportsPage } from "./modules/reports/ReportsPage";
 import { ContentCenterPage } from "./modules/content/ContentCenterPage";
 import { ForeignTradeCenterPage } from "./modules/foreign-trade/ForeignTradeCenterPage";
+import { AccountingCenterPage } from "./modules/accounting/AccountingCenterPage";
 
 export function App() {
   return (
@@ -38,6 +39,7 @@ export function App() {
         <Route path="/campanas" element={<CampaignsPage />} />
         <Route path="/contenido" element={<ContentCenterPage />} />
         <Route path="/comercio-exterior" element={<RoleProtectedRoute roles={["administrador"]}><ForeignTradeCenterPage /></RoleProtectedRoute>} />
+        <Route path="/finanzas-contabilidad" element={<RoleProtectedRoute roles={["administrador", "finanzas"]}><AccountingCenterPage /></RoleProtectedRoute>} />
         <Route path="/copiloto" element={<CopilotPage />} />
         <Route path="/informes" element={<ReportsPage />} />
         <Route path="/prospeccion" element={<ProspectingPage />} />

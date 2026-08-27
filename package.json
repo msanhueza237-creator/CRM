@@ -10,6 +10,7 @@
     "lint": "eslint .",
     "test:content": "node --experimental-strip-types scripts/test-content-center.mjs",
     "test:foreign-trade": "node --experimental-strip-types scripts/test-foreign-trade-center.mjs",
+    "test:accounting": "node --experimental-strip-types scripts/test-accounting-center.mjs",
     "test:prospecting": "node scripts/test-prospecting-contract.mjs",
     "commit": "node scripts/commit.js"
   },
