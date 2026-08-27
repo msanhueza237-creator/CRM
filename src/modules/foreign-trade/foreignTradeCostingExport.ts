@@ -147,7 +147,7 @@ function addProductsSheet(sheet: Worksheet, detail: ForeignTradeOperationDetail,
     const row = sheet.addRow([
       source?.line_number || "",
       line.productName,
-      line.sku || source?.supplier_sku || "",
+      line.sku || line.supplierCode || line.supplierModel || source?.supplier_sku || "",
       quantity,
       source?.currency || detail.operation.base_currency,
       Number(source?.unit_factory_cost || 0),

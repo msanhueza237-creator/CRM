@@ -14,6 +14,13 @@ import {
 } from "./foreignTradeCostEngine";
 import { exportForeignTradeCostingExcel } from "./foreignTradeCostingExport";
 
+function costingIdentity(line: { sku: string | null; supplierCode: string | null; supplierModel: string | null }) {
+  if (line.sku) return `SKU CRM: ${line.sku}`;
+  if (line.supplierCode) return `Código proveedor: ${line.supplierCode}`;
+  if (line.supplierModel) return `Modelo proveedor: ${line.supplierModel}`;
+  return "Sin código";
+}
+
 type CostingForm = {
   exchangeRateClp: string;
   cifTotalOriginal: string;
@@ -245,7 +252,7 @@ export function ForeignTradeCostingPanel({
                 <thead><tr><th>Producto</th><th>Cantidad</th><th>Costo factura</th><th>CIF asignado</th><th>Derecho</th><th>IVA import.</th><th>Gastos</th><th>Costo unitario</th><th>Venta proyectada</th><th>Objetivo</th><th>Precio neto</th><th>Margen</th></tr></thead>
                 <tbody>{result.lines.map((line) => (
                   <tr key={line.lineId}>
-                    <td data-label="Producto"><strong>{line.productName}</strong><small>{line.sku || "Sin SKU"}</small></td>
+                    <td data-label="Producto"><strong>{line.productName}</strong><small>{costingIdentity(line)}</small></td>
                     <td data-label="Cantidad">{formatNumber(line.quantity)}</td>
                     <td data-label="Costo factura"><strong>{formatClp(line.invoiceUnitClp)}</strong><small>{formatClp(line.invoiceTotalClp)} total</small></td>
                     <td data-label="CIF asignado">{formatClp(line.cifClp)}<small>{formatClp(line.quantity ? line.cifClp / line.quantity : 0)} por unidad</small></td>
@@ -266,7 +273,7 @@ export function ForeignTradeCostingPanel({
                 <article className="foreign-trade-mobile-record-card foreign-trade-mobile-costing-card" role="listitem" key={line.lineId}>
                   <header className="foreign-trade-mobile-record-header">
                     <span className="foreign-trade-mobile-record-icon"><PackageCheck size={20} /></span>
-                    <div><strong>{line.productName}</strong><small>{line.sku || "Sin SKU"}</small></div>
+                    <div><strong>{line.productName}</strong><small>{costingIdentity(line)}</small></div>
                   </header>
                   <div className="foreign-trade-mobile-record-metrics">
                     <MobileCostMetric label="Cantidad" value={formatNumber(line.quantity)} />

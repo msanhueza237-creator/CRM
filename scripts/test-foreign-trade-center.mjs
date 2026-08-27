@@ -559,6 +559,15 @@ assert.match(phase17Migration, /integration_records[\s\S]*provider = 'facto'/i);
 await db.exec(phase17Migration);
 await db.exec(phase17Migration);
 
+const phase18Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase18_operation_line_identity.sql", import.meta.url),
+  "utf8",
+);
+assert.match(phase18Migration, /repair_foreign_trade_operation_product_identities/i);
+assert.match(phase18Migration, /recognized_supplier_code/i);
+await db.exec(phase18Migration);
+await db.exec(phase18Migration);
+
 const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
   id: "00000000-0000-4000-8000-000000000101",
   applied_cost_line_id: "00000000-0000-4000-8000-000000000102",
@@ -2151,8 +2160,31 @@ assert.equal(exactMatch.lines[0].selected_product_id, null);
 const firstConfirmation = await confirmMatchDocument(exactDocument, exactProductId);
 assert.equal(firstConfirmation.rows[0].result.inserted_lines, 1);
 assert.equal(Number((await db.query("select count(*) as count from public.content_products")).rows[0].count), catalogCountBefore);
+const exactConfirmedLine = (await db.query(
+  "select sku,supplier_sku,content_product_id,temporary_product,source_snapshot from public.foreign_trade_operation_lines where source_document_id=$1",
+  [exactDocument.documentId],
+)).rows[0];
+assert.equal(exactConfirmedLine.sku, "RCM-100", "el SKU oficial debe venir del producto CRM confirmado");
+assert.equal(exactConfirmedLine.supplier_sku, "RCM-100", "el codigo del proveedor debe conservarse separado");
+assert.equal(exactConfirmedLine.content_product_id, exactProductId);
+assert.equal(exactConfirmedLine.temporary_product, false);
+assert.equal(exactConfirmedLine.source_snapshot.recognized_supplier_code, "RCM-100");
 const reopenedConfirmation = await confirmMatchDocument(exactDocument, exactProductId);
 assert.equal(reopenedConfirmation.rows[0].result.inserted_lines, 0, "reabrir la conciliacion no debe duplicar lineas importadas");
+
+const historicalExternalCodeOperation = await db.query(
+  "insert into public.import_shipments(reference,title,status) values ($1,$2,'quotation') returning id",
+  [`HIST-${crypto.randomUUID()}`, "Codigo externo historico"],
+);
+const historicalExternalLine = await db.query(`
+  insert into public.foreign_trade_operation_lines(
+    operation_id,line_number,sku,product_name,temporary_product,quantity,currency,data_source,source_snapshot
+  ) values ($1,1,'SUP-OLD-7','Producto historico proveedor',true,1,'USD','document',$2::jsonb)
+  returning sku,supplier_sku,temporary_product
+`, [historicalExternalCodeOperation.rows[0].id, JSON.stringify({ supplier_product_code: "SUP-OLD-7" })]);
+assert.equal(historicalExternalLine.rows[0].sku, null, "un codigo documental no debe presentarse como SKU maestro");
+assert.equal(historicalExternalLine.rows[0].supplier_sku, "SUP-OLD-7");
+assert.equal(historicalExternalLine.rows[0].temporary_product, true);
 
 // 2. Codigo diferente y descripcion similar: sugiere, pero no confirma solo.
 const similarDocument = await createMatchDocument(matchSupplierA, {

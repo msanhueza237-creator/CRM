@@ -22,6 +22,8 @@ export interface ForeignTradeCostingLineResult {
   lineId: string;
   productName: string;
   sku: string | null;
+  supplierCode: string | null;
+  supplierModel: string | null;
   quantity: number;
   invoiceTotalClp: number;
   invoiceUnitClp: number;
@@ -235,6 +237,8 @@ export function calculateForeignTradeCosting(
       lineId: line.id,
       productName: line.product_name,
       sku: line.sku,
+      supplierCode: line.supplier_sku,
+      supplierModel: line.supplier_model,
       quantity: toNumber(quantity),
       invoiceTotalClp: toMoney(invoiceTotal),
       invoiceUnitClp: toMoney(invoiceUnit),

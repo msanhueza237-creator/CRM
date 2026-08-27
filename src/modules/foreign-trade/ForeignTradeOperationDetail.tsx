@@ -12,6 +12,7 @@ import {
   PackageSearch,
   Plus,
   RefreshCw,
+  ScanSearch,
   Save,
   Scale,
   Trash2,
@@ -20,6 +21,7 @@ import {
 import {
   deleteForeignTradeCostLine,
   deleteForeignTradeOperationLine,
+  repairForeignTradeOperationProductIdentities,
   searchForeignTradeCatalog,
   updateForeignTradeOperation,
   upsertForeignTradeCostLine,
@@ -43,6 +45,7 @@ import { useForeignTradeOperation } from "./useForeignTradeOperation";
 import { ForeignTradeDocumentsPanel } from "./ForeignTradeDocumentsPanel";
 import { ForeignTradeCostingPanel } from "./ForeignTradeCostingPanel";
 import { ForeignTradeExpenseReconciliationPanel } from "./ForeignTradeExpenseReconciliationPanel";
+import { formatForeignTradeProductIdentity, getForeignTradeProductIdentity } from "./foreignTradeProductIdentity";
 
 type DetailTab = "summary" | "products" | "costs" | "reconciliation" | "costing" | "documents";
 
@@ -85,6 +88,8 @@ export function ForeignTradeOperationDetail({
   const [costDialog, setCostDialog] = useState<ForeignTradeCostLine | "new" | null>(null);
   const [editingOperation, setEditingOperation] = useState(false);
   const [notice, setNotice] = useState("");
+  const [identityRepairError, setIdentityRepairError] = useState("");
+  const [repairingIdentities, setRepairingIdentities] = useState(false);
 
   async function changed(message: string) {
     setNotice(message);
@@ -99,6 +104,24 @@ export function ForeignTradeOperationDetail({
   const missing = getMissingInputs(detail.lines, detail.costs, operation.exchange_rate_clp);
   const taxRecords = detail.costs.filter((cost) => cost.category === "duties" || cost.category === "taxes");
   const operatingCosts = detail.costs.filter((cost) => cost.category !== "duties" && cost.category !== "taxes");
+  const recognizedProductCount = detail.lines.filter((line) => getForeignTradeProductIdentity(line).value).length;
+
+  async function repairProductIdentities() {
+    setRepairingIdentities(true);
+    setNotice("");
+    setIdentityRepairError("");
+    try {
+      const result = await repairForeignTradeOperationProductIdentities(operationId);
+      await changed(`${result.recognized_lines} de ${totals.line_count} línea(s) tienen código reconocido; ${result.catalog_linked_lines} están vinculadas al catálogo CRM.`);
+    } catch (repairError) {
+      const message = repairError instanceof Error ? repairError.message : String(repairError);
+      setIdentityRepairError(/repair_foreign_trade_operation_product_identities|does not exist|404/i.test(message)
+        ? "Falta ejecutar supabase/foreign_trade_center_phase18_operation_line_identity.sql en Supabase."
+        : `No se pudieron recuperar los códigos: ${message}`);
+    } finally {
+      setRepairingIdentities(false);
+    }
+  }
 
   return (
     <div className="foreign-trade-view-stack">
@@ -109,6 +132,7 @@ export function ForeignTradeOperationDetail({
       </header>
 
       {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}
+      {identityRepairError ? <div className="notice-banner error"><AlertTriangle size={18} /> {identityRepairError}</div> : null}
       {missing.length ? <div className="notice-banner warning foreign-trade-analysis-warning"><AlertTriangle size={18} /><div><strong>Análisis todavía incompleto</strong><span>{missing.join(" · ")}</span></div></div> : null}
 
       <nav className="foreign-trade-detail-tabs" aria-label="Ficha de operación">
@@ -155,7 +179,7 @@ export function ForeignTradeOperationDetail({
 
       {tab === "products" ? (
         <section className="panel foreign-trade-detail-panel">
-          <div className="foreign-trade-detail-panel-heading"><div><h2>Productos de la operación</h2><p>Vincula el catálogo oficial o registra un producto temporal en estudio.</p></div><button className="primary-button" type="button" onClick={() => setLineDialog("new")}><Plus size={17} /> Agregar producto</button></div>
+          <div className="foreign-trade-detail-panel-heading"><div><h2>Productos de la operación</h2><p>{recognizedProductCount} de {detail.lines.length} con código reconocido. El código del proveedor se conserva separado del SKU oficial.</p></div><div className="foreign-trade-row-actions"><button className="ghost-button" type="button" disabled={repairingIdentities} onClick={() => void repairProductIdentities()}>{repairingIdentities ? <LoaderCircle className="spin" size={17} /> : <ScanSearch size={17} />} Reconocer códigos</button><button className="primary-button" type="button" onClick={() => setLineDialog("new")}><Plus size={17} /> Agregar producto</button></div></div>
           {detail.lines.length ? <>
             <div className="table-scroll foreign-trade-desktop-records"><table className="foreign-trade-detail-table"><thead><tr><th>Producto</th><th>Cantidad</th><th>Costo fábrica</th><th>Total registrado</th><th>CBM</th><th>Fuente</th><th aria-label="Acciones" /></tr></thead><tbody>{detail.lines.map((line) => <ProductRow key={line.id} line={line} onEdit={() => setLineDialog(line)} onDelete={async () => { if (!window.confirm(`¿Eliminar ${line.product_name} de esta operación?`)) return; await deleteForeignTradeOperationLine(line.id); await changed("Producto eliminado de la operación."); }} />)}</tbody></table></div>
             <div className="foreign-trade-mobile-records" role="list" aria-label="Productos de la operación">{detail.lines.map((line) => <MobileProductCard key={line.id} line={line} onEdit={() => setLineDialog(line)} onDelete={async () => { if (!window.confirm(`¿Eliminar ${line.product_name} de esta operación?`)) return; await deleteForeignTradeOperationLine(line.id); await changed("Producto eliminado de la operación."); }} />)}</div>
@@ -428,16 +452,18 @@ function CostLineDialog({ operationId, defaultRate, cost, lines, onClose, onSave
 function ProductRow({ line, onEdit, onDelete }: { line: ForeignTradeOperationLine; onEdit: () => void; onDelete: () => Promise<void> }) {
   const total = getProductLineTotal(line);
   const cbmPerUnit = line.cbm_total !== null && line.quantity > 0 ? line.cbm_total / line.quantity : null;
-  return <tr><td data-label="Producto"><div className="foreign-trade-product-cell">{line.primary_image_url ? <img src={line.primary_image_url} alt="" /> : <span><Boxes size={18} /></span>}<div><strong>{line.product_name}</strong><small>{line.sku || "Sin SKU"} · {line.temporary_product ? "Temporal" : "Catálogo CRM"}</small></div></div></td><td data-label="Cantidad">{formatDecimal(line.quantity)}</td><td data-label="Costo fábrica">{line.unit_factory_cost === null ? "Pendiente" : formatMoney(line.unit_factory_cost, line.currency)}</td><td data-label="Total registrado">{formatMoney(total, line.currency)}</td><td data-label="CBM">{line.cbm_total === null ? "Pendiente" : <><strong>{formatDecimal(line.cbm_total)} m³</strong>{cbmPerUnit !== null ? <small>{formatDecimal(cbmPerUnit)} m³ por unidad</small> : null}</>}</td><td data-label="Fuente"><SourceBadge source={line.data_source} /></td><td data-label="Acciones"><div className="foreign-trade-row-actions"><button className="icon-button" type="button" title="Editar producto" aria-label={`Editar ${line.product_name}`} onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar producto" aria-label={`Eliminar ${line.product_name}`} onClick={() => void onDelete()}><Trash2 size={16} /></button></div></td></tr>;
+  const identity = getForeignTradeProductIdentity(line);
+  return <tr><td data-label="Producto"><div className="foreign-trade-product-cell">{line.primary_image_url ? <img src={line.primary_image_url} alt="" /> : <span><Boxes size={18} /></span>}<div><strong>{line.product_name}</strong><small>{formatForeignTradeProductIdentity(identity)} · {line.temporary_product ? "Temporal" : "Catálogo CRM"}</small></div></div></td><td data-label="Cantidad">{formatDecimal(line.quantity)}</td><td data-label="Costo fábrica">{line.unit_factory_cost === null ? "Pendiente" : formatMoney(line.unit_factory_cost, line.currency)}</td><td data-label="Total registrado">{formatMoney(total, line.currency)}</td><td data-label="CBM">{line.cbm_total === null ? "Pendiente" : <><strong>{formatDecimal(line.cbm_total)} m³</strong>{cbmPerUnit !== null ? <small>{formatDecimal(cbmPerUnit)} m³ por unidad</small> : null}</>}</td><td data-label="Fuente"><SourceBadge source={line.data_source} /></td><td data-label="Acciones"><div className="foreign-trade-row-actions"><button className="icon-button" type="button" title="Editar producto" aria-label={`Editar ${line.product_name}`} onClick={onEdit}><Edit3 size={16} /></button><button className="icon-button danger" type="button" title="Eliminar producto" aria-label={`Eliminar ${line.product_name}`} onClick={() => void onDelete()}><Trash2 size={16} /></button></div></td></tr>;
 }
 
 function MobileProductCard({ line, onEdit, onDelete }: { line: ForeignTradeOperationLine; onEdit: () => void; onDelete: () => Promise<void> }) {
   const total = getProductLineTotal(line);
   const cbmPerUnit = line.cbm_total !== null && line.quantity > 0 ? line.cbm_total / line.quantity : null;
+  const identity = getForeignTradeProductIdentity(line);
   return <article className="foreign-trade-mobile-record-card" role="listitem">
     <header className="foreign-trade-mobile-record-header">
       {line.primary_image_url ? <img src={line.primary_image_url} alt="" /> : <span className="foreign-trade-mobile-record-icon"><Boxes size={20} /></span>}
-      <div><strong>{line.product_name}</strong><small>{line.sku || "Sin SKU"} · {line.temporary_product ? "Temporal" : "Catálogo CRM"}</small></div>
+      <div><strong>{line.product_name}</strong><small>{formatForeignTradeProductIdentity(identity)} · {line.temporary_product ? "Temporal" : "Catálogo CRM"}</small></div>
       <div className="foreign-trade-mobile-record-actions"><button className="icon-button" type="button" title="Editar producto" aria-label={`Editar ${line.product_name}`} onClick={onEdit}><Edit3 size={17} /></button><button className="icon-button danger" type="button" title="Eliminar producto" aria-label={`Eliminar ${line.product_name}`} onClick={() => void onDelete()}><Trash2 size={17} /></button></div>
     </header>
     <div className="foreign-trade-mobile-record-metrics">

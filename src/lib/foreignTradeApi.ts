@@ -203,6 +203,25 @@ export async function getForeignTradeOperationDetail(operationId: string): Promi
   return normalizeOperationDetail(data);
 }
 
+export async function repairForeignTradeOperationProductIdentities(operationId: string): Promise<{
+  operation_id: string;
+  updated_lines: number;
+  recognized_lines: number;
+  catalog_linked_lines: number;
+}> {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("repair_foreign_trade_operation_product_identities", {
+    p_operation_id: operationId,
+  });
+  if (error) throw error;
+  return data as {
+    operation_id: string;
+    updated_lines: number;
+    recognized_lines: number;
+    catalog_linked_lines: number;
+  };
+}
+
 export async function searchForeignTradeCatalog(search = ""): Promise<ForeignTradeCatalogProduct[]> {
   requireSupabase();
   const { data, error } = await supabase!.rpc("foreign_trade_product_catalog", {
