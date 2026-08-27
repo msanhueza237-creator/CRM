@@ -7,7 +7,7 @@ import type {
   AccountingFactoExcelResult,
   AccountingImportPreview,
   AccountingJournalDraft,
-  AccountingReconciliationCandidate,
+  AccountingReconciliationProposal,
   AccountingReport,
 } from "../types/accounting";
 
@@ -102,14 +102,14 @@ export function confirmAccountingImport(batchId: string, exchangeRate?: number) 
 }
 
 export function proposeAccountingReconciliation(transactionId: string) {
-  return accountingRequest<{ transaction: Record<string, unknown>; candidates: AccountingReconciliationCandidate[] }>("reconciliation/propose", {
+  return accountingRequest<AccountingReconciliationProposal>("reconciliation/propose", {
     method: "POST",
     body: { transactionId },
   });
 }
 
 export function confirmAccountingReconciliation(input: { transactionId: string; links: Array<{ targetType: string; targetId: string; amount: number }>; note?: string }) {
-  return accountingRequest<{ matched: number; remaining: number }>("reconciliation/confirm", { method: "POST", body: input });
+  return accountingRequest<{ matched: number; allocated: number; remaining: number }>("reconciliation/confirm", { method: "POST", body: input });
 }
 
 export function createAccountingCheck(input: {

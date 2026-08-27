@@ -1,5 +1,10 @@
 import { parseBankWorkbook } from "./bank-parsers.ts";
 import { parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-parsers.ts";
+import {
+  buildSuggestedAllocationPlan,
+  rankReconciliationCandidates,
+  type ReconciliationDocumentInput,
+} from "./reconciliation-engine.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -972,21 +977,55 @@ async function proposeReconciliation(rest: RestClient, payload: JsonRecord) {
   if (!transaction) throw new HttpError(404, "Movimiento bancario no encontrado.");
   const entityId = String(transaction.entity_id);
   const incoming = Number(transaction.amount_clp) > 0;
+  const previousReconciliations = await selectRows(
+    rest,
+    `accounting_reconciliations?select=matched_amount_clp&bank_transaction_id=eq.${transactionId}&status=eq.confirmed&limit=1000`,
+  );
+  const allocatedAmount = previousReconciliations.reduce((sum, row) => sum + numeric(row.matched_amount_clp), 0);
+  const transactionAmount = Math.abs(Number(transaction.amount_clp));
+  const remainingAmount = Math.max(transactionAmount - allocatedAmount, 0);
+  if (remainingAmount <= 0.5) {
+    return { transaction, allocatedAmount, remainingAmount: 0, candidates: [], suggestedPlan: null };
+  }
   const candidates = await selectRows(rest, incoming
     ? `accounting_receivables?select=*&entity_id=eq.${entityId}&status=in.(pending,partial,overdue,collections)&limit=1000`
     : `accounting_payables?select=*&entity_id=eq.${entityId}&status=in.(pending,partial,overdue)&limit=1000`);
-  const amount = Math.abs(Number(transaction.amount_clp));
-  const description = normalizeText(`${transaction.description || ""} ${transaction.reference || ""}`);
-  const ranked = candidates.map((candidate) => {
-    const balance = Number(candidate.balance_clp || 0);
-    const amountScore = amount === balance ? 0.65 : Math.max(0, 0.45 - Math.abs(amount - balance) / Math.max(amount, balance, 1));
-    const name = normalizeText(String(candidate.customer_name || candidate.supplier_name || ""));
-    const document = normalizeText(String(candidate.document_number || ""));
-    const textScore = (name && description.includes(name) ? 0.2 : 0) + (document && description.includes(document) ? 0.15 : 0);
-    const score = Math.min(1, amountScore + textScore);
-    return { targetType: incoming ? "receivable" : "payable", targetId: candidate.id, candidate, score, confidence: score >= 0.95 ? "exact" : score >= 0.75 ? "high" : "possible", suggestedAmount: Math.min(amount, balance) };
-  }).filter((item) => item.score >= 0.2).sort((a, b) => b.score - a.score).slice(0, 20);
-  return { transaction, candidates: ranked };
+  const documents: Array<ReconciliationDocumentInput<JsonRecord>> = candidates.map((candidate) => ({
+    targetType: incoming ? "receivable" : "payable",
+    targetId: String(candidate.id),
+    counterpartyName: String(candidate.customer_name || candidate.supplier_name || ""),
+    counterpartyTaxId: String(candidate.customer_tax_id || candidate.supplier_tax_id || ""),
+    documentNumber: String(candidate.document_number || ""),
+    issuedOn: String(candidate.issued_on || ""),
+    dueOn: candidate.due_on ? String(candidate.due_on) : null,
+    balanceClp: numeric(candidate.balance_clp),
+    raw: candidate,
+  }));
+  const ranked = rankReconciliationCandidates({
+    amountClp: transactionAmount,
+    transactionDate: String(transaction.transaction_date || ""),
+    description: String(transaction.description || ""),
+    reference: transaction.reference ? String(transaction.reference) : null,
+    operationNumber: transaction.operation_number ? String(transaction.operation_number) : null,
+  }, documents, remainingAmount);
+  const suggestedPlan = buildSuggestedAllocationPlan(ranked, remainingAmount);
+  return {
+    transaction,
+    allocatedAmount,
+    remainingAmount,
+    suggestedPlan,
+    candidates: ranked.map((item) => ({
+      targetType: item.targetType,
+      targetId: item.targetId,
+      candidate: item.document.raw,
+      score: item.score,
+      confidence: item.confidence,
+      suggestedAmount: item.suggestedAmount,
+      evidence: item.evidence,
+      dateDifferenceDays: item.dateDifferenceDays,
+      signals: item.signals,
+    })),
+  };
 }
 
 async function confirmReconciliation(rest: RestClient, profile: Profile, payload: JsonRecord) {
@@ -997,9 +1036,38 @@ async function confirmReconciliation(rest: RestClient, profile: Profile, payload
   if (!transaction) throw new HttpError(404, "Movimiento bancario no encontrado.");
   const entityId = String(transaction.entity_id);
   const transactionAmount = Math.abs(Number(transaction.amount_clp));
-  const allocations = links.map((link) => ({ targetType: String(link.targetType), targetId: requiredUuid(link.targetId), amount: positiveNumber(link.amount) }));
+  const expectedTargetType = Number(transaction.amount_clp) > 0 ? "receivable" : "payable";
+  const combined = new Map<string, { targetType: string; targetId: string; amount: number }>();
+  for (const link of links) {
+    const targetType = String(link.targetType);
+    if (targetType !== expectedTargetType) throw new HttpError(400, "El tipo de documento no corresponde a la dirección del movimiento bancario.");
+    const targetId = requiredUuid(link.targetId);
+    const key = `${targetType}:${targetId}`;
+    const current = combined.get(key);
+    combined.set(key, { targetType, targetId, amount: (current?.amount || 0) + positiveNumber(link.amount) });
+  }
+  const allocations = [...combined.values()];
   const total = allocations.reduce((sum, link) => sum + link.amount, 0);
-  if (total > transactionAmount + 0.5) throw new HttpError(400, "La asignación supera el monto del movimiento bancario.");
+  const previousReconciliations = await selectRows(
+    rest,
+    `accounting_reconciliations?select=matched_amount_clp&bank_transaction_id=eq.${transactionId}&status=eq.confirmed&limit=1000`,
+  );
+  const previouslyAllocated = previousReconciliations.reduce((sum, row) => sum + numeric(row.matched_amount_clp), 0);
+  const availableAmount = Math.max(transactionAmount - previouslyAllocated, 0);
+  if (availableAmount <= 0.5) throw new HttpError(409, "El movimiento bancario ya está completamente conciliado.");
+  if (total > availableAmount + 0.5) throw new HttpError(400, "La asignación supera el saldo disponible del movimiento bancario.");
+
+  const targetIds = allocations.map((link) => link.targetId);
+  const documentTable = expectedTargetType === "receivable" ? "accounting_receivables" : "accounting_payables";
+  const documents = await selectRows(rest, `${documentTable}?select=id,original_amount_clp,paid_amount_clp,balance_clp&id=in.(${targetIds.join(",")})&limit=1000`);
+  const documentMap = new Map(documents.map((document) => [String(document.id), document]));
+  for (const allocation of allocations) {
+    const document = documentMap.get(allocation.targetId);
+    if (!document) throw new HttpError(404, "Uno de los documentos de conciliación no existe.");
+    const balance = numeric(document.balance_clp);
+    if (allocation.amount > balance + 0.5) throw new HttpError(400, "Una asignación supera el saldo pendiente del documento.");
+  }
+
   const reconciliation = (await insertRows(rest, "accounting_reconciliations", [{
     entity_id: entityId,
     bank_transaction_id: transactionId,
@@ -1020,8 +1088,7 @@ async function confirmReconciliation(rest: RestClient, profile: Profile, payload
     const receivable = link.targetType === "receivable";
     const table = receivable ? "accounting_receivables" : "accounting_payables";
     const allocationTable = receivable ? "accounting_receivable_allocations" : "accounting_payable_allocations";
-    const document = (await selectRows(rest, `${table}?select=id,original_amount_clp,paid_amount_clp&id=eq.${link.targetId}&limit=1`))[0];
-    if (!document) throw new HttpError(404, "Documento de conciliación no encontrado.");
+    const document = documentMap.get(link.targetId)!;
     const paid = Number(document.paid_amount_clp || 0) + link.amount;
     const original = Number(document.original_amount_clp || 0);
     await patchRows(rest, table, `id=eq.${link.targetId}`, { paid_amount_clp: paid, status: paid >= original - 0.5 ? "paid" : "partial", updated_at: new Date().toISOString() });
@@ -1034,13 +1101,14 @@ async function confirmReconciliation(rest: RestClient, profile: Profile, payload
       created_by: profile.id,
     }]);
   }
-  await patchRows(rest, "accounting_bank_transactions", `id=eq.${transactionId}`, { reconciliation_status: total >= transactionAmount - 0.5 ? "matched" : "partial", updated_at: new Date().toISOString() });
+  const allocatedAmount = previouslyAllocated + total;
+  await patchRows(rest, "accounting_bank_transactions", `id=eq.${transactionId}`, { reconciliation_status: allocatedAmount >= transactionAmount - 0.5 ? "matched" : "partial", updated_at: new Date().toISOString() });
   await insertRows(rest, "accounting_audit_events", [{
     entity_id: entityId, actor_id: profile.id, action: "reconciliation.confirmed",
     entity_type: "bank_transaction", entity_id_text: transactionId,
-    new_value: { reconciliation_id: reconciliation.id, total, links: allocations },
+    new_value: { reconciliation_id: reconciliation.id, total, previously_allocated: previouslyAllocated, allocated_amount: allocatedAmount, links: allocations },
   }]);
-  return { reconciliation, matched: total, remaining: Math.max(transactionAmount - total, 0) };
+  return { reconciliation, matched: total, allocated: allocatedAmount, remaining: Math.max(transactionAmount - allocatedAmount, 0) };
 }
 
 async function createCheck(rest: RestClient, profile: Profile, payload: JsonRecord) {

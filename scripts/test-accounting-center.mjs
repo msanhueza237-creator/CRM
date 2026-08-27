@@ -6,6 +6,11 @@ import {
   bankIsoDate,
   bankMoney,
 } from "../supabase/functions/accounting-center/bank-normalizers.ts";
+import {
+  buildSuggestedAllocationPlan,
+  extractChileanTaxIds,
+  rankReconciliationCandidates,
+} from "../supabase/functions/accounting-center/reconciliation-engine.ts";
 
 const migration = (await readFile(new URL("../supabase/accounting_center.sql", import.meta.url), "utf8"))
   .replace(/create extension if not exists pgcrypto;/i, "");
@@ -45,6 +50,8 @@ assert.match(edgeSource, /index \+= 40/);
 assert.match(edgeSource, /suggestedExchangeRate/);
 assert.match(edgeSource, /Ingresa un tipo de cambio .*\/CLP válido/);
 assert.match(edgeSource, /route === "reconciliation\/confirm"/);
+assert.match(edgeSource, /previouslyAllocated/);
+assert.match(edgeSource, /saldo disponible del movimiento bancario/);
 assert.match(edgeSource, /route === "checks\/create"/);
 assert.match(edgeSource, /accounting_create_journal_entry/);
 assert.match(edgeSource, /saldo_acumulado_clp/);
@@ -70,6 +77,8 @@ assert.match(pageSource, /Importar cartola real/);
 assert.match(pageSource, /Descargar cartola original/);
 assert.match(pageSource, /accounting-bank-history/);
 assert.match(pageSource, /Se conservará el monto original y se guardará su equivalente contable en CLP/);
+assert.match(pageSource, /Usar propuesta/);
+assert.match(pageSource, /Permite pagos parciales, varias facturas por pago y varios abonos por factura/);
 
 const bancoEstadoRange = bancoEstadoStatementRange([
   ["Fecha Inicio", "", "", "", "11/03/2026"],
@@ -82,6 +91,75 @@ assert.equal(bankIsoDate("13/03", bancoEstadoRange), "2026-03-13");
 assert.equal(bankMoney("$204.250"), 204250);
 assert.equal(bankMoney("$5,000,000"), 5000000);
 assert.equal(bankMoney("US$1,25"), 1.25);
+
+const reconciliationTransaction = {
+  amountClp: 1_500_000,
+  transactionDate: "2026-07-29",
+  description: "TEF 77724382-9 IMPORTADORA LATIN CHILE",
+  reference: "Pago facturas",
+  operationNumber: "580760089",
+};
+assert.deepEqual(extractChileanTaxIds(reconciliationTransaction.description), ["777243829"]);
+const reconciliationDocuments = [
+  {
+    targetType: "receivable",
+    targetId: "00000000-0000-4000-8000-000000000101",
+    counterpartyName: "Importadora Latin Chile Limitada",
+    counterpartyTaxId: "77.724.382-9",
+    documentNumber: "F-100",
+    issuedOn: "2026-07-01",
+    dueOn: "2026-07-29",
+    balanceClp: 1_000_000,
+    raw: { id: "first" },
+  },
+  {
+    targetType: "receivable",
+    targetId: "00000000-0000-4000-8000-000000000102",
+    counterpartyName: "Importadora Latin Chile Ltda",
+    counterpartyTaxId: "77.724.382-9",
+    documentNumber: "F-101",
+    issuedOn: "2026-07-10",
+    dueOn: "2026-08-10",
+    balanceClp: 800_000,
+    raw: { id: "second" },
+  },
+  {
+    targetType: "receivable",
+    targetId: "00000000-0000-4000-8000-000000000103",
+    counterpartyName: "Cliente sin relación",
+    counterpartyTaxId: "76.411.321-7",
+    documentNumber: "F-999",
+    issuedOn: "2026-07-29",
+    dueOn: "2026-07-29",
+    balanceClp: 1_500_000,
+    raw: { id: "unrelated" },
+  },
+];
+const rankedReconciliation = rankReconciliationCandidates(reconciliationTransaction, reconciliationDocuments, 1_500_000);
+assert.equal(rankedReconciliation[0].signals.taxId, true);
+assert.equal(rankedReconciliation[0].confidence, "high");
+assert.ok(rankedReconciliation[0].evidence.includes("RUT exacto"));
+const multiInvoicePlan = buildSuggestedAllocationPlan(rankedReconciliation, 1_500_000);
+assert.ok(multiInvoicePlan);
+assert.equal(multiInvoicePlan.links.length, 2);
+assert.deepEqual(multiInvoicePlan.links.map((link) => link.amount), [1_000_000, 500_000]);
+
+const partialRank = rankReconciliationCandidates(
+  { ...reconciliationTransaction, amountClp: 300_000 },
+  [reconciliationDocuments[0]],
+  300_000,
+);
+assert.equal(partialRank[0].signals.amount, "partial");
+assert.equal(partialRank[0].suggestedAmount, 300_000);
+assert.ok(partialRank[0].evidence.includes("Posible pago parcial"));
+
+const exactRank = rankReconciliationCandidates(
+  { ...reconciliationTransaction, amountClp: 1_000_000, reference: "F-100" },
+  [reconciliationDocuments[0]],
+  1_000_000,
+);
+assert.equal(exactRank[0].confidence, "exact");
+assert.equal(exactRank[0].signals.document, true);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";

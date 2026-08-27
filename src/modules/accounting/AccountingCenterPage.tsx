@@ -58,6 +58,7 @@ import type {
   AccountingPayable,
   AccountingReceivable,
   AccountingReconciliationCandidate,
+  AccountingReconciliationProposal,
   AccountingReport,
   AccountingView,
 } from "../../types/accounting";
@@ -451,13 +452,146 @@ function ImportPreviewDialog({ preview, busy, close, runAction }: { preview: Acc
 
 function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   const unmatched = data.bankTransactions.filter((row) => row.reconciliation_status !== "matched" && row.reconciliation_status !== "ignored");
-  const [selected, setSelected] = useState<AccountingBankTransaction | null>(unmatched[0] || null);
-  const [candidates, setCandidates] = useState<AccountingReconciliationCandidate[]>([]);
+  const [selected, setSelected] = useState<AccountingBankTransaction | null>(null);
+  const [proposal, setProposal] = useState<AccountingReconciliationProposal | null>(null);
+  const [allocations, setAllocations] = useState<Record<string, string>>({});
   const [candidateBusy, setCandidateBusy] = useState(false);
   const [localError, setLocalError] = useState("");
-  async function propose(transaction: AccountingBankTransaction) { setSelected(transaction); setCandidateBusy(true); setLocalError(""); try { setCandidates((await proposeAccountingReconciliation(transaction.id)).candidates); } catch (caught) { setLocalError(caught instanceof Error ? caught.message : "No se pudieron calcular coincidencias."); } finally { setCandidateBusy(false); } }
-  async function confirm(candidate: AccountingReconciliationCandidate) { if (!selected) return; await runAction("reconcile", () => confirmAccountingReconciliation({ transactionId: selected.id, links: [{ targetType: candidate.targetType, targetId: candidate.targetId, amount: candidate.suggestedAmount }] }), "Movimiento conciliado y saldo actualizado."); setCandidates([]); setSelected(null); }
-  return <div className="accounting-reconcile-layout"><section className="panel"><div className="accounting-panel-heading"><div><p>Cartola normalizada</p><h2>Movimientos pendientes</h2><span>No se contabilizan automáticamente sin una regla aprobada.</span></div><Status value={`${unmatched.length} pendientes`} tone={unmatched.length ? "review" : "success"} /></div>{unmatched.length ? <div className="accounting-transaction-list">{unmatched.map((row) => <button className={selected?.id === row.id ? "active" : ""} key={row.id} type="button" onClick={() => void propose(row)}><span>{date(row.transaction_date)}</span><strong>{row.description}</strong><small>{row.reference || row.operation_number || "Sin referencia"}</small><b className={row.amount_clp >= 0 ? "positive" : "negative"}>{clp(row.amount_clp)}</b></button>)}</div> : <Empty icon={CheckCircle2} text="Todos los movimientos visibles están conciliados." />}</section><section className="panel"><div className="accounting-panel-heading"><div><p>Motor determinístico</p><h2>Coincidencias sugeridas</h2></div></div>{localError ? <div className="accounting-local-error">{localError}</div> : null}{candidateBusy ? <Empty icon={LoaderCircle} text="Comparando monto, fecha, RUT y referencia…" spinning /> : null}{!candidateBusy && selected && !candidates.length ? <Empty icon={Search} text="Selecciona el movimiento o no se encontraron coincidencias suficientes." /> : null}<div className="accounting-candidate-list">{candidates.map((candidate) => { const document = candidate.candidate as AccountingReceivable & AccountingPayable; return <article key={candidate.targetId}><div><Status value={confidence(candidate.confidence)} tone={candidate.confidence === "exact" ? "success" : "review"} /><strong>{candidate.targetType === "receivable" ? document.customer_name : document.supplier_name}</strong><span>{document.document_number} · saldo {clp(document.balance_clp)}</span></div><div><b>{Math.round(candidate.score * 100)}%</b><button className="small-command" disabled={busy === "reconcile"} type="button" onClick={() => void confirm(candidate)}>Conciliar {clp(candidate.suggestedAmount)}</button></div></article>; })}</div></section></div>;
+  const [movementQuery, setMovementQuery] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [candidateQuery, setCandidateQuery] = useState("");
+  const [note, setNote] = useState("");
+  const normalizedMovementQuery = normalize(movementQuery);
+  const filteredTransactions = unmatched.filter((row) => {
+    const text = normalize(`${row.description} ${row.reference || ""} ${row.operation_number || ""}`);
+    return (!normalizedMovementQuery || text.includes(normalizedMovementQuery))
+      && (!from || row.transaction_date >= from)
+      && (!to || row.transaction_date <= to);
+  });
+  const candidates = proposal?.candidates || [];
+  const normalizedCandidateQuery = normalize(candidateQuery);
+  const visibleCandidates = candidates.filter((candidate) => {
+    const document = candidate.candidate;
+    const name = candidate.targetType === "receivable" ? (document as AccountingReceivable).customer_name : (document as AccountingPayable).supplier_name;
+    const taxId = candidate.targetType === "receivable" ? (document as AccountingReceivable).customer_tax_id : (document as AccountingPayable).supplier_tax_id;
+    return !normalizedCandidateQuery || normalize(`${name} ${taxId || ""} ${document.document_number}`).includes(normalizedCandidateQuery);
+  });
+  const selectedTotal = Object.values(allocations).reduce((sum, value) => sum + Math.max(0, parseLocalizedNumber(value)), 0);
+  const remainingAmount = proposal?.remainingAmount || 0;
+  const allocationErrors = candidates.some((candidate) => parseLocalizedNumber(allocations[candidate.targetId] || "0") > number(candidate.candidate.balance_clp) + 0.5);
+  const invalidTotal = selectedTotal > remainingAmount + 0.5;
+
+  function applySuggestedPlan(nextProposal: AccountingReconciliationProposal) {
+    const next: Record<string, string> = {};
+    for (const link of nextProposal.suggestedPlan?.links || []) next[link.targetId] = String(Math.round(link.amount));
+    setAllocations(next);
+  }
+
+  async function propose(transaction: AccountingBankTransaction) {
+    setSelected(transaction);
+    setCandidateBusy(true);
+    setLocalError("");
+    setCandidateQuery("");
+    setNote("");
+    setProposal(null);
+    setAllocations({});
+    try {
+      const nextProposal = await proposeAccountingReconciliation(transaction.id);
+      setProposal(nextProposal);
+      applySuggestedPlan(nextProposal);
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : "No se pudieron calcular coincidencias.");
+    } finally {
+      setCandidateBusy(false);
+    }
+  }
+
+  function toggleCandidate(candidate: AccountingReconciliationCandidate, checked: boolean) {
+    setAllocations((current) => {
+      const next = { ...current };
+      if (checked) next[candidate.targetId] = String(Math.round(candidate.suggestedAmount));
+      else delete next[candidate.targetId];
+      return next;
+    });
+  }
+
+  async function confirm() {
+    if (!selected || !proposal) return;
+    const links = candidates.flatMap((candidate) => {
+      const amount = parseLocalizedNumber(allocations[candidate.targetId] || "0");
+      return amount > 0 ? [{ targetType: candidate.targetType, targetId: candidate.targetId, amount }] : [];
+    });
+    if (!links.length || invalidTotal || allocationErrors) return;
+    const completed = await runAction(
+      "reconcile",
+      () => confirmAccountingReconciliation({ transactionId: selected.id, links, note }),
+      links.length > 1 ? "Pago distribuido y saldos actualizados." : "Movimiento conciliado y saldo actualizado.",
+    );
+    if (completed) {
+      setProposal(null);
+      setAllocations({});
+      setSelected(null);
+      setNote("");
+    }
+  }
+
+  return <div className="accounting-reconcile-layout">
+    <section className="panel accounting-reconcile-movements">
+      <div className="accounting-panel-heading"><div><p>Cartola normalizada</p><h2>Movimientos pendientes</h2><span>Busca por nombre, RUT, referencia o fecha.</span></div><Status value={`${unmatched.length} pendientes`} tone={unmatched.length ? "review" : "success"} /></div>
+      <div className="accounting-reconcile-filters">
+        <label><span>Buscar movimiento</span><input placeholder="Nombre, RUT o referencia" type="search" value={movementQuery} onChange={(event) => setMovementQuery(event.target.value)} /></label>
+        <label><span>Desde</span><input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
+        <label><span>Hasta</span><input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+      </div>
+      <small className="accounting-filter-count">Mostrando {filteredTransactions.length} de {unmatched.length} pendientes.</small>
+      {filteredTransactions.length ? <div className="accounting-transaction-list">{filteredTransactions.map((row) => <button className={selected?.id === row.id ? "active" : ""} key={row.id} type="button" onClick={() => void propose(row)}><span>{date(row.transaction_date)} {row.reconciliation_status === "partial" ? "· Parcial" : ""}</span><strong>{row.description}</strong><small>{row.reference || row.operation_number || "Sin referencia"}</small><b className={row.amount_clp >= 0 ? "positive" : "negative"}>{clp(row.amount_clp)}</b></button>)}</div> : <Empty icon={unmatched.length ? Search : CheckCircle2} text={unmatched.length ? "No hay movimientos que coincidan con los filtros." : "Todos los movimientos visibles están conciliados."} />}
+    </section>
+
+    <section className="panel accounting-reconcile-candidates">
+      <div className="accounting-panel-heading"><div><p>Propuesta auditable</p><h2>Asignar documentos</h2><span>Permite pagos parciales, varias facturas por pago y varios abonos por factura.</span></div></div>
+      {localError ? <div className="accounting-local-error">{localError}</div> : null}
+      {candidateBusy ? <Empty icon={LoaderCircle} text="Comparando RUT, nombre, fecha, folio y monto…" spinning /> : null}
+      {!candidateBusy && !selected ? <Empty icon={Search} text="Selecciona un movimiento bancario para buscar coincidencias." /> : null}
+      {!candidateBusy && proposal ? <>
+        <div className="accounting-allocation-summary">
+          <div><span>Movimiento</span><strong>{clp(Math.abs(number(selected?.amount_clp)))}</strong></div>
+          <div><span>Ya conciliado</span><strong>{clp(proposal.allocatedAmount)}</strong></div>
+          <div><span>Disponible</span><strong>{clp(proposal.remainingAmount)}</strong></div>
+          <div className={invalidTotal ? "invalid" : ""}><span>Asignado ahora</span><strong>{clp(selectedTotal)}</strong></div>
+          <div><span>Restará</span><strong>{clp(Math.max(proposal.remainingAmount - selectedTotal, 0))}</strong></div>
+        </div>
+        {proposal.suggestedPlan ? <div className="accounting-suggested-plan"><div><strong>Sugerencia del motor</strong><span>{proposal.suggestedPlan.explanation}</span></div><button className="ghost-button" type="button" onClick={() => applySuggestedPlan(proposal)}>Usar propuesta</button></div> : null}
+        <label className="accounting-candidate-search"><span>Filtrar documentos</span><input placeholder="Cliente, proveedor, RUT o folio" type="search" value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} /></label>
+        {!candidates.length ? <Empty icon={Search} text="No se encontraron documentos suficientemente relacionados. Ajusta la búsqueda o revisa que Facto tenga el RUT y nombre correctos." /> : null}
+        <div className="accounting-candidate-list">{visibleCandidates.map((candidate) => {
+          const document = candidate.candidate;
+          const receivable = candidate.targetType === "receivable";
+          const name = receivable ? (document as AccountingReceivable).customer_name : (document as AccountingPayable).supplier_name;
+          const taxId = receivable ? (document as AccountingReceivable).customer_tax_id : (document as AccountingPayable).supplier_tax_id;
+          const checked = parseLocalizedNumber(allocations[candidate.targetId] || "0") > 0;
+          const amount = parseLocalizedNumber(allocations[candidate.targetId] || "0");
+          const overBalance = amount > number(document.balance_clp) + 0.5;
+          return <article className={checked ? "selected" : ""} key={candidate.targetId}>
+            <label className="accounting-candidate-check"><input checked={checked} type="checkbox" onChange={(event) => toggleCandidate(candidate, event.target.checked)} /><span className="sr-only">Seleccionar {name}</span></label>
+            <div className="accounting-candidate-details">
+              <div className="accounting-candidate-heading"><Status value={confidence(candidate.confidence)} tone={candidate.confidence === "exact" ? "success" : "review"} /><b>{Math.round(candidate.score * 100)}%</b></div>
+              <strong>{name}</strong>
+              <span>{taxId || "Sin RUT"} · Documento {document.document_number}</span>
+              <span>Emitido {date(document.issued_on)} · vence {date(document.due_on)} · saldo {clp(document.balance_clp)}</span>
+              <div className="accounting-match-evidence">{candidate.evidence.map((item) => <small key={item}>{item}</small>)}</div>
+            </div>
+            <label className={`accounting-allocation-input ${overBalance ? "invalid" : ""}`}><span>Monto a asignar</span><input aria-invalid={overBalance} inputMode="numeric" type="text" value={allocations[candidate.targetId] || ""} placeholder={String(Math.round(candidate.suggestedAmount))} onChange={(event) => setAllocations((current) => ({ ...current, [candidate.targetId]: event.target.value }))} /><small>{overBalance ? "Supera el saldo" : candidate.signals.amount === "partial" ? "Abono parcial" : "Editable"}</small></label>
+          </article>;
+        })}</div>
+        {candidates.length ? <div className="accounting-reconcile-confirm">
+          <label><span>Nota de conciliación</span><input maxLength={500} placeholder="Opcional" type="text" value={note} onChange={(event) => setNote(event.target.value)} /></label>
+          {(invalidTotal || allocationErrors) ? <div className="accounting-local-error">Revisa los montos: no pueden superar el saldo del movimiento ni el saldo de cada documento.</div> : null}
+          <button className="primary-button" disabled={busy === "reconcile" || selectedTotal <= 0 || invalidTotal || allocationErrors} type="button" onClick={() => void confirm()}>{busy === "reconcile" ? "Confirmando…" : `Confirmar ${candidates.filter((candidate) => parseLocalizedNumber(allocations[candidate.targetId] || "0") > 0).length} asignación(es)`}</button>
+        </div> : null}
+      </> : null}
+    </section>
+  </div>;
 }
 
 function ReceivablesView({ rows }: { rows: AccountingReceivable[] }) {

@@ -336,7 +336,28 @@ export interface AccountingReconciliationCandidate {
   score: number;
   confidence: "exact" | "high" | "possible";
   suggestedAmount: number;
+  evidence: string[];
+  dateDifferenceDays: number | null;
+  signals: {
+    taxId: boolean;
+    document: boolean;
+    name: number;
+    date: boolean;
+    amount: "exact" | "partial" | "over" | "different";
+  };
   candidate: AccountingReceivable | AccountingPayable;
+}
+
+export interface AccountingReconciliationProposal {
+  transaction: AccountingBankTransaction;
+  allocatedAmount: number;
+  remainingAmount: number;
+  candidates: AccountingReconciliationCandidate[];
+  suggestedPlan: {
+    links: Array<{ targetType: "receivable" | "payable"; targetId: string; amount: number }>;
+    score: number;
+    explanation: string;
+  } | null;
 }
 
 export interface AccountingReportRow {

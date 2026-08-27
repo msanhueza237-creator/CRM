@@ -317,6 +317,108 @@
   min-width: 0;
 }
 
+.accounting-reconcile-layout {
+  grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.28fr);
+}
+
+.accounting-reconcile-movements,
+.accounting-reconcile-candidates { min-width: 0; }
+
+.accounting-reconcile-filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) repeat(2, minmax(120px, 0.45fr));
+  gap: 9px;
+  margin-top: 16px;
+}
+
+.accounting-reconcile-filters label,
+.accounting-candidate-search,
+.accounting-reconcile-confirm > label { min-width: 0; }
+
+.accounting-reconcile-filters span,
+.accounting-candidate-search > span,
+.accounting-reconcile-confirm > label > span,
+.accounting-allocation-input > span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--accounting-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.accounting-reconcile-filters input,
+.accounting-candidate-search input,
+.accounting-reconcile-confirm input,
+.accounting-allocation-input input { width: 100%; }
+
+.accounting-filter-count {
+  display: block;
+  margin-top: 9px;
+  color: var(--accounting-muted);
+}
+
+.accounting-allocation-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(105px, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.accounting-allocation-summary > div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--accounting-line);
+  border-radius: 5px;
+  background: var(--accounting-soft);
+}
+
+.accounting-allocation-summary span,
+.accounting-allocation-summary strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.accounting-allocation-summary span {
+  color: var(--accounting-muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.accounting-allocation-summary strong {
+  margin-top: 4px;
+  color: var(--accounting-ink);
+  font-size: 15px;
+}
+
+.accounting-allocation-summary .invalid {
+  border-color: var(--accounting-danger);
+  background: #fff0ed;
+}
+
+.accounting-suggested-plan {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 12px;
+  border-left: 3px solid var(--accounting-teal);
+  background: #eef8f8;
+}
+
+.accounting-suggested-plan span {
+  display: block;
+  margin-top: 3px;
+  color: var(--accounting-muted);
+}
+
+.accounting-candidate-search {
+  display: block;
+  margin-top: 14px;
+}
+
 .accounting-overview-card,
 .accounting-source-card,
 .accounting-import-card {
@@ -718,6 +820,98 @@
   cursor: pointer;
 }
 
+.accounting-candidate-list article {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(145px, 0.38fr);
+  align-items: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--accounting-line);
+  border-radius: 5px;
+  background: #fff;
+}
+
+.accounting-candidate-list article.selected {
+  border-color: var(--accounting-teal);
+  box-shadow: inset 3px 0 var(--accounting-teal);
+}
+
+.accounting-candidate-check {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 32px;
+}
+
+.accounting-candidate-check input {
+  width: 18px;
+  height: 18px;
+}
+
+.accounting-candidate-details { min-width: 0; }
+
+.accounting-candidate-details > strong,
+.accounting-candidate-details > span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.accounting-candidate-details > span {
+  margin-top: 3px;
+  color: var(--accounting-muted);
+}
+
+.accounting-candidate-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.accounting-match-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 9px;
+}
+
+.accounting-match-evidence small {
+  padding: 4px 6px;
+  border: 1px solid #c8dfe1;
+  border-radius: 4px;
+  background: #f1f8f8;
+  color: #315c62;
+  font-weight: 700;
+}
+
+.accounting-allocation-input { min-width: 0; }
+
+.accounting-allocation-input small {
+  display: block;
+  margin-top: 4px;
+  color: var(--accounting-muted);
+}
+
+.accounting-allocation-input.invalid input { border-color: var(--accounting-danger); }
+.accounting-allocation-input.invalid small { color: var(--accounting-danger); }
+
+.accounting-reconcile-confirm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--accounting-line);
+}
+
+.accounting-reconcile-confirm .accounting-local-error {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
 .accounting-transaction-list button.active,
 .accounting-candidate-list button.active {
   border-color: var(--accounting-teal);
@@ -779,6 +973,7 @@
   .accounting-facto-support-grid { grid-template-columns: 1fr; }
   .accounting-filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .accounting-filter-grid .accounting-search { grid-column: 1 / -1; }
+  .accounting-allocation-summary { grid-template-columns: repeat(3, minmax(105px, 1fr)); }
 }
 
 @media (max-width: 720px) {
@@ -871,6 +1066,14 @@
   }
   .accounting-currency-conversion { grid-template-columns: 1fr; }
   .accounting-findings-list article > b { margin-left: 0; }
+  .accounting-reconcile-filters,
+  .accounting-allocation-summary,
+  .accounting-reconcile-confirm { grid-template-columns: 1fr; }
+  .accounting-suggested-plan { align-items: stretch; flex-direction: column; }
+  .accounting-suggested-plan button,
+  .accounting-reconcile-confirm button { width: 100%; justify-content: center; }
+  .accounting-candidate-list article { grid-template-columns: auto minmax(0, 1fr); }
+  .accounting-allocation-input { grid-column: 2; }
 }
 
 @media (max-width: 430px) {
