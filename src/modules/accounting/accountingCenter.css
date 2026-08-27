@@ -18,7 +18,6 @@
 .accounting-modal-actions,
 .accounting-export-actions,
 .accounting-inline-stats,
-.accounting-import-history,
 .accounting-control-summary {
   display: flex;
   align-items: center;
@@ -124,6 +123,11 @@
   align-items: center;
   justify-content: flex-end;
   gap: 7px;
+}
+
+.accounting-import-history,
+.accounting-bank-layout > * {
+  min-width: 0;
 }
 
 .accounting-review-note {
@@ -397,6 +401,34 @@
   gap: 12px;
 }
 
+.accounting-history-list article {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) max-content max-content;
+}
+
+.accounting-history-icon {
+  flex: 0 0 auto;
+  color: var(--accounting-teal);
+}
+
+.accounting-history-main {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.accounting-history-main strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accounting-history-main span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .accounting-source-list p,
 .accounting-history-list p,
 .accounting-findings-list p {
@@ -597,6 +629,49 @@
   margin: 14px 0;
 }
 
+.accounting-preview-kpis > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--accounting-line);
+  border-radius: 5px;
+  background: var(--accounting-soft);
+}
+
+.accounting-preview-kpis > span strong {
+  display: block;
+}
+
+.accounting-currency-conversion {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.8fr);
+  gap: 16px;
+  align-items: center;
+  margin: 14px 0;
+  padding: 14px;
+  border-left: 4px solid var(--accounting-teal);
+  background: #eef8f8;
+}
+
+.accounting-currency-conversion > div,
+.accounting-rate-field {
+  min-width: 0;
+}
+
+.accounting-currency-conversion > div span,
+.accounting-rate-field small {
+  display: block;
+  margin-top: 4px;
+  color: var(--accounting-muted);
+  font-weight: 500;
+}
+
+.accounting-rate-field input[aria-invalid="true"] {
+  border-color: var(--accounting-danger);
+}
+
 .accounting-transaction-list button,
 .accounting-candidate-list button {
   width: 100%;
@@ -739,8 +814,12 @@
   .accounting-center-table td > button,
   .accounting-center-table td > .accounting-status { justify-self: end; }
   .accounting-source-list article,
-  .accounting-history-list article { align-items: flex-start; flex-direction: column; }
+  .accounting-history-list article { align-items: flex-start; }
+  .accounting-history-list article { grid-template-columns: 20px minmax(0, 1fr); }
+  .accounting-history-list article > small,
+  .accounting-history-list article > .accounting-history-actions { grid-column: 2; }
   .accounting-history-actions { width: 100%; justify-content: space-between; }
+  .accounting-currency-conversion { grid-template-columns: 1fr; }
   .accounting-findings-list article > b { margin-left: 0; }
 }
 

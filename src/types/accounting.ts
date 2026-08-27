@@ -287,6 +287,12 @@ export interface AccountingImportPreviewRow {
 export interface AccountingImportPreview {
   batch: AccountingImportBatch;
   bankAccount: AccountingBankAccount;
+  suggestedExchangeRate: {
+    rate: number;
+    rate_date: string;
+    source: string;
+    status: string;
+  } | null;
   summary: { total: number; new: number; duplicates: number; errors: number };
   rows: AccountingImportPreviewRow[];
 }

@@ -583,6 +583,16 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
   );
   if (existingBatch.length) throw new HttpError(409, "Este archivo ya fue cargado anteriormente.");
   const bankAccount = await ensureBankAccount(rest, entityId, preview);
+  const latestTransactionDate = preview.rows.reduce(
+    (latest, row) => row.transaction_date > latest ? row.transaction_date : latest,
+    "",
+  );
+  const suggestedExchangeRate = preview.currency === "CLP"
+    ? null
+    : (await selectRows(
+      rest,
+      `accounting_exchange_rates?select=rate,rate_date,source,status&from_currency=eq.${preview.currency}&to_currency=eq.CLP${latestTransactionDate ? `&rate_date=lte.${latestTransactionDate}` : ""}&order=rate_date.desc,created_at.desc&limit=1`,
+    ))[0] || null;
   const existingFingerprints = preview.rows.length
     ? await selectRows(rest, `accounting_bank_transactions?select=fingerprint&bank_account_id=eq.${bankAccount.id}&fingerprint=in.(${preview.rows.map((row) => row.fingerprint).join(",")})`)
     : [];
@@ -613,7 +623,13 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
     normalized_data: row,
     validation_errors: row.errors,
   })));
-  return { batch, bankAccount, summary: { total: preview.rows.length, new: valid.length, duplicates: duplicates.length, errors: invalid.length }, rows: preview.rows.slice(0, 300) };
+  return {
+    batch,
+    bankAccount,
+    suggestedExchangeRate,
+    summary: { total: preview.rows.length, new: valid.length, duplicates: duplicates.length, errors: invalid.length },
+    rows: preview.rows.slice(0, 300),
+  };
 }
 
 async function previewFactoExcel(rest: RestClient, profile: Profile, payload: JsonRecord) {
@@ -871,10 +887,17 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
   const entityId = String(batch.entity_id);
   const rows = await selectRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&status=eq.new&order=row_number.asc&limit=5000`);
   const summary = asObject(batch.summary);
+  const batchCurrency = String(summary.currency || "CLP").toUpperCase();
+  const requestedRate = numeric(payload.exchangeRate);
+  if (batchCurrency !== "CLP" && requestedRate <= 0) {
+    throw new HttpError(400, `Ingresa un tipo de cambio ${batchCurrency}/CLP válido para confirmar la cartola.`);
+  }
   const bankAccount = await bankAccountForBatch(rest, entityId, String(batch.source_type), String(summary.account_hint || ""), String(summary.currency || "CLP"));
   const created = await upsertRows(rest, "accounting_bank_transactions", rows.map((row) => {
     const data = asObject(row.normalized_data);
-    const rate = Number(data.exchange_rate || (String(data.currency) === "CLP" ? 1 : payload.exchangeRate));
+    const rowCurrency = String(data.currency || batchCurrency).toUpperCase();
+    const documentedRate = numeric(data.exchange_rate);
+    const rate = documentedRate > 0 ? documentedRate : rowCurrency === "CLP" ? 1 : requestedRate;
     if (!Number.isFinite(rate) || rate <= 0) throw new HttpError(400, `Falta tipo de cambio para la fila ${row.row_number}.`);
     return {
       entity_id: entityId,
@@ -890,7 +913,7 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
       credit: Number(data.credit || 0),
       amount: Number(data.amount || 0),
       balance: data.balance === null ? null : Number(data.balance),
-      currency: data.currency,
+      currency: rowCurrency,
       exchange_rate: rate,
       amount_clp: Number(data.amount || 0) * rate,
       fingerprint: row.fingerprint,
@@ -902,7 +925,13 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
   await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
   await insertRows(rest, "accounting_audit_events", [{
     entity_id: entityId, actor_id: profile.id, action: "bank_import.confirmed", entity_type: "import_batch",
-    entity_id_text: batchId, new_value: { imported: created.length, bank_account_id: bankAccount.id },
+    entity_id_text: batchId,
+    new_value: {
+      imported: created.length,
+      bank_account_id: bankAccount.id,
+      currency: batchCurrency,
+      exchange_rate: batchCurrency === "CLP" ? 1 : requestedRate,
+    },
   }]);
   return { imported: created.length, bankAccount };
 }
