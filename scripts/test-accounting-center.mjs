@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
+import {
+  bancoEstadoStatementRange,
+  bankIsoDate,
+  bankMoney,
+} from "../supabase/functions/accounting-center/bank-normalizers.ts";
 
 const migration = (await readFile(new URL("../supabase/accounting_center.sql", import.meta.url), "utf8"))
   .replace(/create extension if not exists pgcrypto;/i, "");
@@ -65,6 +70,18 @@ assert.match(pageSource, /Importar cartola real/);
 assert.match(pageSource, /Descargar cartola original/);
 assert.match(pageSource, /accounting-bank-history/);
 assert.match(pageSource, /Se conservará el monto original y se guardará su equivalente contable en CLP/);
+
+const bancoEstadoRange = bancoEstadoStatementRange([
+  ["Fecha Inicio", "", "", "", "11/03/2026"],
+  ["Fecha Final", "", "", "", "08/06/2026"],
+]);
+assert.deepEqual(bancoEstadoRange, { from: "2026-03-11", to: "2026-06-08", defaultYear: 2026 });
+assert.equal(bankIsoDate("11/03", bancoEstadoRange), "2026-03-11");
+assert.equal(bankIsoDate("08/06", bancoEstadoRange), "2026-06-08");
+assert.equal(bankIsoDate("13/03", bancoEstadoRange), "2026-03-13");
+assert.equal(bankMoney("$204.250"), 204250);
+assert.equal(bankMoney("$5,000,000"), 5000000);
+assert.equal(bankMoney("US$1,25"), 1.25);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";

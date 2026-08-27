@@ -581,7 +581,10 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
   const existingBatch = await selectRows(rest,
     `accounting_import_batches?select=id,status&entity_id=eq.${entityId}&source_type=eq.${sourceType(preview.profile)}&file_hash=eq.${fileHash}&limit=1`,
   );
-  if (existingBatch.length) throw new HttpError(409, "Este archivo ya fue cargado anteriormente.");
+  const previousPreview = existingBatch[0] || null;
+  if (previousPreview && ["imported", "partial"].includes(String(previousPreview.status))) {
+    throw new HttpError(409, "Esta cartola ya fue importada. No se modificó el respaldo ni se duplicaron sus movimientos.");
+  }
   const bankAccount = await ensureBankAccount(rest, entityId, preview);
   const latestTransactionDate = preview.rows.reduce(
     (latest, row) => row.transaction_date > latest ? row.transaction_date : latest,
@@ -601,7 +604,7 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
   const valid = preview.rows.filter((row) => !row.errors.length && !duplicateSet.has(row.fingerprint));
   const invalid = preview.rows.filter((row) => row.errors.length);
   const duplicates = preview.rows.filter((row) => duplicateSet.has(row.fingerprint));
-  const batch = (await insertRows(rest, "accounting_import_batches", [{
+  const batchData = {
     entity_id: entityId,
     source_type: sourceType(preview.profile),
     import_profile: preview.profile,
@@ -615,7 +618,15 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
     error_count: invalid.length,
     summary: { currency: preview.currency, account_hint: preview.account_hint, warnings: preview.warnings },
     imported_by: profile.id,
-  }]))[0];
+    updated_at: new Date().toISOString(),
+  };
+  let batch: JsonRecord;
+  if (previousPreview) {
+    await deleteRows(rest, "accounting_import_rows", `batch_id=eq.${previousPreview.id}`);
+    batch = (await patchRows(rest, "accounting_import_batches", `id=eq.${previousPreview.id}`, batchData))[0];
+  } else {
+    batch = (await insertRows(rest, "accounting_import_batches", [batchData]))[0];
+  }
   await insertRows(rest, "accounting_import_rows", preview.rows.map((row) => ({
     batch_id: batch.id,
     row_number: row.row_number,
@@ -1397,6 +1408,14 @@ async function patchRows(rest: RestClient, table: string, filter: string, row: J
   const response = await fetch(`${rest.url}/rest/v1/${table}?${filter}`, { method: "PATCH", headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(row) });
   if (!response.ok) throw new HttpError(response.status, `Error actualizando ${table}: ${(await response.text()).slice(0, 400)}`);
   return await response.json() as JsonRecord[];
+}
+
+async function deleteRows(rest: RestClient, table: string, filter: string) {
+  const response = await fetch(`${rest.url}/rest/v1/${table}?${filter}`, {
+    method: "DELETE",
+    headers: { ...serviceHeaders(rest), Prefer: "return=minimal" },
+  });
+  if (!response.ok) throw new HttpError(response.status, `Error limpiando ${table}: ${(await response.text()).slice(0, 400)}`);
 }
 
 async function rpc(rest: RestClient, fn: string, body: JsonRecord) {

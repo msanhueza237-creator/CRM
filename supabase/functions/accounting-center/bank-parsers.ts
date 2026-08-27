@@ -1,4 +1,10 @@
 import * as XLSX from "npm:xlsx@0.18.5";
+import {
+  bancoEstadoStatementRange,
+  bankIsoDate,
+  bankMoney,
+  type BankStatementDateRange,
+} from "./bank-normalizers.ts";
 
 export type NormalizedBankRow = {
   row_number: number;
@@ -64,6 +70,7 @@ function detectProfile(workbook: XLSX.WorkBook, requested?: string): BankPreview
 
 function parseBancoEstado(workbook: XLSX.WorkBook): BankPreview {
   const rows = sheetRows(workbook, findSheet(workbook, "movimientos"));
+  const statementRange = bancoEstadoStatementRange(sheetRows(workbook, findSheet(workbook, "resumen")));
   const headerIndex = findHeader(rows, ["fecha", "descripcion", "cheques cargos", "depositos abonos"]);
   if (headerIndex < 0) throw new Error("No se encontró el encabezado de movimientos de BancoEstado.");
   const header = rows[headerIndex].map(normalizeText);
@@ -81,7 +88,7 @@ function parseBancoEstado(workbook: XLSX.WorkBook): BankPreview {
       debit: columnIndex(header, "cheques cargos"),
       credit: columnIndex(header, "depositos abonos"),
       balance: columnIndex(header, "saldo"),
-    }, "CLP"),
+    }, "CLP", statementRange),
   };
 }
 
@@ -125,8 +132,8 @@ function parseMercadoPago(workbook: XLSX.WorkBook): BankPreview {
   const parsed: NormalizedBankRow[] = [];
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
     const source = rows[index];
-    const amount = money(source[amountColumn]);
-    const date = isoDate(source[dateColumn]);
+    const amount = bankMoney(source[amountColumn]);
+    const date = bankIsoDate(source[dateColumn]);
     if (!date || !Number.isFinite(amount) || amount === 0) continue;
     const movement = String(source[movementColumn] || "Movimiento").trim();
     const transaction = String(source[descriptionColumn] || "").trim();
@@ -137,7 +144,7 @@ function parseMercadoPago(workbook: XLSX.WorkBook): BankPreview {
       transaction_date: date,
       value_date: null,
       description: [movement, transaction, store].filter(Boolean).join(" - "),
-      reference: feeColumn >= 0 ? `Comisión: ${money(source[feeColumn])}` : null,
+      reference: feeColumn >= 0 ? `Comisión: ${bankMoney(source[feeColumn])}` : null,
       operation_number: String(source[operationColumn] || "").trim() || null,
       debit: amount < 0 ? Math.abs(amount) : 0,
       credit: amount > 0 ? amount : 0,
@@ -157,14 +164,15 @@ function parseRows(
   headerIndex: number,
   columns: { date: number; description: number; operation: number; debit: number; credit: number; balance: number },
   currency: string,
+  dateRange?: BankStatementDateRange,
 ) {
   const parsed: NormalizedBankRow[] = [];
   const header = rows[headerIndex].map(normalizeText);
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
     const source = rows[index];
-    const date = isoDate(source[columns.date]);
-    const debit = Math.abs(money(source[columns.debit]));
-    const credit = Math.abs(money(source[columns.credit]));
+    const date = bankIsoDate(source[columns.date], dateRange);
+    const debit = Math.abs(bankMoney(source[columns.debit]));
+    const credit = Math.abs(bankMoney(source[columns.credit]));
     const description = String(source[columns.description] || "").trim();
     if (!date || !description || (debit === 0 && credit === 0)) continue;
     const errors: string[] = [];
@@ -218,39 +226,9 @@ function normalizeText(value: unknown) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
-function money(value: unknown) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  let text = String(value || "").trim().replace(/[^\d,.-]/g, "");
-  if (!text) return 0;
-  const lastComma = text.lastIndexOf(",");
-  const lastDot = text.lastIndexOf(".");
-  if (lastComma > lastDot) text = text.replace(/\./g, "").replace(",", ".");
-  else text = text.replace(/,/g, "");
-  const number = Number(text);
-  return Number.isFinite(number) ? number : 0;
-}
-
 function nullableMoney(value: unknown) {
   const text = String(value || "").trim();
-  return text ? money(value) : null;
-}
-
-function isoDate(value: unknown) {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
-  const text = String(value || "").trim();
-  if (!text) return "";
-  const parts = text.match(/^(\d{1,4})[\/-](\d{1,2})[\/-](\d{1,4})/);
-  if (parts) {
-    const yearFirst = parts[1].length === 4;
-    const year = Number(yearFirst ? parts[1] : parts[3]);
-    const month = Number(parts[2]);
-    const day = Number(yearFirst ? parts[3] : parts[1]);
-    if (year > 1900 && month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      return `${year.toString().padStart(4, "0")}-${month.toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
-    }
-  }
-  const parsed = new Date(text);
-  return Number.isNaN(parsed.getTime()) ? "" : parsed.toISOString().slice(0, 10);
+  return text ? bankMoney(value) : null;
 }
 
 async function sha256(text: string) {
