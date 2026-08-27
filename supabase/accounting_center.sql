@@ -1048,6 +1048,18 @@ begin
   if not public.accounting_has_permission('accounting.ledger.view') and auth.role() <> 'service_role' then
     raise exception 'No tienes permiso para ejecutar controles contables.';
   end if;
+  delete from public.accounting_control_findings previous
+  using public.accounting_control_findings current_finding
+  where previous.entity_id=p_entity_id
+    and previous.status='resolved'
+    and current_finding.entity_id=previous.entity_id
+    and current_finding.status='open'
+    and current_finding.control_code=previous.control_code
+    and current_finding.entity_type is not distinct from previous.entity_type
+    and current_finding.entity_reference is not distinct from previous.entity_reference
+    and current_finding.control_code in (
+      'bank_unmatched','source_unposted','receivable_overdue','payable_overdue','missing_exchange_rate'
+    );
   update public.accounting_control_findings set status='resolved', resolved_at=now(), resolved_by=auth.uid()
   where entity_id=p_entity_id and status='open' and control_code in (
     'bank_unmatched','source_unposted','receivable_overdue','payable_overdue','missing_exchange_rate'

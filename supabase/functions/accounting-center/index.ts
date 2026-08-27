@@ -227,11 +227,12 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
     let observedTo: string | null = null;
     const includedCanonical = new Set<string>();
     const sourceDocumentByCanonical = new Map<string, string>();
-    // Detail resources are processed before summaries so the richer payload wins
-    // without keeping the complete Facto history in the Edge Function memory.
-    const orderedResources = ["document_details", "documents", "purchase_document_details", "purchase_documents"];
-    const pageSize = 100;
+    const backupKeys = new Set<string>();
+    // Facto summaries contain the authoritative counterpart and totals. Details
+    // remain in the immutable backup, but must not replace the accounting header.
+    const orderedResources = ["documents", "purchase_documents", "document_details", "purchase_document_details"];
     for (const resource of orderedResources) {
+      const pageSize = resource.includes("details") ? 20 : 100;
       for (let offset = 0; offset < 50000; offset += pageSize) {
         const page = await selectRows(rest,
           `integration_records?select=id,resource,external_id,payload,observed_at,updated_at&provider=eq.facto&resource=eq.${resource}&order=updated_at.asc&limit=${pageSize}&offset=${offset}`,
@@ -349,9 +350,13 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
           payables += payableRows.length;
         }
 
-        const backupRows: JsonRecord[] = [];
+        const backupRowsByKey = new Map<string, JsonRecord>();
         for (const item of pageItems) {
-          backupRows.push({
+          // Facto can expose more than one integration row for the same document.
+          // Keep the latest payload in this run instead of failing the whole history load.
+          const backupKey = `${item.resource}:${item.externalId}`;
+          backupKeys.add(backupKey);
+          backupRowsByKey.set(backupKey, {
             run_id: runId,
             integration_record_id: item.record.id,
             resource: item.resource,
@@ -366,8 +371,11 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
             validation_errors: item.normalized.errors,
           });
         }
-        if (backupRows.length) await insertRows(rest, "accounting_facto_sync_records", backupRows);
-        backups += backupRows.length;
+        const backupRows = [...backupRowsByKey.values()];
+        if (backupRows.length) {
+          await upsertRowsMinimal(rest, "accounting_facto_sync_records", backupRows, "run_id,resource,external_id");
+        }
+        backups = backupKeys.size;
         await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
           source_records: sourceRecords,
           in_range_records: accepted,
@@ -839,21 +847,40 @@ function normalizeFactoDocument(payload: JsonRecord, purchase: boolean, external
     ...asObject(asObject(payload.data).document),
   };
   const counterpartObject = asObject(first(document, ["customer","client","supplier","provider","receptor","emisor"]));
-  const currency = String(first(document, ["currency","moneda","currency_code"]) || "CLP").toUpperCase().slice(0, 3);
+  const currencyId = String(first(document, ["currency_id"]) || "");
+  const currency = String(first(document, ["currency","moneda","currency_code"]) || (currencyId === "39" ? "CLP" : "CLP")).toUpperCase().slice(0, 3);
   const rate = numeric(first(document, ["exchange_rate","tipo_cambio","dolar"])) || (currency === "CLP" ? 1 : 0);
   const net = numeric(first(document, ["net","net_amount","monto_neto","total_neto"]));
-  const tax = numeric(first(document, ["tax","vat","iva","monto_iva"]));
+  const tax = numeric(first(document, ["tax","vat","iva","monto_iva","taxes_amount"]));
   const exempt = numeric(first(document, ["exempt","exempt_amount","monto_exento"]));
   const total = numeric(first(document, ["total","total_amount","monto_total","amount"]));
-  const counterpart = String(first(counterpartObject, ["name","business_name","razon_social"]) || first(document, purchase ? ["supplier_name","provider_name","razon_social"] : ["customer_name","client_name","razon_social"]) || "").trim();
+  const documentType = factoDocumentType(document, purchase);
+  let counterpart = String(
+    first(counterpartObject, ["name","business_name","razon_social"])
+      || first(document, purchase
+        ? ["issuer_name","issuer_legal_name","supplier_name","provider_name","razon_social"]
+        : ["receiver_legal_name","receiver_name","customer_name","client_name","razon_social"])
+      || "",
+  ).trim();
+  // Chilean receipts can legitimately omit the customer's identity. Preserve the
+  // sale without inventing a person while keeping it reconcilable as consumer sales.
+  if (!counterpart && !purchase && ["sales_receipt", "sales_exempt_receipt"].includes(documentType)) {
+    counterpart = "Consumidor final";
+  }
   const errors: string[] = [];
   if (!counterpart) errors.push("counterpart_missing");
   if (!total) errors.push("total_missing");
   if (currency !== "CLP" && !rate) errors.push("exchange_rate_missing");
   return {
-    documentType: String(first(document, ["document_type","type","tipo_documento"]) || (purchase ? "purchase_invoice" : "sales_invoice")),
+    documentType,
     folio: String(first(document, ["folio","number","document_number","numero"]) || externalId),
-    taxId: String(first(counterpartObject, ["tax_id","rut","document_number"]) || first(document, purchase ? ["supplier_tax_id","provider_tax_id","rut"] : ["customer_tax_id","client_tax_id","rut"]) || ""),
+    taxId: String(
+      first(counterpartObject, ["tax_id","rut","document_number"])
+        || first(document, purchase
+          ? ["issuer_tax_id_code","supplier_tax_id","provider_tax_id","rut"]
+          : ["receiver_tax_id_code","customer_tax_id","client_tax_id","rut"])
+        || "",
+    ),
     counterpart,
     issuedOn: dateValue(first(document, ["issued_on","issue_date","date","fecha_emision","fecha"])),
     dueOn: dateValue(first(document, ["due_on","due_date","fecha_vencimiento"])),
@@ -864,6 +891,21 @@ function normalizeFactoDocument(payload: JsonRecord, purchase: boolean, external
     sourceCreatedAt: dateTimeValue(first(document, ["created_at","createdAt","fecha_creacion"])),
     errors,
   };
+}
+
+function factoDocumentType(document: JsonRecord, purchase: boolean) {
+  const taxType = String(first(document, ["document_type_taxbureau", "tax_document_type"]) || "");
+  const direction = purchase ? "purchase" : "sales";
+  const suffixByTaxType: Record<string, string> = {
+    "33": "invoice",
+    "34": "exempt_invoice",
+    "39": "receipt",
+    "41": "exempt_receipt",
+    "56": "debit_note",
+    "61": "credit_note",
+  };
+  if (suffixByTaxType[taxType]) return `${direction}_${suffixByTaxType[taxType]}`;
+  return String(first(document, ["document_type", "type", "tipo_documento"]) || `${direction}_invoice`);
 }
 
 async function ensureBankAccount(rest: RestClient, entityId: string, preview: { profile: string; currency: string; account_hint: string }) {
@@ -955,6 +997,16 @@ async function upsertRowsSelected(rest: RestClient, table: string, rows: JsonRec
   });
   if (!response.ok) throw new HttpError(response.status, `Error consolidando ${table}: ${(await response.text()).slice(0, 400)}`);
   return await response.json() as JsonRecord[];
+}
+
+async function upsertRowsMinimal(rest: RestClient, table: string, rows: JsonRecord[], onConflict: string) {
+  if (!rows.length) return;
+  const response = await fetch(`${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
+    method: "POST",
+    headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
+    body: JSON.stringify(rows),
+  });
+  if (!response.ok) throw new HttpError(response.status, `Error consolidando ${table}: ${(await response.text()).slice(0, 400)}`);
 }
 
 async function patchRows(rest: RestClient, table: string, filter: string, row: JsonRecord) {
