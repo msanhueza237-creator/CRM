@@ -32,7 +32,7 @@ begin
   ));
   v_match := regexp_match(
     v_text,
-    '\m([A-Z][A-Z0-9]{0,7}[- ][A-Z0-9-]*[0-9][A-Z0-9-]*|[A-Z]{1,8}[0-9][A-Z0-9-]{1,})\M'
+    '\m([A-Z][A-Z0-9]{0,7}[- ][A-Z0-9-]*[0-9][A-Z0-9-]*|[A-Z]{1,8}[0-9][A-Z0-9-]{1,}|[A-Z]{2,8}-[A-Z]{2,8})\M'
   );
   return case when v_match is null then null else trim(v_match[1]) end;
 end
