@@ -21,6 +21,11 @@ import type {
   ForeignTradeOperationLine,
   ForeignTradeOperationStatus,
   ForeignTradeSupplier,
+  ForeignTradeIntelligenceData,
+  ForeignTradeIntelligenceRecommendation,
+  ForeignTradeIntelligenceScenario,
+  ForeignTradeIntelligenceSnapshot,
+  RunForeignTradeIntelligenceInput,
   SaveForeignTradeCostingScenarioInput,
   UpsertForeignTradeCostLineInput,
   UpsertForeignTradeOperationLineInput,
@@ -101,7 +106,7 @@ export async function getForeignTradeCenterData(): Promise<ForeignTradeCenterDat
     supabase.rpc("foreign_trade_dashboard_summary"),
     supabase
       .from("import_shipments")
-      .select("id,supplier_id,reference,title,operation_type,transport_type,origin_port,destination_port,status,value_usd,base_currency,exchange_rate_clp,exchange_rate_source,incoterm,target_container_cbm,order_date,estimated_departure,estimated_arrival,notes,created_at,updated_at")
+      .select("id,supplier_id,reference,title,operation_type,transport_type,origin_port,destination_port,status,value_usd,base_currency,exchange_rate_clp,exchange_rate_source,incoterm,target_container_cbm,order_date,estimated_departure,estimated_arrival,inventory_mode,notes,created_at,updated_at")
       .order("created_at", { ascending: false })
       .limit(300),
     supabase.from("foreign_trade_operation_statuses").select("*").order("sort_order"),
@@ -148,11 +153,18 @@ export async function createForeignTradeOperation(input: CreateForeignTradeOpera
     incoterm: input.incoterm?.trim().toUpperCase() || null,
     target_container_cbm: decimalOrNull(input.targetContainerCbm),
     value_usd: decimalOrNull(input.valueUsd) || "0",
+    inventory_mode: input.inventoryMode || "historical",
     notes: input.notes?.trim() || null,
   };
   const { data, error } = await supabase.rpc("create_foreign_trade_operation", { p_payload: payload });
   if (error) throw error;
-  return String(data);
+  const operationId = String(data);
+  const { error: inventoryModeError } = await supabase
+    .from("import_shipments")
+    .update({ inventory_mode: payload.inventory_mode })
+    .eq("id", operationId);
+  if (inventoryModeError) throw inventoryModeError;
+  return operationId;
 }
 
 export async function updateForeignTradeOperation(input: UpdateForeignTradeOperationInput) {
@@ -184,6 +196,7 @@ export async function updateForeignTradeOperation(input: UpdateForeignTradeOpera
     order_date: input.orderDate || null,
     estimated_departure: input.estimatedDeparture || null,
     estimated_arrival: input.estimatedArrival || null,
+    inventory_mode: input.inventoryMode || "historical",
     notes: input.notes?.trim() || null,
     source_label: "configured",
     updated_by: authResult.data.user?.id || null,
@@ -201,6 +214,106 @@ export async function getForeignTradeOperationDetail(operationId: string): Promi
   const { data, error } = await supabase!.rpc("foreign_trade_operation_detail", { p_operation_id: operationId });
   if (error) throw error;
   return normalizeOperationDetail(data);
+}
+
+export async function getForeignTradeIntelligence(operationId?: string | null): Promise<ForeignTradeIntelligenceData> {
+  requireSupabase();
+
+  let snapshotQuery = supabase!
+    .from("foreign_trade_intelligence_snapshots")
+    .select("id,operation_id,scenario_id,task_id,scope,as_of_date,assumptions,summary,source_observed_at,input_fingerprint,confidence,agent_type,created_at")
+    .order("created_at", { ascending: false })
+    .limit(1);
+  snapshotQuery = operationId
+    ? snapshotQuery.eq("operation_id", operationId)
+    : snapshotQuery.is("operation_id", null);
+
+  let scenarioQuery = supabase!
+    .from("foreign_trade_intelligence_scenarios")
+    .select("id,operation_id,name,status,parameters,created_at,updated_at")
+    .eq("status", "active")
+    .order("updated_at", { ascending: false });
+  scenarioQuery = operationId
+    ? scenarioQuery.eq("operation_id", operationId)
+    : scenarioQuery.is("operation_id", null);
+
+  const [snapshotResult, scenarioResult] = await Promise.all([
+    snapshotQuery.maybeSingle(),
+    scenarioQuery,
+  ]);
+  if (snapshotResult.error) throw snapshotResult.error;
+  if (scenarioResult.error) throw scenarioResult.error;
+
+  const snapshot = snapshotResult.data
+    ? normalizeForeignTradeIntelligenceSnapshot(snapshotResult.data)
+    : null;
+  let recommendations: ForeignTradeIntelligenceRecommendation[] = [];
+  if (snapshot) {
+    const { data, error } = await supabase!
+      .from("replenishment_recommendations")
+      .select("id,snapshot_id,operation_id,sku,product_name,available_units,committed_units,confirmed_inbound_units,current_operation_units,average_daily_demand,monthly_demand,lead_time_days,safety_stock_units,reorder_point_units,target_units,projected_stock_at_arrival,coverage_days,recommended_units,recommended_value_usd,required_order_date,projected_stockout_date,severity,purchase_policy,confidence,confidence_level,data_quality,rationale,warnings,status,created_at,updated_at")
+      .eq("snapshot_id", snapshot.id)
+      .order("recommended_units", { ascending: false });
+    if (error) throw error;
+    recommendations = (data ?? []).map(normalizeForeignTradeIntelligenceRecommendation);
+  }
+
+  return {
+    snapshot,
+    recommendations,
+    scenarios: (scenarioResult.data ?? []) as ForeignTradeIntelligenceScenario[],
+  };
+}
+
+export async function runForeignTradeIntelligence(input: RunForeignTradeIntelligenceInput) {
+  requireSupabase();
+  const parameters = {
+    as_of: input.asOf || new Date().toISOString().slice(0, 10),
+    production_days: finiteNonNegative(input.productionDays),
+    sea_travel_days: finiteNonNegative(input.seaTravelDays),
+    customs_delay_days: finiteNonNegative(input.customsDelayDays),
+    additional_delay_days: finiteNonNegative(input.additionalDelayDays),
+    safety_stock_days: finiteNonNegative(input.safetyStockDays),
+    target_coverage_days: finitePositive(input.targetCoverageDays),
+    demand_change_percent: finiteNumber(input.demandChangePercent),
+  };
+  const sanitizedParameters = Object.fromEntries(
+    Object.entries(parameters).filter(([, value]) => value !== undefined),
+  );
+  const { data, error } = await supabase!.rpc("run_foreign_trade_intelligence", {
+    p_operation_id: input.operationId || null,
+    p_parameters: sanitizedParameters,
+    p_task_id: null,
+  });
+  if (error) throw error;
+  return String(data);
+}
+
+export async function saveForeignTradeIntelligenceScenario(input: {
+  operationId?: string | null;
+  name: string;
+  parameters: Record<string, unknown>;
+}) {
+  requireSupabase();
+  const name = input.name.trim();
+  if (name.length < 3 || name.length > 120) {
+    throw new Error("El nombre del escenario debe tener entre 3 y 120 caracteres.");
+  }
+  const authResult = await supabase!.auth.getUser();
+  if (authResult.error) throw authResult.error;
+  const { data, error } = await supabase!
+    .from("foreign_trade_intelligence_scenarios")
+    .insert({
+      operation_id: input.operationId || null,
+      name,
+      parameters: input.parameters,
+      created_by: authResult.data.user?.id || null,
+      updated_by: authResult.data.user?.id || null,
+    })
+    .select("id")
+    .single();
+  if (error) throw error;
+  return String(data.id);
 }
 
 export async function repairForeignTradeOperationProductIdentities(operationId: string): Promise<{
@@ -1126,4 +1239,66 @@ function normalizeSummary(value: unknown): ForeignTradeDashboardSummary {
 function numberValue(value: unknown) {
   const number = Number(value || 0);
   return Number.isFinite(number) ? number : 0;
+}
+
+function finiteNumber(value: number | undefined) {
+  return value === undefined || !Number.isFinite(value) ? undefined : value;
+}
+
+function finiteNonNegative(value: number | undefined) {
+  return value === undefined || !Number.isFinite(value) ? undefined : Math.max(0, value);
+}
+
+function finitePositive(value: number | undefined) {
+  return value === undefined || !Number.isFinite(value) ? undefined : Math.max(1, value);
+}
+
+function normalizeForeignTradeIntelligenceSnapshot(value: unknown): ForeignTradeIntelligenceSnapshot {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const assumptions = raw.assumptions && typeof raw.assumptions === "object"
+    ? raw.assumptions as Record<string, unknown>
+    : {};
+  const summary = raw.summary && typeof raw.summary === "object"
+    ? raw.summary as Record<string, unknown>
+    : {};
+  return {
+    ...(raw as unknown as ForeignTradeIntelligenceSnapshot),
+    confidence: numberValue(raw.confidence),
+    assumptions: {
+      production_days: numberValue(assumptions.production_days),
+      sea_travel_days: numberValue(assumptions.sea_travel_days),
+      customs_delay_days: numberValue(assumptions.customs_delay_days),
+      additional_delay_days: numberValue(assumptions.additional_delay_days),
+      lead_time_days: numberValue(assumptions.lead_time_days),
+      safety_stock_days: numberValue(assumptions.safety_stock_days),
+      target_coverage_days: numberValue(assumptions.target_coverage_days),
+      effective_target_days: numberValue(assumptions.effective_target_days),
+      demand_change_percent: numberValue(assumptions.demand_change_percent),
+      formula: String(assumptions.formula || ""),
+    },
+    summary: {
+      products_analyzed: numberValue(summary.products_analyzed),
+      critical_products: numberValue(summary.critical_products),
+      high_risk_products: numberValue(summary.high_risk_products),
+      recommended_units: numberValue(summary.recommended_units),
+      products_with_data_gaps: numberValue(summary.products_with_data_gaps),
+      automatic_actions: false,
+      source: String(summary.source || "Centro de Comercio Exterior"),
+    },
+  };
+}
+
+function normalizeForeignTradeIntelligenceRecommendation(value: unknown): ForeignTradeIntelligenceRecommendation {
+  const raw = value && typeof value === "object" ? value as Record<string, unknown> : {};
+  const numericKeys = [
+    "available_units", "committed_units", "confirmed_inbound_units", "current_operation_units",
+    "average_daily_demand", "monthly_demand", "lead_time_days", "safety_stock_units",
+    "reorder_point_units", "target_units", "projected_stock_at_arrival", "recommended_units",
+    "recommended_value_usd", "confidence",
+  ] as const;
+  const normalized = { ...raw } as Record<string, unknown>;
+  for (const key of numericKeys) normalized[key] = numberValue(raw[key]);
+  normalized.coverage_days = raw.coverage_days === null ? null : numberValue(raw.coverage_days);
+  normalized.warnings = Array.isArray(raw.warnings) ? raw.warnings.map(String) : [];
+  return normalized as unknown as ForeignTradeIntelligenceRecommendation;
 }

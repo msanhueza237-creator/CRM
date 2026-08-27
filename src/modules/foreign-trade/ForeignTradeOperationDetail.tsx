@@ -45,9 +45,10 @@ import { useForeignTradeOperation } from "./useForeignTradeOperation";
 import { ForeignTradeDocumentsPanel } from "./ForeignTradeDocumentsPanel";
 import { ForeignTradeCostingPanel } from "./ForeignTradeCostingPanel";
 import { ForeignTradeExpenseReconciliationPanel } from "./ForeignTradeExpenseReconciliationPanel";
+import { ForeignTradeIntelligencePanel } from "./ForeignTradeIntelligencePanel";
 import { formatForeignTradeProductIdentity, getForeignTradeProductIdentity } from "./foreignTradeProductIdentity";
 
-type DetailTab = "summary" | "products" | "costs" | "reconciliation" | "costing" | "documents";
+type DetailTab = "summary" | "products" | "costs" | "reconciliation" | "costing" | "intelligence" | "documents";
 
 const costCategories: Array<{ value: ForeignTradeCostCategory; label: string }> = [
   { value: "origin", label: "Gastos en origen" },
@@ -141,6 +142,7 @@ export function ForeignTradeOperationDetail({
         <button className={tab === "costs" ? "active" : ""} type="button" onClick={() => setTab("costs")}>Costos base <span>{detail.costs.length}</span></button>
         <button className={tab === "reconciliation" ? "active" : ""} type="button" onClick={() => setTab("reconciliation")}>Conciliación agencia</button>
         <button className={tab === "costing" ? "active" : ""} type="button" onClick={() => setTab("costing")}>Costeo y precio</button>
+        <button className={tab === "intelligence" ? "active" : ""} type="button" onClick={() => setTab("intelligence")}>Inteligencia</button>
         <button className={tab === "documents" ? "active" : ""} type="button" onClick={() => setTab("documents")}>Documentos</button>
       </nav>
 
@@ -166,6 +168,7 @@ export function ForeignTradeOperationDetail({
                 <Fact label="Incoterm" value={operation.incoterm || "No informado"} />
                 <Fact label="Salida estimada" value={formatDate(operation.estimated_departure)} />
                 <Fact label="Llegada estimada" value={formatDate(operation.estimated_arrival)} />
+                <Fact label="Tratamiento de inventario" value={inventoryModeLabel(operation.inventory_mode)} />
               </dl>
               {operation.notes ? <p className="foreign-trade-internal-note">{operation.notes}</p> : null}
             </article>
@@ -198,6 +201,8 @@ export function ForeignTradeOperationDetail({
       {tab === "reconciliation" ? <ForeignTradeExpenseReconciliationPanel operationId={operationId} costs={detail.costs} onChanged={changed} /> : null}
 
       {tab === "costing" ? <ForeignTradeCostingPanel detail={detail} costParameters={costParameters} onSaved={changed} /> : null}
+
+      {tab === "intelligence" ? <ForeignTradeIntelligencePanel operationId={operationId} /> : null}
 
       {tab === "documents" ? <ForeignTradeDocumentsPanel operationId={operationId} supplierId={operation.supplier_id} suppliers={suppliers} onChanged={changed} /> : null}
 
@@ -240,6 +245,7 @@ function EditOperationDialog({
     orderDate: dateInputValue(operation.order_date),
     estimatedDeparture: dateInputValue(operation.estimated_departure),
     estimatedArrival: dateInputValue(operation.estimated_arrival),
+    inventoryMode: operation.inventory_mode || "historical",
     notes: operation.notes || "",
   });
   const [busy, setBusy] = useState(false);
@@ -276,6 +282,7 @@ function EditOperationDialog({
           <label><span>Fecha de orden</span><input type="date" value={form.orderDate || ""} onChange={(event) => setForm({ ...form, orderDate: event.target.value })} /></label>
           <label><span>Salida estimada</span><input type="date" value={form.estimatedDeparture || ""} onChange={(event) => setForm({ ...form, estimatedDeparture: event.target.value })} /></label>
           <label><span>Llegada estimada</span><input type="date" value={form.estimatedArrival || ""} onChange={(event) => setForm({ ...form, estimatedArrival: event.target.value })} /></label>
+          <label><span>Tratamiento de inventario</span><select value={form.inventoryMode || "historical"} onChange={(event) => setForm({ ...form, inventoryMode: event.target.value as UpdateForeignTradeOperationInput["inventoryMode"] })}><option value="future">En tránsito: entrada futura</option><option value="current">Recibida: inventario actual</option><option value="historical">Histórica: no sumar inventario</option></select></label>
           <label><span>Moneda base</span><input required maxLength={3} value={form.baseCurrency} onChange={(event) => setForm({ ...form, baseCurrency: event.target.value })} /></label>
           <label><span>Tipo de cambio CLP</span><input inputMode="decimal" value={form.exchangeRateClp || ""} onChange={(event) => setForm({ ...form, exchangeRateClp: event.target.value })} placeholder="Ej. 990" /></label>
           <label><span>Origen del tipo de cambio</span><select value={form.exchangeRateSource} onChange={(event) => setForm({ ...form, exchangeRateSource: event.target.value as UpdateForeignTradeOperationInput["exchangeRateSource"] })}><option value="manual">Manual</option><option value="current">Actual</option><option value="conservative">Conservador</option><option value="custom">Personalizado</option></select></label>
@@ -561,3 +568,4 @@ function formatMoney(value: number, currency: string) { try { return new Intl.Nu
 function formatDate(value: string | null) { return value ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium" }).format(new Date(value)) : "Sin fecha"; }
 function operationTypeLabel(value: ForeignTradeOperation["operation_type"]) { return ({ simulation: "Simulación", quotation: "Cotización", proforma: "Proforma", purchase_order: "Orden de compra", shipment: "Importación" })[value]; }
 function transportTypeLabel(value: string) { return ({ sea: "Marítimo", air: "Aéreo", land: "Terrestre", multimodal: "Multimodal" } as Record<string, string>)[value] || value; }
+function inventoryModeLabel(value: ForeignTradeOperation["inventory_mode"] | undefined) { return ({ current: "Inventario actual", future: "Entrada futura confirmada", historical: "Solo histórico" } as Record<string, string>)[value || "historical"]; }

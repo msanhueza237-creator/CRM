@@ -536,6 +536,55 @@ async function handleAgentHubRoute(
     );
   }
 
+  if (["foreign-trade/context", "foreign-trade/analyze"].includes(operation)) {
+    return withProspectingIdempotency(
+      context,
+      validation,
+      `hub/${operation}`,
+      payload,
+      async () => {
+        const taskId = requiredString(payload.task_id, "task_id", 36);
+        const workerId = requiredString(payload.worker_id, "worker_id", 120);
+        const leaseToken = requiredString(payload.lease_token, "lease_token", 36);
+        const operationId = payload.operation_id === null || payload.operation_id === undefined || payload.operation_id === ""
+          ? null
+          : requiredString(payload.operation_id, "operation_id", 36);
+        if (!isUuid(taskId) || !isUuid(leaseToken) || (operationId && !isUuid(operationId))) {
+          throw new RequestValidationError("task_id, lease_token and operation_id must be UUID values");
+        }
+
+        // Esta RPC valida que la tarea pertenezca a foreign_trade, esté arrendada
+        // por este worker y tenga un lease vigente. Una tarea commercial falla aquí.
+        const contextResult = await context.supabase.rpc("foreign_trade_agent_context", {
+          p_task_id: taskId,
+          p_worker_id: workerId,
+          p_lease_token: leaseToken,
+          p_operation_id: operationId,
+        });
+        if (contextResult.error) return rpcErrorResult(contextResult.error);
+        if (operation === "foreign-trade/context") {
+          return { body: asObject(contextResult.data) };
+        }
+
+        const parameters = asObject(payload.parameters);
+        const analysisResult = await context.supabase.rpc("run_foreign_trade_intelligence", {
+          p_operation_id: operationId,
+          p_parameters: parameters,
+          p_task_id: taskId,
+        });
+        if (analysisResult.error) return rpcErrorResult(analysisResult.error);
+        return {
+          body: {
+            ok: true,
+            snapshot_id: analysisResult.data,
+            read_only: true,
+            automatic_actions: false,
+          },
+        };
+      },
+    );
+  }
+
   if (operation === "tasks/claim") {
     return withProspectingIdempotency(
       context,
@@ -544,11 +593,23 @@ async function handleAgentHubRoute(
       payload,
       async () => {
         const workerId = requiredString(payload.worker_id, "worker_id", 120);
+        const agentType = payload.agent_type === null || payload.agent_type === undefined || payload.agent_type === ""
+          ? null
+          : requiredString(payload.agent_type, "agent_type", 40);
+        if (agentType && !["commercial", "marketing", "finance", "collections", "logistics", "foreign_trade", "executive"].includes(agentType)) {
+          throw new RequestValidationError("agent_type is invalid");
+        }
         const leaseSeconds = clampNumber(String(payload.lease_seconds ?? "120"), 30, 600, 120);
-        const { data, error } = await context.supabase.rpc("claim_business_agent_task", {
-          p_worker_id: workerId,
-          p_lease_seconds: leaseSeconds,
-        });
+        const { data, error } = agentType
+          ? await context.supabase.rpc("claim_business_agent_task_for_agent", {
+            p_worker_id: workerId,
+            p_agent_type: agentType,
+            p_lease_seconds: leaseSeconds,
+          })
+          : await context.supabase.rpc("claim_business_agent_task", {
+            p_worker_id: workerId,
+            p_lease_seconds: leaseSeconds,
+          });
         if (error) return rpcErrorResult(error);
         const row = Array.isArray(data) ? data[0] : data;
         if (!row) return { body: { task: null } };

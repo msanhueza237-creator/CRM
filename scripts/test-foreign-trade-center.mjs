@@ -365,9 +365,27 @@ await db.exec(`
     action text not null,
     payload jsonb not null default '{}'::jsonb,
     status text not null default 'pending',
+    priority integer not null default 50,
+    worker_id text,
+    lease_token uuid,
+    lease_expires_at timestamptz,
+    attempts integer not null default 0,
     requested_by uuid references auth.users(id),
     result jsonb,
-    created_at timestamptz not null default now()
+    started_at timestamptz,
+    created_at timestamptz not null default now(),
+    updated_at timestamptz not null default now()
+  );
+  create table public.integration_records (
+    id uuid primary key default gen_random_uuid(),
+    provider text not null,
+    resource text not null,
+    external_id text not null,
+    payload jsonb not null default '{}'::jsonb,
+    payload_hash text not null default '',
+    observed_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique(provider,resource,external_id)
   );
   create table public.agent_task_events (
     id uuid primary key default gen_random_uuid(),
@@ -567,6 +585,16 @@ assert.match(phase18Migration, /repair_foreign_trade_operation_product_identitie
 assert.match(phase18Migration, /recognized_supplier_code/i);
 await db.exec(phase18Migration);
 await db.exec(phase18Migration);
+
+const phase19Migration = await readFile(
+  new URL("../supabase/foreign_trade_center_phase19_intelligence.sql", import.meta.url),
+  "utf8",
+);
+assert.match(phase19Migration, /foreign_trade_agent_context/i);
+assert.match(phase19Migration, /inventory_mode/i);
+assert.match(phase19Migration, /analysis_only_no_automatic_purchase/i);
+await db.exec(phase19Migration);
+await db.exec(phase19Migration);
 
 const hydratedInvoiceAmounts = hydrateActualAmountsFromCosts({
   id: "00000000-0000-4000-8000-000000000101",
@@ -1123,6 +1151,64 @@ assert.equal(detail.rows[0].detail.costs.length, 1);
 assert.equal(detail.rows[0].detail.totals.registered_merchandise, 84);
 assert.equal(detail.rows[0].detail.totals.total_cbm, 0.048);
 assert.equal(detail.rows[0].detail.totals.costs_clp, 98025);
+
+// La inteligencia usa Facto en solo lectura y deja una foto reproducible.
+await db.query(
+  `insert into public.integration_records(provider,resource,external_id,payload)
+   values ('facto','inventory_snapshots','HVAC-001',$1::jsonb)`,
+  [JSON.stringify({ sku: "HVAC-001", name: "Herramienta HVAC", available_units: 12, average_daily_demand: 1 })],
+);
+const intelligenceSnapshot = await db.query(
+  "select public.run_foreign_trade_intelligence($1,$2::jsonb,null) as id",
+  [operationId, JSON.stringify({ as_of: "2026-08-26", production_days: 5, sea_travel_days: 5, customs_delay_days: 0, safety_stock_days: 5, target_coverage_days: 20 })],
+);
+const intelligenceRecommendation = (await db.query(
+  `select available_units,confirmed_inbound_units,recommended_units,purchase_policy,confidence_level
+   from public.replenishment_recommendations where snapshot_id=$1 and sku='HVAC-001'`,
+  [intelligenceSnapshot.rows[0].id],
+)).rows[0];
+assert.equal(Number(intelligenceRecommendation.available_units), 12);
+assert.equal(Number(intelligenceRecommendation.confirmed_inbound_units), 0, "una simulacion historica no suma stock futuro");
+assert.equal(Number(intelligenceRecommendation.recommended_units), 8);
+assert.equal(intelligenceRecommendation.purchase_policy, "analysis_only_no_automatic_purchase");
+assert.ok(["low", "medium", "high"].includes(intelligenceRecommendation.confidence_level));
+
+// Un worker comercial solo reclama tareas comerciales y nunca obtiene el
+// contrato privado, aunque intente usar un lease valido propio.
+const commercialTaskId = (await db.query(
+  `insert into public.business_agent_tasks(agent_type,action,payload,priority)
+   values ('commercial','analysis','{}'::jsonb,1) returning id`,
+)).rows[0].id;
+const foreignTaskId = (await db.query(
+  `insert into public.business_agent_tasks(agent_type,action,payload,priority)
+   values ('foreign_trade','analysis',$1::jsonb,100) returning id`,
+  [JSON.stringify({ operation_id: operationId })],
+)).rows[0].id;
+await db.query("select set_config('app.test_auth_role','service_role',false)");
+const commercialLease = (await db.query(
+  "select * from public.claim_business_agent_task_for_agent('commercial-worker','commercial',120)",
+)).rows[0];
+assert.equal(commercialLease.task.id, commercialTaskId);
+await assert.rejects(
+  db.query(
+    "select public.foreign_trade_agent_context($1,'commercial-worker',$2,$3)",
+    [commercialTaskId, commercialLease.lease_token, operationId],
+  ),
+  /foreign_trade_agent_context_forbidden/,
+);
+const foreignLease = (await db.query(
+  "select * from public.claim_business_agent_task_for_agent('foreign-worker','foreign_trade',120)",
+)).rows[0];
+assert.equal(foreignLease.task.id, foreignTaskId);
+const foreignContext = (await db.query(
+  "select public.foreign_trade_agent_context($1,'foreign-worker',$2,$3) as context",
+  [foreignTaskId, foreignLease.lease_token, operationId],
+)).rows[0].context;
+assert.equal(foreignContext.contract, "foreign_trade_intelligence_v1");
+assert.equal(foreignContext.read_only, true);
+assert.equal(foreignContext.operation.id, operationId);
+assert.equal(foreignContext.operation_lines.length, 1);
+await db.query("select set_config('app.test_auth_role','authenticated',false)");
 
 const preparedExtraction = prepareExtraction({
   document_scope: {
@@ -2349,16 +2435,8 @@ assert.equal(operationReconciliation.lines[0].source_page, 1);
 assert.equal(operationReconciliation.lines[0].source_row_label, "1");
 
 // 12. Facto aporta alias de busqueda sin transformarse en un segundo maestro.
-await db.exec(`
-  create table public.integration_records (
-    id uuid primary key default gen_random_uuid(),
-    provider text not null,
-    external_id text not null,
-    payload jsonb not null default '{}'::jsonb
-  )
-`);
 await db.query(
-  "insert into public.integration_records(provider,external_id,payload) values ('facto',$1,$2::jsonb)",
+  "insert into public.integration_records(provider,resource,external_id,payload) values ('facto','products',$1,$2::jsonb)",
   ["FACTO-MOTOR-220", JSON.stringify({ sku: "MOTOR-220", name: "Alias Facto Ventilador XZQ" })],
 );
 const factoCatalog = (await db.query(

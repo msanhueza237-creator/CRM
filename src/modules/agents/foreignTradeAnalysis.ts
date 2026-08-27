@@ -56,11 +56,47 @@ async function readAllIntegrationRows(
   return rows;
 }
 
-export async function queueForeignTradeAnalysis() {
+export async function queueForeignTradeAnalysis(options: {
+  operationId?: string;
+  snapshotId?: string;
+  question?: string;
+} = {}) {
   if (!supabase) throw new Error("Supabase no está configurado.");
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData.user) {
     throw new Error("Tu sesión no está disponible. Vuelve a iniciar sesión.");
+  }
+
+  const question = options.question?.trim();
+  if (options.operationId || question) {
+    const { data, error } = await supabase
+      .from("business_agent_tasks")
+      .insert({
+        agent_type: "foreign_trade",
+        action: question ? "answer_foreign_trade_question" : "review_import_plan",
+        requested_by: authData.user.id,
+        payload: {
+          contract: "foreign_trade_intelligence_v1",
+          operation_id: options.operationId || null,
+          snapshot_id: options.snapshotId || null,
+          question: question || null,
+          as_of: new Date().toISOString().slice(0, 10),
+          read_only: true,
+          automatic_actions: false,
+          requires_human_confirmation: true,
+          sources: ["foreign_trade_center", "facto_read_only"],
+        },
+      })
+      .select("id")
+      .single();
+    if (error) throw error;
+    return {
+      taskId: String(data.id),
+      productCount: 0,
+      freightInvoiceCount: 0,
+      customsReferenceCount: 0,
+      gmailSyncNote: "",
+    };
   }
 
   const inventoryRows = await readAllIntegrationRows(

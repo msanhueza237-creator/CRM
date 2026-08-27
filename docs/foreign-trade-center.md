@@ -72,6 +72,28 @@ La IA nunca crea directamente productos ni cambia costos oficiales. La función 
 puede dejar el documento en `review_required`. El RPC `confirm_foreign_trade_document` materializa
 los datos seleccionados después de una confirmación explícita de administración.
 
+## Inteligencia de inventario y compras
+
+La migración incremental `supabase/foreign_trade_center_phase19_intelligence.sql` conecta el
+Centro de Comercio Exterior con Facto y con el Agente de Comercio Exterior mediante un contrato
+privado y acotado:
+
+- cada operación se clasifica como inventario `current`, `future` o `historical`;
+- Facto se consulta exclusivamente desde los snapshots normalizados de `integration_records`;
+- el motor calcula demanda, lead time, stock de seguridad, cobertura, quiebre proyectado,
+  stock esperado a la llegada y cantidad sugerida;
+- los supuestos son ajustables y quedan congelados en snapshots históricos;
+- los escenarios se guardan sin sobrescribir operaciones, documentos, costos ni inventario;
+- cada recomendación incluye confianza, calidad de datos, advertencias y explicación;
+- la pantalla `Inteligencia` analiza el portafolio o una operación y permite formular una
+  consulta natural al Agente de Comercio Exterior;
+- el resultado es siempre de solo lectura y requiere confirmación humana para cualquier acción.
+
+El worker debe reclamar las tareas indicando `agent_type: "foreign_trade"`. Antes de entregar
+datos sensibles, `foreign_trade_agent_context` valida tipo de agente, worker, lease y vencimiento.
+Una tarea `commercial` no puede obtener este contexto ni leer costos, proformas, márgenes o
+proyecciones privadas.
+
 ## Modelo privado
 
 La migración `supabase/foreign_trade_center.sql` amplía las entidades existentes y agrega:
@@ -126,6 +148,10 @@ Ejecutar en Supabase SQL Editor, después de las migraciones que ya están en pr
 17. `supabase/foreign_trade_center_phase13_packing_list_enrichment.sql`
 18. `supabase/foreign_trade_center_phase14_direct_supplier_payments.sql`
 19. `supabase/foreign_trade_center_phase15_documentary_settlement_control.sql`
+20. `supabase/foreign_trade_center_phase16_cif_allocation.sql`
+21. `supabase/foreign_trade_center_phase17_supplier_product_matching.sql`
+22. `supabase/foreign_trade_center_phase18_operation_line_identity.sql`
+23. `supabase/foreign_trade_center_phase19_intelligence.sql`
 
 ### Pagos directos fuera de la rendición
 
@@ -153,13 +179,11 @@ npm run lint
 npm run build
 ```
 
-La prueba de comercio exterior instala las tres migraciones dos veces, valida el aislamiento del agente comercial, crea un proveedor y una operación con precisión decimal, vincula un producto del catálogo, calcula CBM determinístico, conserva el snapshot, registra un gasto y comprueba la ficha, los RPC y la auditoría. También simula una extracción con diferencias de total y CBM, confirma una revisión humana e impide confirmarla por segunda vez.
+La prueba de comercio exterior instala todas las migraciones dos veces, valida el aislamiento del agente comercial, crea un proveedor y una operación con precisión decimal, vincula un producto del catálogo, calcula CBM determinístico, conserva el snapshot, registra un gasto y comprueba la ficha, los RPC y la auditoría. También verifica la proyección de inventario, el reclamo de tareas por agente, el contexto privado con lease vigente, la extracción documental y la revisión humana.
 
-## Próximas fases
+## Despliegue de inteligencia
 
-1. Fase 4: motor decimal de distribución, costo puesto en bodega, márgenes y comparación de escenarios.
-2. Fase 5: alertas e historial ejecutivo.
-3. Fase 6: API privada para el Agente de Comercio Exterior con validación de permisos y confirmación humana.
-4. Fase 7: proyección de compras a partir de stock, ventas, tránsito y demanda existentes.
-
-No se implementaron todavía cálculos legales, distribución de gastos, aprobación de compras ni cambios automáticos de precios. Las Fases 1, 2 y 3 dejan las fronteras y contratos preparados para incorporarlos sin rehacer el módulo.
+Después de aplicar la Fase 19 se debe redesplegar la Edge Function `crm-agent` y el frontend del
+CRM. Los workers existentes siguen siendo compatibles si omiten `agent_type`; los workers nuevos
+deben enviarlo para evitar tomar tareas de otro agente. No se agregan secretos nuevos ni se cambia
+ningún precio comercial automáticamente.

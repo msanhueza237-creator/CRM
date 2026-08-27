@@ -8631,6 +8631,260 @@ th {
   }
 }
 
+/* Comercio Exterior: inteligencia de inventario y compras. */
+.foreign-trade-intelligence-stack {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+}
+
+.foreign-trade-intelligence-hero {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1.2rem;
+  border: 1px solid #b9d7d3;
+  border-left: 4px solid #087f8c;
+  background: #eef8f5;
+}
+
+.foreign-trade-intelligence-hero > div > span {
+  display: inline-flex;
+  align-items: center;
+  gap: .42rem;
+  color: #087f8c;
+  font-size: .78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.foreign-trade-intelligence-hero h2,
+.foreign-trade-agent-question h2 {
+  margin: .35rem 0 .25rem;
+  font-size: 1.25rem;
+  letter-spacing: 0;
+}
+
+.foreign-trade-intelligence-hero p,
+.foreign-trade-agent-question p {
+  max-width: 760px;
+  margin: 0;
+  color: #50636b;
+}
+
+.foreign-trade-intelligence-scope {
+  display: grid;
+  gap: .35rem;
+  max-width: 680px;
+  font-weight: 700;
+}
+
+.foreign-trade-intelligence-scope select,
+.foreign-trade-intelligence-form input,
+.foreign-trade-intelligence-scenario-bar input,
+.foreign-trade-intelligence-scenario-bar select,
+.foreign-trade-agent-question textarea {
+  width: 100%;
+  border: 1px solid #bfd0d4;
+  background: #fff;
+}
+
+.foreign-trade-intelligence-controls {
+  display: grid;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.foreign-trade-intelligence-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: .8rem;
+}
+
+.foreign-trade-intelligence-form label {
+  display: grid;
+  gap: .32rem;
+  min-width: 0;
+  color: #344b54;
+  font-size: .8rem;
+  font-weight: 750;
+}
+
+.foreign-trade-number-input {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid #bfd0d4;
+  background: #fff;
+}
+
+.foreign-trade-number-input input {
+  border: 0;
+  min-width: 0;
+}
+
+.foreign-trade-number-input span {
+  padding: 0 .7rem;
+  color: #62757d;
+  font-size: .76rem;
+}
+
+.foreign-trade-intelligence-scenario-bar {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) auto minmax(180px, .7fr);
+  gap: .7rem;
+}
+
+.foreign-trade-intelligence-kpis {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(145px, 1fr));
+  gap: .75rem;
+}
+
+.foreign-trade-intelligence-kpi {
+  display: grid;
+  gap: .45rem;
+  min-height: 118px;
+  padding: .9rem;
+  border: 1px solid #d3dfe2;
+  border-top: 3px solid #087f8c;
+  background: #fff;
+}
+
+.foreign-trade-intelligence-kpi.danger { border-top-color: #b42318; }
+.foreign-trade-intelligence-kpi > div { display: flex; align-items: center; gap: .45rem; color: #48616a; font-size: .78rem; font-weight: 800; }
+.foreign-trade-intelligence-kpi > strong { font-size: 1.45rem; }
+.foreign-trade-intelligence-kpi > small { color: #6b7d84; }
+
+.foreign-trade-intelligence-results {
+  min-width: 0;
+  padding: 1rem;
+}
+
+.foreign-trade-intelligence-results table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+}
+
+.foreign-trade-intelligence-results th,
+.foreign-trade-intelligence-results td {
+  padding: .7rem .55rem;
+  border-bottom: 1px solid #dce5e7;
+  text-align: left;
+  vertical-align: top;
+}
+
+.foreign-trade-intelligence-results th {
+  color: #52676f;
+  font-size: .7rem;
+  text-transform: uppercase;
+}
+
+.foreign-trade-intelligence-results td small,
+.foreign-trade-intelligence-results td em {
+  display: block;
+  margin-top: .2rem;
+  color: #6a7d84;
+  font-size: .72rem;
+  font-style: normal;
+}
+
+.foreign-trade-intelligence-results td em { color: #9a5b00; }
+
+.foreign-trade-risk {
+  display: inline-flex;
+  padding: .22rem .45rem;
+  border: 1px solid #cddadc;
+  background: #eef4f4;
+  color: #36535b;
+  font-size: .7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.foreign-trade-risk.high { border-color: #edbd78; background: #fff5e7; color: #865000; }
+.foreign-trade-risk.critical { border-color: #ecaca7; background: #fff0ef; color: #a41f16; }
+
+.foreign-trade-intelligence-explain {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid #d3dfe2;
+  background: #f7faf9;
+}
+
+.foreign-trade-intelligence-explain > div {
+  display: grid;
+  gap: .3rem;
+  padding: .9rem;
+  border-right: 1px solid #d3dfe2;
+}
+
+.foreign-trade-intelligence-explain > div:last-child { border-right: 0; }
+.foreign-trade-intelligence-explain span { color: #60747b; font-size: .78rem; }
+
+.foreign-trade-agent-question {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: .8rem;
+  padding: 1rem;
+}
+
+.foreign-trade-agent-question > div {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: .7rem;
+}
+
+.foreign-trade-agent-question textarea {
+  min-height: 86px;
+  resize: vertical;
+}
+
+.foreign-trade-intelligence-empty {
+  padding: 1rem;
+  border: 1px dashed #bfced2;
+  color: #60747b;
+  text-align: center;
+}
+
+@media (max-width: 1050px) {
+  .foreign-trade-intelligence-form { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+  .foreign-trade-intelligence-kpis { grid-template-columns: repeat(2, minmax(145px, 1fr)); }
+}
+
+@media (max-width: 700px) {
+  .foreign-trade-intelligence-hero { display: grid; }
+  .foreign-trade-intelligence-form,
+  .foreign-trade-intelligence-kpis,
+  .foreign-trade-intelligence-explain,
+  .foreign-trade-intelligence-scenario-bar,
+  .foreign-trade-agent-question { grid-template-columns: minmax(0, 1fr); }
+  .foreign-trade-intelligence-explain > div { border-right: 0; border-bottom: 1px solid #d3dfe2; }
+  .foreign-trade-intelligence-explain > div:last-child { border-bottom: 0; }
+  .foreign-trade-intelligence-results table { min-width: 0; }
+  .foreign-trade-intelligence-results thead { display: none; }
+  .foreign-trade-intelligence-results tbody,
+  .foreign-trade-intelligence-results tr,
+  .foreign-trade-intelligence-results td { display: block; width: 100%; }
+  .foreign-trade-intelligence-results tr { margin-bottom: .8rem; border: 1px solid #d3dfe2; }
+  .foreign-trade-intelligence-results td {
+    display: grid;
+    grid-template-columns: minmax(112px, .45fr) minmax(0, 1fr);
+    gap: .6rem;
+    min-height: 42px;
+  }
+  .foreign-trade-intelligence-results td::before {
+    content: attr(data-label);
+    color: #5f7279;
+    font-size: .7rem;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+  .foreign-trade-agent-question .primary-button { width: 100%; }
+}
+
 .foreign-trade-edit-operation-dialog {
   max-width: 920px;
 }

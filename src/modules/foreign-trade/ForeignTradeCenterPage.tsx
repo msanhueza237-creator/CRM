@@ -2,6 +2,7 @@ import { FormEvent, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
+  BrainCircuit,
   Boxes,
   Calculator,
   CheckCircle2,
@@ -38,10 +39,12 @@ import { useForeignTradeCenter } from "./useForeignTradeCenter";
 import { ForeignTradeOperationDetail } from "./ForeignTradeOperationDetail";
 import { ForeignTradeQuoteCalculator } from "./ForeignTradeQuoteCalculator";
 import { ForeignTradeSupplierDialog } from "./ForeignTradeSupplierDialog";
+import { ForeignTradeIntelligencePanel } from "./ForeignTradeIntelligencePanel";
 
 const views = [
   { id: "dashboard", label: "Resumen", icon: Landmark },
   { id: "calculator", label: "Calculadora", icon: Calculator },
+  { id: "intelligence", label: "Inteligencia", icon: BrainCircuit },
   { id: "operations", label: "Operaciones", icon: Ship },
   { id: "suppliers", label: "Proveedores", icon: UsersRound },
   { id: "settings", label: "Configuración", icon: Settings2 },
@@ -140,6 +143,7 @@ export function ForeignTradeCenterPage() {
         <>
           {activeView === "dashboard" ? <ForeignTradeOverview data={data} onNavigate={navigate} onNew={openOperation} onOpen={openOperationDetail} /> : null}
           {activeView === "calculator" ? <ForeignTradeQuoteCalculator data={data} /> : null}
+          {activeView === "intelligence" ? <ForeignTradeIntelligencePanel operationId={selectedOperationId} operations={data.operations} onSelectOperation={(operationId) => setParams(operationId ? { view: "intelligence", operation: operationId } : { view: "intelligence" })} /> : null}
           {activeView === "operations" && selectedOperationId ? <ForeignTradeOperationDetail operationId={selectedOperationId} statuses={data.statuses} suppliers={data.suppliers} costParameters={data.costParameters} onBack={() => navigate("operations")} onDelete={removeOperation} onChanged={refresh} /> : null}
           {activeView === "operations" && !selectedOperationId ? <ForeignTradeOperations data={data} onNew={openOperation} onOpen={openOperationDetail} onDelete={removeOperation} /> : null}
           {activeView === "suppliers" ? <ForeignTradeSuppliers suppliers={data.suppliers} onNew={() => setSupplierDialog("new")} onEdit={setSupplierDialog} /> : null}
@@ -347,6 +351,7 @@ function NewOperationDialog({
     baseCurrency: "USD",
     exchangeRateSource: "manual",
     destinationPort: "San Antonio, Chile",
+    inventoryMode: operationType === "shipment" ? "future" : "historical",
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -377,6 +382,7 @@ function NewOperationDialog({
           <label><span>Proveedor</span><select value={form.supplierId || ""} onChange={(event) => setForm({ ...form, supplierId: event.target.value })}><option value="">Sin proveedor todavía</option>{data.suppliers.filter((supplier) => supplier.active).map((supplier) => <option value={supplier.id} key={supplier.id}>{supplier.name}</option>)}</select></label>
           <label><span>Estado</span><select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>{data.statuses.filter((status) => status.active).map((status) => <option value={status.code} key={status.code}>{status.name}</option>)}</select></label>
           <label><span>Transporte</span><select value={form.transportType} onChange={(event) => setForm({ ...form, transportType: event.target.value as CreateForeignTradeOperationInput["transportType"] })}><option value="sea">Marítimo</option><option value="air">Aéreo</option><option value="land">Terrestre</option><option value="multimodal">Multimodal</option></select></label>
+          <label><span>Tratamiento de inventario</span><select value={form.inventoryMode || "historical"} onChange={(event) => setForm({ ...form, inventoryMode: event.target.value as CreateForeignTradeOperationInput["inventoryMode"] })}><option value="future">En tránsito: entrada futura</option><option value="current">Recibida: inventario actual</option><option value="historical">Simulación o histórico</option></select></label>
           <label><span>Incoterm</span><input value={form.incoterm || ""} onChange={(event) => setForm({ ...form, incoterm: event.target.value })} placeholder="EXW, FOB, CIF..." /></label>
           <label><span>Moneda</span><input value={form.baseCurrency} onChange={(event) => setForm({ ...form, baseCurrency: event.target.value })} maxLength={3} /></label>
           <label><span>Tipo de cambio CLP</span><input inputMode="decimal" value={form.exchangeRateClp || ""} onChange={(event) => setForm({ ...form, exchangeRateClp: event.target.value })} placeholder="Ej. 980" /></label>

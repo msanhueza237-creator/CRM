@@ -6,6 +6,7 @@ export type ForeignTradeOperationType =
   | "shipment";
 
 export type ForeignTradeExchangeRateSource = "manual" | "current" | "conservative" | "custom";
+export type ForeignTradeInventoryMode = "current" | "future" | "historical";
 
 export interface ForeignTradeDashboardSummary {
   operations_in_preparation: number;
@@ -80,6 +81,7 @@ export interface ForeignTradeOperation {
   order_date: string | null;
   estimated_departure: string | null;
   estimated_arrival: string | null;
+  inventory_mode: ForeignTradeInventoryMode;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -151,6 +153,7 @@ export interface CreateForeignTradeOperationInput {
   incoterm?: string;
   targetContainerCbm?: string;
   valueUsd?: string;
+  inventoryMode?: ForeignTradeInventoryMode;
   notes?: string;
 }
 
@@ -323,6 +326,107 @@ export interface ForeignTradeOperationDetail {
   costs: ForeignTradeCostLine[];
   scenarios: ForeignTradeScenario[];
   totals: ForeignTradeOperationTotals;
+}
+
+export interface ForeignTradeIntelligenceAssumptions {
+  production_days: number;
+  sea_travel_days: number;
+  customs_delay_days: number;
+  additional_delay_days: number;
+  lead_time_days: number;
+  safety_stock_days: number;
+  target_coverage_days: number;
+  effective_target_days: number;
+  demand_change_percent: number;
+  formula: string;
+}
+
+export interface ForeignTradeIntelligenceSummary {
+  products_analyzed: number;
+  critical_products: number;
+  high_risk_products: number;
+  recommended_units: number;
+  products_with_data_gaps: number;
+  automatic_actions: false;
+  source: string;
+}
+
+export interface ForeignTradeIntelligenceSnapshot {
+  id: string;
+  operation_id: string | null;
+  scenario_id: string | null;
+  task_id: string | null;
+  scope: "portfolio" | "operation";
+  as_of_date: string;
+  assumptions: ForeignTradeIntelligenceAssumptions;
+  summary: ForeignTradeIntelligenceSummary;
+  source_observed_at: string | null;
+  input_fingerprint: string;
+  confidence: number;
+  agent_type: "foreign_trade";
+  created_at: string;
+}
+
+export interface ForeignTradeIntelligenceRecommendation {
+  id: string;
+  snapshot_id: string;
+  operation_id: string | null;
+  sku: string;
+  product_name: string | null;
+  available_units: number;
+  committed_units: number;
+  confirmed_inbound_units: number;
+  current_operation_units: number;
+  average_daily_demand: number;
+  monthly_demand: number;
+  lead_time_days: number;
+  safety_stock_units: number;
+  reorder_point_units: number;
+  target_units: number;
+  projected_stock_at_arrival: number;
+  coverage_days: number | null;
+  recommended_units: number;
+  recommended_value_usd: number;
+  required_order_date: string | null;
+  projected_stockout_date: string | null;
+  severity: "low" | "medium" | "high" | "critical";
+  purchase_policy: string;
+  confidence: number;
+  confidence_level: "low" | "medium" | "high";
+  data_quality: Record<string, unknown>;
+  rationale: Record<string, unknown>;
+  warnings: string[];
+  status: "pending" | "approved" | "rejected" | "expired";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ForeignTradeIntelligenceScenario {
+  id: string;
+  operation_id: string | null;
+  name: string;
+  status: "active" | "archived";
+  parameters: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ForeignTradeIntelligenceData {
+  snapshot: ForeignTradeIntelligenceSnapshot | null;
+  recommendations: ForeignTradeIntelligenceRecommendation[];
+  scenarios: ForeignTradeIntelligenceScenario[];
+}
+
+export interface RunForeignTradeIntelligenceInput {
+  operationId?: string | null;
+  asOf?: string;
+  productionDays?: number;
+  seaTravelDays?: number;
+  customsDelayDays?: number;
+  additionalDelayDays?: number;
+  safetyStockDays?: number;
+  targetCoverageDays?: number;
+  demandChangePercent?: number;
 }
 
 export type ForeignTradeReconciliationStatus = "draft" | "reviewed" | "applied" | "refund_pending" | "settled";
