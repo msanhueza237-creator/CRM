@@ -182,7 +182,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   const asOf = new Date().toISOString().slice(0, 10);
   const [summary, dashboard] = await Promise.all([
     rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: asOf }),
-    buildDashboardAnalytics(rest, entityId, asOf, sources),
+    buildDashboardAnalytics(rest, entityId, asOf, sources, accounts),
   ]);
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, sources, entries,
@@ -228,11 +228,51 @@ function dashboardIncomeTotals(rawRows: unknown): DashboardResultTotals {
   };
 }
 
+function emptyDashboardTotals(): DashboardResultTotals {
+  return dashboardIncomeTotals([]);
+}
+
+function finalizeDashboardTotals(values: Pick<DashboardResultTotals, "sales" | "costs" | "expenses" | "otherResults">): DashboardResultTotals {
+  const grossProfit = values.sales - values.costs;
+  const operatingProfit = grossProfit - values.expenses + values.otherResults;
+  return {
+    ...values,
+    grossProfit,
+    operatingProfit,
+    grossMargin: values.sales ? (grossProfit / values.sales) * 100 : null,
+    operatingMargin: values.sales ? (operatingProfit / values.sales) * 100 : null,
+  };
+}
+
+function addLedgerLineToDashboard(total: DashboardResultTotals, accountType: string, debit: number, credit: number) {
+  if (accountType === "income") total.sales += credit - debit;
+  else if (accountType === "cost") total.costs += debit - credit;
+  else if (accountType === "expense") total.expenses += debit - credit;
+  else if (accountType === "result") total.otherResults += credit - debit;
+}
+
+function documentaryNetSalesClp(document: JsonRecord) {
+  const exchangeRate = String(document.currency || "CLP") === "CLP" ? 1 : numeric(document.exchange_rate) || 1;
+  const netAmount = numeric(document.net_amount);
+  const taxAmount = numeric(document.tax_amount);
+  const totalClp = numeric(document.total_clp);
+  const netClp = netAmount
+    ? netAmount * exchangeRate
+    : Math.max(0, totalClp - taxAmount * exchangeRate);
+  return String(document.document_type || "").includes("credit_note") ? -netClp : netClp;
+}
+
 function dashboardVariance(current: number, previous: number) {
   return previous ? ((current - previous) / Math.abs(previous)) * 100 : null;
 }
 
-async function buildDashboardAnalytics(rest: RestClient, entityId: string, asOf: string, sources: JsonRecord[]) {
+async function buildDashboardAnalytics(
+  rest: RestClient,
+  entityId: string,
+  asOf: string,
+  sources: JsonRecord[],
+  accounts: JsonRecord[],
+) {
   const year = Number(asOf.slice(0, 4));
   const currentMonth = Number(asOf.slice(5, 7));
   const yearStart = `${year}-01-01`;
@@ -246,88 +286,140 @@ async function buildDashboardAnalytics(rest: RestClient, entityId: string, asOf:
     return { period: `${year}-${monthText}`, label: dashboardMonthLabels[index], from: `${year}-${monthText}-01`, to };
   });
 
+  const warnings: string[] = [];
+  const accountTypes = new Map(accounts.map((account) => [String(account.id), String(account.account_type || "")]));
+  const monthTotals = new Map(monthRanges.map((month) => [month.period, emptyDashboardTotals()]));
+  let previousYear = emptyDashboardTotals();
+  let ledgerLines: JsonRecord[] = [];
+  let ledgerReadFailed = false;
+
   try {
-    const [monthlyRows, previousYearRows] = await Promise.all([
-      Promise.all(monthRanges.map((month) => rpc(rest, "accounting_income_statement", {
-        p_entity_id: entityId,
-        p_from: month.from,
-        p_to: month.to,
-      }))),
-      rpc(rest, "accounting_income_statement", {
-        p_entity_id: entityId,
-        p_from: `${priorYear}-01-01`,
-        p_to: priorAsOf,
-      }),
-    ]);
-
-    let exactCostEntries: JsonRecord[] = [];
-    try {
-      const postedEntries = await selectRows(rest, `accounting_journal_entries?select=source_document_id,idempotency_key&entity_id=eq.${entityId}&status=eq.posted&entry_date=gte.${yearStart}&entry_date=lte.${asOf}&source_document_id=not.is.null&limit=5000`);
-      exactCostEntries = postedEntries.filter((entry) => String(entry.idempotency_key || "").startsWith("facto-cost:"));
-    } catch (error) {
-      console.warn("[accounting-center] exact cost coverage unavailable", {
-        entityId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    const monthly = monthRanges.map((month, index) => ({ ...month, ...dashboardIncomeTotals(monthlyRows[index]) }));
-    const current = monthly.reduce<DashboardResultTotals>((accumulator, month) => {
-      accumulator.sales += month.sales;
-      accumulator.costs += month.costs;
-      accumulator.expenses += month.expenses;
-      accumulator.otherResults += month.otherResults;
-      accumulator.grossProfit += month.grossProfit;
-      accumulator.operatingProfit += month.operatingProfit;
-      return accumulator;
-    }, { sales: 0, costs: 0, expenses: 0, otherResults: 0, grossProfit: 0, operatingProfit: 0, grossMargin: null, operatingMargin: null });
-    current.grossMargin = current.sales ? (current.grossProfit / current.sales) * 100 : null;
-    current.operatingMargin = current.sales ? (current.operatingProfit / current.sales) * 100 : null;
-
-    const previousYear = dashboardIncomeTotals(previousYearRows);
-    const salesDocuments = sources.filter((source) => String(source.document_type || "") === "sales_invoice"
-      && String(source.issued_on || "") >= yearStart
-      && String(source.issued_on || "") <= asOf);
-    const exactCostSourceIds = new Set(exactCostEntries.map((entry) => String(entry.source_document_id || "")).filter(Boolean));
-    const salesWithExactCost = salesDocuments.filter((document) => exactCostSourceIds.has(String(document.id))).length;
-
-    return {
-      available: true,
-      year,
-      from: yearStart,
-      to: asOf,
-      monthly,
-      current,
-      previousYear,
-      comparison: {
-        sales: dashboardVariance(current.sales, previousYear.sales),
-        grossProfit: dashboardVariance(current.grossProfit, previousYear.grossProfit),
-        operatingProfit: dashboardVariance(current.operatingProfit, previousYear.operatingProfit),
-      },
-      costCoverage: {
-        totalSalesDocuments: salesDocuments.length,
-        salesWithExactCost,
-        missingSalesCost: Math.max(0, salesDocuments.length - salesWithExactCost),
-        percentage: salesDocuments.length ? (salesWithExactCost / salesDocuments.length) * 100 : 0,
-      },
-    };
+    ledgerLines = await selectAllRows(rest,
+      `accounting_journal_lines?select=account_id,debit_clp,credit_clp,accounting_journal_entries!inner(entry_date,idempotency_key,source_document_id,status)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=gte.${priorYear}-01-01&accounting_journal_entries.entry_date=lte.${asOf}&order=id.asc`,
+    );
   } catch (error) {
-    console.warn("[accounting-center] dashboard analytics unavailable", {
+    ledgerReadFailed = true;
+    warnings.push("No se pudo leer el detalle completo del libro mayor; las ventas se presentan desde documentos Facto validados.");
+    console.warn("[accounting-center] dashboard ledger detail unavailable", {
       entityId,
       message: error instanceof Error ? error.message : String(error),
     });
-    return {
-      available: false,
-      year,
-      from: yearStart,
-      to: asOf,
-      monthly: [],
-      current: dashboardIncomeTotals([]),
-      previousYear: dashboardIncomeTotals([]),
-      comparison: { sales: null, grossProfit: null, operatingProfit: null },
-      costCoverage: { totalSalesDocuments: 0, salesWithExactCost: 0, missingSalesCost: 0, percentage: 0 },
-    };
   }
+
+  let relevantLedgerLines = 0;
+  const exactCostSourceIds = new Set<string>();
+  for (const line of ledgerLines) {
+    const entry = asObject(line.accounting_journal_entries);
+    const entryDate = String(entry.entry_date || "");
+    const accountType = accountTypes.get(String(line.account_id || "")) || "";
+    if (!["income", "cost", "expense", "result"].includes(accountType)) continue;
+    const debit = numeric(line.debit_clp);
+    const credit = numeric(line.credit_clp);
+    if (!debit && !credit) continue;
+    relevantLedgerLines += 1;
+    if (String(entry.idempotency_key || "").startsWith("facto-cost:")) {
+      const sourceDocumentId = String(entry.source_document_id || "");
+      if (sourceDocumentId) exactCostSourceIds.add(sourceDocumentId);
+    }
+    if (entryDate >= yearStart && entryDate <= asOf) {
+      const total = monthTotals.get(entryDate.slice(0, 7));
+      if (total) addLedgerLineToDashboard(total, accountType, debit, credit);
+    } else if (entryDate >= `${priorYear}-01-01` && entryDate <= priorAsOf) {
+      addLedgerLineToDashboard(previousYear, accountType, debit, credit);
+    }
+  }
+
+  let financialDocuments = sources;
+  try {
+    financialDocuments = await selectAllRows(rest,
+      `accounting_source_documents?select=id,issued_on,document_type,currency,exchange_rate,net_amount,tax_amount,total_clp,data_quality,status&entity_id=eq.${entityId}&issued_on=gte.${priorYear}-01-01&issued_on=lte.${asOf}&order=issued_on.asc`,
+    );
+  } catch (error) {
+    warnings.push("La cobertura documental se calculó con el último conjunto cargado en pantalla.");
+    console.warn("[accounting-center] dashboard document coverage limited", {
+      entityId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  const validSalesDocuments = financialDocuments.filter((source) => {
+    const documentType = String(source.document_type || "");
+    const quality = String(source.data_quality || "validated");
+    return documentType.startsWith("sales_") && quality !== "inconsistent";
+  });
+  const currentSalesDocuments = validSalesDocuments.filter((source) => {
+    const issuedOn = String(source.issued_on || "");
+    return issuedOn >= yearStart && issuedOn <= asOf;
+  });
+
+  const ledgerCurrentSales = [...monthTotals.values()].reduce((sum, total) => sum + total.sales, 0);
+  let usedDocumentarySales = false;
+  if (Math.abs(ledgerCurrentSales) < 0.005 && currentSalesDocuments.length) {
+    for (const document of currentSalesDocuments) {
+      const total = monthTotals.get(String(document.issued_on || "").slice(0, 7));
+      if (total) total.sales += documentaryNetSalesClp(document);
+    }
+    usedDocumentarySales = true;
+    warnings.push("Ventas recuperadas desde documentos Facto validados; el margen seguirá provisional hasta completar sus asientos.");
+  }
+
+  if (Math.abs(previousYear.sales) < 0.005) {
+    const previousSalesDocuments = validSalesDocuments.filter((source) => {
+      const issuedOn = String(source.issued_on || "");
+      return issuedOn >= `${priorYear}-01-01` && issuedOn <= priorAsOf;
+    });
+    if (previousSalesDocuments.length) {
+      previousYear.sales = previousSalesDocuments.reduce((sum, document) => sum + documentaryNetSalesClp(document), 0);
+    }
+  }
+
+  const monthly = monthRanges.map((month) => ({
+    ...month,
+    ...finalizeDashboardTotals(monthTotals.get(month.period) || emptyDashboardTotals()),
+  }));
+  const current = finalizeDashboardTotals(monthly.reduce((accumulator, month) => ({
+    sales: accumulator.sales + month.sales,
+    costs: accumulator.costs + month.costs,
+    expenses: accumulator.expenses + month.expenses,
+    otherResults: accumulator.otherResults + month.otherResults,
+  }), { sales: 0, costs: 0, expenses: 0, otherResults: 0 }));
+  previousYear = finalizeDashboardTotals(previousYear);
+
+  const salesWithExactCost = currentSalesDocuments.filter((document) => exactCostSourceIds.has(String(document.id))).length;
+  const missingSalesCost = Math.max(0, currentSalesDocuments.length - salesWithExactCost);
+  if (current.sales > 0 && current.costs <= 0) warnings.push("Hay ventas registradas, pero todavía no existe costo de ventas contabilizado para el período.");
+
+  const available = relevantLedgerLines > 0 || currentSalesDocuments.length > 0;
+  const basis = usedDocumentarySales
+    ? (relevantLedgerLines > 0 ? "mixed" : "documentary")
+    : relevantLedgerLines > 0
+    ? "ledger"
+    : "unavailable";
+  if (!available && !ledgerReadFailed) warnings.push("No se encontraron asientos ni documentos de venta validados para el período.");
+
+  return {
+    available,
+    basis,
+    warnings,
+    ledgerLines: relevantLedgerLines,
+    year,
+    from: yearStart,
+    to: asOf,
+    monthly,
+    current,
+    previousYear,
+    comparison: {
+      sales: dashboardVariance(current.sales, previousYear.sales),
+      grossProfit: dashboardVariance(current.grossProfit, previousYear.grossProfit),
+      operatingProfit: dashboardVariance(current.operatingProfit, previousYear.operatingProfit),
+    },
+    costCoverage: {
+      totalSalesDocuments: currentSalesDocuments.length,
+      salesWithExactCost,
+      missingSalesCost,
+      percentage: currentSalesDocuments.length ? (salesWithExactCost / currentSalesDocuments.length) * 100 : 0,
+    },
+  };
 }
 
 async function createAccount(rest: RestClient, profile: Profile, payload: JsonRecord, requestId: string) {

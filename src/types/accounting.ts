@@ -269,6 +269,9 @@ export interface AccountingDashboardMonth extends AccountingDashboardTotals {
 
 export interface AccountingDashboardAnalytics {
   available: boolean;
+  basis: "ledger" | "mixed" | "documentary" | "unavailable";
+  warnings: string[];
+  ledgerLines: number;
   year: number;
   from: string;
   to: string;

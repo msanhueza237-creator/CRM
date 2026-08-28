@@ -473,6 +473,10 @@
 .accounting-analytics-unavailable { display: flex; align-items: center; gap: 12px; border-color: #e8c98f; color: #8b5600; }
 .accounting-analytics-unavailable div { display: grid; gap: 3px; }
 .accounting-analytics-unavailable span { color: var(--accounting-muted); }
+.accounting-dashboard-warnings { display: flex; align-items: flex-start; gap: 12px; border-color: #e8c98f; background: #fffaf0; color: #8b5600; }
+.accounting-dashboard-warnings > svg { flex: 0 0 auto; margin-top: 2px; }
+.accounting-dashboard-warnings div { display: grid; gap: 4px; min-width: 0; }
+.accounting-dashboard-warnings span { color: var(--accounting-muted); line-height: 1.45; }
 
 .accounting-liquidity-grid { grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr); }
 .accounting-position-row { margin-top: 17px; }

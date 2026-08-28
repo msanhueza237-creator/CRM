@@ -202,7 +202,9 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   const result = dashboard.current;
   const available = number(summary.bank_clp) + number(summary.bank_usd_clp);
   const position = available + number(summary.receivables) + number(summary.checks_portfolio) - number(summary.payables);
-  const resultIsProvisional = summary.provisional || dashboard.costCoverage.missingSalesCost > 0;
+  const documentaryBasis = dashboard.basis === "documentary" || dashboard.basis === "mixed";
+  const dashboardWarnings = Array.isArray(dashboard.warnings) ? dashboard.warnings : [];
+  const resultIsProvisional = summary.provisional || dashboard.costCoverage.missingSalesCost > 0 || documentaryBasis;
   const cards: Array<{ label: string; value: string; detail: string; view: AccountingView; icon: typeof Landmark; tone?: string; trend?: number | null }> = [
     { label: "Disponible", value: clp(available), detail: `CLP ${clp(summary.bank_clp)} · USD equiv. ${clp(summary.bank_usd_clp)}`, view: "banks", icon: WalletCards },
     { label: "Posición financiera", value: clp(position), detail: "Disponible + cobros + cheques − obligaciones", view: "reports", icon: Scale, tone: position < 0 ? "danger" : "positive" },
@@ -220,7 +222,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
         <div>
           <p>Resumen ejecutivo · {dashboard.year}</p>
           <h2>Posición y desempeño financiero</h2>
-          <span>Cifras contabilizadas entre {shortDate(dashboard.from)} y {shortDate(dashboard.to)}. Cada bloque abre su respaldo operativo.</span>
+          <span>{documentaryBasis ? "Cifras contables y documentos Facto validados" : "Cifras contabilizadas"} entre {shortDate(dashboard.from)} y {shortDate(dashboard.to)}. Cada bloque abre su respaldo operativo.</span>
         </div>
         <div className="accounting-executive-status">
           <span className={`accounting-quality ${resultIsProvisional ? "review" : "ok"}`}>{resultIsProvisional ? "Lectura provisional" : "Información completa"}</span>
@@ -247,7 +249,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
         <div className="accounting-analytics-grid">
           <button className="panel accounting-chart-panel" type="button" onClick={() => navigate("reports")}>
             <div className="accounting-panel-heading">
-              <div><p>Evolución mensual</p><h2>Ventas, costos y resultado</h2><span>Serie obtenida exclusivamente desde asientos contabilizados.</span></div>
+              <div><p>Evolución mensual</p><h2>Ventas, costos y resultado</h2><span>{documentaryBasis ? "Ventas documentales Facto y costos contabilizados; lectura provisional visible." : "Serie obtenida exclusivamente desde asientos contabilizados."}</span></div>
               <ArrowRight size={19} />
             </div>
             <FinancialTrendChart months={dashboard.monthly} />
@@ -270,6 +272,8 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
       ) : (
         <section className="panel accounting-analytics-unavailable"><AlertTriangle size={22} /><div><strong>No se pudo construir la tendencia contable</strong><span>Los saldos operativos siguen disponibles. Revisa la función de informes antes de presentar la rentabilidad.</span></div></section>
       )}
+
+      {dashboardWarnings.length ? <section className="panel accounting-dashboard-warnings"><AlertTriangle size={20} /><div><strong>Alcance de la lectura</strong>{dashboardWarnings.map((warning) => <span key={warning}>{warning}</span>)}</div></section> : null}
 
       <div className="accounting-dashboard-grid accounting-liquidity-grid">
         <button className="panel accounting-position-panel" type="button" onClick={() => navigate("reports")}>
@@ -370,6 +374,9 @@ function fallbackDashboard(asOf: string): AccountingBootstrap["dashboard"] {
   const safeAsOf = /^\d{4}-\d{2}-\d{2}$/.test(asOf || "") ? asOf : today();
   return {
     available: false,
+    basis: "unavailable",
+    warnings: ["No fue posible cargar el análisis financiero."],
+    ledgerLines: 0,
     year: Number(safeAsOf.slice(0, 4)),
     from: `${safeAsOf.slice(0, 4)}-01-01`,
     to: safeAsOf,
