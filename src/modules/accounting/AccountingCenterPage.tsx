@@ -200,6 +200,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   const summary = data.summary;
   const dashboard = data.dashboard ?? fallbackDashboard(summary.as_of);
   const result = dashboard.current;
+  const expenses = dashboard.expenseBreakdown;
   const available = number(summary.bank_clp) + number(summary.bank_usd_clp);
   const position = available + number(summary.receivables) + number(summary.checks_portfolio) - number(summary.payables);
   const documentaryBasis = dashboard.basis === "documentary" || dashboard.basis === "mixed";
@@ -210,6 +211,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
     { label: "Posición financiera", value: clp(position), detail: "Disponible + cobros + cheques − obligaciones", view: "reports", icon: Scale, tone: position < 0 ? "danger" : "positive" },
     { label: `Ventas ${dashboard.year}`, value: clp(result.sales), detail: "Ingresos contabilizados acumulados", view: "reports", icon: BadgeDollarSign, trend: dashboard.comparison.sales },
     { label: "Costo de ventas", value: clp(result.costs), detail: `${formatPercent(dashboard.costCoverage.percentage)} de facturas con costo exacto`, view: "ledger", icon: ReceiptText, tone: dashboard.costCoverage.missingSalesCost ? "warning" : "" },
+    { label: `Costo laboral ${dashboard.year}`, value: clp(expenses.laborTotal), detail: `Sueldos ${clp(expenses.salaries)} · PREVIRED ${clp(expenses.pensionContributions)}`, view: "ledger", icon: WalletCards },
     { label: "Margen bruto", value: formatPercent(result.grossMargin), detail: `${clp(result.grossProfit)} después del costo contabilizado`, view: "reports", icon: BarChart3, trend: dashboard.comparison.grossProfit, tone: result.grossProfit < 0 ? "danger" : "positive" },
     { label: "Resultado operativo", value: clp(result.operatingProfit), detail: resultIsProvisional ? "Provisional por cobertura o período abierto" : "Resultado contable del período", view: "reports", icon: result.operatingProfit < 0 ? TrendingDown : TrendingUp, trend: dashboard.comparison.operatingProfit, tone: result.operatingProfit < 0 ? "danger" : "positive" },
   ];
@@ -272,6 +274,20 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
       ) : (
         <section className="panel accounting-analytics-unavailable"><AlertTriangle size={22} /><div><strong>No se pudo construir la tendencia contable</strong><span>Los saldos operativos siguen disponibles. Revisa la función de informes antes de presentar la rentabilidad.</span></div></section>
       )}
+
+      <button className="panel accounting-labor-panel" type="button" onClick={() => navigate("ledger")}>
+        <div className="accounting-panel-heading">
+          <div><p>Conciliación laboral</p><h2>Sueldos y obligaciones previsionales</h2><span>Movimientos contabilizados entre {shortDate(dashboard.from)} y {shortDate(dashboard.to)}.</span></div>
+          <ArrowRight size={19} />
+        </div>
+        <div className="accounting-labor-grid">
+          <div><span>Remuneraciones</span><strong>{clp(expenses.salaries)}</strong><small>Cuenta 6.1.10</small></div>
+          <div><span>PREVIRED / cotizaciones</span><strong>{clp(expenses.pensionContributions)}</strong><small>Cuenta 6.1.12</small></div>
+          <div><span>Cargas patronales</span><strong>{clp(expenses.employerContributions)}</strong><small>Cuenta 6.1.11</small></div>
+          <div className="total"><span>Total laboral</span><strong>{clp(expenses.laborTotal)}</strong><small>Incluido en gastos operacionales</small></div>
+        </div>
+        <p className="accounting-labor-note"><ShieldCheck size={16} /> Estos importes ya están incluidos una sola vez en los gastos operacionales de {clp(expenses.total)} y en el resultado del período.</p>
+      </button>
 
       {dashboardWarnings.length ? <section className="panel accounting-dashboard-warnings"><AlertTriangle size={20} /><div><strong>Alcance de la lectura</strong>{dashboardWarnings.map((warning) => <span key={warning}>{warning}</span>)}</div></section> : null}
 
@@ -383,6 +399,7 @@ function fallbackDashboard(asOf: string): AccountingBootstrap["dashboard"] {
     monthly: [],
     current,
     previousYear: { ...current },
+    expenseBreakdown: { salaries: 0, pensionContributions: 0, employerContributions: 0, laborTotal: 0, legalFees: 0, otherOperatingExpenses: 0, total: 0 },
     comparison: { sales: null, grossProfit: null, operatingProfit: null },
     costCoverage: { totalSalesDocuments: 0, salesWithExactCost: 0, missingSalesCost: 0, percentage: 0 },
   };

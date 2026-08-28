@@ -478,6 +478,32 @@
 .accounting-dashboard-warnings div { display: grid; gap: 4px; min-width: 0; }
 .accounting-dashboard-warnings span { color: var(--accounting-muted); line-height: 1.45; }
 
+.accounting-labor-panel {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  padding: 18px;
+  border-left: 4px solid #3d705c;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.accounting-labor-panel:hover,
+.accounting-labor-panel:focus-visible { border-color: #78a997; box-shadow: 0 8px 22px rgba(23, 49, 58, 0.08); }
+.accounting-labor-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+.accounting-labor-grid > div { display: grid; gap: 4px; min-width: 0; padding: 13px; border: 1px solid var(--accounting-line); border-radius: 5px; background: #f7faf9; }
+.accounting-labor-grid > div.total { border-color: #9fc8b8; background: #e8f4ef; }
+.accounting-labor-grid span,
+.accounting-labor-grid small { color: var(--accounting-muted); }
+.accounting-labor-grid span { font-size: 11px; font-weight: 800; text-transform: uppercase; }
+.accounting-labor-grid strong { overflow-wrap: anywhere; color: var(--accounting-ink); font-size: 20px; }
+.accounting-labor-grid small { font-size: 11px; }
+.accounting-labor-note { display: flex; align-items: flex-start; gap: 8px; margin: 13px 0 0; color: #46665d; font-size: 12px; line-height: 1.45; }
+.accounting-labor-note svg { flex: 0 0 auto; color: #23805f; }
+
 .accounting-liquidity-grid { grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr); }
 .accounting-position-row { margin-top: 17px; }
 .accounting-position-track { height: 10px; }
@@ -1252,6 +1278,7 @@
   .accounting-source-actions > button { flex: 1 1 100%; justify-content: center; }
   .accounting-principle-band { align-items: flex-start; }
   .accounting-kpi-grid { grid-template-columns: 1fr; }
+  .accounting-labor-grid { grid-template-columns: 1fr 1fr; }
   .accounting-automation-controls,
   .accounting-coverage-grid { grid-template-columns: 1fr; }
   .accounting-automation-controls .primary-button,
@@ -1359,6 +1386,8 @@
   .accounting-private-badge { white-space: normal; }
   .accounting-preview-kpis { grid-template-columns: 1fr; }
   .accounting-center-table td { grid-template-columns: 95px minmax(0, 1fr); }
+  .accounting-labor-grid { grid-template-columns: 1fr; }
+  .accounting-labor-panel { padding: 15px; }
 }
 
 .accounting-reconciliation-recovery {

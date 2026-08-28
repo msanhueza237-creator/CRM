@@ -93,6 +93,7 @@ begin
       and t.transaction_date between p_from and p_to
       and t.amount_clp < 0
       and t.reconciliation_status <> 'ignored'
+      and coalesce(t.metadata->>'classification_locked','false') <> 'true'
       and (
         lower(t.description) like '%sisla%'
         or lower(t.description) like '%marco sanhueza%'

@@ -278,6 +278,15 @@ export interface AccountingDashboardAnalytics {
   monthly: AccountingDashboardMonth[];
   current: AccountingDashboardTotals;
   previousYear: AccountingDashboardTotals;
+  expenseBreakdown: {
+    salaries: number;
+    pensionContributions: number;
+    employerContributions: number;
+    laborTotal: number;
+    legalFees: number;
+    otherOperatingExpenses: number;
+    total: number;
+  };
   comparison: {
     sales: number | null;
     grossProfit: number | null;

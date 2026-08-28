@@ -202,6 +202,16 @@ type DashboardResultTotals = {
   operatingMargin: number | null;
 };
 
+type DashboardExpenseBreakdown = {
+  salaries: number;
+  pensionContributions: number;
+  employerContributions: number;
+  laborTotal: number;
+  legalFees: number;
+  otherOperatingExpenses: number;
+  total: number;
+};
+
 const dashboardMonthLabels = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
 function dashboardIncomeTotals(rawRows: unknown): DashboardResultTotals {
@@ -266,6 +276,31 @@ function dashboardVariance(current: number, previous: number) {
   return previous ? ((current - previous) / Math.abs(previous)) * 100 : null;
 }
 
+function emptyDashboardExpenseBreakdown(): DashboardExpenseBreakdown {
+  return {
+    salaries: 0,
+    pensionContributions: 0,
+    employerContributions: 0,
+    laborTotal: 0,
+    legalFees: 0,
+    otherOperatingExpenses: 0,
+    total: 0,
+  };
+}
+
+function addDashboardExpense(
+  breakdown: DashboardExpenseBreakdown,
+  classification: string,
+  amount: number,
+) {
+  breakdown.total += amount;
+  if (classification === "payroll_expense") breakdown.salaries += amount;
+  else if (classification === "payroll_contributions_expense") breakdown.pensionContributions += amount;
+  else if (classification === "payroll_employer_expense") breakdown.employerContributions += amount;
+  else if (classification === "legal_fees") breakdown.legalFees += amount;
+  else breakdown.otherOperatingExpenses += amount;
+}
+
 async function buildDashboardAnalytics(
   rest: RestClient,
   entityId: string,
@@ -288,7 +323,9 @@ async function buildDashboardAnalytics(
 
   const warnings: string[] = [];
   const accountTypes = new Map(accounts.map((account) => [String(account.id), String(account.account_type || "")]));
+  const accountClassifications = new Map(accounts.map((account) => [String(account.id), String(account.classification || "")]));
   const monthTotals = new Map(monthRanges.map((month) => [month.period, emptyDashboardTotals()]));
+  const expenseBreakdown = emptyDashboardExpenseBreakdown();
   let previousYear = emptyDashboardTotals();
   let ledgerLines: JsonRecord[] = [];
   let ledgerReadFailed = false;
@@ -324,6 +361,13 @@ async function buildDashboardAnalytics(
     if (entryDate >= yearStart && entryDate <= asOf) {
       const total = monthTotals.get(entryDate.slice(0, 7));
       if (total) addLedgerLineToDashboard(total, accountType, debit, credit);
+      if (accountType === "expense") {
+        addDashboardExpense(
+          expenseBreakdown,
+          accountClassifications.get(String(line.account_id || "")) || "",
+          debit - credit,
+        );
+      }
     } else if (entryDate >= `${priorYear}-01-01` && entryDate <= priorAsOf) {
       addLedgerLineToDashboard(previousYear, accountType, debit, credit);
     }
@@ -383,6 +427,10 @@ async function buildDashboardAnalytics(
     expenses: accumulator.expenses + month.expenses,
     otherResults: accumulator.otherResults + month.otherResults,
   }), { sales: 0, costs: 0, expenses: 0, otherResults: 0 }));
+  expenseBreakdown.laborTotal = expenseBreakdown.salaries
+    + expenseBreakdown.pensionContributions
+    + expenseBreakdown.employerContributions;
+  expenseBreakdown.total = current.expenses;
   previousYear = finalizeDashboardTotals(previousYear);
 
   const salesWithExactCost = currentSalesDocuments.filter((document) => exactCostSourceIds.has(String(document.id))).length;
@@ -408,6 +456,7 @@ async function buildDashboardAnalytics(
     monthly,
     current,
     previousYear,
+    expenseBreakdown,
     comparison: {
       sales: dashboardVariance(current.sales, previousYear.sales),
       grossProfit: dashboardVariance(current.grossProfit, previousYear.grossProfit),
