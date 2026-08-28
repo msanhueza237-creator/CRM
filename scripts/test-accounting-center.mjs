@@ -11,6 +11,7 @@ import {
   extractChileanTaxIds,
   rankReconciliationCandidates,
 } from "../supabase/functions/accounting-center/reconciliation-engine.ts";
+import { normalizeAccountingReconciliationProposal } from "../src/modules/accounting/reconciliationCompatibility.ts";
 
 const migration = (await readFile(new URL("../supabase/accounting_center.sql", import.meta.url), "utf8"))
   .replace(/create extension if not exists pgcrypto;/i, "");
@@ -78,6 +79,32 @@ assert.match(pageSource, /Descargar cartola original/);
 assert.match(pageSource, /accounting-bank-history/);
 assert.match(pageSource, /Se conservará el monto original y se guardará su equivalente contable en CLP/);
 assert.match(pageSource, /Usar propuesta/);
+
+const legacyProposal = normalizeAccountingReconciliationProposal({
+  transaction: {
+    id: "legacy-transaction",
+    amount_clp: 500000,
+    transaction_date: "2026-07-29",
+    description: "TEF 15427713-7 MARCO SANHUEZA",
+  },
+  candidates: [{
+    targetType: "receivable",
+    targetId: "legacy-receivable",
+    score: 0.82,
+    confidence: "high",
+    suggestedAmount: 300000,
+    candidate: {
+      id: "legacy-receivable",
+      customer_name: "Cliente prueba",
+      document_number: "1001",
+      balance_clp: 300000,
+    },
+  }],
+});
+assert.equal(legacyProposal.remainingAmount, 500000);
+assert.deepEqual(legacyProposal.candidates[0].evidence, []);
+assert.equal(legacyProposal.candidates[0].signals.amount, "over");
+assert.equal(legacyProposal.suggestedPlan, null);
 assert.match(pageSource, /Permite pagos parciales, varias facturas por pago y varios abonos por factura/);
 
 const bancoEstadoRange = bancoEstadoStatementRange([

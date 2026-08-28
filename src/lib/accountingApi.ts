@@ -7,9 +7,9 @@ import type {
   AccountingFactoExcelResult,
   AccountingImportPreview,
   AccountingJournalDraft,
-  AccountingReconciliationProposal,
   AccountingReport,
 } from "../types/accounting";
+import { normalizeAccountingReconciliationProposal } from "../modules/accounting/reconciliationCompatibility";
 
 type RequestOptions = { method?: "GET" | "POST"; body?: unknown };
 
@@ -101,11 +101,12 @@ export function confirmAccountingImport(batchId: string, exchangeRate?: number) 
   return accountingRequest<{ imported: number; existing?: boolean }>("imports/confirm", { method: "POST", body: { batchId, exchangeRate } });
 }
 
-export function proposeAccountingReconciliation(transactionId: string) {
-  return accountingRequest<AccountingReconciliationProposal>("reconciliation/propose", {
+export async function proposeAccountingReconciliation(transactionId: string) {
+  const result = await accountingRequest<unknown>("reconciliation/propose", {
     method: "POST",
     body: { transactionId },
   });
+  return normalizeAccountingReconciliationProposal(result);
 }
 
 export function confirmAccountingReconciliation(input: { transactionId: string; links: Array<{ targetType: string; targetId: string; amount: number }>; note?: string }) {
