@@ -40,6 +40,10 @@ Deno.serve(async (request) => {
       requirePermission(profile, "import");
       return json(await syncFacto(rest, profile, requestId, await readJson(request)), 200, request);
     }
+    if (route === "facto/cost-entry" && request.method === "POST") {
+      requirePermission(profile, "post");
+      return json(await postFactoCostEntry(rest, profile, requestId, await readJson(request)), 200, request);
+    }
     if (route === "facto-excel/preview" && request.method === "POST") {
       requirePermission(profile, "import");
       return json(await previewFactoExcel(rest, profile, await readJson(request)), 201, request);
@@ -1910,6 +1914,106 @@ async function postFactoDocument(
   });
 }
 
+async function postFactoCostEntry(
+  rest: RestClient,
+  profile: Profile,
+  requestId: string,
+  payload: JsonRecord,
+) {
+  const entityId = requiredUuid(payload.entityId);
+  const sourceDocumentId = requiredUuid(payload.sourceDocumentId);
+  const amountClp = Math.round(Math.abs(numeric(payload.amountClp)) * 10000) / 10000;
+  if (amountClp <= 0) throw new HttpError(400, "El costo de venta Facto debe ser mayor que cero.");
+
+  const document = (await selectRows(
+    rest,
+    `accounting_source_documents?select=*&id=eq.${sourceDocumentId}&entity_id=eq.${entityId}&source_type=eq.FACTO&limit=1`,
+  ))[0];
+  if (!document) throw new HttpError(404, "No se encontró el documento Facto asociado al asiento.");
+  const documentType = String(document.document_type || "");
+  if (!documentType.startsWith("sales_")) {
+    throw new HttpError(409, "El costo de venta solo puede asociarse a un documento de venta Facto.");
+  }
+
+  const [periods, accounts] = await Promise.all([
+    selectRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&status=in.(open,review)&order=starts_on.asc`),
+    selectRows(rest, `accounting_accounts?select=id,classification&entity_id=eq.${entityId}&active=eq.true`),
+  ]);
+  const accountByClassification = new Map(
+    accounts.map((account) => [String(account.classification), String(account.id)]),
+  );
+  const issuedOn = requiredDate(document.issued_on);
+  const creditNote = documentType.includes("credit_note");
+  const evidence = optionalText(payload.evidence, 500) || "Asiento contable Facto verificado por administración";
+  const idempotencyKey = `facto-cost:${sourceDocumentId}`;
+  const existingEntry = (await selectRows(
+    rest,
+    `accounting_journal_entries?select=id,status&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(idempotencyKey)}&limit=1`,
+  ))[0];
+  if (existingEntry) {
+    return {
+      entryId: existingEntry.id,
+      sourceDocumentId,
+      folio: document.folio,
+      amountClp,
+      status: existingEntry.status,
+      existing: true,
+    };
+  }
+  const lines = creditNote
+    ? [
+      {
+        ...postingLine(accountByClassification, "inventory", amountClp, 0, "Reverso de inventario por nota de crédito Facto"),
+        metadata: { facto_account_code: "1201", evidence },
+      },
+      {
+        ...postingLine(accountByClassification, "cost_of_sales", 0, amountClp, "Reverso de costo de venta Facto"),
+        metadata: { facto_account_code: "5101", evidence },
+      },
+    ]
+    : [
+      {
+        ...postingLine(accountByClassification, "cost_of_sales", amountClp, 0, "Costo de ventas de mercaderías Facto"),
+        metadata: { facto_account_code: "5101", evidence },
+      },
+      {
+        ...postingLine(accountByClassification, "inventory", 0, amountClp, "Salida de inventario de mercaderías Facto"),
+        metadata: { facto_account_code: "1201", evidence },
+      },
+    ];
+  const entry = await postAutomatedEntry(rest, profile, {
+    entityId,
+    periodId: periodForDate(periods, issuedOn),
+    date: issuedOn,
+    description: `${creditNote ? "Reverso de costo" : "Costo de venta"} Facto ${String(document.folio || document.external_id || "")}`.trim(),
+    reference: String(document.folio || document.external_id || sourceDocumentId),
+    sourceType: "FACTO",
+    sourceDocumentId,
+    sourceModule: "facto_accounting_entry",
+    idempotencyKey,
+    currency: "CLP",
+    exchangeRate: 1,
+    lines,
+  });
+  await insertRows(rest, "accounting_audit_events", [{
+    entity_id: entityId,
+    actor_id: profile.id,
+    action: "facto.cost_entry_imported",
+    entity_type: "journal_entry",
+    entity_id_text: String(entry.id),
+    correlation_id: requestIdToUuid(requestId),
+    new_value: {
+      source_document_id: sourceDocumentId,
+      folio: document.folio || null,
+      amount_clp: amountClp,
+      source_module: "facto_accounting_entry",
+      evidence,
+    },
+  }]);
+  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+  return { entryId: entry.id, sourceDocumentId, folio: document.folio, amountClp, status: "posted", existing: false };
+}
+
 async function postBankTransaction(
   rest: RestClient,
   profile: Profile,
@@ -2080,10 +2184,11 @@ async function postAutomatedEntry(rest: RestClient, profile: Profile, input: {
   reference: string;
   sourceType: string;
   sourceDocumentId: string | null;
+  sourceModule?: string;
   idempotencyKey: string;
   currency: string;
   exchangeRate: number;
-  lines: Array<{ accountId: string; debit: number; credit: number; description: string }>;
+  lines: Array<{ accountId: string; debit: number; credit: number; description: string; metadata?: JsonRecord }>;
 }) {
   const existing = await selectRows(rest, `accounting_journal_entries?select=id,status&entity_id=eq.${input.entityId}&idempotency_key=eq.${encodeURIComponent(input.idempotencyKey)}&limit=1`);
   if (existing[0]) return existing[0];
@@ -2098,7 +2203,7 @@ async function postAutomatedEntry(rest: RestClient, profile: Profile, input: {
     reference: input.reference,
     source_type: input.sourceType,
     source_document_id: input.sourceDocumentId,
-    source_module: "accounting_automation",
+    source_module: input.sourceModule || "accounting_automation",
     idempotency_key: input.idempotencyKey,
     currency: validCurrency(input.currency) || "CLP",
     exchange_rate: input.exchangeRate,
@@ -2115,7 +2220,7 @@ async function postAutomatedEntry(rest: RestClient, profile: Profile, input: {
       credit_clp: line.credit,
       currency: validCurrency(input.currency) || "CLP",
       exchange_rate: input.exchangeRate,
-      metadata: { automated: true, policy: "verified_source" },
+      metadata: { automated: true, policy: "verified_source", ...(line.metadata || {}) },
     })));
     await rpc(rest, "accounting_post_journal_entry", { p_entry_id: entry.id });
     return entry;

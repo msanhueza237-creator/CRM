@@ -30,6 +30,11 @@ const factoExcelParserSource = await readFile(new URL("../supabase/functions/acc
 const pageSource = await readFile(new URL("../src/modules/accounting/AccountingCenterPage.tsx", import.meta.url), "utf8");
 
 assert.match(edgeSource, /route === "facto\/sync"/);
+assert.match(edgeSource, /route === "facto\/cost-entry"/);
+assert.match(edgeSource, /facto-cost:/);
+assert.match(edgeSource, /sourceModule: "facto_accounting_entry"/);
+assert.match(edgeSource, /facto_account_code: "5101"/);
+assert.match(edgeSource, /facto_account_code: "1201"/);
 assert.match(edgeSource, /route === "facto-excel\/preview"/);
 assert.match(edgeSource, /route === "facto-excel\/confirm"/);
 assert.match(edgeSource, /accounting_payment_events/);
