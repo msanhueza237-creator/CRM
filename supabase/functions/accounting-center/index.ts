@@ -1024,6 +1024,124 @@ async function consolidateFactoCheckRows(
   return { checks: consolidatedChecks, linkedAllocations, unmatchedAllocations };
 }
 
+async function ensureFactoCheckOpeningReceivables(
+  rest: RestClient,
+  entityId: string,
+  batch: JsonRecord,
+  importRows: JsonRecord[],
+  sourceDocuments: JsonRecord[],
+  receivables: JsonRecord[],
+) {
+  const firstCurrentFolio = sourceDocuments
+    .filter((row) => String(row.document_type || "") === "sales_invoice" && String(row.issued_on || "") >= "2026-01-01")
+    .map((row) => Number(normalizeDocumentNumber(row.folio)))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right)[0];
+  if (!firstCurrentFolio) return [];
+
+  const grouped = new Map<string, JsonRecord[]>();
+  for (const row of importRows) {
+    const data = asObject(row.normalized_data);
+    const folio = normalizeDocumentNumber(data.source_document_number);
+    const numericFolio = Number(folio);
+    if (!folio || !Number.isFinite(numericFolio) || numericFolio >= firstCurrentFolio) continue;
+    const existing = findFactoSourceDocument(sourceDocuments, {
+      direction: "sale",
+      document_type: "sales_invoice",
+      document_number: folio,
+      counterpart_tax_id: data.customer_tax_id,
+    });
+    if (existing) continue;
+    const customerTaxId = normalizeTaxForMatch(data.customer_tax_id) || "SIN_RUT";
+    const key = `${customerTaxId}|${folio}`;
+    grouped.set(key, [...(grouped.get(key) || []), row]);
+  }
+
+  const ensured: JsonRecord[] = [];
+  for (const [key, rows] of grouped) {
+    const firstData = asObject(rows[0].normalized_data);
+    const folio = normalizeDocumentNumber(firstData.source_document_number);
+    const amountClp = rows.reduce((sum, row) => sum + numeric(asObject(row.normalized_data).amount_clp), 0);
+    if (!folio || amountClp <= 0) continue;
+    const sourceKey = `facto-check-opening:${key}`;
+    const now = new Date().toISOString();
+    const [source] = await upsertRowsSelected(rest, "accounting_source_documents", [{
+      entity_id: entityId,
+      source_type: "EXCEL",
+      source_id: String(batch.id),
+      source_key: sourceKey,
+      document_type: "sales_opening_receivable",
+      external_id: sourceKey,
+      folio,
+      counterpart_tax_id: firstData.customer_tax_id || null,
+      counterpart_name: firstData.customer_name || firstData.issuer_name || "Cliente informado por Facto",
+      issued_on: "2025-12-31",
+      due_on: null,
+      currency: "CLP",
+      exchange_rate: 1,
+      net_amount: 0,
+      tax_amount: 0,
+      exempt_amount: 0,
+      total_amount: amountClp,
+      total_clp: amountClp,
+      status: "validated",
+      data_quality: "validated",
+      raw_payload: {
+        evidence: "Saldo inicial respaldado por planilla de cheques Facto",
+        accounting_date_basis: "2025-12-31 representa apertura; no sustituye la fecha tributaria original",
+        first_current_facto_folio: firstCurrentFolio,
+        import_batch_id: batch.id,
+        import_row_ids: rows.map((row) => row.id),
+        normalized_rows: rows.map((row) => asObject(row.normalized_data)),
+      },
+      observed_at: now,
+      updated_at: now,
+    }], "entity_id,source_type,source_key", "*");
+    if (!source) throw new Error(`No se pudo conservar el saldo inicial Facto ${folio}.`);
+
+    let receivable = receivables.find((row) => String(row.source_document_id) === String(source.id));
+    if (!receivable) {
+      receivable = (await insertRows(rest, "accounting_receivables", [{
+        entity_id: entityId,
+        source_document_id: source.id,
+        customer_tax_id: firstData.customer_tax_id || null,
+        customer_name: firstData.customer_name || firstData.issuer_name || "Cliente informado por Facto",
+        document_number: folio,
+        issued_on: "2025-12-31",
+        due_on: null,
+        currency: "CLP",
+        exchange_rate: 1,
+        original_amount: amountClp,
+        original_amount_clp: amountClp,
+        paid_amount_clp: 0,
+        reported_paid_amount_clp: amountClp,
+        reported_balance_clp: 0,
+        reported_at: now,
+        reported_source_batch_id: batch.id,
+        status: "pending",
+        notes: "Saldo inicial anterior a 2026, respaldado por cheque cobrado en Facto; fecha tributaria original no disponible en el respaldo.",
+        updated_at: now,
+      }]))[0];
+      receivables.push(receivable);
+    } else if (numeric(receivable.original_amount_clp) < amountClp - 0.005) {
+      await patchRows(rest, "accounting_receivables", `id=eq.${receivable.id}`, {
+        original_amount: amountClp,
+        original_amount_clp: amountClp,
+        reported_paid_amount_clp: amountClp,
+        reported_balance_clp: 0,
+        reported_at: now,
+        reported_source_batch_id: batch.id,
+        updated_at: now,
+      });
+      receivable.original_amount = amountClp;
+      receivable.original_amount_clp = amountClp;
+    }
+    sourceDocuments.push(source);
+    ensured.push({ source, receivable, amount_clp: amountClp });
+  }
+  return ensured;
+}
+
 async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRecord) {
   const batchId = requiredUuid(payload.batchId);
   const batch = (await selectRows(rest, `accounting_import_batches?select=*&id=eq.${batchId}&limit=1`))[0];
@@ -2035,13 +2153,44 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
     selectAllRows(rest, `accounting_bank_accounts?select=id,institution,ledger_account_id&entity_id=eq.${entityId}&active=eq.true`),
   ]);
   if (!batches.length) throw new HttpError(409, "No hay una planilla de cheques Facto respaldada.");
+  const openingReceivables = new Map<string, JsonRecord>();
   for (const batch of batches) {
     const rows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batch.id}&order=row_number.asc`);
+    const ensured = await ensureFactoCheckOpeningReceivables(
+      rest,
+      entityId,
+      batch,
+      rows,
+      sourceDocuments,
+      receivables,
+    );
+    for (const item of ensured) openingReceivables.set(String(asObject(item.receivable).id), item);
     await consolidateFactoCheckRows(rest, entityId, String(batch.id), rows, sourceDocuments, receivables);
   }
 
   const accounts = new Map(accountRows.map((row) => [String(row.classification), String(row.id)]));
   const bankLedgerById = new Map(bankAccounts.map((row) => [String(row.id), String(row.ledger_account_id || "")]));
+  for (const item of openingReceivables.values()) {
+    const receivable = asObject(item.receivable);
+    const source = asObject(item.source);
+    const amount = numeric(item.amount_clp);
+    await postAutomatedEntry(rest, profile, {
+      entityId,
+      periodId: periodForDate(periods, "2026-01-01"),
+      date: "2026-01-01",
+      description: `Saldo inicial cuenta por cobrar Facto ${String(receivable.document_number)}`,
+      reference: String(receivable.document_number || receivable.id),
+      sourceType: "EXCEL",
+      sourceDocumentId: String(source.id),
+      idempotencyKey: `facto-check-opening:${receivable.id}`,
+      currency: "CLP",
+      exchangeRate: 1,
+      lines: [
+        postingLine(accounts, "receivables", amount, 0, "Saldo por cobrar anterior a 2026 respaldado por Facto"),
+        postingLine(accounts, "retained_earnings", 0, amount, "Contrapartida de apertura; no es venta del ejercicio 2026"),
+      ],
+    });
+  }
   const checks = await selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&source_business_key=not.is.null&order=received_on.asc`);
   const receivableMap = new Map(receivables.map((row) => [String(row.id), { ...row }]));
   const existingAllocations = await selectAllRows(rest,
