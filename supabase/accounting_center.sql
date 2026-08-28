@@ -564,8 +564,8 @@ begin
     (v_entity,'1','ACTIVOS',1,'asset','debit','assets',false),
     (v_entity,'1.1','ACTIVO CIRCULANTE',2,'asset','debit','current_assets',false),
     (v_entity,'1.1.01','Caja',3,'asset','debit','cash',true),
-    (v_entity,'1.1.02','Scotiabank CLP',3,'asset','debit','bank_clp',true),
-    (v_entity,'1.1.03','BancoEstado CLP',3,'asset','debit','bank_clp',true),
+    (v_entity,'1.1.02','Scotiabank CLP',3,'asset','debit','bank_scotiabank_clp',true),
+    (v_entity,'1.1.03','BancoEstado CLP',3,'asset','debit','bank_bancoestado_clp',true),
     (v_entity,'1.1.04','Mercado Pago',3,'asset','debit','payment_processor',true),
     (v_entity,'1.1.05','Banco USD',3,'asset','debit','bank_usd',true),
     (v_entity,'1.1.10','Clientes y documentos por cobrar',3,'asset','debit','receivables',true),
@@ -580,6 +580,8 @@ begin
     (v_entity,'2.1.02','Proveedores extranjeros',3,'liability','credit','foreign_payables',true),
     (v_entity,'2.1.10','IVA débito fiscal',3,'liability','credit','vat_debit',true),
     (v_entity,'2.1.11','Impuestos por pagar',3,'liability','credit','taxes_payable',true),
+    (v_entity,'2.1.20','Remuneraciones por pagar',3,'liability','credit','payroll_payable',true),
+    (v_entity,'2.1.21','Cotizaciones previsionales por pagar',3,'liability','credit','payroll_withholdings',true),
     (v_entity,'2.1.99','Cuenta transitoria de pasivos',3,'liability','credit','suspense_liability',true),
     (v_entity,'3','PATRIMONIO',1,'equity','credit','equity',false),
     (v_entity,'3.1.01','Capital',3,'equity','credit','capital',true),
@@ -594,7 +596,9 @@ begin
     (v_entity,'6','GASTOS',1,'expense','debit','expenses',false),
     (v_entity,'6.1.01','Gastos operacionales',3,'expense','debit','operating_expenses',true),
     (v_entity,'6.1.02','Gastos bancarios',3,'expense','debit','bank_fees',true),
-    (v_entity,'6.1.03','Pérdida por diferencia de cambio',3,'expense','debit','fx_loss',true)
+    (v_entity,'6.1.03','Pérdida por diferencia de cambio',3,'expense','debit','fx_loss',true),
+    (v_entity,'6.1.10','Remuneraciones',3,'expense','debit','payroll_expense',true),
+    (v_entity,'6.1.11','Cargas patronales',3,'expense','debit','payroll_employer_expense',true)
   on conflict (entity_id, code) do nothing;
 
   update public.accounting_accounts child
@@ -1010,7 +1014,7 @@ as $$
       from public.accounting_journal_lines l join public.accounting_journal_entries e on e.id=l.entry_id
       join public.accounting_accounts a on a.id=l.account_id
       where e.entity_id=p_entity_id and e.status in ('posted','reversed') and e.entry_date<=p_as_of
-        and a.classification in ('cash','bank_clp','payment_processor')),0),
+        and a.classification in ('cash','bank_clp','bank_scotiabank_clp','bank_bancoestado_clp','payment_processor')),0),
     'bank_usd_clp', coalesce((select sum(l.debit_clp-l.credit_clp)
       from public.accounting_journal_lines l join public.accounting_journal_entries e on e.id=l.entry_id
       join public.accounting_accounts a on a.id=l.account_id
