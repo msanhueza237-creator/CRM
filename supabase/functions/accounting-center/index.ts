@@ -247,7 +247,7 @@ async function buildDashboardAnalytics(rest: RestClient, entityId: string, asOf:
   });
 
   try {
-    const [monthlyRows, previousYearRows, exactCostEntries] = await Promise.all([
+    const [monthlyRows, previousYearRows] = await Promise.all([
       Promise.all(monthRanges.map((month) => rpc(rest, "accounting_income_statement", {
         p_entity_id: entityId,
         p_from: month.from,
@@ -258,8 +258,18 @@ async function buildDashboardAnalytics(rest: RestClient, entityId: string, asOf:
         p_from: `${priorYear}-01-01`,
         p_to: priorAsOf,
       }),
-      selectRows(rest, `accounting_journal_entries?select=source_document_id&entity_id=eq.${entityId}&status=eq.posted&entry_date=gte.${yearStart}&entry_date=lte.${asOf}&idempotency_key=like.facto-cost:*&source_document_id=not.is.null&limit=5000`),
     ]);
+
+    let exactCostEntries: JsonRecord[] = [];
+    try {
+      const postedEntries = await selectRows(rest, `accounting_journal_entries?select=source_document_id,idempotency_key&entity_id=eq.${entityId}&status=eq.posted&entry_date=gte.${yearStart}&entry_date=lte.${asOf}&source_document_id=not.is.null&limit=5000`);
+      exactCostEntries = postedEntries.filter((entry) => String(entry.idempotency_key || "").startsWith("facto-cost:"));
+    } catch (error) {
+      console.warn("[accounting-center] exact cost coverage unavailable", {
+        entityId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const monthly = monthRanges.map((month, index) => ({ ...month, ...dashboardIncomeTotals(monthlyRows[index]) }));
     const current = monthly.reduce<DashboardResultTotals>((accumulator, month) => {
