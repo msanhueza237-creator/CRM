@@ -66,6 +66,7 @@ assert.match(edgeSource, /route === "ledger\/verified-classifications"/);
 assert.match(edgeSource, /route === "ledger\/facto-check-settlements"/);
 assert.match(edgeSource, /route === "ledger\/facto-current-state"/);
 assert.match(edgeSource, /representedSourceDocumentIds/);
+assert.match(edgeSource, /accountedSourceDocumentIds/);
 assert.match(edgeSource, /status: "posted"/);
 assert.match(edgeSource, /physicalCheckBusinessKey/);
 assert.match(edgeSource, /facto-check-receivable:/);

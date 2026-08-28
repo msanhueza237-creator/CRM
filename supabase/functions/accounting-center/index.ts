@@ -2839,8 +2839,8 @@ async function applyFactoCurrentState(rest: RestClient, profile: Profile, payloa
     p_payable_ids: [...outstandingPayableIds],
   });
   const [refreshedReceivables, refreshedPayables, trialRows] = await Promise.all([
-    selectAllRows(rest, `accounting_receivables?select=reported_balance_clp,balance_clp&entity_id=eq.${entityId}`),
-    selectAllRows(rest, `accounting_payables?select=reported_balance_clp,balance_clp&entity_id=eq.${entityId}`),
+    selectAllRows(rest, `accounting_receivables?select=source_document_id,reported_balance_clp,balance_clp&entity_id=eq.${entityId}`),
+    selectAllRows(rest, `accounting_payables?select=source_document_id,reported_balance_clp,balance_clp&entity_id=eq.${entityId}`),
     rpc(rest, "accounting_trial_balance", { p_entity_id: entityId, p_from: "1900-01-01", p_to: asOf }),
   ]);
   const targetReceivablesClp = refreshedReceivables.reduce(
@@ -2892,7 +2892,12 @@ async function applyFactoCurrentState(rest: RestClient, profile: Profile, payloa
   // La foto vigente queda representada por el asiento agregado de alineacion.
   // Solo cambia el estado documental despues de que el asiento termino bien;
   // no crea pagos ni evidencia bancaria.
-  await Promise.all([...representedSourceDocumentIds].map((sourceDocumentId) =>
+  const accountedSourceDocumentIds = new Set([
+    ...representedSourceDocumentIds,
+    ...refreshedReceivables.map((row) => String(row.source_document_id || "")).filter(Boolean),
+    ...refreshedPayables.map((row) => String(row.source_document_id || "")).filter(Boolean),
+  ]);
+  await Promise.all([...accountedSourceDocumentIds].map((sourceDocumentId) =>
     patchRows(rest, "accounting_source_documents", `id=eq.${sourceDocumentId}`, {
       status: "posted",
       updated_at: now,
