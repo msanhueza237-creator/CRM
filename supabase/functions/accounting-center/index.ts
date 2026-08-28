@@ -2142,6 +2142,31 @@ function signedDocumentAmount(document: JsonRecord) {
   return String(document.document_type || "").includes("credit_note") ? -amount : amount;
 }
 
+function checkSettlementLines(
+  accounts: Map<string, string>,
+  bankLedgerAccount: string | undefined,
+  staged: boolean,
+  depositAmount: number,
+  checkAmount: number,
+) {
+  const lines = staged
+    ? [postingLine(accounts, "suspense_liability", depositAmount, 0, "Liberación de depósito de cheque identificado")]
+    : [{
+      accountId: bankLedgerAccount || postingAccount(accounts, "bank_bancoestado_clp"),
+      debit: depositAmount,
+      credit: 0,
+      description: "Depósito de cheque en BancoEstado",
+    }];
+  lines.push(postingLine(accounts, "checks_portfolio", 0, checkAmount, "Cheque cobrado en BancoEstado"));
+  const difference = Math.round((depositAmount - checkAmount) * 10000) / 10000;
+  if (difference > 0.005) {
+    lines.push(postingLine(accounts, "other_income", 0, difference, "Diferencia positiva documentada entre depósito y cheque"));
+  } else if (difference < -0.005) {
+    lines.push(postingLine(accounts, "bank_fees", -difference, 0, "Diferencia negativa documentada entre depósito y cheque"));
+  }
+  return lines;
+}
+
 async function settleFactoChecks(rest: RestClient, profile: Profile, payload: JsonRecord) {
   const entityId = requiredUuid(payload.entityId);
   const [batches, sourceDocuments, receivables, periods, accountRows, bankAccounts] = await Promise.all([
@@ -2298,7 +2323,7 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
   // idempotent across the multi-request REST workflow.
   const checkIds = new Set(checks.map((row) => String(row.id)));
   const existingCheckLinks = (await selectAllRows(rest,
-    "accounting_reconciliation_links?select=target_id,reconciliation_id&target_type=eq.check",
+    "accounting_reconciliation_links?select=id,target_id,reconciliation_id,target_reference,allocated_amount_clp&target_type=eq.check",
   )).filter((row) => checkIds.has(String(row.target_id || "")));
   const existingReconciliationIds = [...new Set(existingCheckLinks.map((row) => String(row.reconciliation_id || "")).filter(Boolean))];
   const existingCheckReconciliations = existingReconciliationIds.length
@@ -2353,6 +2378,201 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
   const bancoEstadoIds = new Set(bankAccounts
     .filter((row) => normalizeText(row.institution).includes("estado"))
     .map((row) => String(row.id)));
+  const allBancoEstadoDeposits = (await selectAllRows(rest,
+    `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&amount_clp=gt.0&reconciliation_status=neq.ignored&order=transaction_date.asc`,
+  )).filter((row) => {
+    const description = normalizeText(row.description);
+    return bancoEstadoIds.has(String(row.bank_account_id)) && description.includes("deposito") && description.includes("document");
+  });
+
+  // Facto can report several partial cheques for the same invoice with amounts
+  // separated by one peso. Prefer the deposit closest to the cheque reception
+  // date before the amount, otherwise two sequential cheques can be crossed.
+  // This block repairs only reconciliations created by this cheque workflow;
+  // reconciliations belonging to another target are never reassigned.
+  const repairCandidates: Array<{ check: JsonRecord; deposit: JsonRecord; checkIndex: number; depositIndex: number; days: number; amountDelta: number }> = [];
+  for (let checkIndex = 0; checkIndex < checks.length; checkIndex += 1) {
+    const check = checks[checkIndex];
+    const receivedAmount = checkReceiptTotals.get(String(check.id)) || 0;
+    if (receivedAmount < numeric(check.amount_clp) - 0.5) continue;
+    for (let depositIndex = 0; depositIndex < allBancoEstadoDeposits.length; depositIndex += 1) {
+      const deposit = allBancoEstadoDeposits[depositIndex];
+      const amountDelta = Math.abs(numeric(check.amount_clp) - numeric(deposit.amount_clp));
+      if (amountDelta > 1.005) continue;
+      const receivedOn = String(check.received_on || "");
+      const collectedOn = String(check.facto_collected_on || check.due_on || receivedOn);
+      const depositOn = String(deposit.transaction_date || "");
+      if (!dateWithinWindow(depositOn, receivedOn, collectedOn, 3, 21)) continue;
+      repairCandidates.push({
+        check,
+        deposit,
+        checkIndex,
+        depositIndex,
+        days: Math.abs(daysBetween(receivedOn, depositOn)),
+        amountDelta,
+      });
+    }
+  }
+  const repairCheckCandidateCount = new Map<number, number>();
+  const repairDepositCandidateCount = new Map<number, number>();
+  for (const candidate of repairCandidates) {
+    repairCheckCandidateCount.set(candidate.checkIndex, (repairCheckCandidateCount.get(candidate.checkIndex) || 0) + 1);
+    repairDepositCandidateCount.set(candidate.depositIndex, (repairDepositCandidateCount.get(candidate.depositIndex) || 0) + 1);
+  }
+  repairCandidates.sort((left, right) =>
+    (repairCheckCandidateCount.get(left.checkIndex) || 0) - (repairCheckCandidateCount.get(right.checkIndex) || 0)
+    || (repairDepositCandidateCount.get(left.depositIndex) || 0) - (repairDepositCandidateCount.get(right.depositIndex) || 0)
+    || left.days - right.days
+    || left.amountDelta - right.amountDelta
+    || String(left.check.id).localeCompare(String(right.check.id))
+  );
+  const desiredDepositByCheck = new Map<string, JsonRecord>();
+  const desiredCheckByDeposit = new Map<string, JsonRecord>();
+  for (const candidate of repairCandidates) {
+    const checkId = String(candidate.check.id);
+    const depositId = String(candidate.deposit.id);
+    if (desiredDepositByCheck.has(checkId) || desiredCheckByDeposit.has(depositId)) continue;
+    desiredDepositByCheck.set(checkId, candidate.deposit);
+    desiredCheckByDeposit.set(depositId, candidate.check);
+  }
+  const confirmedCheckReconciliationByDeposit = new Map(existingCheckLinks
+    .map((link) => allReconciliationById.get(String(link.reconciliation_id || "")))
+    .filter((row) => row && String(row.status) === "confirmed")
+    .map((row) => [String(row!.bank_transaction_id || ""), row!]));
+  let bankEvidenceCorrections = 0;
+  let bankEvidenceCorrectionClp = 0;
+  for (const [depositId, desiredCheck] of desiredCheckByDeposit) {
+    const reconciliation = confirmedCheckReconciliationByDeposit.get(depositId);
+    if (!reconciliation) continue;
+    const reconciliationId = String(reconciliation.id);
+    const link = existingCheckLinks.find((row) => String(row.reconciliation_id || "") === reconciliationId);
+    if (!link) continue;
+    const currentCheckId = String(link.target_id || "");
+    const desiredCheckId = String(desiredCheck.id);
+    if (!currentCheckId || currentCheckId === desiredCheckId) continue;
+    if (existingCheckLinks.some((row) => String(row.target_id || "") === desiredCheckId)) continue;
+    const currentCheck = checks.find((row) => String(row.id) === currentCheckId);
+    const currentDesiredDeposit = desiredDepositByCheck.get(currentCheckId);
+    if (!currentCheck || !currentDesiredDeposit || String(currentDesiredDeposit.id) === depositId) continue;
+    if (String(currentDesiredDeposit.reconciliation_status || "unmatched") !== "unmatched") continue;
+    const deposit = allBancoEstadoDeposits.find((row) => String(row.id) === depositId);
+    if (!deposit) continue;
+
+    const oldEntry = (await selectRows(rest,
+      `accounting_journal_entries?select=id,entry_date,status&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(`bank-reconciliation:${reconciliationId}`)}&limit=1`,
+    ))[0];
+    const correctedKey = `bank-reconciliation-corrected:${reconciliationId}`;
+    const correctedEntry = (await selectRows(rest,
+      `accounting_journal_entries?select=id&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(correctedKey)}&limit=1`,
+    ))[0];
+    if (!correctedEntry) {
+      if (oldEntry && String(oldEntry.status) === "posted") {
+        await rpc(rest, "accounting_reverse_journal_entry", {
+          p_entry_id: oldEntry.id,
+          p_reversal_date: oldEntry.entry_date,
+          p_reason: "Corrección de asociación entre cheque Facto y depósito BancoEstado.",
+        });
+      }
+      const depositAmount = numeric(deposit.amount_clp);
+      const checkAmount = numeric(desiredCheck.amount_clp);
+      const staged = (await selectRows(rest,
+        `accounting_journal_entries?select=id&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(`bank-transaction:${depositId}`)}&status=in.(posted,reversed)&limit=1`,
+      ))[0];
+      await postAutomatedEntry(rest, profile, {
+        entityId,
+        periodId: periodForDate(periods, String(deposit.transaction_date)),
+        date: String(deposit.transaction_date),
+        description: `Cobro cheque ${String(desiredCheck.check_number)} corregido por cartola BancoEstado`,
+        reference: String(deposit.operation_number || deposit.reference || depositId),
+        sourceType: "SYSTEM",
+        sourceDocumentId: null,
+        idempotencyKey: correctedKey,
+        currency: "CLP",
+        exchangeRate: 1,
+        lines: checkSettlementLines(
+          accounts,
+          bankLedgerById.get(String(deposit.bank_account_id || "")),
+          Boolean(staged),
+          depositAmount,
+          checkAmount,
+        ),
+      });
+    }
+    await patchRows(rest, "accounting_reconciliation_links", `id=eq.${link.id}`, {
+      target_id: desiredCheckId,
+      target_reference: String(desiredCheck.source_business_key || desiredCheck.check_number),
+      allocated_amount_clp: numeric(desiredCheck.amount_clp),
+    });
+    await patchRows(rest, "accounting_reconciliations", `id=eq.${reconciliationId}`, {
+      matched_amount_clp: numeric(deposit.amount_clp),
+      explanation: "Asociación corregida por monto con tolerancia de $1 y mayor proximidad a la fecha de recepción del cheque.",
+      updated_at: new Date().toISOString(),
+    });
+    await patchRows(rest, "accounting_checks", `id=eq.${currentCheckId}`, {
+      status: currentCheck.facto_collected_on ? "deposited" : "portfolio",
+      deposited_on: null,
+      bank_evidence_status: "pending",
+      notes: currentCheck.facto_collected_on
+        ? "Cobrado/inactivo en Facto; pendiente de confirmar el depósito correcto en cartola BancoEstado."
+        : "Cheque informado por Facto; pendiente de cobro y cartola BancoEstado.",
+      metadata: {
+        ...asObject(currentCheck.metadata),
+        matched_bank_transaction_id: null,
+        matched_bank_transaction_date: null,
+        bank_match_rule: null,
+      },
+      updated_at: new Date().toISOString(),
+    });
+    await patchRows(rest, "accounting_checks", `id=eq.${desiredCheckId}`, {
+      status: "collected",
+      deposited_on: deposit.transaction_date,
+      bank_evidence_status: "matched",
+      notes: "Cobro Facto confirmado por depósito en cartola BancoEstado con tolerancia documentada de $1.",
+      metadata: {
+        ...asObject(desiredCheck.metadata),
+        matched_bank_transaction_id: depositId,
+        matched_bank_transaction_date: deposit.transaction_date,
+        bank_match_rule: "amount_tolerance_1_clp+closest_received_date",
+      },
+      updated_at: new Date().toISOString(),
+    });
+    link.target_id = desiredCheckId;
+    currentCheck.status = currentCheck.facto_collected_on ? "deposited" : "portfolio";
+    currentCheck.bank_evidence_status = "pending";
+    desiredCheck.status = "collected";
+    desiredCheck.bank_evidence_status = "matched";
+    bankEvidenceCorrections += 1;
+    bankEvidenceCorrectionClp += numeric(deposit.amount_clp);
+  }
+
+  // A retry can resume after the reconciliation link was reassigned but before
+  // the previous cheque was reset. Rebuild the evidence flag from the durable
+  // link set so a partially completed correction cannot leave two cheques
+  // pointing at the same bank deposit.
+  const linkedCheckIds = new Set(existingCheckLinks.map((row) => String(row.target_id || "")).filter(Boolean));
+  for (const check of checks) {
+    if (String(check.bank_evidence_status || "pending") !== "matched") continue;
+    if (linkedCheckIds.has(String(check.id))) continue;
+    await patchRows(rest, "accounting_checks", `id=eq.${check.id}`, {
+      status: check.facto_collected_on ? "deposited" : "portfolio",
+      deposited_on: null,
+      bank_evidence_status: "pending",
+      notes: check.facto_collected_on
+        ? "Cobrado/inactivo en Facto; pendiente de confirmar el depósito correcto en cartola BancoEstado."
+        : "Cheque informado por Facto; pendiente de cobro y cartola BancoEstado.",
+      metadata: {
+        ...asObject(check.metadata),
+        matched_bank_transaction_id: null,
+        matched_bank_transaction_date: null,
+        bank_match_rule: null,
+      },
+      updated_at: new Date().toISOString(),
+    });
+    check.status = check.facto_collected_on ? "deposited" : "portfolio";
+    check.deposited_on = null;
+    check.bank_evidence_status = "pending";
+  }
+
   const bankTransactions = await selectAllRows(rest,
     `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&amount_clp=gt.0&reconciliation_status=eq.unmatched&order=transaction_date.asc`,
   );
@@ -2368,7 +2588,7 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
     if (receivedAmount < numeric(check.amount_clp) - 0.5) continue;
     for (let depositIndex = 0; depositIndex < deposits.length; depositIndex += 1) {
       const deposit = deposits[depositIndex];
-      if (Math.abs(numeric(check.amount_clp) - numeric(deposit.amount_clp)) > 0.5) continue;
+      if (Math.abs(numeric(check.amount_clp) - numeric(deposit.amount_clp)) > 1.005) continue;
       const receivedOn = String(check.received_on || "");
       const collectedOn = String(check.facto_collected_on || check.due_on || receivedOn);
       const depositOn = String(deposit.transaction_date || "");
@@ -2403,19 +2623,12 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
     const depositId = String(candidate.deposit.id);
     if (usedChecks.has(checkId) || usedDeposits.has(depositId)) continue;
     const amount = numeric(candidate.check.amount_clp);
+    const depositAmount = numeric(candidate.deposit.amount_clp);
     const staged = (await selectRows(rest,
       `accounting_journal_entries?select=id&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(`bank-transaction:${depositId}`)}&status=in.(posted,reversed)&limit=1`,
     ))[0];
     const bankLedgerAccount = bankLedgerById.get(String(candidate.deposit.bank_account_id || ""));
-    const lines = staged
-      ? [
-        postingLine(accounts, "suspense_liability", amount, 0, "Liberación de depósito de cheque identificado"),
-        postingLine(accounts, "checks_portfolio", 0, amount, "Cheque cobrado en BancoEstado"),
-      ]
-      : [
-        { accountId: bankLedgerAccount || postingAccount(accounts, "bank_bancoestado_clp"), debit: amount, credit: 0, description: "Depósito de cheque en BancoEstado" },
-        postingLine(accounts, "checks_portfolio", 0, amount, "Cheque cobrado en BancoEstado"),
-      ];
+    const lines = checkSettlementLines(accounts, bankLedgerAccount, Boolean(staged), depositAmount, amount);
     const previousLink = existingCheckLinks.find((row) => String(row.target_id || "") === checkId);
     let reconciliation = previousLink
       ? allReconciliationById.get(String(previousLink.reconciliation_id || ""))
@@ -2427,8 +2640,8 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
         status: "proposed",
         confidence: "exact",
         score: 1,
-        matched_amount_clp: amount,
-        explanation: "Cheque Facto conciliado por monto exacto y ventana entre recepción, fecha de cobro y cartola BancoEstado.",
+        matched_amount_clp: depositAmount,
+        explanation: "Cheque Facto conciliado por monto exacto o diferencia documentada de hasta $1 y ventana de fechas BancoEstado.",
       }]))[0];
       await insertRows(rest, "accounting_reconciliation_links", [{
         reconciliation_id: reconciliation.id,
@@ -2457,8 +2670,8 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
       status: "confirmed",
       confidence: "exact",
       score: 1,
-      matched_amount_clp: amount,
-      explanation: "Cheque Facto conciliado por monto exacto y ventana entre recepción, fecha de cobro y cartola BancoEstado.",
+      matched_amount_clp: depositAmount,
+      explanation: "Cheque Facto conciliado por monto exacto o diferencia documentada de hasta $1 y ventana de fechas BancoEstado.",
       confirmed_by: profile.id,
       confirmed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -2476,14 +2689,16 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
         ...asObject(candidate.check.metadata),
         matched_bank_transaction_id: depositId,
         matched_bank_transaction_date: candidate.deposit.transaction_date,
-        bank_match_rule: "exact_amount+facto_date_window",
+        bank_match_rule: Math.abs(depositAmount - amount) <= 0.005
+          ? "exact_amount+facto_date_window"
+          : "amount_tolerance_1_clp+facto_date_window",
       },
       updated_at: new Date().toISOString(),
     });
     usedChecks.add(checkId);
     usedDeposits.add(depositId);
     bankMatches += 1;
-    bankMatchedClp += amount;
+    bankMatchedClp += depositAmount;
   }
 
   const refreshedChecks = await selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&source_business_key=not.is.null`);
@@ -2505,6 +2720,8 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
       facto_collected_amount_clp: factCollectedAmount,
       bank_confirmed: bankConfirmed.length,
       bank_confirmed_amount_clp: bankConfirmedAmount,
+      bank_evidence_corrections: bankEvidenceCorrections,
+      bank_evidence_correction_clp: bankEvidenceCorrectionClp,
       allocations_created: allocationsCreated,
       receivables_applied_clp: receivablesAppliedClp,
       warnings: allocationWarnings.slice(0, 50),
@@ -2522,6 +2739,8 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
     bankConfirmedPercent: totalAmount ? Math.round(bankConfirmedAmount / totalAmount * 10000) / 100 : 0,
     bankMatchesCreated: bankMatches,
     bankMatchedClp,
+    bankEvidenceCorrections,
+    bankEvidenceCorrectionClp,
     allocationsCreated,
     receivablesAppliedClp,
     warnings: allocationWarnings,
