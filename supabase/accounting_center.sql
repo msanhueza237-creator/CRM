@@ -583,6 +583,7 @@ begin
     (v_entity,'1.1.20','Inventarios',3,'asset','debit','inventory',true),
     (v_entity,'1.1.21','Importaciones en tránsito',3,'asset','debit','imports_in_transit',true),
     (v_entity,'1.1.30','IVA crédito fiscal',3,'asset','debit','vat_credit',true),
+    (v_entity,'1.1.98','Transferencias internas por conciliar',3,'asset','debit','internal_transfer_clearing',true),
     (v_entity,'1.1.99','Cuenta transitoria de activos',3,'asset','debit','suspense_asset',true),
     (v_entity,'2','PASIVOS',1,'liability','credit','liabilities',false),
     (v_entity,'2.1','PASIVO CIRCULANTE',2,'liability','credit','current_liabilities',false),
@@ -608,7 +609,9 @@ begin
     (v_entity,'6.1.02','Gastos bancarios',3,'expense','debit','bank_fees',true),
     (v_entity,'6.1.03','Pérdida por diferencia de cambio',3,'expense','debit','fx_loss',true),
     (v_entity,'6.1.10','Remuneraciones',3,'expense','debit','payroll_expense',true),
-    (v_entity,'6.1.11','Cargas patronales',3,'expense','debit','payroll_employer_expense',true)
+    (v_entity,'6.1.11','Cargas patronales',3,'expense','debit','payroll_employer_expense',true),
+    (v_entity,'6.1.12','Cotizaciones previsionales',3,'expense','debit','payroll_contributions_expense',true),
+    (v_entity,'6.1.20','Honorarios legales',3,'expense','debit','legal_fees',true)
   on conflict (entity_id, code) do nothing;
 
   update public.accounting_accounts child
