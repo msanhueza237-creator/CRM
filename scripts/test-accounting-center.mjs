@@ -14,12 +14,14 @@ import {
   selectVerifiedExactAllocation,
 } from "../supabase/functions/accounting-center/reconciliation-engine.ts";
 import { normalizeAccountingReconciliationProposal } from "../src/modules/accounting/reconciliationCompatibility.ts";
+import { buildFactoCurrentStateAdjustment } from "../supabase/functions/accounting-center/facto-current-state.ts";
 
 const migration = (await readFile(new URL("../supabase/accounting_center.sql", import.meta.url), "utf8"))
   .replace(/create extension if not exists pgcrypto;/i, "");
 const factoHistoryMigration = await readFile(new URL("../supabase/accounting_facto_history.sql", import.meta.url), "utf8");
 const factoExcelMigration = await readFile(new URL("../supabase/accounting_facto_excel_imports.sql", import.meta.url), "utf8");
 const factoCheckSettlementMigration = await readFile(new URL("../supabase/accounting_facto_check_settlements.sql", import.meta.url), "utf8");
+const factoOutstandingSnapshotMigration = await readFile(new URL("../supabase/accounting_facto_outstanding_snapshot.sql", import.meta.url), "utf8");
 const controlsRefreshFix = await readFile(new URL("../supabase/accounting_control_findings_refresh_fix.sql", import.meta.url), "utf8");
 const bankRealityMigration = await readFile(new URL("../supabase/accounting_bank_reality.sql", import.meta.url), "utf8");
 const edgeSource = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
@@ -62,6 +64,7 @@ assert.match(edgeSource, /route === "ledger\/prepare"/);
 assert.match(edgeSource, /route === "ledger\/payroll-accruals"/);
 assert.match(edgeSource, /route === "ledger\/verified-classifications"/);
 assert.match(edgeSource, /route === "ledger\/facto-check-settlements"/);
+assert.match(edgeSource, /route === "ledger\/facto-current-state"/);
 assert.match(edgeSource, /physicalCheckBusinessKey/);
 assert.match(edgeSource, /facto-check-receivable:/);
 assert.match(edgeSource, /facto-check-opening:/);
@@ -70,6 +73,8 @@ assert.match(edgeSource, /no es venta del ejercicio 2026/);
 assert.match(edgeSource, /bank-reconciliation:/);
 assert.match(factoCheckSettlementMigration, /source_business_key/);
 assert.match(factoCheckSettlementMigration, /accounting_reconciliation_check_target_uidx/);
+assert.match(factoOutstandingSnapshotMigration, /accounting_apply_facto_outstanding_snapshot/);
+assert.match(factoOutstandingSnapshotMigration, /No crea evidencia ni conciliaciones bancarias/);
 assert.match(edgeSource, /bank-payroll-settlement:/);
 assert.match(edgeSource, /bank-internal-transfer:/);
 assert.match(edgeSource, /verified_payroll_description/);
@@ -258,6 +263,34 @@ assert.equal(partialRank[0].signals.amount, "partial");
 assert.equal(partialRank[0].suggestedAmount, 300_000);
 assert.ok(partialRank[0].evidence.includes("Posible pago parcial"));
 
+const factoCurrentState = buildFactoCurrentStateAdjustment({
+  currentReceivablesClp: 86_297_839,
+  targetReceivablesClp: 13_643_913,
+  currentPayablesClp: 31_121_939.19,
+  targetPayablesClp: 12_707_744.19,
+});
+assert.equal(factoCurrentState.receivablesDelta, -72_653_926);
+assert.equal(factoCurrentState.payablesDelta, -18_414_195);
+assert.equal(factoCurrentState.lines.length, 4);
+assert.equal(
+  factoCurrentState.lines.reduce((sum, line) => sum + line.debit, 0),
+  factoCurrentState.lines.reduce((sum, line) => sum + line.credit, 0),
+);
+assert.deepEqual(
+  factoCurrentState.lines.map((line) => line.classification),
+  ["suspense_asset", "receivables", "payables", "suspense_liability"],
+);
+const factoCurrentStateRestore = buildFactoCurrentStateAdjustment({
+  currentReceivablesClp: 100,
+  targetReceivablesClp: 250,
+  currentPayablesClp: 100,
+  targetPayablesClp: 175,
+});
+assert.deepEqual(
+  factoCurrentStateRestore.lines.map((line) => line.classification),
+  ["receivables", "suspense_asset", "suspense_liability", "payables"],
+);
+
 const exactRank = rankReconciliationCandidates(
   { ...reconciliationTransaction, amountClp: 1_000_000, reference: "F-100" },
   [reconciliationDocuments[0]],
@@ -380,6 +413,7 @@ await db.exec(migration.slice(transactionStart));
 await db.exec(factoHistoryMigration);
 await db.exec(factoExcelMigration);
 await db.exec(factoCheckSettlementMigration);
+await db.exec(factoOutstandingSnapshotMigration);
 await db.exec(bankRealityMigration);
 
 const entity = await db.query(`select id from public.accounting_entities where tax_id='77.724.382-9'`);

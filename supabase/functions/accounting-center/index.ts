@@ -6,6 +6,7 @@ import {
   selectVerifiedExactAllocation,
   type ReconciliationDocumentInput,
 } from "./reconciliation-engine.ts";
+import { buildFactoCurrentStateAdjustment } from "./facto-current-state.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -136,6 +137,10 @@ Deno.serve(async (request) => {
     if (route === "ledger/facto-check-settlements" && request.method === "POST") {
       requirePermission(profile, "post");
       return json(await settleFactoChecks(rest, profile, await readJson(request)), 200, request);
+    }
+    if (route === "ledger/facto-current-state" && request.method === "POST") {
+      requirePermission(profile, "post");
+      return json(await applyFactoCurrentState(rest, profile, await readJson(request)), 200, request);
     }
     if (route === "reports" && request.method === "GET") {
       requirePermission(profile, "view");
@@ -2744,6 +2749,184 @@ async function settleFactoChecks(rest: RestClient, profile: Profile, payload: Js
     allocationsCreated,
     receivablesAppliedClp,
     warnings: allocationWarnings,
+  };
+}
+
+async function applyFactoCurrentState(rest: RestClient, profile: Profile, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  const requestedBatchId = payload.batchId ? requiredUuid(payload.batchId) : "";
+  const batchPath = requestedBatchId
+    ? `accounting_import_batches?select=*&id=eq.${requestedBatchId}&entity_id=eq.${entityId}&limit=1`
+    : `accounting_import_batches?select=*&entity_id=eq.${entityId}&source_type=eq.COLLECTIONS&import_profile=eq.facto_unpaid_documents&status=eq.imported&order=created_at.desc&limit=1`;
+  const batch = (await selectRows(rest, batchPath))[0];
+  if (!batch) throw new HttpError(404, "No existe una foto importada de documentos impagos Facto.");
+  if (String(batch.source_type) !== "COLLECTIONS" || String(batch.import_profile) !== "facto_unpaid_documents") {
+    throw new HttpError(400, "El respaldo seleccionado no corresponde a documentos impagos Facto.");
+  }
+
+  const createdOn = String(batch.created_at || "").slice(0, 10);
+  const asOf = payload.asOf ? requiredDate(payload.asOf) : requiredDate(createdOn);
+  const [importRows, sourceDocuments, receivables, payables, accountRows, periods] = await Promise.all([
+    selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batch.id}&status=neq.invalid&order=row_number.asc`),
+    selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO`),
+    selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}`),
+    selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}`),
+    selectAllRows(rest, `accounting_accounts?select=id,classification&entity_id=eq.${entityId}&active=eq.true&allows_posting=eq.true`),
+    selectAllRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&status=neq.closed&order=starts_on.asc`),
+  ]);
+  if (!importRows.length) throw new HttpError(409, "La foto Facto no contiene filas válidas para aplicar.");
+
+  const receivableBySource = new Map(receivables.map((row) => [String(row.source_document_id), row]));
+  const payableBySource = new Map(payables.map((row) => [String(row.source_document_id), row]));
+  const outstandingReceivableIds = new Set<string>();
+  const outstandingPayableIds = new Set<string>();
+  const now = new Date().toISOString();
+  let linkedRows = 0;
+  let unmatchedRows = 0;
+
+  for (const importRow of importRows) {
+    const data = asObject(importRow.normalized_data);
+    const direction = String(data.direction || "");
+    if (!['sale', 'purchase'].includes(direction)) continue;
+    let source = findFactoSourceDocument(sourceDocuments, data);
+    let target = source
+      ? direction === "sale" ? receivableBySource.get(String(source.id)) : payableBySource.get(String(source.id))
+      : null;
+    if (!target) {
+      const created = await ensureFactoWorkbookDocument(rest, entityId, batch, importRow, data);
+      source = created.source;
+      target = created.target;
+      sourceDocuments.push(source);
+      if (direction === "sale") receivableBySource.set(String(source.id), target);
+      else payableBySource.set(String(source.id), target);
+    }
+    if (!target) {
+      unmatchedRows += 1;
+      continue;
+    }
+
+    const reportedPaid = Math.max(0, numeric(data.reported_paid_clp));
+    const reportedBalance = Math.max(0, numeric(data.reported_balance_clp));
+    const dueOn = String(target.due_on || "");
+    const status = reportedBalance <= 1
+      ? "paid"
+      : reportedPaid > 0
+      ? "partial"
+      : dueOn && dueOn < asOf
+      ? "overdue"
+      : "pending";
+    const table = direction === "sale" ? "accounting_receivables" : "accounting_payables";
+    await patchRows(rest, table, `id=eq.${target.id}`, {
+      reported_paid_amount_clp: reportedPaid,
+      reported_balance_clp: reportedBalance,
+      reported_at: now,
+      reported_source_batch_id: batch.id,
+      status,
+      updated_at: now,
+    });
+    if (direction === "sale") outstandingReceivableIds.add(String(target.id));
+    else outstandingPayableIds.add(String(target.id));
+    linkedRows += 1;
+  }
+
+  const snapshotResult = await rpc(rest, "accounting_apply_facto_outstanding_snapshot", {
+    p_entity_id: entityId,
+    p_batch_id: batch.id,
+    p_as_of: asOf,
+    p_receivable_ids: [...outstandingReceivableIds],
+    p_payable_ids: [...outstandingPayableIds],
+  });
+  const [refreshedReceivables, refreshedPayables, trialRows] = await Promise.all([
+    selectAllRows(rest, `accounting_receivables?select=reported_balance_clp,balance_clp&entity_id=eq.${entityId}`),
+    selectAllRows(rest, `accounting_payables?select=reported_balance_clp,balance_clp&entity_id=eq.${entityId}`),
+    rpc(rest, "accounting_trial_balance", { p_entity_id: entityId, p_from: "1900-01-01", p_to: asOf }),
+  ]);
+  const targetReceivablesClp = refreshedReceivables.reduce(
+    (sum, row) => sum + numeric(row.reported_balance_clp ?? row.balance_clp),
+    0,
+  );
+  const targetPayablesClp = refreshedPayables.reduce(
+    (sum, row) => sum + numeric(row.reported_balance_clp ?? row.balance_clp),
+    0,
+  );
+  const accounts = new Map(accountRows.map((row) => [String(row.classification), String(row.id)]));
+  const receivablesAccountId = postingAccount(accounts, "receivables");
+  const payablesAccountId = postingAccount(accounts, "payables");
+  const trial = Array.isArray(trialRows) ? trialRows.map(asObject) : [];
+  const receivablesTrial = trial.find((row) => String(row.account_id) === receivablesAccountId);
+  const payablesTrial = trial.find((row) => String(row.account_id) === payablesAccountId);
+  const currentReceivablesClp = numeric(receivablesTrial?.debits) - numeric(receivablesTrial?.credits);
+  const currentPayablesClp = numeric(payablesTrial?.credits) - numeric(payablesTrial?.debits);
+  const adjustment = buildFactoCurrentStateAdjustment({
+    currentReceivablesClp,
+    targetReceivablesClp,
+    currentPayablesClp,
+    targetPayablesClp,
+  });
+  let journalEntry: JsonRecord | null = null;
+  if (adjustment.lines.length) {
+    const moneyKey = (value: number) => Math.round(value * 100) / 100;
+    journalEntry = await postAutomatedEntry(rest, profile, {
+      entityId,
+      periodId: periodForDate(periods, asOf),
+      date: asOf,
+      description: `Alineación de saldos actuales con foto de impagos Facto al ${asOf}`,
+      reference: String(batch.file_name || batch.id),
+      sourceType: "FACTO",
+      sourceDocumentId: null,
+      idempotencyKey: `facto-current-state:${batch.id}:${asOf}:ar-${moneyKey(currentReceivablesClp)}-${moneyKey(targetReceivablesClp)}:ap-${moneyKey(currentPayablesClp)}-${moneyKey(targetPayablesClp)}`,
+      currency: "CLP",
+      exchangeRate: 1,
+      lines: adjustment.lines.map((line) => postingLine(
+        accounts,
+        line.classification,
+        line.debit,
+        line.credit,
+        line.description,
+      )),
+    });
+  }
+
+  await insertRows(rest, "accounting_audit_events", [{
+    entity_id: entityId,
+    actor_id: profile.id,
+    action: "facto_outstanding_snapshot.applied",
+    entity_type: "accounting_import_batch",
+    entity_id_text: String(batch.id),
+    new_value: {
+      as_of: asOf,
+      linked_rows: linkedRows,
+      unmatched_rows: unmatchedRows,
+      outstanding_receivables: outstandingReceivableIds.size,
+      outstanding_payables: outstandingPayableIds.size,
+      current_receivables_clp: currentReceivablesClp,
+      target_receivables_clp: targetReceivablesClp,
+      current_payables_clp: currentPayablesClp,
+      target_payables_clp: targetPayablesClp,
+      receivables_delta_clp: adjustment.receivablesDelta,
+      payables_delta_clp: adjustment.payablesDelta,
+      journal_entry_id: journalEntry?.id || null,
+      snapshot_result: snapshotResult,
+      bank_evidence_created: false,
+    },
+  }]);
+  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+  return {
+    batchId: batch.id,
+    asOf,
+    linkedRows,
+    unmatchedRows,
+    outstandingReceivables: outstandingReceivableIds.size,
+    outstandingPayables: outstandingPayableIds.size,
+    currentReceivablesClp,
+    targetReceivablesClp,
+    currentPayablesClp,
+    targetPayablesClp,
+    receivablesDeltaClp: adjustment.receivablesDelta,
+    payablesDeltaClp: adjustment.payablesDelta,
+    journalEntryId: journalEntry?.id || null,
+    snapshot: snapshotResult,
+    bankEvidenceCreated: false,
   };
 }
 
