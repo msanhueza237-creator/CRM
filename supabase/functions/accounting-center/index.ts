@@ -179,12 +179,145 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     selectRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
     selectRows(rest, `accounting_facto_sync_runs?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=24`),
   ]);
-  const summary = await rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: new Date().toISOString().slice(0, 10) });
+  const asOf = new Date().toISOString().slice(0, 10);
+  const [summary, dashboard] = await Promise.all([
+    rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: asOf }),
+    buildDashboardAnalytics(rest, entityId, asOf, sources),
+  ]);
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, sources, entries,
-    receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, summary,
+    receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, summary, dashboard,
     profile: { role: profile.role, permissions: [...rolePermissions[profile.role]] },
   };
+}
+
+type DashboardResultTotals = {
+  sales: number;
+  costs: number;
+  expenses: number;
+  otherResults: number;
+  grossProfit: number;
+  operatingProfit: number;
+  grossMargin: number | null;
+  operatingMargin: number | null;
+};
+
+const dashboardMonthLabels = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
+
+function dashboardIncomeTotals(rawRows: unknown): DashboardResultTotals {
+  const totals = { sales: 0, costs: 0, expenses: 0, otherResults: 0 };
+  const rows = Array.isArray(rawRows) ? rawRows : [];
+  for (const rawRow of rows) {
+    const row = asObject(rawRow);
+    const amount = numeric(row.amount_clp);
+    switch (String(row.category || "")) {
+      case "Ingresos": totals.sales += amount; break;
+      case "Costo de ventas": totals.costs += amount; break;
+      case "Gastos operacionales": totals.expenses += amount; break;
+      default: totals.otherResults += amount; break;
+    }
+  }
+  const grossProfit = totals.sales - totals.costs;
+  const operatingProfit = grossProfit - totals.expenses + totals.otherResults;
+  return {
+    ...totals,
+    grossProfit,
+    operatingProfit,
+    grossMargin: totals.sales ? (grossProfit / totals.sales) * 100 : null,
+    operatingMargin: totals.sales ? (operatingProfit / totals.sales) * 100 : null,
+  };
+}
+
+function dashboardVariance(current: number, previous: number) {
+  return previous ? ((current - previous) / Math.abs(previous)) * 100 : null;
+}
+
+async function buildDashboardAnalytics(rest: RestClient, entityId: string, asOf: string, sources: JsonRecord[]) {
+  const year = Number(asOf.slice(0, 4));
+  const currentMonth = Number(asOf.slice(5, 7));
+  const yearStart = `${year}-01-01`;
+  const priorYear = year - 1;
+  const priorAsOf = `${priorYear}${asOf.slice(4)}`;
+  const monthRanges = Array.from({ length: currentMonth }, (_, index) => {
+    const month = index + 1;
+    const monthText = String(month).padStart(2, "0");
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const to = month === currentMonth ? asOf : `${year}-${monthText}-${lastDay}`;
+    return { period: `${year}-${monthText}`, label: dashboardMonthLabels[index], from: `${year}-${monthText}-01`, to };
+  });
+
+  try {
+    const [monthlyRows, previousYearRows, exactCostEntries] = await Promise.all([
+      Promise.all(monthRanges.map((month) => rpc(rest, "accounting_income_statement", {
+        p_entity_id: entityId,
+        p_from: month.from,
+        p_to: month.to,
+      }))),
+      rpc(rest, "accounting_income_statement", {
+        p_entity_id: entityId,
+        p_from: `${priorYear}-01-01`,
+        p_to: priorAsOf,
+      }),
+      selectRows(rest, `accounting_journal_entries?select=source_document_id&entity_id=eq.${entityId}&status=eq.posted&entry_date=gte.${yearStart}&entry_date=lte.${asOf}&idempotency_key=like.facto-cost:*&source_document_id=not.is.null&limit=5000`),
+    ]);
+
+    const monthly = monthRanges.map((month, index) => ({ ...month, ...dashboardIncomeTotals(monthlyRows[index]) }));
+    const current = monthly.reduce<DashboardResultTotals>((accumulator, month) => {
+      accumulator.sales += month.sales;
+      accumulator.costs += month.costs;
+      accumulator.expenses += month.expenses;
+      accumulator.otherResults += month.otherResults;
+      accumulator.grossProfit += month.grossProfit;
+      accumulator.operatingProfit += month.operatingProfit;
+      return accumulator;
+    }, { sales: 0, costs: 0, expenses: 0, otherResults: 0, grossProfit: 0, operatingProfit: 0, grossMargin: null, operatingMargin: null });
+    current.grossMargin = current.sales ? (current.grossProfit / current.sales) * 100 : null;
+    current.operatingMargin = current.sales ? (current.operatingProfit / current.sales) * 100 : null;
+
+    const previousYear = dashboardIncomeTotals(previousYearRows);
+    const salesDocuments = sources.filter((source) => String(source.document_type || "") === "sales_invoice"
+      && String(source.issued_on || "") >= yearStart
+      && String(source.issued_on || "") <= asOf);
+    const exactCostSourceIds = new Set(exactCostEntries.map((entry) => String(entry.source_document_id || "")).filter(Boolean));
+    const salesWithExactCost = salesDocuments.filter((document) => exactCostSourceIds.has(String(document.id))).length;
+
+    return {
+      available: true,
+      year,
+      from: yearStart,
+      to: asOf,
+      monthly,
+      current,
+      previousYear,
+      comparison: {
+        sales: dashboardVariance(current.sales, previousYear.sales),
+        grossProfit: dashboardVariance(current.grossProfit, previousYear.grossProfit),
+        operatingProfit: dashboardVariance(current.operatingProfit, previousYear.operatingProfit),
+      },
+      costCoverage: {
+        totalSalesDocuments: salesDocuments.length,
+        salesWithExactCost,
+        missingSalesCost: Math.max(0, salesDocuments.length - salesWithExactCost),
+        percentage: salesDocuments.length ? (salesWithExactCost / salesDocuments.length) * 100 : 0,
+      },
+    };
+  } catch (error) {
+    console.warn("[accounting-center] dashboard analytics unavailable", {
+      entityId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      available: false,
+      year,
+      from: yearStart,
+      to: asOf,
+      monthly: [],
+      current: dashboardIncomeTotals([]),
+      previousYear: dashboardIncomeTotals([]),
+      comparison: { sales: null, grossProfit: null, operatingProfit: null },
+      costCoverage: { totalSalesDocuments: 0, salesWithExactCost: 0, missingSalesCost: 0, percentage: 0 },
+    };
+  }
 }
 
 async function createAccount(rest: RestClient, profile: Profile, payload: JsonRecord, requestId: string) {

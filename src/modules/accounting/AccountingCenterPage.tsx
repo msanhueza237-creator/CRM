@@ -2,7 +2,9 @@ import { Component, FormEvent, useRef, useState, type ErrorInfo, type ReactNode 
 import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
+  ArrowRight,
   BadgeDollarSign,
+  BarChart3,
   BookOpenCheck,
   CheckCircle2,
   CircleDollarSign,
@@ -20,7 +22,10 @@ import {
   Scale,
   Search,
   ShieldCheck,
+  TrendingDown,
+  TrendingUp,
   Upload,
+  WalletCards,
   X,
 } from "lucide-react";
 import {
@@ -53,6 +58,7 @@ import type {
   AccountingAccount,
   AccountingBankTransaction,
   AccountingBootstrap,
+  AccountingDashboardMonth,
   AccountingFactoSyncResult,
   AccountingFactoExcelPreview,
   AccountingFactoExcelProfile,
@@ -192,25 +198,98 @@ class ReconciliationErrorBoundary extends Component<{ children: ReactNode }, { f
 
 function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate: (view: AccountingView) => void }) {
   const summary = data.summary;
+  const dashboard = data.dashboard ?? fallbackDashboard(summary.as_of);
+  const result = dashboard.current;
   const available = number(summary.bank_clp) + number(summary.bank_usd_clp);
   const position = available + number(summary.receivables) + number(summary.checks_portfolio) - number(summary.payables);
-  const cards: Array<{ label: string; value: string; detail: string; view: AccountingView; tone?: string }> = [
-    { label: "Disponible CLP", value: clp(summary.bank_clp), detail: "Caja, bancos y Mercado Pago contabilizados", view: "banks" },
-    { label: "Banco USD", value: clp(summary.bank_usd_clp), detail: "Equivalente CLP, conserva moneda original", view: "banks" },
-    { label: "Por cobrar", value: clp(summary.receivables), detail: `${clp(summary.receivables_overdue)} vencido`, view: "receivables", tone: summary.receivables_overdue ? "warning" : "" },
-    { label: "Por pagar", value: clp(summary.payables), detail: `${clp(summary.payables_overdue)} vencido`, view: "payables", tone: summary.payables_overdue ? "warning" : "" },
-    { label: "Cheques en cartera", value: clp(summary.checks_portfolio), detail: "No se consideran banco disponible", view: "checks" },
-    { label: "Posición financiera", value: clp(position), detail: "Disponible + por cobrar + cheques - por pagar", view: "reports", tone: position < 0 ? "danger" : "positive" },
+  const resultIsProvisional = summary.provisional || dashboard.costCoverage.missingSalesCost > 0;
+  const cards: Array<{ label: string; value: string; detail: string; view: AccountingView; icon: typeof Landmark; tone?: string; trend?: number | null }> = [
+    { label: "Disponible", value: clp(available), detail: `CLP ${clp(summary.bank_clp)} · USD equiv. ${clp(summary.bank_usd_clp)}`, view: "banks", icon: WalletCards },
+    { label: "Posición financiera", value: clp(position), detail: "Disponible + cobros + cheques − obligaciones", view: "reports", icon: Scale, tone: position < 0 ? "danger" : "positive" },
+    { label: `Ventas ${dashboard.year}`, value: clp(result.sales), detail: "Ingresos contabilizados acumulados", view: "reports", icon: BadgeDollarSign, trend: dashboard.comparison.sales },
+    { label: "Costo de ventas", value: clp(result.costs), detail: `${formatPercent(dashboard.costCoverage.percentage)} de facturas con costo exacto`, view: "ledger", icon: ReceiptText, tone: dashboard.costCoverage.missingSalesCost ? "warning" : "" },
+    { label: "Margen bruto", value: formatPercent(result.grossMargin), detail: `${clp(result.grossProfit)} después del costo contabilizado`, view: "reports", icon: BarChart3, trend: dashboard.comparison.grossProfit, tone: result.grossProfit < 0 ? "danger" : "positive" },
+    { label: "Resultado operativo", value: clp(result.operatingProfit), detail: resultIsProvisional ? "Provisional por cobertura o período abierto" : "Resultado contable del período", view: "reports", icon: result.operatingProfit < 0 ? TrendingDown : TrendingUp, trend: dashboard.comparison.operatingProfit, tone: result.operatingProfit < 0 ? "danger" : "positive" },
   ];
+  const bestSalesMonth = dashboard.monthly.reduce<AccountingDashboardMonth | null>((best, month) => !best || month.sales > best.sales ? month : best, null);
+  const latestMonth = dashboard.monthly[dashboard.monthly.length - 1] || null;
+  const workingCapitalBase = Math.max(available + number(summary.receivables) + number(summary.checks_portfolio), number(summary.payables), 1);
   return (
     <div className="accounting-view-stack">
+      <section className="panel accounting-executive-band">
+        <div>
+          <p>Resumen ejecutivo · {dashboard.year}</p>
+          <h2>Posición y desempeño financiero</h2>
+          <span>Cifras contabilizadas entre {shortDate(dashboard.from)} y {shortDate(dashboard.to)}. Cada bloque abre su respaldo operativo.</span>
+        </div>
+        <div className="accounting-executive-status">
+          <span className={`accounting-quality ${resultIsProvisional ? "review" : "ok"}`}>{resultIsProvisional ? "Lectura provisional" : "Información completa"}</span>
+          <small>Actualizado al {shortDate(summary.as_of)}</small>
+        </div>
+      </section>
+
       <section className="accounting-kpi-grid">
         {cards.map((card) => (
           <button key={card.label} className={`accounting-kpi ${card.tone || ""}`} type="button" onClick={() => navigate(card.view)}>
-            <span>{card.label}</span><strong>{card.value}</strong><small>{card.detail}</small>
+            <card.icon size={20} />
+            <div>
+              <span>{card.label}</span>
+              <strong>{card.value}</strong>
+              <small>{card.detail}</small>
+              {card.trend !== undefined ? <TrendBadge value={card.trend} /> : null}
+            </div>
+            <ArrowRight className="accounting-kpi-arrow" size={16} aria-hidden="true" />
           </button>
         ))}
       </section>
+
+      {dashboard.available ? (
+        <div className="accounting-analytics-grid">
+          <button className="panel accounting-chart-panel" type="button" onClick={() => navigate("reports")}>
+            <div className="accounting-panel-heading">
+              <div><p>Evolución mensual</p><h2>Ventas, costos y resultado</h2><span>Serie obtenida exclusivamente desde asientos contabilizados.</span></div>
+              <ArrowRight size={19} />
+            </div>
+            <FinancialTrendChart months={dashboard.monthly} />
+            <div className="accounting-chart-legend" aria-hidden="true">
+              <span><i className="sales" />Ventas</span><span><i className="costs" />Costo de ventas</span><span><i className="profit" />Resultado operativo</span>
+            </div>
+          </button>
+
+          <button className="panel accounting-result-panel" type="button" onClick={() => navigate("reports")}>
+            <div className="accounting-panel-heading">
+              <div><p>Estado de resultados</p><h2>Formación del resultado</h2><span>Acumulado a la fecha seleccionada.</span></div>
+              <ArrowRight size={19} />
+            </div>
+            <FinancialResultRows result={result} />
+            <div className={`accounting-result-total ${result.operatingProfit < 0 ? "negative" : ""}`}>
+              <span>Resultado operativo</span><strong>{clp(result.operatingProfit)}</strong><small>{formatPercent(result.operatingMargin)} sobre ventas</small>
+            </div>
+          </button>
+        </div>
+      ) : (
+        <section className="panel accounting-analytics-unavailable"><AlertTriangle size={22} /><div><strong>No se pudo construir la tendencia contable</strong><span>Los saldos operativos siguen disponibles. Revisa la función de informes antes de presentar la rentabilidad.</span></div></section>
+      )}
+
+      <div className="accounting-dashboard-grid accounting-liquidity-grid">
+        <button className="panel accounting-position-panel" type="button" onClick={() => navigate("reports")}>
+          <div className="accounting-panel-heading"><div><p>Estructura financiera</p><h2>Activos líquidos y compromisos</h2><span>Comparación operativa, no reemplaza el balance general.</span></div><ArrowRight size={19} /></div>
+          <FinancialPositionRow label="Disponible" value={available} maximum={workingCapitalBase} tone="available" />
+          <FinancialPositionRow label="Cuentas por cobrar" value={number(summary.receivables)} maximum={workingCapitalBase} tone="receivable" />
+          <FinancialPositionRow label="Cheques en cartera" value={number(summary.checks_portfolio)} maximum={workingCapitalBase} tone="checks" />
+          <FinancialPositionRow label="Cuentas por pagar" value={number(summary.payables)} maximum={workingCapitalBase} tone="payable" />
+        </button>
+
+        <section className="panel accounting-insight-panel">
+          <div className="accounting-panel-heading"><div><p>Lectura ejecutiva</p><h2>Señales del período</h2></div><BarChart3 size={22} /></div>
+          <div className="accounting-insight-list">
+            <button type="button" onClick={() => navigate("reports")}><span>Mes con mayores ventas</span><strong>{bestSalesMonth ? `${bestSalesMonth.label} · ${clp(bestSalesMonth.sales)}` : "Sin datos"}</strong></button>
+            <button type="button" onClick={() => navigate("reports")}><span>Último mes contabilizado</span><strong>{latestMonth ? `${latestMonth.label} · ${formatPercent(latestMonth.operatingMargin)}` : "Sin datos"}</strong><small>Margen operativo</small></button>
+            <button type="button" onClick={() => navigate("ledger")}><span>Cobertura del costo</span><strong>{dashboard.costCoverage.salesWithExactCost} de {dashboard.costCoverage.totalSalesDocuments} facturas</strong><small>{dashboard.costCoverage.missingSalesCost ? `${dashboard.costCoverage.missingSalesCost} requieren costo exacto` : "Cobertura completa"}</small></button>
+          </div>
+        </section>
+      </div>
+
       <div className="accounting-dashboard-grid">
         <section className="panel accounting-overview-card">
           <div className="accounting-panel-heading"><div><p>Estado de consolidación</p><h2>Control operativo</h2></div><span className={`accounting-quality ${summary.provisional ? "review" : "ok"}`}>{summary.provisional ? "Provisional" : "Período cerrado"}</span></div>
@@ -232,6 +311,78 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
       </div>
     </div>
   );
+}
+
+function TrendBadge({ value }: { value: number | null }) {
+  if (value === null) return <span className="accounting-trend neutral">Sin base comparable</span>;
+  const positive = value >= 0;
+  return <span className={`accounting-trend ${positive ? "up" : "down"}`}>{positive ? <TrendingUp size={13} /> : <TrendingDown size={13} />}{positive ? "+" : ""}{value.toLocaleString("es-CL", { maximumFractionDigits: 1 })}% vs. año anterior</span>;
+}
+
+function FinancialTrendChart({ months }: { months: AccountingDashboardMonth[] }) {
+  if (!months.length) return <div className="accounting-chart-empty">Todavía no hay meses contabilizados.</div>;
+  const values = months.flatMap((month) => [month.sales, month.costs, month.operatingProfit]);
+  const minimum = Math.min(0, ...values);
+  const maximum = Math.max(1, ...values);
+  const plotTop = 20;
+  const plotBottom = 210;
+  const plotLeft = 66;
+  const plotRight = 710;
+  const y = (value: number) => plotTop + ((maximum - value) / (maximum - minimum || 1)) * (plotBottom - plotTop);
+  const x = (index: number) => plotLeft + (index / Math.max(1, months.length - 1)) * (plotRight - plotLeft);
+  const pathFor = (field: "sales" | "costs" | "operatingProfit") => months.map((month, index) => `${index ? "L" : "M"}${x(index).toFixed(1)},${y(month[field]).toFixed(1)}`).join(" ");
+  const ticks = Array.from({ length: 5 }, (_, index) => maximum - ((maximum - minimum) * index) / 4);
+  return (
+    <div className="accounting-chart-wrap">
+      <svg viewBox="0 0 740 250" role="img" aria-label="Tendencia mensual de ventas, costo de ventas y resultado operativo">
+        {ticks.map((tick) => <g key={tick}><line x1={plotLeft} x2={plotRight} y1={y(tick)} y2={y(tick)} className="grid" /><text x="58" y={y(tick) + 4} textAnchor="end">{compactClp(tick)}</text></g>)}
+        {minimum < 0 ? <line x1={plotLeft} x2={plotRight} y1={y(0)} y2={y(0)} className="zero" /> : null}
+        <path d={pathFor("sales")} className="series sales" />
+        <path d={pathFor("costs")} className="series costs" />
+        <path d={pathFor("operatingProfit")} className="series profit" />
+        {months.map((month, index) => <g key={month.period}><text x={x(index)} y="238" textAnchor="middle" className="month">{month.label}</text><circle cx={x(index)} cy={y(month.sales)} r="4" className="point sales"><title>{month.label}: ventas {clp(month.sales)}</title></circle><circle cx={x(index)} cy={y(month.costs)} r="4" className="point costs"><title>{month.label}: costos {clp(month.costs)}</title></circle><circle cx={x(index)} cy={y(month.operatingProfit)} r="4" className="point profit"><title>{month.label}: resultado {clp(month.operatingProfit)}</title></circle></g>)}
+      </svg>
+    </div>
+  );
+}
+
+function FinancialResultRows({ result }: { result: AccountingBootstrap["dashboard"]["current"] }) {
+  const maximum = Math.max(result.sales, result.costs, result.expenses, Math.abs(result.grossProfit), 1);
+  const rows = [
+    { label: "Ventas netas", value: result.sales, tone: "sales" },
+    { label: "Costo de ventas", value: result.costs, tone: "costs" },
+    { label: "Margen bruto", value: result.grossProfit, tone: "gross" },
+    { label: "Gastos operacionales", value: result.expenses, tone: "expenses" },
+  ];
+  return <div className="accounting-result-rows">{rows.map((row) => <div key={row.label}><div><span>{row.label}</span><strong>{clp(row.value)}</strong></div><span className="accounting-result-track"><i className={row.tone} style={{ width: `${Math.max(2, Math.min(100, Math.abs(row.value) / maximum * 100))}%` }} /></span></div>)}</div>;
+}
+
+function FinancialPositionRow({ label, value, maximum, tone }: { label: string; value: number; maximum: number; tone: string }) {
+  return <div className="accounting-position-row"><div><span>{label}</span><strong>{clp(value)}</strong></div><span className="accounting-position-track"><i className={tone} style={{ width: `${Math.max(value ? 2 : 0, Math.min(100, value / maximum * 100))}%` }} /></span></div>;
+}
+
+function formatPercent(value: number | null) {
+  return value === null ? "Sin base" : `${value.toLocaleString("es-CL", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
+}
+
+function fallbackDashboard(asOf: string): AccountingBootstrap["dashboard"] {
+  const current = { sales: 0, costs: 0, expenses: 0, otherResults: 0, grossProfit: 0, operatingProfit: 0, grossMargin: null, operatingMargin: null };
+  const safeAsOf = /^\d{4}-\d{2}-\d{2}$/.test(asOf || "") ? asOf : today();
+  return {
+    available: false,
+    year: Number(safeAsOf.slice(0, 4)),
+    from: `${safeAsOf.slice(0, 4)}-01-01`,
+    to: safeAsOf,
+    monthly: [],
+    current,
+    previousYear: { ...current },
+    comparison: { sales: null, grossProfit: null, operatingProfit: null },
+    costCoverage: { totalSalesDocuments: 0, salesWithExactCost: 0, missingSalesCost: 0, percentage: 0 },
+  };
+}
+
+function compactClp(value: number) {
+  return new Intl.NumberFormat("es-CL", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
 function AccountsView({ data, busy, runAction }: ActionViewProps) {
@@ -776,6 +927,7 @@ function money(value: unknown) { return new Intl.NumberFormat("es-CL", { maximum
 function currencyMoney(value: unknown, currency: string) { return new Intl.NumberFormat("es-CL", { style: "currency", currency: currency || "CLP", currencyDisplay: "code", maximumFractionDigits: currency === "CLP" ? 0 : 2 }).format(number(value)); }
 function parseLocalizedNumber(value: string) { let text = value.trim().replace(/[^\d,.-]/g, ""); if (!text) return 0; const comma = text.lastIndexOf(","); const dot = text.lastIndexOf("."); if (comma > dot) text = text.replace(/\./g, "").replace(",", "."); else if (dot > comma) text = text.replace(/,/g, ""); else if (comma >= 0) text = text.replace(",", "."); const parsed = Number(text); return Number.isFinite(parsed) ? parsed : 0; }
 function date(value: string | null | undefined) { if (!value) return "—"; const parsed = new Date(`${value.slice(0, 10)}T12:00:00`); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("es-CL"); }
+function shortDate(value: string | null | undefined) { if (!value) return "—"; const parsed = new Date(`${value.slice(0, 10)}T12:00:00`); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("es-CL", { day: "2-digit", month: "short", year: "numeric" }); }
 function dateTime(value: string) { const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" }); }
 function today() { return new Date().toISOString().slice(0, 10); }
 function normalize(value: string) { return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }

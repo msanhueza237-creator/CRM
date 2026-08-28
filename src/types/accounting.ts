@@ -249,6 +249,45 @@ export interface AccountingSummary {
   provisional: boolean;
 }
 
+export interface AccountingDashboardTotals {
+  sales: number;
+  costs: number;
+  expenses: number;
+  otherResults: number;
+  grossProfit: number;
+  operatingProfit: number;
+  grossMargin: number | null;
+  operatingMargin: number | null;
+}
+
+export interface AccountingDashboardMonth extends AccountingDashboardTotals {
+  period: string;
+  label: string;
+  from: string;
+  to: string;
+}
+
+export interface AccountingDashboardAnalytics {
+  available: boolean;
+  year: number;
+  from: string;
+  to: string;
+  monthly: AccountingDashboardMonth[];
+  current: AccountingDashboardTotals;
+  previousYear: AccountingDashboardTotals;
+  comparison: {
+    sales: number | null;
+    grossProfit: number | null;
+    operatingProfit: number | null;
+  };
+  costCoverage: {
+    totalSalesDocuments: number;
+    salesWithExactCost: number;
+    missingSalesCost: number;
+    percentage: number;
+  };
+}
+
 export interface AccountingBootstrap {
   entity: AccountingEntity;
   accounts: AccountingAccount[];
@@ -265,6 +304,7 @@ export interface AccountingBootstrap {
   batches: AccountingImportBatch[];
   factoSyncRuns: AccountingFactoSyncRun[];
   summary: AccountingSummary;
+  dashboard: AccountingDashboardAnalytics;
   profile: { role: AccountingRole; permissions: string[] };
 }
 
