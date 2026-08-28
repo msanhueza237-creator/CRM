@@ -2780,6 +2780,7 @@ async function applyFactoCurrentState(rest: RestClient, profile: Profile, payloa
   const payableBySource = new Map(payables.map((row) => [String(row.source_document_id), row]));
   const outstandingReceivableIds = new Set<string>();
   const outstandingPayableIds = new Set<string>();
+  const representedSourceDocumentIds = new Set<string>();
   const now = new Date().toISOString();
   let linkedRows = 0;
   let unmatchedRows = 0;
@@ -2826,6 +2827,7 @@ async function applyFactoCurrentState(rest: RestClient, profile: Profile, payloa
     });
     if (direction === "sale") outstandingReceivableIds.add(String(target.id));
     else outstandingPayableIds.add(String(target.id));
+    representedSourceDocumentIds.add(String(source.id));
     linkedRows += 1;
   }
 
@@ -2886,6 +2888,16 @@ async function applyFactoCurrentState(rest: RestClient, profile: Profile, payloa
       )),
     });
   }
+
+  // La foto vigente queda representada por el asiento agregado de alineacion.
+  // Solo cambia el estado documental despues de que el asiento termino bien;
+  // no crea pagos ni evidencia bancaria.
+  await Promise.all([...representedSourceDocumentIds].map((sourceDocumentId) =>
+    patchRows(rest, "accounting_source_documents", `id=eq.${sourceDocumentId}`, {
+      status: "posted",
+      updated_at: now,
+    })
+  ));
 
   await insertRows(rest, "accounting_audit_events", [{
     entity_id: entityId,
