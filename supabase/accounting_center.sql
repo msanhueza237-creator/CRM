@@ -428,11 +428,21 @@ create table if not exists public.accounting_checks (
     'portfolio','deposited','collected','protested','replaced','voided'
   )),
   import_batch_id uuid references public.accounting_import_batches(id) on delete restrict,
+  source_business_key text,
+  facto_collected_on date,
+  bank_evidence_status text not null default 'pending' check (bank_evidence_status in ('pending','matched','not_required')),
   notes text,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  unique (entity_id, bank_name, check_number)
+  updated_at timestamptz not null default now()
 );
+
+create unique index if not exists accounting_checks_source_business_key_uidx
+  on public.accounting_checks(entity_id, source_business_key)
+  where source_business_key is not null;
+
+create unique index if not exists accounting_reconciliation_check_target_uidx
+  on public.accounting_reconciliation_links(target_type, target_id)
+  where target_type = 'check';
 
 create table if not exists public.accounting_receivable_allocations (
   id uuid primary key default gen_random_uuid(),

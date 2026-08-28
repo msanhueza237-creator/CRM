@@ -133,6 +133,10 @@ Deno.serve(async (request) => {
       requirePermission(profile, "post");
       return json(await postVerifiedBankClassifications(rest, profile, await readJson(request)), 200, request);
     }
+    if (route === "ledger/facto-check-settlements" && request.method === "POST") {
+      requirePermission(profile, "post");
+      return json(await settleFactoChecks(rest, profile, await readJson(request)), 200, request);
+    }
     if (route === "reports" && request.method === "GET") {
       requirePermission(profile, "view");
       return json(await report(rest, new URL(request.url)), 200, request);
@@ -809,56 +813,11 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
       processedImportRowIds.push(String(row.id));
     }
   } else if (String(batch.source_type) === "CHECKS") {
-    const settlementAccount = await expectedBankAccount(rest, entityId, "BancoEstado");
-    const existingChecks = await selectAllRows(rest,
-      `accounting_checks?select=bank_name,check_number&entity_id=eq.${entityId}`,
-    );
-    const existingCheckKeys = new Set(existingChecks.map((row) => checkBusinessKey(row.bank_name, row.check_number)));
-    const checkRows = importRows.flatMap((row) => {
-      const data = asObject(row.normalized_data);
-      const businessKey = checkBusinessKey(data.issuer_bank, data.check_number);
-      if (existingCheckKeys.has(businessKey)) {
-        duplicates += 1;
-        duplicateImportRowIds.push(String(row.id));
-        return [];
-      }
-      existingCheckKeys.add(businessKey);
-      const source = findFactoSourceDocument(sourceDocuments, {
-        direction: "sale",
-        document_type: "sales_invoice",
-        document_number: data.source_document_number,
-        counterpart_tax_id: data.customer_tax_id,
-      });
-      const receivable = source ? receivableBySource.get(String(source.id)) : null;
-      if (receivable) linked += 1;
-      else unmatched += 1;
-      return [{
-        entity_id: entityId,
-        receivable_id: receivable?.id || null,
-        customer_name: String(data.customer_name || data.issuer_name || "Cliente sin identificar"),
-        bank_name: String(data.issuer_bank || "Banco emisor no informado"),
-        check_number: String(data.check_number || ""),
-        amount_clp: numeric(data.amount_clp),
-        received_on: data.received_on,
-        due_on: data.due_on || null,
-        status: "portfolio",
-        import_batch_id: batchId,
-        source_row_id: row.id,
-        settlement_bank_account_id: settlementAccount?.id || null,
-        source_status: data.source_status || null,
-        notes: "Cheque informado por Facto; pendiente de confirmar en cartola BancoEstado.",
-        metadata: {
-          expected_settlement_institution: "BancoEstado",
-          issuer_tax_id: data.issuer_tax_id || null,
-          detail: data.detail || null,
-          source_document_number: data.source_document_number || null,
-        },
-        updated_at: new Date().toISOString(),
-      }];
-    });
-    const created = await upsertRows(rest, "accounting_checks", checkRows, "entity_id,bank_name,check_number", true);
-    imported = created.length;
-    duplicates += Math.max(0, checkRows.length - created.length);
+    const result = await consolidateFactoCheckRows(rest, entityId, batchId, importRows, sourceDocuments, receivables);
+    imported = result.checks;
+    linked = result.linkedAllocations;
+    unmatched = result.unmatchedAllocations;
+    processedImportRowIds.push(...importRows.map((row) => String(row.id)));
   } else {
     const profileName = String(batch.import_profile || "facto_cash");
     const paymentRows: JsonRecord[] = [];
@@ -953,6 +912,116 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
   }]);
   await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
   return { imported, linked, unmatched, duplicates, invalid, status, summary: finalSummary };
+}
+
+async function consolidateFactoCheckRows(
+  rest: RestClient,
+  entityId: string,
+  batchId: string,
+  importRows: JsonRecord[],
+  sourceDocuments: JsonRecord[],
+  receivables: JsonRecord[],
+) {
+  const settlementAccount = await expectedBankAccount(rest, entityId, "BancoEstado");
+  const receivableBySource = new Map(receivables.map((row) => [String(row.source_document_id), row]));
+  const grouped = new Map<string, JsonRecord[]>();
+  for (const row of importRows) {
+    const data = asObject(row.normalized_data);
+    const key = physicalCheckBusinessKey(data);
+    if (!key) continue;
+    grouped.set(key, [...(grouped.get(key) || []), row]);
+  }
+  const existingChecks = await selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}`);
+  const usedCheckIds = new Set<string>();
+  let linkedAllocations = 0;
+  let unmatchedAllocations = 0;
+  let consolidatedChecks = 0;
+
+  for (const [sourceBusinessKey, rows] of grouped) {
+    const firstRow = rows[0];
+    const firstData = asObject(firstRow.normalized_data);
+    const sourceRowIds = rows.map((row) => String(row.id));
+    const allocations = rows.map((row) => {
+      const data = asObject(row.normalized_data);
+      const source = findFactoSourceDocument(sourceDocuments, {
+        direction: "sale",
+        document_type: "sales_invoice",
+        document_number: data.source_document_number,
+        counterpart_tax_id: data.customer_tax_id,
+      });
+      const receivable = source ? receivableBySource.get(String(source.id)) : null;
+      if (receivable) linkedAllocations += 1;
+      else unmatchedAllocations += 1;
+      return {
+        source_row_id: row.id,
+        source_document_number: data.source_document_number || null,
+        customer_tax_id: data.customer_tax_id || null,
+        receivable_id: receivable?.id || null,
+        amount_clp: Math.round(numeric(data.amount_clp) * 10000) / 10000,
+      };
+    });
+    const amountClp = allocations.reduce((sum, allocation) => sum + numeric(allocation.amount_clp), 0);
+    if (amountClp <= 0) continue;
+    const receivedOn = dateValue(firstData.received_on) || dateValue(firstData.due_on);
+    if (!receivedOn) continue;
+    const collectedOn = dateValue(firstData.due_on);
+    const factoCollected = normalizeText(firstData.source_status).includes("inactivo") && Boolean(collectedOn);
+    const legacyKey = checkBusinessKey(firstData.issuer_bank, firstData.check_number);
+    let check = existingChecks.find((row) => String(row.source_business_key || "") === sourceBusinessKey);
+    if (!check) {
+      check = existingChecks.find((row) => sourceRowIds.includes(String(row.source_row_id || "")) && !usedCheckIds.has(String(row.id)));
+    }
+    if (!check) {
+      check = existingChecks.find((row) =>
+        checkBusinessKey(row.bank_name, row.check_number) === legacyKey && !usedCheckIds.has(String(row.id))
+      );
+    }
+    const previousMetadata = asObject(check?.metadata);
+    const checkPayload = {
+      entity_id: entityId,
+      receivable_id: allocations.find((allocation) => allocation.receivable_id)?.receivable_id || null,
+      customer_name: String(firstData.customer_name || firstData.issuer_name || "Cliente sin identificar"),
+      bank_name: String(firstData.issuer_bank || "Banco emisor no informado"),
+      check_number: String(firstData.check_number || ""),
+      amount_clp: amountClp,
+      received_on: receivedOn,
+      due_on: collectedOn,
+      status: check?.bank_evidence_status === "matched" ? "collected" : factoCollected ? "deposited" : "portfolio",
+      import_batch_id: batchId,
+      source_row_id: firstRow.id,
+      source_business_key: sourceBusinessKey,
+      facto_collected_on: collectedOn,
+      settlement_bank_account_id: settlementAccount?.id || null,
+      source_status: firstData.source_status || null,
+      bank_evidence_status: check?.bank_evidence_status || "pending",
+      notes: check?.bank_evidence_status === "matched"
+        ? "Cobro Facto confirmado por deposito exacto en cartola BancoEstado."
+        : factoCollected
+        ? "Cobrado/inactivo en Facto; pendiente de confirmar el deposito en cartola BancoEstado."
+        : "Cheque informado por Facto; pendiente de cobro y cartola BancoEstado.",
+      metadata: {
+        ...previousMetadata,
+        expected_settlement_institution: "BancoEstado",
+        issuer_tax_id: firstData.issuer_tax_id || null,
+        customer_tax_id: firstData.customer_tax_id || null,
+        detail: firstData.detail || null,
+        source_row_ids: sourceRowIds,
+        allocations,
+        physical_check_rule: "bank+number+received_on+collected_on+customer_tax_id",
+      },
+      updated_at: new Date().toISOString(),
+    };
+    if (check) {
+      await patchRows(rest, "accounting_checks", `id=eq.${check.id}`, checkPayload);
+      check = { ...check, ...checkPayload };
+    } else {
+      check = (await insertRows(rest, "accounting_checks", [checkPayload]))[0];
+      existingChecks.push(check);
+    }
+    usedCheckIds.add(String(check.id));
+    consolidatedChecks += 1;
+  }
+  return { checks: consolidatedChecks, linkedAllocations, unmatchedAllocations };
 }
 
 async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRecord) {
@@ -1955,6 +2024,376 @@ function signedDocumentAmount(document: JsonRecord) {
   return String(document.document_type || "").includes("credit_note") ? -amount : amount;
 }
 
+async function settleFactoChecks(rest: RestClient, profile: Profile, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  const [batches, sourceDocuments, receivables, periods, accountRows, bankAccounts] = await Promise.all([
+    selectAllRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&source_type=eq.CHECKS&order=created_at.asc`),
+    selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO`),
+    selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}`),
+    selectAllRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.asc`),
+    selectAllRows(rest, `accounting_accounts?select=id,classification&entity_id=eq.${entityId}&active=eq.true&allows_posting=eq.true`),
+    selectAllRows(rest, `accounting_bank_accounts?select=id,institution,ledger_account_id&entity_id=eq.${entityId}&active=eq.true`),
+  ]);
+  if (!batches.length) throw new HttpError(409, "No hay una planilla de cheques Facto respaldada.");
+  for (const batch of batches) {
+    const rows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batch.id}&order=row_number.asc`);
+    await consolidateFactoCheckRows(rest, entityId, String(batch.id), rows, sourceDocuments, receivables);
+  }
+
+  const accounts = new Map(accountRows.map((row) => [String(row.classification), String(row.id)]));
+  const bankLedgerById = new Map(bankAccounts.map((row) => [String(row.id), String(row.ledger_account_id || "")]));
+  const checks = await selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&source_business_key=not.is.null&order=received_on.asc`);
+  const receivableMap = new Map(receivables.map((row) => [String(row.id), { ...row }]));
+  const existingAllocations = await selectAllRows(rest,
+    `accounting_receivable_allocations?select=*&check_id=not.is.null&status=eq.confirmed`,
+  );
+  const allocationKeys = new Set(existingAllocations.map((row) => `${row.check_id}|${row.receivable_id}`));
+  const checkReceiptTotals = new Map<string, number>();
+  for (const allocation of existingAllocations) {
+    const checkId = String(allocation.check_id || "");
+    checkReceiptTotals.set(checkId, (checkReceiptTotals.get(checkId) || 0) + numeric(allocation.amount_clp));
+  }
+  let allocationsCreated = 0;
+  let receivablesAppliedClp = 0;
+  const allocationWarnings: JsonRecord[] = [];
+
+  for (const check of checks) {
+    const metadata = asObject(check.metadata);
+    const allocations = Array.isArray(metadata.allocations) ? metadata.allocations.map(asObject) : [];
+    for (const allocation of allocations) {
+      const receivableId = String(allocation.receivable_id || "");
+      const receivable = receivableMap.get(receivableId);
+      if (!receivable) {
+        allocationWarnings.push({ checkId: check.id, document: allocation.source_document_number, warning: "Documento Facto no vinculado." });
+        continue;
+      }
+      const allocationKey = `${check.id}|${receivableId}`;
+      if (allocationKeys.has(allocationKey)) continue;
+      const requested = Math.round(numeric(allocation.amount_clp) * 10000) / 10000;
+      const balance = Math.max(numeric(receivable.original_amount_clp) - numeric(receivable.paid_amount_clp), 0);
+      const applied = Math.min(requested, balance);
+      if (applied <= 0.005) continue;
+      const entry = await postAutomatedEntry(rest, profile, {
+        entityId,
+        periodId: periodForDate(periods, String(check.received_on)),
+        date: String(check.received_on),
+        description: `Recepción cheque Facto ${String(check.check_number)} para documento ${String(receivable.document_number)}`,
+        reference: String(check.check_number || check.id),
+        sourceType: "FACTO",
+        sourceDocumentId: String(receivable.source_document_id || "") || null,
+        idempotencyKey: `facto-check-receivable:${check.id}:${receivableId}`,
+        currency: "CLP",
+        exchangeRate: 1,
+        lines: [
+          postingLine(accounts, "checks_portfolio", applied, 0, "Cheque recibido y pendiente de respaldo bancario"),
+          postingLine(accounts, "receivables", 0, applied, "Aplicación a cuenta por cobrar"),
+        ],
+      });
+      await insertRows(rest, "accounting_receivable_allocations", [{
+        receivable_id: receivableId,
+        check_id: check.id,
+        journal_entry_id: entry.id,
+        amount_clp: applied,
+        allocated_on: check.received_on,
+        status: "confirmed",
+        created_by: profile.id,
+      }]);
+      const paid = numeric(receivable.paid_amount_clp) + applied;
+      const original = numeric(receivable.original_amount_clp);
+      await patchRows(rest, "accounting_receivables", `id=eq.${receivableId}`, {
+        paid_amount_clp: paid,
+        status: paid >= original - 0.5 ? "paid" : paid > 0 ? "partial" : receivable.status,
+        updated_at: new Date().toISOString(),
+      });
+      receivable.paid_amount_clp = paid;
+      receivable.status = paid >= original - 0.5 ? "paid" : "partial";
+      allocationKeys.add(allocationKey);
+      checkReceiptTotals.set(String(check.id), (checkReceiptTotals.get(String(check.id)) || 0) + applied);
+      allocationsCreated += 1;
+      receivablesAppliedClp += applied;
+    }
+  }
+
+  // The REST workflow above spans multiple requests. If a previous execution
+  // inserted an allocation and stopped before updating the receivable, rebuild
+  // the operational paid amount from every confirmed allocation. Never lower a
+  // pre-existing amount because older/manual evidence may not have an allocation.
+  const confirmedReceivableAllocations = await selectAllRows(rest,
+    "accounting_receivable_allocations?select=receivable_id,amount_clp&status=eq.confirmed",
+  );
+  const confirmedAllocationTotals = new Map<string, number>();
+  for (const allocation of confirmedReceivableAllocations) {
+    const receivableId = String(allocation.receivable_id || "");
+    if (!receivableMap.has(receivableId)) continue;
+    confirmedAllocationTotals.set(
+      receivableId,
+      (confirmedAllocationTotals.get(receivableId) || 0) + numeric(allocation.amount_clp),
+    );
+  }
+  for (const [receivableId, allocated] of confirmedAllocationTotals) {
+    const receivable = receivableMap.get(receivableId)!;
+    const currentPaid = numeric(receivable.paid_amount_clp);
+    if (allocated <= currentPaid + 0.005) continue;
+    const original = numeric(receivable.original_amount_clp);
+    await patchRows(rest, "accounting_receivables", `id=eq.${receivableId}`, {
+      paid_amount_clp: allocated,
+      status: allocated >= original - 0.5 ? "paid" : "partial",
+      updated_at: new Date().toISOString(),
+    });
+    receivable.paid_amount_clp = allocated;
+    receivable.status = allocated >= original - 0.5 ? "paid" : "partial";
+  }
+
+  // Recover a previous run that created the reconciliation link but stopped
+  // before updating the cheque or the bank transaction. This keeps retries
+  // idempotent across the multi-request REST workflow.
+  const checkIds = new Set(checks.map((row) => String(row.id)));
+  const existingCheckLinks = (await selectAllRows(rest,
+    "accounting_reconciliation_links?select=target_id,reconciliation_id&target_type=eq.check",
+  )).filter((row) => checkIds.has(String(row.target_id || "")));
+  const existingReconciliationIds = [...new Set(existingCheckLinks.map((row) => String(row.reconciliation_id || "")).filter(Boolean))];
+  const existingCheckReconciliations = existingReconciliationIds.length
+    ? await selectAllRows(rest,
+      `accounting_reconciliations?select=id,bank_transaction_id,status&entity_id=eq.${entityId}&id=in.(${existingReconciliationIds.join(",")})`,
+    )
+    : [];
+  const allReconciliationById = new Map(existingCheckReconciliations.map((row) => [String(row.id), row]));
+  const reconciliationById = new Map(existingCheckReconciliations
+    .filter((row) => String(row.status) === "confirmed")
+    .map((row) => [String(row.id), row]));
+  const recoveredBankTransactionIds = [...new Set(existingCheckLinks
+    .map((link) => reconciliationById.get(String(link.reconciliation_id || "")))
+    .map((row) => String(row?.bank_transaction_id || ""))
+    .filter(Boolean))];
+  const recoveredBankTransactions = recoveredBankTransactionIds.length
+    ? await selectAllRows(rest,
+      `accounting_bank_transactions?select=id,transaction_date&entity_id=eq.${entityId}&id=in.(${recoveredBankTransactionIds.join(",")})`,
+    )
+    : [];
+  const recoveredTransactionById = new Map(recoveredBankTransactions.map((row) => [String(row.id), row]));
+  for (const link of existingCheckLinks) {
+    const reconciliation = reconciliationById.get(String(link.reconciliation_id || ""));
+    if (!reconciliation) continue;
+    const transactionId = String(reconciliation.bank_transaction_id || "");
+    const transaction = recoveredTransactionById.get(transactionId);
+    const checkId = String(link.target_id || "");
+    const check = checks.find((row) => String(row.id) === checkId);
+    if (!transaction || !check) continue;
+    await patchRows(rest, "accounting_bank_transactions", `id=eq.${transactionId}`, {
+      reconciliation_status: "matched",
+      updated_at: new Date().toISOString(),
+    });
+    await patchRows(rest, "accounting_checks", `id=eq.${checkId}`, {
+      status: "collected",
+      deposited_on: transaction.transaction_date,
+      bank_evidence_status: "matched",
+      notes: "Cobro Facto confirmado por depósito exacto en cartola BancoEstado.",
+      metadata: {
+        ...asObject(check.metadata),
+        matched_bank_transaction_id: transactionId,
+        matched_bank_transaction_date: transaction.transaction_date,
+        bank_match_rule: "exact_amount+facto_date_window",
+      },
+      updated_at: new Date().toISOString(),
+    });
+    check.status = "collected";
+    check.deposited_on = transaction.transaction_date;
+    check.bank_evidence_status = "matched";
+  }
+
+  const bancoEstadoIds = new Set(bankAccounts
+    .filter((row) => normalizeText(row.institution).includes("estado"))
+    .map((row) => String(row.id)));
+  const bankTransactions = await selectAllRows(rest,
+    `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&amount_clp=gt.0&reconciliation_status=eq.unmatched&order=transaction_date.asc`,
+  );
+  const deposits = bankTransactions.filter((row) => {
+    const description = normalizeText(row.description);
+    return bancoEstadoIds.has(String(row.bank_account_id)) && description.includes("deposito") && description.includes("document");
+  });
+  const candidateRows: Array<{ check: JsonRecord; deposit: JsonRecord; checkIndex: number; depositIndex: number; days: number }> = [];
+  for (let checkIndex = 0; checkIndex < checks.length; checkIndex += 1) {
+    const check = checks[checkIndex];
+    if (String(check.bank_evidence_status || "pending") === "matched") continue;
+    const receivedAmount = checkReceiptTotals.get(String(check.id)) || 0;
+    if (receivedAmount < numeric(check.amount_clp) - 0.5) continue;
+    for (let depositIndex = 0; depositIndex < deposits.length; depositIndex += 1) {
+      const deposit = deposits[depositIndex];
+      if (Math.abs(numeric(check.amount_clp) - numeric(deposit.amount_clp)) > 0.5) continue;
+      const receivedOn = String(check.received_on || "");
+      const collectedOn = String(check.facto_collected_on || check.due_on || receivedOn);
+      const depositOn = String(deposit.transaction_date || "");
+      if (!dateWithinWindow(depositOn, receivedOn, collectedOn, 3, 21)) continue;
+      candidateRows.push({
+        check,
+        deposit,
+        checkIndex,
+        depositIndex,
+        days: Math.abs(daysBetween(collectedOn, depositOn)),
+      });
+    }
+  }
+  const checkCandidateCount = new Map<number, number>();
+  const depositCandidateCount = new Map<number, number>();
+  for (const candidate of candidateRows) {
+    checkCandidateCount.set(candidate.checkIndex, (checkCandidateCount.get(candidate.checkIndex) || 0) + 1);
+    depositCandidateCount.set(candidate.depositIndex, (depositCandidateCount.get(candidate.depositIndex) || 0) + 1);
+  }
+  candidateRows.sort((left, right) =>
+    (checkCandidateCount.get(left.checkIndex) || 0) - (checkCandidateCount.get(right.checkIndex) || 0)
+    || (depositCandidateCount.get(left.depositIndex) || 0) - (depositCandidateCount.get(right.depositIndex) || 0)
+    || left.days - right.days
+    || String(left.check.id).localeCompare(String(right.check.id))
+  );
+  const usedChecks = new Set<string>();
+  const usedDeposits = new Set<string>();
+  let bankMatches = 0;
+  let bankMatchedClp = 0;
+  for (const candidate of candidateRows) {
+    const checkId = String(candidate.check.id);
+    const depositId = String(candidate.deposit.id);
+    if (usedChecks.has(checkId) || usedDeposits.has(depositId)) continue;
+    const amount = numeric(candidate.check.amount_clp);
+    const staged = (await selectRows(rest,
+      `accounting_journal_entries?select=id&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(`bank-transaction:${depositId}`)}&status=in.(posted,reversed)&limit=1`,
+    ))[0];
+    const bankLedgerAccount = bankLedgerById.get(String(candidate.deposit.bank_account_id || ""));
+    const lines = staged
+      ? [
+        postingLine(accounts, "suspense_liability", amount, 0, "Liberación de depósito de cheque identificado"),
+        postingLine(accounts, "checks_portfolio", 0, amount, "Cheque cobrado en BancoEstado"),
+      ]
+      : [
+        { accountId: bankLedgerAccount || postingAccount(accounts, "bank_bancoestado_clp"), debit: amount, credit: 0, description: "Depósito de cheque en BancoEstado" },
+        postingLine(accounts, "checks_portfolio", 0, amount, "Cheque cobrado en BancoEstado"),
+      ];
+    const previousLink = existingCheckLinks.find((row) => String(row.target_id || "") === checkId);
+    let reconciliation = previousLink
+      ? allReconciliationById.get(String(previousLink.reconciliation_id || ""))
+      : null;
+    if (!reconciliation) {
+      reconciliation = (await insertRows(rest, "accounting_reconciliations", [{
+        entity_id: entityId,
+        bank_transaction_id: depositId,
+        status: "proposed",
+        confidence: "exact",
+        score: 1,
+        matched_amount_clp: amount,
+        explanation: "Cheque Facto conciliado por monto exacto y ventana entre recepción, fecha de cobro y cartola BancoEstado.",
+      }]))[0];
+      await insertRows(rest, "accounting_reconciliation_links", [{
+        reconciliation_id: reconciliation.id,
+        target_type: "check",
+        target_id: checkId,
+        target_reference: String(candidate.check.source_business_key || candidate.check.check_number),
+        allocated_amount_clp: amount,
+      }]);
+      existingCheckLinks.push({ target_id: checkId, reconciliation_id: reconciliation.id });
+      allReconciliationById.set(String(reconciliation.id), reconciliation);
+    }
+    await postAutomatedEntry(rest, profile, {
+      entityId,
+      periodId: periodForDate(periods, String(candidate.deposit.transaction_date)),
+      date: String(candidate.deposit.transaction_date),
+      description: `Cobro cheque ${String(candidate.check.check_number)} confirmado por cartola BancoEstado`,
+      reference: String(candidate.deposit.operation_number || candidate.deposit.reference || depositId),
+      sourceType: "SYSTEM",
+      sourceDocumentId: null,
+      idempotencyKey: `bank-reconciliation:${reconciliation.id}`,
+      currency: "CLP",
+      exchangeRate: 1,
+      lines,
+    });
+    await patchRows(rest, "accounting_reconciliations", `id=eq.${reconciliation.id}`, {
+      status: "confirmed",
+      confidence: "exact",
+      score: 1,
+      matched_amount_clp: amount,
+      explanation: "Cheque Facto conciliado por monto exacto y ventana entre recepción, fecha de cobro y cartola BancoEstado.",
+      confirmed_by: profile.id,
+      confirmed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    await patchRows(rest, "accounting_bank_transactions", `id=eq.${depositId}`, {
+      reconciliation_status: "matched",
+      updated_at: new Date().toISOString(),
+    });
+    await patchRows(rest, "accounting_checks", `id=eq.${checkId}`, {
+      status: "collected",
+      deposited_on: candidate.deposit.transaction_date,
+      bank_evidence_status: "matched",
+      notes: "Cobro Facto confirmado por depósito exacto en cartola BancoEstado.",
+      metadata: {
+        ...asObject(candidate.check.metadata),
+        matched_bank_transaction_id: depositId,
+        matched_bank_transaction_date: candidate.deposit.transaction_date,
+        bank_match_rule: "exact_amount+facto_date_window",
+      },
+      updated_at: new Date().toISOString(),
+    });
+    usedChecks.add(checkId);
+    usedDeposits.add(depositId);
+    bankMatches += 1;
+    bankMatchedClp += amount;
+  }
+
+  const refreshedChecks = await selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&source_business_key=not.is.null`);
+  const factoCollected = refreshedChecks.filter((row) => normalizeText(row.source_status).includes("inactivo") && row.facto_collected_on);
+  const bankConfirmed = refreshedChecks.filter((row) => row.bank_evidence_status === "matched");
+  const totalAmount = refreshedChecks.reduce((sum, row) => sum + numeric(row.amount_clp), 0);
+  const factCollectedAmount = factoCollected.reduce((sum, row) => sum + numeric(row.amount_clp), 0);
+  const bankConfirmedAmount = bankConfirmed.reduce((sum, row) => sum + numeric(row.amount_clp), 0);
+  await insertRows(rest, "accounting_audit_events", [{
+    entity_id: entityId,
+    actor_id: profile.id,
+    action: "facto_checks.settled",
+    entity_type: "accounting_check_batch",
+    entity_id_text: String(batches[batches.length - 1].id),
+    new_value: {
+      physical_checks: refreshedChecks.length,
+      total_amount_clp: totalAmount,
+      facto_collected: factoCollected.length,
+      facto_collected_amount_clp: factCollectedAmount,
+      bank_confirmed: bankConfirmed.length,
+      bank_confirmed_amount_clp: bankConfirmedAmount,
+      allocations_created: allocationsCreated,
+      receivables_applied_clp: receivablesAppliedClp,
+      warnings: allocationWarnings.slice(0, 50),
+    },
+  }]);
+  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+  return {
+    physicalChecks: refreshedChecks.length,
+    totalAmountClp: totalAmount,
+    factoCollected: factoCollected.length,
+    factoCollectedAmountClp: factCollectedAmount,
+    factoCollectedPercent: refreshedChecks.length ? Math.round(factoCollected.length / refreshedChecks.length * 10000) / 100 : 0,
+    bankConfirmed: bankConfirmed.length,
+    bankConfirmedAmountClp: bankConfirmedAmount,
+    bankConfirmedPercent: totalAmount ? Math.round(bankConfirmedAmount / totalAmount * 10000) / 100 : 0,
+    bankMatchesCreated: bankMatches,
+    bankMatchedClp,
+    allocationsCreated,
+    receivablesAppliedClp,
+    warnings: allocationWarnings,
+  };
+}
+
+function daysBetween(left: string, right: string) {
+  const leftTime = Date.parse(`${left}T00:00:00Z`);
+  const rightTime = Date.parse(`${right}T00:00:00Z`);
+  if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime)) return Number.MAX_SAFE_INTEGER;
+  return Math.round((leftTime - rightTime) / 86400000);
+}
+
+function dateWithinWindow(value: string, start: string, end: string, daysBefore: number, daysAfter: number) {
+  const valueTime = Date.parse(`${value}T00:00:00Z`);
+  const startTime = Date.parse(`${start}T00:00:00Z`) - daysBefore * 86400000;
+  const endTime = Date.parse(`${end}T00:00:00Z`) + daysAfter * 86400000;
+  return Number.isFinite(valueTime) && Number.isFinite(startTime) && Number.isFinite(endTime)
+    && valueTime >= startTime && valueTime <= endTime;
+}
+
 async function createCheck(rest: RestClient, profile: Profile, payload: JsonRecord) {
   const entityId = requiredUuid(payload.entityId);
   const receivableId = optionalText(payload.receivableId, 80);
@@ -2249,11 +2688,11 @@ async function existingFactoExcelDuplicates(
     }
   } else if (preview.source_type === "CHECKS") {
     const existing = await selectAllRows(rest,
-      `accounting_checks?select=bank_name,check_number&entity_id=eq.${entityId}`,
+      `accounting_checks?select=bank_name,check_number,source_business_key&entity_id=eq.${entityId}`,
     );
-    const keys = new Set(existing.map((row) => checkBusinessKey(row.bank_name, row.check_number)));
+    const keys = new Set(existing.map((row) => String(row.source_business_key || "")));
     for (const row of preview.rows) {
-      if (keys.has(checkBusinessKey(row.data.issuer_bank, row.data.check_number))) {
+      if (keys.has(physicalCheckBusinessKey(row.data))) {
         duplicateFingerprints.add(row.fingerprint);
       }
     }
@@ -2263,6 +2702,16 @@ async function existingFactoExcelDuplicates(
 
 function checkBusinessKey(bankName: unknown, checkNumber: unknown) {
   return `${normalizeText(bankName)}|${normalizeDocumentNumber(checkNumber)}`;
+}
+
+function physicalCheckBusinessKey(data: JsonRecord) {
+  const bank = normalizeText(data.issuer_bank || data.bank_name);
+  const number = normalizeDocumentNumber(data.check_number);
+  const receivedOn = dateValue(data.received_on);
+  const collectedOn = dateValue(data.due_on || data.facto_collected_on);
+  const customerTaxId = normalizeTaxForMatch(data.customer_tax_id || data.issuer_tax_id);
+  if (!bank || !number || !receivedOn) return "";
+  return [bank, number, receivedOn, collectedOn || "pending", customerTaxId || "unknown"].join("|");
 }
 
 function normalizeDocumentNumber(value: unknown) {

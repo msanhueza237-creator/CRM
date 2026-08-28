@@ -19,6 +19,7 @@ const migration = (await readFile(new URL("../supabase/accounting_center.sql", i
   .replace(/create extension if not exists pgcrypto;/i, "");
 const factoHistoryMigration = await readFile(new URL("../supabase/accounting_facto_history.sql", import.meta.url), "utf8");
 const factoExcelMigration = await readFile(new URL("../supabase/accounting_facto_excel_imports.sql", import.meta.url), "utf8");
+const factoCheckSettlementMigration = await readFile(new URL("../supabase/accounting_facto_check_settlements.sql", import.meta.url), "utf8");
 const controlsRefreshFix = await readFile(new URL("../supabase/accounting_control_findings_refresh_fix.sql", import.meta.url), "utf8");
 const bankRealityMigration = await readFile(new URL("../supabase/accounting_bank_reality.sql", import.meta.url), "utf8");
 const edgeSource = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
@@ -60,6 +61,12 @@ assert.match(edgeSource, /route === "ledger\/coverage"/);
 assert.match(edgeSource, /route === "ledger\/prepare"/);
 assert.match(edgeSource, /route === "ledger\/payroll-accruals"/);
 assert.match(edgeSource, /route === "ledger\/verified-classifications"/);
+assert.match(edgeSource, /route === "ledger\/facto-check-settlements"/);
+assert.match(edgeSource, /physicalCheckBusinessKey/);
+assert.match(edgeSource, /facto-check-receivable:/);
+assert.match(edgeSource, /bank-reconciliation:/);
+assert.match(factoCheckSettlementMigration, /source_business_key/);
+assert.match(factoCheckSettlementMigration, /accounting_reconciliation_check_target_uidx/);
 assert.match(edgeSource, /bank-payroll-settlement:/);
 assert.match(edgeSource, /bank-internal-transfer:/);
 assert.match(edgeSource, /verified_payroll_description/);
@@ -369,6 +376,7 @@ await db.exec(migration.slice(0, transactionStart));
 await db.exec(migration.slice(transactionStart));
 await db.exec(factoHistoryMigration);
 await db.exec(factoExcelMigration);
+await db.exec(factoCheckSettlementMigration);
 await db.exec(bankRealityMigration);
 
 const entity = await db.query(`select id from public.accounting_entities where tax_id='77.724.382-9'`);
@@ -463,6 +471,7 @@ await db.query(`
     import_batch_id,source_row_id,settlement_bank_account_id,source_status,metadata
   ) values ($1,$2,'Cliente prueba','Santander','12345',50000,'2026-01-20','2026-02-20',$3,$4,$5,'Inactivo',
     '{"expected_settlement_institution":"BancoEstado"}'::jsonb)
+  returning id
 `, [entityId, receivableId, checkBatch.rows[0].id, checkRow.rows[0].id, bancoEstado.rows[0].id]);
 const expectedSettlement = await db.query(`
   select c.bank_name,b.institution,c.metadata->>'expected_settlement_institution' expected
@@ -470,6 +479,25 @@ const expectedSettlement = await db.query(`
   where c.entity_id=$1
 `, [entityId]);
 assert.deepEqual(expectedSettlement.rows[0], { bank_name: "Santander", institution: "BancoEstado", expected: "BancoEstado" });
+
+await db.query(`
+  insert into public.accounting_checks(
+    entity_id,customer_name,bank_name,check_number,amount_clp,received_on,due_on,
+    source_business_key,facto_collected_on,source_status
+  ) values
+    ($1,'Cliente repetido','Santander','311',409360,'2026-03-01','2026-03-15','santander|311|2026-03-01|2026-03-15|111111111','2026-03-15','Inactivo'),
+    ($1,'Cliente repetido','Santander','311',409360,'2026-04-01','2026-04-15','santander|311|2026-04-01|2026-04-15|111111111','2026-04-15','Inactivo')
+`, [entityId]);
+const repeatedChecks = await db.query(`select count(*)::int count from public.accounting_checks where entity_id=$1 and bank_name='Santander' and check_number='311'`, [entityId]);
+assert.equal(repeatedChecks.rows[0].count, 2);
+await assert.rejects(
+  db.query(`
+    insert into public.accounting_checks(
+      entity_id,customer_name,bank_name,check_number,amount_clp,received_on,source_business_key
+    ) values ($1,'Duplicado','Santander','311',409360,'2026-03-01','santander|311|2026-03-01|2026-03-15|111111111')
+  `, [entityId]),
+  /unique|duplicate/i,
+);
 
 const payload = {
   entity_id: entityId,
