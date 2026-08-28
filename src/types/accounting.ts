@@ -367,6 +367,7 @@ export interface AccountingExactReconciliationMatch {
   amountClp: number;
   targetType: "receivable" | "payable";
   targetId: string;
+  links?: Array<{ targetType: "receivable" | "payable"; targetId: string; amount: number }>;
   documentNumber: string;
   counterpartyName: string;
   reason: string;

@@ -52,6 +52,12 @@ export interface ExactReconciliationSelection<T> {
   reason: string;
 }
 
+export interface VerifiedExactAllocationSelection<T> {
+  candidates: Array<RankedReconciliationCandidate<T>>;
+  links: Array<{ targetType: ReconciliationTargetType; targetId: string; amount: number }>;
+  reason: string;
+}
+
 const ignoredNameTokens = new Set([
   "abono", "banco", "cargo", "comercial", "deposito", "documento", "documentos", "eirl",
   "empresa", "env", "limitada", "ltda", "pago", "recibido", "sociedad", "spa", "tef", "trf",
@@ -264,4 +270,103 @@ export function selectUniqueExactReconciliation<T>(
         ? "Monto y RUT coinciden exactamente."
         : "Monto y folio coinciden exactamente.",
   };
+}
+
+function amountsMatch(left: number, right: number) {
+  const tolerance = Math.max(0.5, Math.max(Math.abs(left), Math.abs(right)) * 0.000001);
+  return Math.abs(left - right) <= tolerance;
+}
+
+function allocationKey<T>(selection: VerifiedExactAllocationSelection<T>) {
+  return selection.links
+    .map((link) => `${link.targetType}:${link.targetId}:${Math.round(link.amount * 100)}`)
+    .sort()
+    .join("|");
+}
+
+/**
+ * Selects only allocations whose destination is fully proven by a RUT or folio.
+ * It deliberately rejects age-based or name-only distributions.
+ */
+export function selectVerifiedExactAllocation<T>(
+  ranked: Array<RankedReconciliationCandidate<T>>,
+  availableAmount: number,
+): VerifiedExactAllocationSelection<T> | null {
+  const amount = Math.max(0, Math.abs(availableAmount));
+  if (amount <= 0.5) return null;
+
+  const exactSingle = selectUniqueExactReconciliation(ranked, amount);
+  if (exactSingle) {
+    return {
+      candidates: [exactSingle.candidate],
+      links: [{
+        targetType: exactSingle.candidate.targetType,
+        targetId: exactSingle.candidate.targetId,
+        amount,
+      }],
+      reason: exactSingle.reason,
+    };
+  }
+
+  const verified = ranked.filter((candidate) =>
+    candidate.document.balanceClp > 0.5 && (candidate.signals.taxId || candidate.signals.document)
+  );
+  if (!verified.length) return null;
+
+  const plans: Array<VerifiedExactAllocationSelection<T>> = [];
+  const documentMatches = verified.filter((candidate) => candidate.signals.document);
+  if (documentMatches.length === 1 && amount < documentMatches[0].document.balanceClp && !amountsMatch(amount, documentMatches[0].document.balanceClp)) {
+    plans.push({
+      candidates: documentMatches,
+      links: [{ targetType: documentMatches[0].targetType, targetId: documentMatches[0].targetId, amount }],
+      reason: "Folio único y exacto; el monto corresponde a un abono parcial verificable.",
+    });
+  } else if (documentMatches.length > 1) {
+    const total = documentMatches.reduce((sum, candidate) => sum + candidate.document.balanceClp, 0);
+    if (amountsMatch(total, amount)) {
+      plans.push({
+        candidates: documentMatches,
+        links: documentMatches.map((candidate) => ({
+          targetType: candidate.targetType,
+          targetId: candidate.targetId,
+          amount: candidate.document.balanceClp,
+        })),
+        reason: `Los folios identificados cubren exactamente ${documentMatches.length} documentos.`,
+      });
+    }
+  }
+
+  const taxGroups = new Map<string, Array<RankedReconciliationCandidate<T>>>();
+  for (const candidate of verified.filter((item) => item.signals.taxId)) {
+    const group = taxGroups.get(candidate.groupKey) || [];
+    if (!group.some((item) => item.targetId === candidate.targetId)) group.push(candidate);
+    taxGroups.set(candidate.groupKey, group);
+  }
+  for (const group of taxGroups.values()) {
+    if (group.length === 1 && amount < group[0].document.balanceClp && !amountsMatch(amount, group[0].document.balanceClp)) {
+      plans.push({
+        candidates: group,
+        links: [{ targetType: group[0].targetType, targetId: group[0].targetId, amount }],
+        reason: "RUT exacto con un único documento abierto; el monto es un abono parcial verificable.",
+      });
+      continue;
+    }
+    if (group.length > 1) {
+      const total = group.reduce((sum, candidate) => sum + candidate.document.balanceClp, 0);
+      if (amountsMatch(total, amount)) {
+        plans.push({
+          candidates: group,
+          links: group.map((candidate) => ({
+            targetType: candidate.targetType,
+            targetId: candidate.targetId,
+            amount: candidate.document.balanceClp,
+          })),
+          reason: `RUT exacto y monto igual al total de sus ${group.length} documentos abiertos.`,
+        });
+      }
+    }
+  }
+
+  const uniquePlans = [...new Map(plans.map((plan) => [allocationKey(plan), plan])).values()];
+  return uniquePlans.length === 1 ? uniquePlans[0] : null;
 }

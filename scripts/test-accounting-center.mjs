@@ -11,6 +11,7 @@ import {
   extractChileanTaxIds,
   rankReconciliationCandidates,
   selectUniqueExactReconciliation,
+  selectVerifiedExactAllocation,
 } from "../supabase/functions/accounting-center/reconciliation-engine.ts";
 import { normalizeAccountingReconciliationProposal } from "../src/modules/accounting/reconciliationCompatibility.ts";
 
@@ -209,6 +210,54 @@ const ambiguousExactRank = rankReconciliationCandidates(
 );
 assert.equal(selectUniqueExactReconciliation(ambiguousExactRank, 1_000_000), null);
 assert.equal(selectUniqueExactReconciliation(partialRank, 300_000), null);
+
+const verifiedExactSelection = selectVerifiedExactAllocation(exactRank, 1_000_000);
+assert.ok(verifiedExactSelection);
+assert.deepEqual(verifiedExactSelection.links, [{
+  targetType: "receivable",
+  targetId: reconciliationDocuments[0].targetId,
+  amount: 1_000_000,
+}]);
+
+const verifiedPartialSelection = selectVerifiedExactAllocation(partialRank, 300_000);
+assert.ok(verifiedPartialSelection);
+assert.deepEqual(verifiedPartialSelection.links, [{
+  targetType: "receivable",
+  targetId: reconciliationDocuments[0].targetId,
+  amount: 300_000,
+}]);
+assert.match(verifiedPartialSelection.reason, /abono parcial verificable/i);
+
+const ambiguousPartialRank = rankReconciliationCandidates(
+  { ...reconciliationTransaction, amountClp: 300_000 },
+  reconciliationDocuments.slice(0, 2),
+  300_000,
+);
+assert.equal(selectVerifiedExactAllocation(ambiguousPartialRank, 300_000), null);
+
+const multiExactRank = rankReconciliationCandidates(
+  { ...reconciliationTransaction, amountClp: 1_800_000 },
+  reconciliationDocuments.slice(0, 2),
+  1_800_000,
+);
+const multiExactSelection = selectVerifiedExactAllocation(multiExactRank, 1_800_000);
+assert.ok(multiExactSelection);
+assert.deepEqual(multiExactSelection.links.map((link) => link.amount), [1_000_000, 800_000]);
+assert.match(multiExactSelection.reason, /2 documentos abiertos/i);
+assert.equal(selectVerifiedExactAllocation(multiExactRank, 1_700_000), null);
+
+const nameOnlyPartialRank = rankReconciliationCandidates(
+  {
+    amountClp: 300_000,
+    transactionDate: "2026-07-29",
+    description: "Importadora Latin Chile Limitada",
+    reference: "Pago cliente",
+    operationNumber: "580760099",
+  },
+  [{ ...reconciliationDocuments[0], counterpartyTaxId: "" }],
+  300_000,
+);
+assert.equal(selectVerifiedExactAllocation(nameOnlyPartialRank, 300_000), null);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";

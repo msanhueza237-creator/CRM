@@ -3,7 +3,7 @@ import { parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-p
 import {
   buildSuggestedAllocationPlan,
   rankReconciliationCandidates,
-  selectUniqueExactReconciliation,
+  selectVerifiedExactAllocation,
   type ReconciliationDocumentInput,
 } from "./reconciliation-engine.ts";
 
@@ -1157,17 +1157,19 @@ async function previewExactReconciliations(rest: RestClient, payload: JsonRecord
     const documents = reconciliationDocuments(incoming ? receivables : payables, incoming);
     const transactionAmount = Math.abs(numeric(transaction.amount_clp));
     const ranked = rankReconciliationCandidates(reconciliationTransaction(transaction), documents, transactionAmount);
-    const selection = selectUniqueExactReconciliation(ranked, transactionAmount);
+    const selection = selectVerifiedExactAllocation(ranked, transactionAmount);
     if (!selection) continue;
+    const primary = selection.candidates[0];
     matches.push({
       transactionId: transaction.id,
       transactionDate: transaction.transaction_date,
       description: transaction.description,
       amountClp: transactionAmount,
-      targetType: selection.candidate.targetType,
-      targetId: selection.candidate.targetId,
-      documentNumber: selection.candidate.document.documentNumber,
-      counterpartyName: selection.candidate.document.counterpartyName,
+      targetType: primary.targetType,
+      targetId: primary.targetId,
+      documentNumber: selection.candidates.map((candidate) => candidate.document.documentNumber).filter(Boolean).join(", "),
+      counterpartyName: primary.document.counterpartyName,
+      links: selection.links,
       reason: selection.reason,
     });
   }
@@ -1179,7 +1181,7 @@ async function previewExactReconciliations(rest: RestClient, payload: JsonRecord
     exact: matches.length,
     untouched: transactions.length - matches.length,
     matches,
-    policy: "Solo monto total exacto y una única identidad verificable por RUT o folio.",
+    policy: "Solo identidad exacta por RUT o folio: saldo total, abono parcial a un único documento o total exacto de todos los documentos abiertos.",
   };
 }
 
@@ -1204,11 +1206,30 @@ async function confirmExactReconciliations(rest: RestClient, profile: Profile, p
       const table = incoming ? "accounting_receivables" : "accounting_payables";
       const rows = await selectAllRows(rest, `${table}?select=*&entity_id=eq.${entityId}&status=in.(${incoming ? "pending,partial,overdue,collections" : "pending,partial,overdue"})`);
       const amount = Math.abs(numeric(transaction.amount_clp));
-      const selection = selectUniqueExactReconciliation(
+      const selection = selectVerifiedExactAllocation(
         rankReconciliationCandidates(reconciliationTransaction(transaction), reconciliationDocuments(rows, incoming), amount),
         amount,
       );
-      if (!selection || selection.candidate.targetId !== String(item.targetId || "")) {
+      const requestedLinks = (Array.isArray(item.links) ? item.links.map(asObject) : [{
+        targetType: item.targetType,
+        targetId: item.targetId,
+        amount,
+      }]).map((link) => ({
+        targetType: String(link.targetType || ""),
+        targetId: String(link.targetId || ""),
+        amount: Math.round(numeric(link.amount) * 100) / 100,
+      })).sort((left, right) => `${left.targetType}:${left.targetId}`.localeCompare(`${right.targetType}:${right.targetId}`));
+      const verifiedLinks = selection?.links.map((link) => ({
+        targetType: link.targetType,
+        targetId: link.targetId,
+        amount: Math.round(link.amount * 100) / 100,
+      })).sort((left, right) => `${left.targetType}:${left.targetId}`.localeCompare(`${right.targetType}:${right.targetId}`)) || [];
+      const samePlan = requestedLinks.length === verifiedLinks.length && requestedLinks.every((link, index) =>
+        link.targetType === verifiedLinks[index]?.targetType
+        && link.targetId === verifiedLinks[index]?.targetId
+        && Math.abs(link.amount - (verifiedLinks[index]?.amount || 0)) <= 0.01
+      );
+      if (!selection || !samePlan) {
         skipped += 1;
         continue;
       }
@@ -1216,11 +1237,7 @@ async function confirmExactReconciliations(rest: RestClient, profile: Profile, p
         transactionId,
         automation: "exact",
         note: selection.reason,
-        links: [{
-          targetType: selection.candidate.targetType,
-          targetId: selection.candidate.targetId,
-          amount,
-        }],
+        links: selection.links,
       });
       confirmed += 1;
     } catch (error) {
