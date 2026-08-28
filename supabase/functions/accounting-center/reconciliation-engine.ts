@@ -47,6 +47,11 @@ export interface SuggestedReconciliationPlan {
   explanation: string;
 }
 
+export interface ExactReconciliationSelection<T> {
+  candidate: RankedReconciliationCandidate<T>;
+  reason: string;
+}
+
 const ignoredNameTokens = new Set([
   "abono", "banco", "cargo", "comercial", "deposito", "documento", "documentos", "eirl",
   "empresa", "env", "limitada", "ltda", "pago", "recibido", "sociedad", "spa", "tef", "trf",
@@ -231,5 +236,32 @@ export function buildSuggestedAllocationPlan<T>(
       : top.signals.amount === "partial"
         ? "Abono parcial sugerido sobre el documento con mejor coincidencia."
         : "Coincidencia sugerida por identidad, fecha y monto.",
+  };
+}
+
+export function selectUniqueExactReconciliation<T>(
+  ranked: Array<RankedReconciliationCandidate<T>>,
+  availableAmount: number,
+): ExactReconciliationSelection<T> | null {
+  const amount = Math.max(0, Math.abs(availableAmount));
+  if (amount <= 0.5) return null;
+  const exact = ranked.filter((candidate) => {
+    const amountTolerance = Math.max(0.5, amount * 0.000001);
+    const fullBalanceMatch = Math.abs(candidate.document.balanceClp - amount) <= amountTolerance;
+    const strongVerifiedIdentity = candidate.signals.taxId || candidate.signals.document;
+    return candidate.confidence === "exact"
+      && candidate.signals.amount === "exact"
+      && fullBalanceMatch
+      && strongVerifiedIdentity;
+  });
+  if (exact.length !== 1) return null;
+  const candidate = exact[0];
+  return {
+    candidate,
+    reason: candidate.signals.taxId && candidate.signals.document
+      ? "Monto, RUT y folio coinciden exactamente."
+      : candidate.signals.taxId
+        ? "Monto y RUT coinciden exactamente."
+        : "Monto y folio coinciden exactamente.",
   };
 }

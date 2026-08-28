@@ -10,6 +10,7 @@ import {
   buildSuggestedAllocationPlan,
   extractChileanTaxIds,
   rankReconciliationCandidates,
+  selectUniqueExactReconciliation,
 } from "../supabase/functions/accounting-center/reconciliation-engine.ts";
 import { normalizeAccountingReconciliationProposal } from "../src/modules/accounting/reconciliationCompatibility.ts";
 
@@ -51,6 +52,12 @@ assert.match(edgeSource, /index \+= 40/);
 assert.match(edgeSource, /suggestedExchangeRate/);
 assert.match(edgeSource, /Ingresa un tipo de cambio .*\/CLP válido/);
 assert.match(edgeSource, /route === "reconciliation\/confirm"/);
+assert.match(edgeSource, /route === "reconciliation\/exact-preview"/);
+assert.match(edgeSource, /route === "reconciliation\/exact-confirm"/);
+assert.match(edgeSource, /route === "ledger\/coverage"/);
+assert.match(edgeSource, /route === "ledger\/prepare"/);
+assert.match(edgeSource, /profitabilityCertified: false/);
+assert.match(edgeSource, /source_type,accounting_journal_lines/);
 assert.match(edgeSource, /previouslyAllocated/);
 assert.match(edgeSource, /saldo disponible del movimiento bancario/);
 assert.match(edgeSource, /route === "checks\/create"/);
@@ -79,6 +86,9 @@ assert.match(pageSource, /Descargar cartola original/);
 assert.match(pageSource, /accounting-bank-history/);
 assert.match(pageSource, /Se conservará el monto original y se guardará su equivalente contable en CLP/);
 assert.match(pageSource, /Usar propuesta/);
+assert.match(pageSource, /Conciliar coincidencias exactas/);
+assert.match(pageSource, /Preparar libro/);
+assert.match(pageSource, /Rentabilidad todavía no certificada/);
 
 const legacyProposal = normalizeAccountingReconciliationProposal({
   transaction: {
@@ -187,6 +197,18 @@ const exactRank = rankReconciliationCandidates(
 );
 assert.equal(exactRank[0].confidence, "exact");
 assert.equal(exactRank[0].signals.document, true);
+const exactSelection = selectUniqueExactReconciliation(exactRank, 1_000_000);
+assert.ok(exactSelection);
+assert.equal(exactSelection.candidate.targetId, reconciliationDocuments[0].targetId);
+assert.match(exactSelection.reason, /coinciden exactamente/i);
+
+const ambiguousExactRank = rankReconciliationCandidates(
+  { ...reconciliationTransaction, amountClp: 1_000_000, reference: "F-100" },
+  [reconciliationDocuments[0], { ...reconciliationDocuments[0], targetId: "00000000-0000-4000-8000-000000000104" }],
+  1_000_000,
+);
+assert.equal(selectUniqueExactReconciliation(ambiguousExactRank, 1_000_000), null);
+assert.equal(selectUniqueExactReconciliation(partialRank, 300_000), null);
 
 const db = new PGlite();
 const adminId = "00000000-0000-4000-8000-000000000001";

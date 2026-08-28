@@ -360,6 +360,55 @@ export interface AccountingReconciliationProposal {
   } | null;
 }
 
+export interface AccountingExactReconciliationMatch {
+  transactionId: string;
+  transactionDate: string;
+  description: string;
+  amountClp: number;
+  targetType: "receivable" | "payable";
+  targetId: string;
+  documentNumber: string;
+  counterpartyName: string;
+  reason: string;
+}
+
+export interface AccountingExactReconciliationPreview {
+  entityId: string;
+  from: string;
+  to: string;
+  reviewed: number;
+  exact: number;
+  untouched: number;
+  matches: AccountingExactReconciliationMatch[];
+  policy: string;
+}
+
+export interface AccountingLedgerCoverage {
+  entityId: string;
+  from: string;
+  to: string;
+  factoDocuments: number;
+  factoDocumentsPending: number;
+  confirmedReconciliations: number;
+  reconciliationsPending: number;
+  postedEntries: number;
+  unmatchedBankTransactions: number;
+  documentarySalesClp: number;
+  documentaryPurchasesClp: number;
+  documentaryDifferenceClp: number;
+  profitabilityCertified: boolean;
+  profitabilityNote: string;
+  complete: boolean;
+}
+
+export interface AccountingLedgerPrepareResult {
+  posted: number;
+  skipped: number;
+  errors: Array<{ type: string; id: string; error: string }>;
+  remaining: number;
+  coverage: AccountingLedgerCoverage;
+}
+
 export interface AccountingReportRow {
   [key: string]: unknown;
 }

@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import {
   closeAccountingPeriod,
+  confirmExactAccountingReconciliations,
   confirmAccountingFactoExcel,
   confirmAccountingImport,
   confirmAccountingReconciliation,
@@ -34,10 +35,13 @@ import {
   downloadAccountingEvidence,
   exportAccountingExcel,
   exportAccountingPdf,
+  getAccountingLedgerCoverage,
   getAccountingReport,
   postAccountingEntry,
+  prepareAccountingLedger,
   previewAccountingFactoExcel,
   previewAccountingImport,
+  previewExactAccountingReconciliations,
   proposeAccountingReconciliation,
   refreshAccountingControls,
   reverseAccountingEntry,
@@ -52,9 +56,11 @@ import type {
   AccountingFactoSyncResult,
   AccountingFactoExcelPreview,
   AccountingFactoExcelProfile,
+  AccountingExactReconciliationPreview,
   AccountingImportPreview,
   AccountingJournalDraft,
   AccountingJournalEntry,
+  AccountingLedgerCoverage,
   AccountingPayable,
   AccountingReceivable,
   AccountingReconciliationCandidate,
@@ -236,6 +242,30 @@ function AccountDialog({ data, busy, close, runAction }: ActionViewProps & { clo
 
 function LedgerView({ data, busy, runAction }: ActionViewProps) {
   const [showForm, setShowForm] = useState(false);
+  const [from, setFrom] = useState("2026-01-01");
+  const [to, setTo] = useState(today());
+  const [coverage, setCoverage] = useState<AccountingLedgerCoverage | null>(null);
+  const [localError, setLocalError] = useState("");
+
+  async function loadCoverage() {
+    setLocalError("");
+    try {
+      setCoverage(await getAccountingLedgerCoverage({ entityId: data.entity.id, from, to }));
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : "No se pudo revisar la cobertura del libro.");
+    }
+  }
+
+  async function prepareLedger() {
+    let previousRemaining = Number.POSITIVE_INFINITY;
+    for (let iteration = 0; iteration < 100; iteration += 1) {
+      const result = await prepareAccountingLedger({ entityId: data.entity.id, from, to, batchSize: 25 });
+      if (result.errors.length) throw new Error(result.errors.map((item) => item.error).join(" · "));
+      if (result.remaining <= 0 || result.posted + result.skipped <= 0 || result.remaining >= previousRemaining) break;
+      previousRemaining = result.remaining;
+    }
+    setCoverage(await getAccountingLedgerCoverage({ entityId: data.entity.id, from, to }));
+  }
   async function reverse(entry: AccountingJournalEntry) {
     const reason = window.prompt("Motivo de la reversa contable:")?.trim();
     if (!reason) return;
@@ -245,6 +275,13 @@ function LedgerView({ data, busy, runAction }: ActionViewProps) {
   }
   return (
     <div className="accounting-view-stack">
+      <section className="panel accounting-automation-panel">
+        <div className="accounting-panel-heading"><div><p>Preparación auditable</p><h2>Libro contable 2026</h2><span>Convierte documentos Facto y conciliaciones confirmadas en asientos idempotentes. No inventa costo de venta ni gastos faltantes.</span></div></div>
+        <div className="accounting-automation-controls"><label>Desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Hasta<input max={today()} type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><button className="ghost-button" disabled={Boolean(busy) || from > to} type="button" onClick={() => void loadCoverage()}><Search size={17} /> Revisar cobertura</button><button className="primary-button" disabled={Boolean(busy) || from > to} type="button" onClick={() => void runAction("prepare-ledger", prepareLedger, "Libro 2026 preparado desde fuentes verificadas, sin duplicar asientos.")}><RefreshCw className={busy === "prepare-ledger" ? "spin" : ""} size={17} /> {busy === "prepare-ledger" ? "Preparando…" : "Preparar libro"}</button></div>
+        {localError ? <div className="accounting-local-error">{localError}</div> : null}
+        {coverage ? <div className="accounting-coverage-grid"><div><span>Documentos Facto pendientes</span><strong>{coverage.factoDocumentsPending}</strong></div><div><span>Conciliaciones pendientes</span><strong>{coverage.reconciliationsPending}</strong></div><div><span>Asientos contabilizados</span><strong>{coverage.postedEntries}</strong></div><div><span>Movimientos bancarios sin conciliar</span><strong>{coverage.unmatchedBankTransactions}</strong></div><div className="wide"><span>Resultado documental</span><strong>{clp(coverage.documentaryDifferenceClp)}</strong><small>Ventas {clp(coverage.documentarySalesClp)} · compras {clp(coverage.documentaryPurchasesClp)}</small></div></div> : null}
+        {coverage && !coverage.profitabilityCertified ? <div className="accounting-provisional-note">Rentabilidad todavía no certificada: el resultado documental no equivale a utilidad mientras falten costo de venta, gastos y conciliaciones.</div> : null}
+      </section>
       <section className="panel">
         <div className="accounting-panel-heading"><div><p>Libro central</p><h2>Asientos contables</h2><span>Los asientos contabilizados son inmutables; una corrección genera una reversa.</span></div><button className="primary-button" type="button" onClick={() => setShowForm(true)}><Plus size={17} /> Nuevo asiento</button></div>
         <Table headers={["N.º", "Fecha", "Glosa", "Referencia", "Origen", "Estado", "Acción"]}>
@@ -462,6 +499,9 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   const [to, setTo] = useState("");
   const [candidateQuery, setCandidateQuery] = useState("");
   const [note, setNote] = useState("");
+  const [exactFrom, setExactFrom] = useState("2026-01-01");
+  const [exactTo, setExactTo] = useState(today());
+  const [exactPreview, setExactPreview] = useState<AccountingExactReconciliationPreview | null>(null);
   const normalizedMovementQuery = normalize(movementQuery);
   const filteredTransactions = unmatched.filter((row) => {
     const text = normalize(`${row.description} ${row.reference || ""} ${row.operation_number || ""}`);
@@ -536,7 +576,32 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
     }
   }
 
-  return <div className="accounting-reconcile-layout">
+  async function previewExact() {
+    setLocalError("");
+    try {
+      setExactPreview(await previewExactAccountingReconciliations({ entityId: data.entity.id, from: exactFrom, to: exactTo }));
+    } catch (caught) {
+      setLocalError(caught instanceof Error ? caught.message : "No se pudieron revisar las coincidencias exactas.");
+    }
+  }
+
+  async function confirmExact() {
+    if (!exactPreview?.matches.length) return;
+    const completed = await runAction(
+      "exact-reconcile",
+      () => confirmExactAccountingReconciliations(exactPreview),
+      `${exactPreview.matches.length} conciliación(es) exacta(s) confirmadas y auditadas.`,
+    );
+    if (completed) setExactPreview(null);
+  }
+
+  return <div className="accounting-view-stack">
+    <section className="panel accounting-automation-panel">
+      <div className="accounting-panel-heading"><div><p>Automatización conservadora</p><h2>Conciliar coincidencias exactas</h2><span>Solo propone monto total exacto más RUT o folio exacto, con una única coincidencia posible. Los pagos parciales y ambiguos quedan para revisión humana.</span></div></div>
+      <div className="accounting-automation-controls"><label>Desde<input type="date" value={exactFrom} onChange={(event) => setExactFrom(event.target.value)} /></label><label>Hasta<input max={today()} type="date" value={exactTo} onChange={(event) => setExactTo(event.target.value)} /></label><button className="ghost-button" disabled={Boolean(busy) || exactFrom > exactTo} type="button" onClick={() => void previewExact()}><Search size={17} /> Buscar exactas</button>{exactPreview?.matches.length ? <button className="primary-button" disabled={Boolean(busy)} type="button" onClick={() => void confirmExact()}><CheckCircle2 size={17} /> {busy === "exact-reconcile" ? "Confirmando…" : `Confirmar ${exactPreview.matches.length}`}</button> : null}</div>
+      {exactPreview ? <div className="accounting-exact-summary"><strong>{exactPreview.matches.length} coincidencia(s) exacta(s)</strong><span>{exactPreview.untouched} movimientos requieren revisión · {exactPreview.reviewed} revisados</span>{exactPreview.matches.slice(0, 5).map((match) => <small key={match.transactionId}>{date(match.transactionDate)} · {match.description} · {clp(match.amountClp)} → {match.counterpartyName} · {match.documentNumber}</small>)}</div> : null}
+    </section>
+    <div className="accounting-reconcile-layout">
     <section className="panel accounting-reconcile-movements">
       <div className="accounting-panel-heading"><div><p>Cartola normalizada</p><h2>Movimientos pendientes</h2><span>Busca por nombre, RUT, referencia o fecha.</span></div><Status value={`${unmatched.length} pendientes`} tone={unmatched.length ? "review" : "success"} /></div>
       <div className="accounting-reconcile-filters">
@@ -591,6 +656,7 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
         </div> : null}
       </> : null}
     </section>
+    </div>
   </div>;
 }
 
@@ -658,7 +724,7 @@ function PeriodsView({ data, isAdmin, busy, runAction }: ActionViewProps & { isA
 }
 
 function ReportsView({ data }: { data: AccountingBootstrap }) {
-  const [kind, setKind] = useState<"balance8" | "trial" | "journal" | "ledger">("balance8");
+  const [kind, setKind] = useState<AccountingReport["kind"]>("balance8");
   const [from, setFrom] = useState(`${new Date().getFullYear()}-01-01`);
   const [to, setTo] = useState(today());
   const [accountId, setAccountId] = useState(data.accounts.find((row) => row.allows_posting)?.id || "");

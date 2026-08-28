@@ -321,6 +321,56 @@
   grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.28fr);
 }
 
+.accounting-automation-panel {
+  border-left: 4px solid var(--accounting-accent);
+}
+
+.accounting-automation-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(140px, 0.55fr)) repeat(2, max-content);
+  gap: 10px;
+  align-items: end;
+}
+
+.accounting-automation-controls label {
+  min-width: 0;
+  color: var(--accounting-muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.accounting-automation-controls input {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+}
+
+.accounting-coverage-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 9px;
+  margin-top: 14px;
+}
+
+.accounting-coverage-grid > div,
+.accounting-exact-summary {
+  padding: 11px;
+  border: 1px solid var(--accounting-border);
+  background: var(--accounting-soft);
+}
+
+.accounting-coverage-grid span,
+.accounting-coverage-grid small,
+.accounting-exact-summary span,
+.accounting-exact-summary small {
+  display: block;
+  color: var(--accounting-muted);
+}
+
+.accounting-coverage-grid strong { display: block; margin: 4px 0; font-size: 20px; }
+.accounting-coverage-grid .wide { grid-column: span 2; }
+.accounting-exact-summary { display: grid; gap: 5px; margin-top: 12px; }
+
 .accounting-reconcile-movements,
 .accounting-reconcile-candidates { min-width: 0; }
 
@@ -989,6 +1039,11 @@
   .accounting-source-actions > button { flex: 1 1 100%; justify-content: center; }
   .accounting-principle-band { align-items: flex-start; }
   .accounting-kpi-grid { grid-template-columns: 1fr; }
+  .accounting-automation-controls,
+  .accounting-coverage-grid { grid-template-columns: 1fr; }
+  .accounting-automation-controls .primary-button,
+  .accounting-automation-controls .ghost-button { width: 100%; justify-content: center; }
+  .accounting-coverage-grid .wide { grid-column: auto; }
   .accounting-kpi { grid-template-columns: 38px minmax(0, 1fr); }
   .accounting-form-grid,
   .accounting-form-grid.report,

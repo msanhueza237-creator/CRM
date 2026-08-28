@@ -7,6 +7,9 @@ import type {
   AccountingFactoExcelResult,
   AccountingImportPreview,
   AccountingJournalDraft,
+  AccountingExactReconciliationPreview,
+  AccountingLedgerCoverage,
+  AccountingLedgerPrepareResult,
   AccountingReport,
 } from "../types/accounting";
 import { normalizeAccountingReconciliationProposal } from "../modules/accounting/reconciliationCompatibility";
@@ -111,6 +114,25 @@ export async function proposeAccountingReconciliation(transactionId: string) {
 
 export function confirmAccountingReconciliation(input: { transactionId: string; links: Array<{ targetType: string; targetId: string; amount: number }>; note?: string }) {
   return accountingRequest<{ matched: number; allocated: number; remaining: number }>("reconciliation/confirm", { method: "POST", body: input });
+}
+
+export function previewExactAccountingReconciliations(input: { entityId: string; from: string; to: string }) {
+  return accountingRequest<AccountingExactReconciliationPreview>("reconciliation/exact-preview", { method: "POST", body: input });
+}
+
+export function confirmExactAccountingReconciliations(input: AccountingExactReconciliationPreview) {
+  return accountingRequest<{ confirmed: number; skipped: number; errors: Array<{ transactionId: string; error: string }> }>("reconciliation/exact-confirm", {
+    method: "POST",
+    body: { entityId: input.entityId, matches: input.matches },
+  });
+}
+
+export function getAccountingLedgerCoverage(input: { entityId: string; from: string; to: string }) {
+  return accountingRequest<AccountingLedgerCoverage>("ledger/coverage", { method: "POST", body: input });
+}
+
+export function prepareAccountingLedger(input: { entityId: string; from: string; to: string; batchSize?: number }) {
+  return accountingRequest<AccountingLedgerPrepareResult>("ledger/prepare", { method: "POST", body: input });
 }
 
 export function createAccountingCheck(input: {

@@ -3,6 +3,7 @@ import { parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-p
 import {
   buildSuggestedAllocationPlan,
   rankReconciliationCandidates,
+  selectUniqueExactReconciliation,
   type ReconciliationDocumentInput,
 } from "./reconciliation-engine.ts";
 
@@ -70,6 +71,14 @@ Deno.serve(async (request) => {
       requirePermission(profile, "reconcile");
       return json(await confirmReconciliation(rest, profile, await readJson(request)), 200, request);
     }
+    if (route === "reconciliation/exact-preview" && request.method === "POST") {
+      requirePermission(profile, "reconcile");
+      return json(await previewExactReconciliations(rest, await readJson(request)), 200, request);
+    }
+    if (route === "reconciliation/exact-confirm" && request.method === "POST") {
+      requirePermission(profile, "reconcile");
+      return json(await confirmExactReconciliations(rest, profile, await readJson(request)), 200, request);
+    }
     if (route === "checks/create" && request.method === "POST") {
       requirePermission(profile, "entry");
       return json(await createCheck(rest, profile, await readJson(request)), 201, request);
@@ -107,6 +116,14 @@ Deno.serve(async (request) => {
       requirePermission(profile, "view");
       const payload = await readJson(request);
       return json({ count: await rpc(rest, "accounting_refresh_controls", { p_entity_id: requiredUuid(payload.entityId) }) }, 200, request);
+    }
+    if (route === "ledger/coverage" && request.method === "POST") {
+      requirePermission(profile, "view");
+      return json(await accountingLedgerCoverage(rest, await readJson(request)), 200, request);
+    }
+    if (route === "ledger/prepare" && request.method === "POST") {
+      requirePermission(profile, "post");
+      return json(await prepareAccountingLedger(rest, profile, await readJson(request)), 200, request);
     }
     if (route === "reports" && request.method === "GET") {
       requirePermission(profile, "view");
@@ -1068,13 +1085,17 @@ async function confirmReconciliation(rest: RestClient, profile: Profile, payload
     if (allocation.amount > balance + 0.5) throw new HttpError(400, "Una asignación supera el saldo pendiente del documento.");
   }
 
+  const automaticExact = payload.automation === "exact";
   const reconciliation = (await insertRows(rest, "accounting_reconciliations", [{
     entity_id: entityId,
     bank_transaction_id: transactionId,
     status: "confirmed",
-    confidence: "manual",
+    confidence: automaticExact ? "exact" : "manual",
+    score: automaticExact ? 1 : null,
     matched_amount_clp: total,
-    explanation: optionalText(payload.note, 500) || "Conciliación confirmada por usuario.",
+    explanation: optionalText(payload.note, 500) || (automaticExact
+      ? "Conciliación automática exacta revalidada por monto e identidad documental."
+      : "Conciliación confirmada por usuario."),
     confirmed_by: profile.id,
     confirmed_at: new Date().toISOString(),
   }]))[0];
@@ -1106,9 +1127,372 @@ async function confirmReconciliation(rest: RestClient, profile: Profile, payload
   await insertRows(rest, "accounting_audit_events", [{
     entity_id: entityId, actor_id: profile.id, action: "reconciliation.confirmed",
     entity_type: "bank_transaction", entity_id_text: transactionId,
-    new_value: { reconciliation_id: reconciliation.id, total, previously_allocated: previouslyAllocated, allocated_amount: allocatedAmount, links: allocations },
+    new_value: {
+      reconciliation_id: reconciliation.id,
+      total,
+      previously_allocated: previouslyAllocated,
+      allocated_amount: allocatedAmount,
+      links: allocations,
+      automation: automaticExact ? "exact" : "manual",
+    },
   }]);
   return { reconciliation, matched: total, allocated: allocatedAmount, remaining: Math.max(transactionAmount - allocatedAmount, 0) };
+}
+
+async function previewExactReconciliations(rest: RestClient, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  const from = requiredDate(payload.from);
+  const to = requiredDate(payload.to);
+  if (from > to) throw new HttpError(400, "La fecha inicial no puede ser posterior a la final.");
+  const transactions = await selectAllRows(rest,
+    `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&reconciliation_status=eq.unmatched&transaction_date=gte.${from}&transaction_date=lte.${to}&order=transaction_date.asc`,
+  );
+  const [receivables, payables] = await Promise.all([
+    selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&status=in.(pending,partial,overdue,collections)`),
+    selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}&status=in.(pending,partial,overdue)`),
+  ]);
+  const matches: JsonRecord[] = [];
+  for (const transaction of transactions) {
+    const incoming = numeric(transaction.amount_clp) > 0;
+    const documents = reconciliationDocuments(incoming ? receivables : payables, incoming);
+    const transactionAmount = Math.abs(numeric(transaction.amount_clp));
+    const ranked = rankReconciliationCandidates(reconciliationTransaction(transaction), documents, transactionAmount);
+    const selection = selectUniqueExactReconciliation(ranked, transactionAmount);
+    if (!selection) continue;
+    matches.push({
+      transactionId: transaction.id,
+      transactionDate: transaction.transaction_date,
+      description: transaction.description,
+      amountClp: transactionAmount,
+      targetType: selection.candidate.targetType,
+      targetId: selection.candidate.targetId,
+      documentNumber: selection.candidate.document.documentNumber,
+      counterpartyName: selection.candidate.document.counterpartyName,
+      reason: selection.reason,
+    });
+  }
+  return {
+    entityId,
+    from,
+    to,
+    reviewed: transactions.length,
+    exact: matches.length,
+    untouched: transactions.length - matches.length,
+    matches,
+    policy: "Solo monto total exacto y una única identidad verificable por RUT o folio.",
+  };
+}
+
+async function confirmExactReconciliations(rest: RestClient, profile: Profile, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  const requested = Array.isArray(payload.matches) ? payload.matches.map(asObject) : [];
+  if (!requested.length) return { confirmed: 0, skipped: 0, errors: [] };
+  let confirmed = 0;
+  let skipped = 0;
+  const errors: JsonRecord[] = [];
+  for (const item of requested.slice(0, 500)) {
+    const transactionId = requiredUuid(item.transactionId);
+    try {
+      const transaction = (await selectRows(rest,
+        `accounting_bank_transactions?select=*&id=eq.${transactionId}&entity_id=eq.${entityId}&reconciliation_status=eq.unmatched&limit=1`,
+      ))[0];
+      if (!transaction) {
+        skipped += 1;
+        continue;
+      }
+      const incoming = numeric(transaction.amount_clp) > 0;
+      const table = incoming ? "accounting_receivables" : "accounting_payables";
+      const rows = await selectAllRows(rest, `${table}?select=*&entity_id=eq.${entityId}&status=in.(${incoming ? "pending,partial,overdue,collections" : "pending,partial,overdue"})`);
+      const amount = Math.abs(numeric(transaction.amount_clp));
+      const selection = selectUniqueExactReconciliation(
+        rankReconciliationCandidates(reconciliationTransaction(transaction), reconciliationDocuments(rows, incoming), amount),
+        amount,
+      );
+      if (!selection || selection.candidate.targetId !== String(item.targetId || "")) {
+        skipped += 1;
+        continue;
+      }
+      await confirmReconciliation(rest, profile, {
+        transactionId,
+        automation: "exact",
+        note: selection.reason,
+        links: [{
+          targetType: selection.candidate.targetType,
+          targetId: selection.candidate.targetId,
+          amount,
+        }],
+      });
+      confirmed += 1;
+    } catch (error) {
+      skipped += 1;
+      errors.push({ transactionId, error: error instanceof Error ? error.message : "Error inesperado." });
+    }
+  }
+  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+  return { confirmed, skipped, errors };
+}
+
+function reconciliationDocuments(rows: JsonRecord[], incoming: boolean): Array<ReconciliationDocumentInput<JsonRecord>> {
+  return rows.map((row) => ({
+    targetType: incoming ? "receivable" : "payable",
+    targetId: String(row.id),
+    counterpartyName: String(row.customer_name || row.supplier_name || ""),
+    counterpartyTaxId: String(row.customer_tax_id || row.supplier_tax_id || ""),
+    documentNumber: String(row.document_number || ""),
+    issuedOn: String(row.issued_on || ""),
+    dueOn: row.due_on ? String(row.due_on) : null,
+    balanceClp: numeric(row.balance_clp),
+    raw: row,
+  }));
+}
+
+function reconciliationTransaction(row: JsonRecord) {
+  return {
+    amountClp: Math.abs(numeric(row.amount_clp)),
+    transactionDate: String(row.transaction_date || ""),
+    description: String(row.description || ""),
+    reference: row.reference ? String(row.reference) : null,
+    operationNumber: row.operation_number ? String(row.operation_number) : null,
+  };
+}
+
+async function accountingLedgerCoverage(rest: RestClient, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  const from = requiredDate(payload.from);
+  const to = requiredDate(payload.to);
+  if (from > to) throw new HttpError(400, "La fecha inicial no puede ser posterior a la final.");
+  const [documents, entries, reconciliations, unmatchedTransactions] = await Promise.all([
+    selectAllRows(rest, `accounting_source_documents?select=id,document_type,total_clp,net_amount,tax_amount,exchange_rate,data_quality,status&entity_id=eq.${entityId}&source_type=eq.FACTO&issued_on=gte.${from}&issued_on=lte.${to}&data_quality=eq.validated`),
+    selectAllRows(rest, `accounting_journal_entries?select=id,idempotency_key,status&entity_id=eq.${entityId}&entry_date=gte.${from}&entry_date=lte.${to}`),
+    selectAllRows(rest, `accounting_reconciliations?select=id,matched_amount_clp,status,accounting_bank_transactions!inner(transaction_date)&entity_id=eq.${entityId}&status=eq.confirmed&accounting_bank_transactions.transaction_date=gte.${from}&accounting_bank_transactions.transaction_date=lte.${to}`),
+    selectAllRows(rest, `accounting_bank_transactions?select=id&entity_id=eq.${entityId}&transaction_date=gte.${from}&transaction_date=lte.${to}&reconciliation_status=in.(unmatched,partial)`),
+  ]);
+  const entryKeys = new Set(entries.map((entry) => String(entry.idempotency_key || "")));
+  const missingFacto = documents.filter((document) => !entryKeys.has(`facto-document:${document.id}`));
+  const missingReconciliations = reconciliations.filter((row) => !entryKeys.has(`bank-reconciliation:${row.id}`));
+  const sales = documents.filter((document) => String(document.document_type || "").startsWith("sales_"));
+  const purchases = documents.filter((document) => String(document.document_type || "").startsWith("purchase_"));
+  const documentarySalesClp = sales.reduce((sum, document) => sum + signedDocumentAmount(document), 0);
+  const documentaryPurchasesClp = purchases.reduce((sum, document) => sum + signedDocumentAmount(document), 0);
+  return {
+    entityId,
+    from,
+    to,
+    factoDocuments: documents.length,
+    factoDocumentsPending: missingFacto.length,
+    confirmedReconciliations: reconciliations.length,
+    reconciliationsPending: missingReconciliations.length,
+    postedEntries: entries.filter((entry) => ["posted", "reversed"].includes(String(entry.status))).length,
+    unmatchedBankTransactions: unmatchedTransactions.length,
+    documentarySalesClp,
+    documentaryPurchasesClp,
+    documentaryDifferenceClp: documentarySalesClp - documentaryPurchasesClp,
+    profitabilityCertified: false,
+    profitabilityNote: "La diferencia documental no es utilidad neta. Las compras quedan en una cuenta transitoria hasta clasificar inventario, costo de venta y gastos devengados.",
+    complete: missingFacto.length === 0 && missingReconciliations.length === 0,
+  };
+}
+
+async function prepareAccountingLedger(rest: RestClient, profile: Profile, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  const from = requiredDate(payload.from);
+  const to = requiredDate(payload.to);
+  const batchSize = Math.min(Math.max(Math.trunc(numeric(payload.batchSize) || 25), 1), 50);
+  const [documents, reconciliations, entries, accounts, periods, bankAccounts] = await Promise.all([
+    selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO&issued_on=gte.${from}&issued_on=lte.${to}&data_quality=eq.validated&order=issued_on.asc`),
+    selectAllRows(rest, `accounting_reconciliations?select=*,accounting_bank_transactions!inner(*)&entity_id=eq.${entityId}&status=eq.confirmed&accounting_bank_transactions.transaction_date=gte.${from}&accounting_bank_transactions.transaction_date=lte.${to}&order=confirmed_at.asc`),
+    selectAllRows(rest, `accounting_journal_entries?select=id,idempotency_key,status&entity_id=eq.${entityId}&entry_date=gte.${from}&entry_date=lte.${to}`),
+    selectAllRows(rest, `accounting_accounts?select=id,classification,active,allows_posting&entity_id=eq.${entityId}&active=eq.true&allows_posting=eq.true`),
+    selectAllRows(rest, `accounting_periods?select=id,starts_on,ends_on,status&entity_id=eq.${entityId}&status=neq.closed`),
+    selectAllRows(rest, `accounting_bank_accounts?select=id,ledger_account_id&entity_id=eq.${entityId}`),
+  ]);
+  const entryKeys = new Set(entries.map((entry) => String(entry.idempotency_key || "")));
+  const accountByClassification = new Map(accounts.map((account) => [String(account.classification), String(account.id)]));
+  const bankLedgerById = new Map(bankAccounts.map((account) => [String(account.id), String(account.ledger_account_id)]));
+  const pending: Array<{ type: "document" | "reconciliation"; row: JsonRecord }> = [
+    ...documents.filter((row) => !entryKeys.has(`facto-document:${row.id}`)).map((row) => ({ type: "document" as const, row })),
+    ...reconciliations.filter((row) => !entryKeys.has(`bank-reconciliation:${row.id}`)).map((row) => ({ type: "reconciliation" as const, row })),
+  ];
+  let posted = 0;
+  let skipped = 0;
+  const errors: JsonRecord[] = [];
+  for (const item of pending.slice(0, batchSize)) {
+    try {
+      if (item.type === "document") {
+        await postFactoDocument(rest, profile, item.row, periods, accountByClassification);
+      } else {
+        await postConfirmedReconciliation(rest, profile, item.row, periods, bankLedgerById, accountByClassification);
+      }
+      posted += 1;
+    } catch (error) {
+      skipped += 1;
+      errors.push({ type: item.type, id: item.row.id, error: error instanceof Error ? error.message : "Error inesperado." });
+    }
+  }
+  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+  return {
+    posted,
+    skipped,
+    errors,
+    remaining: Math.max(pending.length - Math.min(pending.length, batchSize), 0),
+    coverage: await accountingLedgerCoverage(rest, { entityId, from, to }),
+  };
+}
+
+async function postFactoDocument(
+  rest: RestClient,
+  profile: Profile,
+  document: JsonRecord,
+  periods: JsonRecord[],
+  accounts: Map<string, string>,
+) {
+  const type = String(document.document_type || "");
+  const sale = type.startsWith("sales_");
+  const purchase = type.startsWith("purchase_");
+  if (!sale && !purchase) throw new Error(`Tipo Facto no soportado: ${type || "sin tipo"}.`);
+  const total = Math.round(Math.abs(numeric(document.total_clp)) * 10000) / 10000;
+  if (total <= 0) throw new Error("El documento no tiene total CLP válido.");
+  const exchangeRate = Math.max(numeric(document.exchange_rate), 1);
+  const tax = Math.min(total, Math.max(0, Math.round(numeric(document.tax_amount) * exchangeRate * 10000) / 10000));
+  const economic = Math.round((total - tax) * 10000) / 10000;
+  const creditNote = type.includes("credit_note");
+  const lines: Array<{ accountId: string; debit: number; credit: number; description: string }> = [];
+  if (sale) {
+    lines.push(postingLine(accounts, "receivables", creditNote ? 0 : total, creditNote ? total : 0, "Cliente / documento por cobrar"));
+    if (economic > 0) lines.push(postingLine(accounts, "net_sales", creditNote ? economic : 0, creditNote ? 0 : economic, "Venta neta Facto"));
+    if (tax > 0) lines.push(postingLine(accounts, "vat_debit", creditNote ? tax : 0, creditNote ? 0 : tax, "IVA débito fiscal Facto"));
+  } else {
+    if (economic > 0) lines.push(postingLine(accounts, "suspense_asset", creditNote ? 0 : economic, creditNote ? economic : 0, "Compra pendiente de clasificación contable"));
+    if (tax > 0) lines.push(postingLine(accounts, "vat_credit", creditNote ? 0 : tax, creditNote ? tax : 0, "IVA crédito fiscal Facto"));
+    lines.push(postingLine(accounts, "payables", creditNote ? total : 0, creditNote ? 0 : total, "Proveedor / documento por pagar"));
+  }
+  await postAutomatedEntry(rest, profile, {
+    entityId: String(document.entity_id),
+    periodId: periodForDate(periods, String(document.issued_on)),
+    date: String(document.issued_on),
+    description: `${creditNote ? "Nota de crédito" : sale ? "Venta" : "Compra"} Facto ${String(document.folio || document.external_id || "")}`.trim(),
+    reference: String(document.folio || document.external_id || document.id),
+    sourceType: "FACTO",
+    sourceDocumentId: String(document.id),
+    idempotencyKey: `facto-document:${document.id}`,
+    currency: String(document.currency || "CLP"),
+    exchangeRate,
+    lines,
+  });
+}
+
+async function postConfirmedReconciliation(
+  rest: RestClient,
+  profile: Profile,
+  reconciliation: JsonRecord,
+  periods: JsonRecord[],
+  bankLedgerById: Map<string, string>,
+  accounts: Map<string, string>,
+) {
+  const transaction = asObject(reconciliation.accounting_bank_transactions);
+  const amount = Math.round(numeric(reconciliation.matched_amount_clp) * 10000) / 10000;
+  if (amount <= 0) throw new Error("La conciliación no tiene monto válido.");
+  const incoming = numeric(transaction.amount_clp) > 0;
+  const bankAccount = bankLedgerById.get(String(transaction.bank_account_id || ""));
+  if (!bankAccount) throw new Error("La cuenta bancaria no tiene cuenta contable asociada.");
+  const counterpart = postingAccount(accounts, incoming ? "receivables" : "payables");
+  const lines = incoming
+    ? [
+      { accountId: bankAccount, debit: amount, credit: 0, description: "Ingreso bancario conciliado" },
+      { accountId: counterpart, debit: 0, credit: amount, description: "Cobro de cuenta por cobrar" },
+    ]
+    : [
+      { accountId: counterpart, debit: amount, credit: 0, description: "Pago de cuenta por pagar" },
+      { accountId: bankAccount, debit: 0, credit: amount, description: "Egreso bancario conciliado" },
+    ];
+  await postAutomatedEntry(rest, profile, {
+    entityId: String(reconciliation.entity_id),
+    periodId: periodForDate(periods, String(transaction.transaction_date)),
+    date: String(transaction.transaction_date),
+    description: incoming ? "Cobro bancario conciliado" : "Pago bancario conciliado",
+    reference: String(transaction.operation_number || transaction.reference || reconciliation.id),
+    sourceType: "SYSTEM",
+    sourceDocumentId: null,
+    idempotencyKey: `bank-reconciliation:${reconciliation.id}`,
+    currency: String(transaction.currency || "CLP"),
+    exchangeRate: Math.max(numeric(transaction.exchange_rate), 1),
+    lines,
+  });
+}
+
+async function postAutomatedEntry(rest: RestClient, profile: Profile, input: {
+  entityId: string;
+  periodId: string;
+  date: string;
+  description: string;
+  reference: string;
+  sourceType: string;
+  sourceDocumentId: string | null;
+  idempotencyKey: string;
+  currency: string;
+  exchangeRate: number;
+  lines: Array<{ accountId: string; debit: number; credit: number; description: string }>;
+}) {
+  const existing = await selectRows(rest, `accounting_journal_entries?select=id,status&entity_id=eq.${input.entityId}&idempotency_key=eq.${encodeURIComponent(input.idempotencyKey)}&limit=1`);
+  if (existing[0]) return existing[0];
+  const debit = input.lines.reduce((sum, line) => sum + line.debit, 0);
+  const credit = input.lines.reduce((sum, line) => sum + line.credit, 0);
+  if (debit <= 0 || Math.abs(debit - credit) > 0.0001) throw new Error("El asiento automático quedó descuadrado.");
+  const entry = (await insertRows(rest, "accounting_journal_entries", [{
+    entity_id: input.entityId,
+    period_id: input.periodId,
+    entry_date: input.date,
+    description: input.description,
+    reference: input.reference,
+    source_type: input.sourceType,
+    source_document_id: input.sourceDocumentId,
+    source_module: "accounting_automation",
+    idempotency_key: input.idempotencyKey,
+    currency: validCurrency(input.currency) || "CLP",
+    exchange_rate: input.exchangeRate,
+    status: "validated",
+    created_by: profile.id,
+  }]))[0];
+  try {
+    await insertRows(rest, "accounting_journal_lines", input.lines.map((line, index) => ({
+      entry_id: entry.id,
+      line_number: index + 1,
+      account_id: line.accountId,
+      description: line.description,
+      debit_clp: line.debit,
+      credit_clp: line.credit,
+      currency: validCurrency(input.currency) || "CLP",
+      exchange_rate: input.exchangeRate,
+      metadata: { automated: true, policy: "verified_source" },
+    })));
+    await rpc(rest, "accounting_post_journal_entry", { p_entry_id: entry.id });
+    return entry;
+  } catch (error) {
+    await deleteRows(rest, "accounting_journal_lines", `entry_id=eq.${entry.id}`).catch(() => undefined);
+    await deleteRows(rest, "accounting_journal_entries", `id=eq.${entry.id}`).catch(() => undefined);
+    throw error;
+  }
+}
+
+function postingLine(accounts: Map<string, string>, classification: string, debit: number, credit: number, description: string) {
+  return { accountId: postingAccount(accounts, classification), debit, credit, description };
+}
+
+function postingAccount(accounts: Map<string, string>, classification: string) {
+  const id = accounts.get(classification);
+  if (!id) throw new Error(`Falta una cuenta contable activa para ${classification}.`);
+  return id;
+}
+
+function periodForDate(periods: JsonRecord[], value: string) {
+  const period = periods.find((row) => value >= String(row.starts_on) && value <= String(row.ends_on));
+  if (!period) throw new Error(`No existe un período abierto para ${value}.`);
+  return String(period.id);
+}
+
+function signedDocumentAmount(document: JsonRecord) {
+  const amount = numeric(document.total_clp);
+  return String(document.document_type || "").includes("credit_note") ? -amount : amount;
 }
 
 async function createCheck(rest: RestClient, profile: Profile, payload: JsonRecord) {
@@ -1154,7 +1538,7 @@ async function report(rest: RestClient, url: URL) {
   if (kind === "income") return { kind, rows: await rpc(rest, "accounting_income_statement", { p_entity_id: entityId, p_from: from, p_to: to }) };
   if (kind === "cashflow") return { kind, rows: await rpc(rest, "accounting_cash_flow", { p_entity_id: entityId, p_from: from, p_to: to }) };
   if (kind === "journal") {
-    const entries = await selectRows(rest, `accounting_journal_entries?select=id,entry_date,entry_number,description,reference,origin,accounting_journal_lines(account_id,line_number,debit_clp,credit_clp,currency,description)&entity_id=eq.${entityId}&status=in.(posted,reversed)&entry_date=gte.${from}&entry_date=lte.${to}&order=entry_date.asc,entry_number.asc&limit=5000`);
+    const entries = await selectRows(rest, `accounting_journal_entries?select=id,entry_date,entry_number,description,reference,source_type,accounting_journal_lines(account_id,line_number,debit_clp,credit_clp,currency,description)&entity_id=eq.${entityId}&status=in.(posted,reversed)&entry_date=gte.${from}&entry_date=lte.${to}&order=entry_date.asc,entry_number.asc&limit=5000`);
     const accountIds = [...new Set(entries.flatMap((entry) => {
       const lines = Array.isArray(entry.accounting_journal_lines) ? entry.accounting_journal_lines : [];
       return lines.map((line) => String(asObject(line).account_id || "")).filter(Boolean);
@@ -1177,7 +1561,7 @@ async function report(rest: RestClient, url: URL) {
             cuenta: account.name || "Cuenta sin identificar",
             glosa: line.description || entry.description,
             referencia: entry.reference || "",
-            origen: entry.origin,
+            origen: entry.source_type,
             moneda: line.currency || "CLP",
             debe_clp: numeric(line.debit_clp),
             haber_clp: numeric(line.credit_clp),
