@@ -90,6 +90,8 @@ assert.match(pageSource, /Usar propuesta/);
 assert.match(pageSource, /Conciliar coincidencias exactas/);
 assert.match(pageSource, /Preparar libro/);
 assert.match(pageSource, /Rentabilidad todavía no certificada/);
+assert.match(pageSource, /ReconciliationErrorBoundary/);
+assert.match(pageSource, /No se pudo mostrar esta propuesta/);
 
 const legacyProposal = normalizeAccountingReconciliationProposal({
   transaction: {
@@ -116,6 +118,44 @@ assert.equal(legacyProposal.remainingAmount, 500000);
 assert.deepEqual(legacyProposal.candidates[0].evidence, []);
 assert.equal(legacyProposal.candidates[0].signals.amount, "over");
 assert.equal(legacyProposal.suggestedPlan, null);
+
+const currentProposal = normalizeAccountingReconciliationProposal({
+  transaction: {
+    id: "current-transaction",
+    amount_clp: -500000,
+    transaction_date: "2026-07-29",
+    description: "TEF proveedor",
+  },
+  candidates: [{
+    targetType: "payable",
+    targetId: "current-payable",
+    score: 0.78,
+    document: {
+      targetId: "current-payable",
+      counterpartyName: "Proveedor prueba",
+      counterpartyTaxId: "76.123.456-7",
+      raw: {
+        id: "current-payable",
+        document_number: "F-200",
+        balance_clp: 604388,
+      },
+    },
+  }],
+});
+assert.equal(currentProposal.candidates[0].candidate.id, "current-payable");
+assert.equal(currentProposal.candidates[0].candidate.document_number, "F-200");
+assert.equal(currentProposal.candidates[0].candidate.balance_clp, 604388);
+assert.equal(currentProposal.candidates[0].candidate.supplier_name, "Proveedor prueba");
+assert.equal(currentProposal.candidates[0].candidate.supplier_tax_id, "76.123.456-7");
+assert.deepEqual(currentProposal.candidates[0].evidence, []);
+
+const incompleteProposal = normalizeAccountingReconciliationProposal({
+  transaction: { id: "incomplete-transaction", amount_clp: 1000 },
+  candidates: [{ targetType: "receivable", targetId: "incomplete-receivable", candidate: {} }],
+});
+assert.equal(incompleteProposal.transaction.description, "Movimiento bancario sin descripción");
+assert.equal(incompleteProposal.candidates[0].candidate.document_number, "Sin folio");
+assert.equal(incompleteProposal.candidates[0].candidate.customer_name, "Cliente sin identificar");
 assert.match(pageSource, /Permite pagos parciales, varias facturas por pago y varios abonos por factura/);
 
 const bancoEstadoRange = bancoEstadoStatementRange([

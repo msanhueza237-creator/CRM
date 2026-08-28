@@ -1137,3 +1137,21 @@
   .accounting-preview-kpis { grid-template-columns: 1fr; }
   .accounting-center-table td { grid-template-columns: 95px minmax(0, 1fr); }
 }
+
+.accounting-reconciliation-recovery {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  border-color: #efc9c2;
+  color: #8f2d20;
+}
+
+.accounting-reconciliation-recovery h2,
+.accounting-reconciliation-recovery p { margin: 0; }
+.accounting-reconciliation-recovery p { margin-top: 4px; color: #5e747a; }
+
+@media (max-width: 720px) {
+  .accounting-reconciliation-recovery { grid-template-columns: auto minmax(0, 1fr); }
+  .accounting-reconciliation-recovery button { grid-column: 1 / -1; width: 100%; justify-content: center; }
+}

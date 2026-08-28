@@ -22,6 +22,14 @@ function finiteNumber(value: unknown, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function textValue(value: unknown, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function nullableText(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function targetType(value: unknown, incoming: boolean): "receivable" | "payable" {
   return value === "receivable" || value === "payable"
     ? value
@@ -50,14 +58,37 @@ export function normalizeAccountingReconciliationProposal(value: unknown): Accou
     throw new Error("La propuesta de conciliación llegó incompleta. Actualiza la página e inténtalo nuevamente.");
   }
 
-  const transaction = transactionRecord as unknown as AccountingBankTransaction;
+  const transaction: AccountingBankTransaction = {
+    id: transactionRecord.id,
+    bank_account_id: textValue(transactionRecord.bank_account_id),
+    transaction_date: textValue(transactionRecord.transaction_date),
+    value_date: nullableText(transactionRecord.value_date),
+    description: textValue(transactionRecord.description, "Movimiento bancario sin descripción"),
+    reference: nullableText(transactionRecord.reference),
+    operation_number: nullableText(transactionRecord.operation_number),
+    debit: finiteNumber(transactionRecord.debit),
+    credit: finiteNumber(transactionRecord.credit),
+    amount: finiteNumber(transactionRecord.amount),
+    balance: transactionRecord.balance === null ? null : finiteNumber(transactionRecord.balance),
+    currency: textValue(transactionRecord.currency, "CLP"),
+    exchange_rate: finiteNumber(transactionRecord.exchange_rate, 1),
+    amount_clp: finiteNumber(transactionRecord.amount_clp),
+    reconciliation_status: ["unmatched", "proposed", "partial", "matched", "ignored"].includes(String(transactionRecord.reconciliation_status))
+      ? transactionRecord.reconciliation_status as AccountingBankTransaction["reconciliation_status"]
+      : "unmatched",
+  };
   const movementAmount = Math.abs(finiteNumber(transaction.amount_clp));
   const incoming = finiteNumber(transaction.amount_clp) >= 0;
   const rawCandidates = Array.isArray(raw.candidates) ? raw.candidates : [];
 
   const candidates = rawCandidates.flatMap((candidateValue): AccountingReconciliationCandidate[] => {
     const candidateRecord = asRecord(candidateValue);
-    const documentRecord = asRecord(candidateRecord.candidate);
+    const documentContainer = asRecord(candidateRecord.document);
+    const documentRecord = Object.keys(asRecord(candidateRecord.candidate)).length
+      ? asRecord(candidateRecord.candidate)
+      : Object.keys(asRecord(documentContainer.raw)).length
+        ? asRecord(documentContainer.raw)
+        : documentContainer;
     const id = typeof candidateRecord.targetId === "string" && candidateRecord.targetId
       ? candidateRecord.targetId
       : typeof documentRecord.id === "string" ? documentRecord.id : "";
@@ -76,6 +107,37 @@ export function normalizeAccountingReconciliationProposal(value: unknown): Accou
     const rawSignals = asRecord(candidateRecord.signals);
     const rawDateDifference = Number(candidateRecord.dateDifferenceDays);
 
+    const commonDocument = {
+      id,
+      document_number: textValue(documentRecord.document_number, "Sin folio"),
+      issued_on: textValue(documentRecord.issued_on),
+      due_on: nullableText(documentRecord.due_on),
+      original_amount_clp: Math.max(0, finiteNumber(documentRecord.original_amount_clp, balance)),
+      paid_amount_clp: Math.max(0, finiteNumber(documentRecord.paid_amount_clp)),
+      balance_clp: balance,
+      reported_paid_amount_clp: documentRecord.reported_paid_amount_clp === null || documentRecord.reported_paid_amount_clp === undefined
+        ? null
+        : Math.max(0, finiteNumber(documentRecord.reported_paid_amount_clp)),
+      reported_balance_clp: documentRecord.reported_balance_clp === null || documentRecord.reported_balance_clp === undefined
+        ? null
+        : Math.max(0, finiteNumber(documentRecord.reported_balance_clp)),
+      reported_at: nullableText(documentRecord.reported_at),
+      reported_source_batch_id: nullableText(documentRecord.reported_source_batch_id),
+      status: textValue(documentRecord.status, "pending"),
+      currency: textValue(documentRecord.currency, "CLP"),
+    };
+    const document = type === "receivable"
+      ? {
+        ...commonDocument,
+        customer_name: textValue(documentRecord.customer_name, textValue(documentContainer.counterpartyName, "Cliente sin identificar")),
+        customer_tax_id: nullableText(documentRecord.customer_tax_id) || nullableText(documentContainer.counterpartyTaxId),
+      } as AccountingReceivable
+      : {
+        ...commonDocument,
+        supplier_name: textValue(documentRecord.supplier_name, textValue(documentContainer.counterpartyName, "Proveedor sin identificar")),
+        supplier_tax_id: nullableText(documentRecord.supplier_tax_id) || nullableText(documentContainer.counterpartyTaxId),
+      } as AccountingPayable;
+
     return [{
       targetType: type,
       targetId: id,
@@ -91,7 +153,7 @@ export function normalizeAccountingReconciliationProposal(value: unknown): Accou
         date: Boolean(rawSignals.date),
         amount: amountSignal(rawSignals.amount, movementAmount, balance),
       },
-      candidate: documentRecord as unknown as AccountingReceivable | AccountingPayable,
+      candidate: document,
     }];
   });
 

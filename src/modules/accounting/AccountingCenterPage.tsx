@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { Component, FormEvent, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -160,7 +160,7 @@ export function AccountingCenterPage() {
           {activeView === "ledger" ? <LedgerView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "facto" ? <FactoView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "banks" ? <BankImportView data={data} busy={busy} runAction={runAction} /> : null}
-          {activeView === "reconcile" ? <ReconciliationView data={data} busy={busy} runAction={runAction} /> : null}
+          {activeView === "reconcile" ? <ReconciliationErrorBoundary><ReconciliationView data={data} busy={busy} runAction={runAction} /></ReconciliationErrorBoundary> : null}
           {activeView === "receivables" ? <ReceivablesView rows={data.receivables} /> : null}
           {activeView === "payables" ? <PayablesView rows={data.payables} /> : null}
           {activeView === "checks" ? <ChecksView data={data} busy={busy} runAction={runAction} /> : null}
@@ -171,6 +171,23 @@ export function AccountingCenterPage() {
       ) : null}
     </section>
   );
+}
+
+class ReconciliationErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error("[accounting-reconciliation] Error de render recuperado", error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return <section className="panel accounting-reconciliation-recovery"><AlertTriangle size={28} /><div><h2>No se pudo mostrar esta propuesta</h2><p>La respuesta contenía datos incompletos. La conciliación no fue modificada y puedes volver a cargarla.</p></div><button className="primary-button" type="button" onClick={() => window.location.reload()}><RefreshCw size={17} /> Recargar conciliación</button></section>;
+  }
 }
 
 function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate: (view: AccountingView) => void }) {
@@ -502,6 +519,7 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   const [exactFrom, setExactFrom] = useState("2026-01-01");
   const [exactTo, setExactTo] = useState(today());
   const [exactPreview, setExactPreview] = useState<AccountingExactReconciliationPreview | null>(null);
+  const proposalRequest = useRef(0);
   const normalizedMovementQuery = normalize(movementQuery);
   const filteredTransactions = unmatched.filter((row) => {
     const text = normalize(`${row.description} ${row.reference || ""} ${row.operation_number || ""}`);
@@ -529,6 +547,8 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   }
 
   async function propose(transaction: AccountingBankTransaction) {
+    const requestId = proposalRequest.current + 1;
+    proposalRequest.current = requestId;
     setSelected(transaction);
     setCandidateBusy(true);
     setLocalError("");
@@ -538,12 +558,14 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
     setAllocations({});
     try {
       const nextProposal = await proposeAccountingReconciliation(transaction.id);
+      if (requestId !== proposalRequest.current) return;
       setProposal(nextProposal);
       applySuggestedPlan(nextProposal);
     } catch (caught) {
+      if (requestId !== proposalRequest.current) return;
       setLocalError(caught instanceof Error ? caught.message : "No se pudieron calcular coincidencias.");
     } finally {
-      setCandidateBusy(false);
+      if (requestId === proposalRequest.current) setCandidateBusy(false);
     }
   }
 
