@@ -202,7 +202,9 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   const result = dashboard.current;
   const expenses = dashboard.expenseBreakdown;
   const available = number(summary.bank_clp) + number(summary.bank_usd_clp);
-  const position = available + number(summary.receivables) + number(summary.checks_portfolio) - number(summary.payables);
+  const portfolioChecks = data.checks.filter((check) => check.status === "portfolio");
+  const checksPortfolio = portfolioChecks.reduce((total, check) => total + number(check.amount_clp), 0);
+  const position = available + number(summary.receivables) + checksPortfolio - number(summary.payables);
   const documentaryBasis = dashboard.basis === "documentary" || dashboard.basis === "mixed";
   const dashboardWarnings = Array.isArray(dashboard.warnings) ? dashboard.warnings : [];
   const resultIsProvisional = summary.provisional || dashboard.costCoverage.missingSalesCost > 0 || documentaryBasis;
@@ -217,7 +219,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   ];
   const bestSalesMonth = dashboard.monthly.reduce<AccountingDashboardMonth | null>((best, month) => !best || month.sales > best.sales ? month : best, null);
   const latestMonth = dashboard.monthly[dashboard.monthly.length - 1] || null;
-  const workingCapitalBase = Math.max(available + number(summary.receivables) + number(summary.checks_portfolio), number(summary.payables), 1);
+  const workingCapitalBase = Math.max(available + number(summary.receivables) + checksPortfolio, number(summary.payables), 1);
   return (
     <div className="accounting-view-stack">
       <section className="panel accounting-executive-band">
@@ -296,7 +298,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
           <div className="accounting-panel-heading"><div><p>Estructura financiera</p><h2>Activos líquidos y compromisos</h2><span>Comparación operativa, no reemplaza el balance general.</span></div><ArrowRight size={19} /></div>
           <FinancialPositionRow label="Disponible" value={available} maximum={workingCapitalBase} tone="available" />
           <FinancialPositionRow label="Cuentas por cobrar" value={number(summary.receivables)} maximum={workingCapitalBase} tone="receivable" />
-          <FinancialPositionRow label="Cheques en cartera" value={number(summary.checks_portfolio)} maximum={workingCapitalBase} tone="checks" />
+          <FinancialPositionRow label={`Cheques en cartera (${portfolioChecks.length})`} value={checksPortfolio} maximum={workingCapitalBase} tone="checks" />
           <FinancialPositionRow label="Cuentas por pagar" value={number(summary.payables)} maximum={workingCapitalBase} tone="payable" />
         </button>
 
