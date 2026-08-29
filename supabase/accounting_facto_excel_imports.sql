@@ -108,7 +108,7 @@ as $$
     'payables_overdue', coalesce((select sum(coalesce(reported_balance_clp,balance_clp))
       from public.accounting_payables where entity_id=p_entity_id and status <> 'voided' and due_on < p_as_of),0),
     'checks_portfolio', coalesce((select sum(amount_clp) from public.accounting_checks
-      where entity_id=p_entity_id and status in ('portfolio','deposited')),0),
+      where entity_id=p_entity_id and status='portfolio'),0),
     'unmatched_bank', (select count(*) from public.accounting_bank_transactions
       where entity_id=p_entity_id and reconciliation_status='unmatched'),
     'payment_events_pending', (select count(*) from public.accounting_payment_events

@@ -1,80 +1,18 @@
--- Finanzas y Contabilidad - cobertura bancaria y remuneraciones 2026
--- Corrige la asociación BancoEstado/Scotiabank y agrega cuentas de remuneraciones.
+-- Finanzas - correccion durable del indicador de cheques en cartera.
+--
+-- Los cheques depositados o cobrados se conservan para auditoria, pero no son
+-- dinero en cartera. El dashboard solo suma documentos fisicos con estado
+-- portfolio. Esta migracion puede ejecutarse varias veces sin duplicar datos.
 
-do $$
-declare
-  v_entity uuid;
-  v_scotiabank uuid;
-  v_bancoestado uuid;
-begin
-  select id into v_entity
-  from public.accounting_entities
-  where tax_id = '77.724.382-9'
-  limit 1;
-
-  if v_entity is null then
-    raise exception 'No existe la entidad contable Latin Chile';
-  end if;
-
-  update public.accounting_accounts
-  set classification = 'bank_scotiabank_clp',
-      updated_at = now()
-  where entity_id = v_entity and code = '1.1.02';
-
-  update public.accounting_accounts
-  set classification = 'bank_bancoestado_clp',
-      updated_at = now()
-  where entity_id = v_entity and code = '1.1.03';
-
-  insert into public.accounting_accounts(
-    entity_id, code, name, level, account_type, normal_balance,
-    classification, allows_posting, source_type
-  )
-  values
-    (v_entity, '2.1.20', 'Remuneraciones por pagar', 3, 'liability', 'credit', 'payroll_payable', true, 'SYSTEM'),
-    (v_entity, '2.1.21', 'Cotizaciones previsionales por pagar', 3, 'liability', 'credit', 'payroll_withholdings', true, 'SYSTEM'),
-    (v_entity, '6.1.10', 'Remuneraciones', 3, 'expense', 'debit', 'payroll_expense', true, 'SYSTEM'),
-    (v_entity, '6.1.11', 'Cargas patronales', 3, 'expense', 'debit', 'payroll_employer_expense', true, 'SYSTEM')
-  on conflict (entity_id, code) do update
-  set name = excluded.name,
-      classification = excluded.classification,
-      allows_posting = true,
-      active = true,
-      updated_at = now();
-
-  select id into v_scotiabank
-  from public.accounting_accounts
-  where entity_id = v_entity and code = '1.1.02';
-
-  select id into v_bancoestado
-  from public.accounting_accounts
-  where entity_id = v_entity and code = '1.1.03';
-
-  update public.accounting_bank_accounts
-  set ledger_account_id = v_bancoestado,
-      account_name = case
-        when account_name ilike '%estado%' then account_name
-        else 'BancoEstado ' || currency
-      end,
-      updated_at = now()
-  where entity_id = v_entity
-    and lower(institution) in ('bancoestado', 'banco estado');
-
-  update public.accounting_bank_accounts
-  set ledger_account_id = v_scotiabank,
-      updated_at = now()
-  where entity_id = v_entity
-    and lower(institution) like 'scotia%'
-    and currency = 'CLP';
-end
-$$;
-
-create or replace function public.accounting_dashboard_summary(p_entity_id uuid, p_as_of date default current_date)
+create or replace function public.accounting_dashboard_summary(
+  p_entity_id uuid,
+  p_as_of date default current_date
+)
 returns jsonb
 language sql
+stable
 security definer
 set search_path = public, pg_temp
-stable
 as $$
   select case when auth.role()='service_role' or public.accounting_has_permission('accounting.dashboard.view') then jsonb_build_object(
     'as_of', p_as_of,
@@ -114,3 +52,6 @@ as $$
       where entity_id=p_entity_id and p_as_of between starts_on and ends_on and status<>'closed')
   ) else '{}'::jsonb end
 $$;
+
+revoke all on function public.accounting_dashboard_summary(uuid,date) from public;
+grant execute on function public.accounting_dashboard_summary(uuid,date) to authenticated, service_role;

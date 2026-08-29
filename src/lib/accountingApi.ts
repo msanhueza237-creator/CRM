@@ -25,6 +25,7 @@ async function accountingRequest<T>(route: string, options: RequestOptions = {})
   try {
     response = await fetch(getSupabaseFunctionUrl("accounting-center", route), {
       method: options.method || "GET",
+      cache: "no-store",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });

@@ -3853,7 +3853,14 @@ function corsHeaders(request: Request) {
 }
 
 function json(data: unknown, status: number, request: Request) {
-  return new Response(JSON.stringify(data), { status, headers: { ...corsHeaders(request), "Content-Type": "application/json; charset=utf-8" } });
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      ...corsHeaders(request),
+      "Content-Type": "application/json; charset=utf-8",
+      "Cache-Control": "no-store, max-age=0",
+    },
+  });
 }
 
 async function readJson(request: Request) {
