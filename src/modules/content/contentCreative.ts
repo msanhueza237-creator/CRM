@@ -43,7 +43,7 @@ export function defaultCreativeLayout(
 ): ContentCreativeLayout {
   return {
     style,
-    headline: product?.name?.trim() || "Producto Clima Activa",
+    headline: product?.name?.trim() || "Producto Climactiva",
     supporting_text: firstUsefulSentence(product?.description_text),
     badge: defaultBadge(product, style),
     website: "climactiva.cl",
@@ -111,7 +111,7 @@ function drawBrand(
 
   context.fillStyle = palette.ink;
   context.font = "800 28px Arial, sans-serif";
-  context.fillText("CLIMA ACTIVA", 126, 76);
+  context.fillText("CLIMACTIVA", 126, 76);
   context.fillStyle = palette.accent;
   context.font = "700 15px Arial, sans-serif";
   context.fillText("CLIMATIZACIÓN PROFESIONAL", 126, 101);
@@ -157,7 +157,7 @@ function drawMessage(
       ? "SOLUCIÓN TÉCNICA"
       : layout.style === "promotion"
         ? "PRODUCTO DESTACADO"
-        : "EQUIPAMIENTO CLIMA ACTIVA";
+        : "EQUIPAMIENTO CLIMACTIVA";
   context.fillStyle = palette.accent;
   context.font = "800 18px Arial, sans-serif";
   context.fillText(eyebrow, 62, 190);
@@ -223,7 +223,7 @@ function drawFooter(
   context.fillText(cleanWebsite(layout.website), 666, 1003);
   context.font = "500 15px Arial, sans-serif";
   context.fillStyle = "#cde5e6";
-  context.fillText(publication.hashtags.includes("ClimaActiva") ? "#ClimaActiva" : "Producto verificado", 666, 1032);
+  context.fillText(publication.hashtags.includes("Climactiva") ? "#Climactiva" : "Producto verificado", 666, 1032);
 }
 
 function drawImageContain(
@@ -353,7 +353,15 @@ function defaultBadge(product: ContentProduct | undefined, style: ContentVisualS
 }
 
 function cleanText(value: unknown) {
-  return String(value || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  const source = String(value || "");
+  const decoded = typeof document === "undefined"
+    ? source
+    : (() => {
+      const textarea = document.createElement("textarea");
+      textarea.innerHTML = source;
+      return textarea.value;
+    })();
+  return decoded.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
 }
 
 function cleanWebsite(value: string) {

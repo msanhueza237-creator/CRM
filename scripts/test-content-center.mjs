@@ -186,7 +186,7 @@ assert.equal(isMetaAccessTokenExpired(new Error("Meta rechazo la operacion.")), 
 assert.match(metaAccessTokenExpiredMessage("Instagram"), /META_SOCIAL_ACCESS_TOKEN/);
 assert.deepEqual(
   ensureBrandHashtag(["Refrigeracion", "#climactiva", "Refrigeracion"]),
-  ["Refrigeracion", "ClimaActiva"],
+  ["Refrigeracion", "Climactiva"],
   "el hashtag de marca debe quedar una sola vez",
 );
 assert.equal(
@@ -196,7 +196,7 @@ assert.equal(
 );
 assert.equal(
   buildSocialCaption({ body: "Contenido verificado", cta: "Compra ahora", hashtags: [] }),
-  "Contenido verificado\n\nCompra ahora\nVisita https://climactiva.cl\n\n#ClimaActiva",
+  "Contenido verificado\n\nCompra ahora\nVisita https://climactiva.cl\n\n#Climactiva",
   "la publicacion final siempre debe dirigir al sitio y conservar la marca",
 );
 assert.deepEqual(
@@ -209,26 +209,22 @@ assert.deepEqual(
     ],
     "https://cdn.example.test/fallback.jpg",
   ),
-  [
-    "https://cdn.example.test/one.jpg",
-    "https://cdn.example.test/two.jpg",
-    "https://cdn.example.test/fallback.jpg",
-  ],
-  "el carrusel debe conservar orden, eliminar duplicados y aceptar solo imagenes publicas HTTPS",
+  ["https://cdn.example.test/one.jpg"],
+  "la publicacion debe conservar solamente la primera imagen publica HTTPS",
 );
 assert.equal(
   normalizeSocialImageUrls(Array.from({ length: 12 }, (_, index) => `https://cdn.example.test/${index}.jpg`)).length,
-  10,
-  "Instagram admite hasta 10 imagenes por carrusel",
+  1,
+  "Instagram y Facebook deben recibir solamente la imagen principal",
 );
 
 const socialAdapterSource = await readFile(
   new URL("../supabase/functions/content-center/social-adapters.ts", import.meta.url),
   "utf8",
 );
-assert.match(socialAdapterSource, /media_type:\s*"CAROUSEL"/);
-assert.match(socialAdapterSource, /is_carousel_item:\s*"true"/);
-assert.match(socialAdapterSource, /attached_media\[\$\{index\}\]/);
+assert.doesNotMatch(socialAdapterSource, /media_type:\s*"CAROUSEL"/);
+assert.doesNotMatch(socialAdapterSource, /is_carousel_item:\s*"true"/);
+assert.doesNotMatch(socialAdapterSource, /attached_media\[\$\{index\}\]/);
 
 const contentEdgeSource = await readFile(
   new URL("../supabase/functions/content-center/index.ts", import.meta.url),

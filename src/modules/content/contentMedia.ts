@@ -1,6 +1,6 @@
 import type { ContentProduct, ContentPublication } from "../../types/content";
 
-const MAX_CAROUSEL_IMAGES = 10;
+const MAX_PUBLICATION_IMAGES = 1;
 
 export function getPublicationMediaUrls(
   publication: ContentPublication,
@@ -26,8 +26,7 @@ export function getOriginalPublicationMediaUrls(
     ? product.images.map((image) => image?.src)
     : [];
   return normalizeMediaUrls(
-    [...frozenUrls, ...productUrls],
-    publication.image_url || product?.primary_image_url,
+    [product?.primary_image_url, publication.image_url, ...frozenUrls, ...productUrls],
   );
 }
 
@@ -39,8 +38,7 @@ export function getDesignedMediaCount(publication: ContentPublication) {
 
 export function getProductMediaUrls(product?: ContentProduct) {
   return normalizeMediaUrls(
-    product?.images?.map((image) => image?.src) || [],
-    product?.primary_image_url,
+    [product?.primary_image_url, ...(product?.images?.map((image) => image?.src) || [])],
   );
 }
 
@@ -52,7 +50,7 @@ function normalizeMediaUrls(values: unknown[], fallback?: unknown) {
     if (!/^https:\/\//i.test(url) || seen.has(url)) continue;
     seen.add(url);
     urls.push(url);
-    if (urls.length === MAX_CAROUSEL_IMAGES) break;
+    if (urls.length === MAX_PUBLICATION_IMAGES) break;
   }
   return urls;
 }

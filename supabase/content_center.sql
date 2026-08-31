@@ -1,4 +1,4 @@
--- Clima Activa CRM - Centro de Contenido Inteligente
+-- Climactiva CRM - Centro de Contenido Inteligente
 -- Ejecutar despues de schema.sql y agent_hub.sql.
 -- La migracion es idempotente y nunca almacena secretos de proveedores.
 
@@ -169,7 +169,7 @@ create unique index if not exists brand_profiles_one_default_idx
 
 insert into public.brand_profiles(name, brand_name, description, is_default)
 values (
-  'Marca principal', 'Clima Activa',
+  'Marca principal', 'Climactiva',
   'Marca especializada en climatizacion y herramientas para tecnicos e instaladores.',
   true
 )

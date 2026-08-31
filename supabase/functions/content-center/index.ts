@@ -426,7 +426,7 @@ async function proxyCreativeSource(rest: RestClient, url: URL, req: Request) {
   if (!allowedUrls.includes(sourceUrl)) throw new HttpError(403, "La imagen no pertenece al producto de este borrador.");
 
   const upstream = await fetch(sourceUrl, {
-    headers: { Accept: "image/*", "User-Agent": "ClimaActiva-ContentCenter/1.0" },
+    headers: { Accept: "image/*", "User-Agent": "Climactiva-ContentCenter/1.0" },
     redirect: "follow",
   });
   if (!upstream.ok || !upstream.body) throw new HttpError(502, "No se pudo descargar una imagen del producto.");
@@ -452,7 +452,7 @@ async function attachPublicationCreative(
   requestId: string,
 ) {
   const publicationId = requiredUuid(payload.publicationId, "publicacion");
-  const designedMediaUrls = [...new Set(stringArray(payload.designedMediaUrls, 10))]
+  const designedMediaUrls = [...new Set(stringArray(payload.designedMediaUrls, 1))]
     .filter((url) => /^https:\/\//i.test(url));
   if (!designedMediaUrls.length) throw new HttpError(400, "Faltan las piezas visuales terminadas.");
   if (designedMediaUrls.some((url) => !url.includes("/storage/v1/object/public/content-creatives/"))) {
@@ -1043,7 +1043,7 @@ async function createGroundedVariants(context: GenerationContext) {
       "Si un dato no aparece, omitelo. Nunca rellenes vacios con conocimiento general.",
       "Instagram y Facebook deben tener redacciones propias, no copias identicas.",
       "No incluyas marcadores como [dato faltante].",
-      "Incluye ClimaActiva como hashtag de marca y dirige la llamada a la accion a https://climactiva.cl.",
+      "Incluye Climactiva como hashtag de marca y dirige la llamada a la accion a https://climactiva.cl.",
     ],
     product_facts: context.facts,
     brand_profile: context.brand,
@@ -1186,7 +1186,7 @@ function productImageUrls(product?: JsonRecord) {
       return String(asObject(image).src || "");
     })
     : [];
-  return normalizeSocialImageUrls(images, product.primary_image_url);
+  return normalizeSocialImageUrls([product.primary_image_url, ...images]);
 }
 
 function publicationImageUrls(publication: JsonRecord, product?: JsonRecord) {
@@ -1195,8 +1195,7 @@ function publicationImageUrls(publication: JsonRecord, product?: JsonRecord) {
   if (designedUrls.length) return normalizeSocialImageUrls(designedUrls, publication.image_url);
   const frozenUrls = Array.isArray(sourceFacts.media_urls) ? sourceFacts.media_urls : [];
   return normalizeSocialImageUrls(
-    [...frozenUrls, ...productImageUrls(product)],
-    publication.image_url,
+    [...productImageUrls(product), publication.image_url, ...frozenUrls],
   );
 }
 

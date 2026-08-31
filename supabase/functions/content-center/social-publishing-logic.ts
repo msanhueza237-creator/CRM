@@ -5,13 +5,13 @@ export type InstagramContainerState = {
 };
 
 export const OFFICIAL_WEBSITE_URL = "https://climactiva.cl";
-export const OFFICIAL_BRAND_HASHTAG = "ClimaActiva";
-export const MAX_SOCIAL_CAROUSEL_IMAGES = 10;
+export const OFFICIAL_BRAND_HASHTAG = "Climactiva";
+export const MAX_SOCIAL_PUBLICATION_IMAGES = 1;
 
 export function normalizeSocialImageUrls(
   imageUrls: unknown,
   fallbackImageUrl?: unknown,
-  limit = MAX_SOCIAL_CAROUSEL_IMAGES,
+  limit = MAX_SOCIAL_PUBLICATION_IMAGES,
 ) {
   const candidates = [
     ...(Array.isArray(imageUrls) ? imageUrls : []),

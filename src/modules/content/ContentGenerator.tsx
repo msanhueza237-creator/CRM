@@ -263,7 +263,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
             <button className={visualStyle === "promotion" ? "active" : ""} type="button" aria-pressed={visualStyle === "promotion"} onClick={() => setVisualStyle("promotion")}><BadgePercent size={18} /><span><strong>Promoción</strong><small>Precio o dato destacado</small></span></button>
           </fieldset>
           {visualStyle !== "original" ? <div className="content-visual-editor">
-            <div className="content-visual-editor-heading"><div><strong>Contenido dentro de la pieza</strong><span>Se aplicará a todas las imágenes disponibles, hasta 10 por carrusel.</span></div><span className={`content-visual-swatch ${visualStyle}`} aria-hidden="true" /></div>
+            <div className="content-visual-editor-heading"><div><strong>Contenido dentro de la pieza</strong><span>Se aplicará únicamente a la imagen principal del producto.</span></div><span className={`content-visual-swatch ${visualStyle}`} aria-hidden="true" /></div>
             <label className="content-generator-field"><span>Titular visual</span><input maxLength={120} value={visualHeadline} onChange={(event) => setVisualHeadline(event.target.value)} /></label>
             <div className="content-generator-field-grid">
               <label className="content-generator-field"><span>Dato destacado</span><input maxLength={80} value={visualBadge} onChange={(event) => setVisualBadge(event.target.value)} placeholder="SKU, medida o precio verificado" /></label>
@@ -283,7 +283,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
         </section>
 
         <div className="content-generator-preferences">
-          <label className="content-hashtag-toggle" title="#ClimaActiva se incluye siempre"><input type="checkbox" checked={useHashtags} onChange={(event) => setUseHashtags(event.target.checked)} /><Hash size={17} /> Agregar hashtags adicionales</label>
+          <label className="content-hashtag-toggle" title="#Climactiva se incluye siempre"><input type="checkbox" checked={useHashtags} onChange={(event) => setUseHashtags(event.target.checked)} /><Hash size={17} /> Agregar hashtags adicionales</label>
           <fieldset className="content-mode-picker"><legend>Flujo de revisión</legend><button className={operationMode === "manual" ? "active" : ""} type="button" aria-pressed={operationMode === "manual"} onClick={() => setOperationMode("manual")}><FileText size={17} /> Manual</button><button className={operationMode === "approval" ? "active" : ""} type="button" aria-pressed={operationMode === "approval"} onClick={() => setOperationMode("approval")}><ClipboardCheck size={17} /> Con aprobación</button></fieldset>
         </div>
         {selectedProduct ? <ProductFacts product={selectedProduct} /> : null}
@@ -320,7 +320,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
 
 function ProductFacts({ product }: { product: ContentCenterData["products"][number] }) {
   const imageCount = getProductMediaUrls(product).length;
-  return <div className="content-fact-source"><ShieldCheck size={18} /><div><strong>Fuente autorizada</strong><span>{product.name} · {product.sku || "sin SKU"} · {formatMoney(product.promotional_price ?? product.price)} · stock {product.stock ?? "no informado"} · {imageCount} {imageCount === 1 ? "imagen" : "imágenes"} para la publicación</span></div></div>;
+  return <div className="content-fact-source"><ShieldCheck size={18} /><div><strong>Fuente autorizada</strong><span>{product.name} · {product.sku || "sin SKU"} · {formatMoney(product.promotional_price ?? product.price)} · stock {product.stock ?? "no informado"} · {imageCount ? "imagen principal lista para la publicación" : "sin imagen principal"}</span></div></div>;
 }
 
 function statusLabel(status: string) {

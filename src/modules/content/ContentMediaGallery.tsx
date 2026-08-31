@@ -13,7 +13,7 @@ export function ContentMediaGallery({ images, alt }: { images: string[]; alt: st
         {images.length > 1 ? <span>{selectedIndex + 1} / {images.length}</span> : null}
       </div>
       {images.length > 1 ? (
-        <div className="content-media-thumbnails" aria-label="Imágenes disponibles para el carrusel">
+        <div className="content-media-thumbnails" aria-label="Imágenes disponibles">
           {images.map((image, index) => (
             <button
               className={image === activeUrl ? "active" : ""}
