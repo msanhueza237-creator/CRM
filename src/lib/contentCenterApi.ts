@@ -3,6 +3,7 @@ import type {
   ContentBootstrap,
   ContentChannelCode,
   ContentConnectionCheck,
+  ContentCreativeLayout,
   ContentProduct,
   ContentPublication,
   ContentOperationMode,
@@ -67,8 +68,57 @@ export function generateSocialContent(input: {
   variants: number;
   useHashtags: boolean;
   operationMode: ContentOperationMode;
+  visualLayout?: ContentCreativeLayout;
 }) {
   return contentRequest<{ groupId: string; publications: ContentPublication[] }>("generate", { method: "POST", body: input });
+}
+
+export async function fetchContentCreativeSource(publicationId: string, sourceUrl: string) {
+  if (!isSupabaseConfigured || !supabase) throw new Error("Conecta Supabase para crear la pieza visual.");
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (!token) throw new Error("Tu sesion expiro. Vuelve a iniciar sesion.");
+  const params = new URLSearchParams({ publicationId, sourceUrl });
+  const response = await fetch(getSupabaseFunctionUrl("content-center", `creative-source?${params}`), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    const result = await response.json().catch(() => ({}));
+    throw new Error(result.error || "No se pudo leer una imagen del producto.");
+  }
+  return response.blob();
+}
+
+export async function uploadContentCreative(publicationId: string, blob: Blob, index: number) {
+  if (!isSupabaseConfigured || !supabase) throw new Error("Conecta Supabase para guardar la pieza visual.");
+  const { data } = await supabase.auth.getSession();
+  const userId = data.session?.user.id;
+  if (!userId) throw new Error("Tu sesion expiro. Vuelve a iniciar sesion.");
+  const path = `${userId}/${publicationId}/${Date.now()}-${index + 1}.jpg`;
+  const { error } = await supabase.storage.from("content-creatives").upload(path, blob, {
+    cacheControl: "31536000",
+    contentType: "image/jpeg",
+    upsert: false,
+  });
+  if (error) throw new Error(`No se pudo guardar la pieza visual: ${error.message}`);
+  const { data: publicData } = supabase.storage.from("content-creatives").getPublicUrl(path);
+  return { path, publicUrl: publicData.publicUrl };
+}
+
+export function attachContentCreatives(
+  publicationId: string,
+  designedMediaUrls: string[],
+  visualLayout: ContentCreativeLayout,
+) {
+  return contentRequest<{ publication: ContentPublication }>("creative", {
+    method: "POST",
+    body: { publicationId, designedMediaUrls, visualLayout },
+  });
+}
+
+export async function removeContentCreatives(paths: string[]) {
+  if (!paths.length || !supabase) return;
+  await supabase.storage.from("content-creatives").remove(paths);
 }
 
 export function approveContentPublication(publicationId: string) {

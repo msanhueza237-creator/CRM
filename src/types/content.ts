@@ -1,5 +1,14 @@
 export type ContentChannelCode = "instagram" | "facebook";
 export type ContentOperationMode = "manual" | "approval" | "autopilot";
+export type ContentVisualStyle = "original" | "editorial" | "technical" | "promotion";
+
+export interface ContentCreativeLayout {
+  style: ContentVisualStyle;
+  headline: string;
+  supporting_text: string;
+  badge: string;
+  website: string;
+}
 export type ContentPublicationStatus =
   | "draft"
   | "pending_approval"

@@ -230,5 +230,23 @@ assert.match(socialAdapterSource, /media_type:\s*"CAROUSEL"/);
 assert.match(socialAdapterSource, /is_carousel_item:\s*"true"/);
 assert.match(socialAdapterSource, /attached_media\[\$\{index\}\]/);
 
+const contentEdgeSource = await readFile(
+  new URL("../supabase/functions/content-center/index.ts", import.meta.url),
+  "utf8",
+);
+assert.match(contentEdgeSource, /designed_media_urls/);
+assert.match(contentEdgeSource, /content_creative_attached/);
+assert.ok(
+  contentEdgeSource.indexOf("designed_media_urls") < contentEdgeSource.lastIndexOf("media_urls"),
+  "las piezas diagramadas deben tener prioridad sobre las imagenes originales al publicar",
+);
+
+const creativeStorageMigration = await readFile(
+  new URL("../supabase/content_creatives_storage.sql", import.meta.url),
+  "utf8",
+);
+assert.match(creativeStorageMigration, /content-creatives/);
+assert.match(creativeStorageMigration, /content_has_permission\('content\.generate'\)/);
+
 await db.close();
 console.log("Centro de Contenido: esquema, catálogo, cola y rotación verificados.");

@@ -82,6 +82,14 @@ Deno.serve(async (req) => {
       requirePermission(profile, "content.generate");
       return json(await generateContent(rest, profile, await readJson(req), requestId), 201, req);
     }
+    if (route === "creative-source" && req.method === "GET") {
+      requirePermission(profile, "content.generate");
+      return await proxyCreativeSource(rest, new URL(req.url), req);
+    }
+    if (route === "creative" && req.method === "POST") {
+      requirePermission(profile, "content.edit");
+      return json(await attachPublicationCreative(rest, profile, await readJson(req), requestId), 200, req);
+    }
     if (route === "approve" && req.method === "POST") {
       requirePermission(profile, "content.approve");
       return json(await approvePublication(rest, profile, await readJson(req), requestId), 200, req);
@@ -348,6 +356,7 @@ async function generateContent(
 
   const groupId = crypto.randomUUID();
   const mediaUrls = productImageUrls(product);
+  const visualLayout = normalizeCreativeLayout(payload.visualLayout, product);
   const rows: JsonRecord[] = [];
   for (const variant of generation.variants) {
     const channel = channelMap.get(variant.channel);
@@ -366,7 +375,7 @@ async function generateContent(
       body: variant.body,
       hashtags: brandedHashtags,
       image_url: mediaUrls[0] || null,
-      source_facts: { ...facts, media_urls: mediaUrls },
+      source_facts: { ...facts, media_urls: mediaUrls, creative_layout: visualLayout },
       missing_facts: [],
       content_fingerprint: await sha256(`${variant.channel}|${normalizeForFingerprint(variant.body)}`),
       model_name: generation.model,
@@ -392,6 +401,96 @@ async function generateContent(
     actor_id: optionalText(payload.generatorId, 120) || profile.id,
   })));
   return { groupId, publications: inserted, verification, requestId };
+}
+
+async function proxyCreativeSource(rest: RestClient, url: URL, req: Request) {
+  const publicationId = requiredUuid(url.searchParams.get("publicationId"), "publicacion");
+  const sourceUrl = requiredText(url.searchParams.get("sourceUrl"), "imagen original", 4000);
+  if (!/^https:\/\//i.test(sourceUrl)) throw new HttpError(400, "La imagen original no usa una URL segura.");
+  const publicationRows = await selectRows(
+    rest,
+    `content_publications?select=id,product_id,image_url,source_facts&id=eq.${publicationId}&limit=1`,
+  );
+  const publication = publicationRows[0];
+  if (!publication) throw new HttpError(404, "Publicacion no encontrada.");
+  const sourceFacts = asObject(publication.source_facts);
+  const frozenUrls = stringArray(sourceFacts.media_urls, 10);
+  let allowedUrls = normalizeSocialImageUrls(frozenUrls, publication.image_url);
+  if (publication.product_id) {
+    const products = await selectRows(
+      rest,
+      `content_products?select=images,primary_image_url&id=eq.${publication.product_id}&limit=1`,
+    );
+    allowedUrls = normalizeSocialImageUrls([...allowedUrls, ...productImageUrls(products[0])]);
+  }
+  if (!allowedUrls.includes(sourceUrl)) throw new HttpError(403, "La imagen no pertenece al producto de este borrador.");
+
+  const upstream = await fetch(sourceUrl, {
+    headers: { Accept: "image/*", "User-Agent": "ClimaActiva-ContentCenter/1.0" },
+    redirect: "follow",
+  });
+  if (!upstream.ok || !upstream.body) throw new HttpError(502, "No se pudo descargar una imagen del producto.");
+  const contentType = upstream.headers.get("content-type") || "";
+  const contentLength = Number(upstream.headers.get("content-length") || 0);
+  if (!contentType.toLowerCase().startsWith("image/")) throw new HttpError(422, "El archivo de origen no es una imagen.");
+  if (contentLength > 15_000_000) throw new HttpError(413, "Una imagen del producto supera 15 MB.");
+  return new Response(upstream.body, {
+    status: 200,
+    headers: {
+      ...corsHeaders(req),
+      "Content-Type": contentType,
+      "Cache-Control": "private, max-age=300",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+async function attachPublicationCreative(
+  rest: RestClient,
+  profile: Profile,
+  payload: JsonRecord,
+  requestId: string,
+) {
+  const publicationId = requiredUuid(payload.publicationId, "publicacion");
+  const designedMediaUrls = [...new Set(stringArray(payload.designedMediaUrls, 10))]
+    .filter((url) => /^https:\/\//i.test(url));
+  if (!designedMediaUrls.length) throw new HttpError(400, "Faltan las piezas visuales terminadas.");
+  if (designedMediaUrls.some((url) => !url.includes("/storage/v1/object/public/content-creatives/"))) {
+    throw new HttpError(400, "Una pieza visual no pertenece al almacenamiento autorizado.");
+  }
+  const rows = await selectRows(
+    rest,
+    `content_publications?select=id,status,product_id,correlation_id,source_facts&id=eq.${publicationId}&limit=1`,
+  );
+  const publication = rows[0];
+  if (!publication) throw new HttpError(404, "Publicacion no encontrada.");
+  if (!["draft", "pending_approval", "approved", "failed"].includes(String(publication.status))) {
+    throw new HttpError(409, "No se puede reemplazar la imagen de una publicacion ya programada o publicada.");
+  }
+  const creativeLayout = normalizeCreativeLayout(payload.visualLayout);
+  if (creativeLayout.style === "original") throw new HttpError(400, "Selecciona un estilo gráfico para guardar la pieza.");
+  const sourceFacts = asObject(publication.source_facts);
+  const updated = await patchRows(rest, "content_publications", `id=eq.${publicationId}`, {
+    image_url: designedMediaUrls[0],
+    source_facts: {
+      ...sourceFacts,
+      creative_layout: creativeLayout,
+      designed_media_urls: designedMediaUrls,
+      creative_generated_at: new Date().toISOString(),
+    },
+    updated_by: profile.id,
+    error_code: null,
+    error_message: null,
+  });
+  await history(
+    rest,
+    publication,
+    "content_creative_attached",
+    `${designedMediaUrls.length} pieza(s) visual(es) de marca vinculadas al borrador.`,
+    profile,
+    requestId,
+  );
+  return { publication: updated[0] || null };
 }
 
 async function approvePublication(rest: RestClient, profile: Profile, payload: JsonRecord, requestId: string) {
@@ -1092,11 +1191,25 @@ function productImageUrls(product?: JsonRecord) {
 
 function publicationImageUrls(publication: JsonRecord, product?: JsonRecord) {
   const sourceFacts = asObject(publication.source_facts);
+  const designedUrls = Array.isArray(sourceFacts.designed_media_urls) ? sourceFacts.designed_media_urls : [];
+  if (designedUrls.length) return normalizeSocialImageUrls(designedUrls, publication.image_url);
   const frozenUrls = Array.isArray(sourceFacts.media_urls) ? sourceFacts.media_urls : [];
   return normalizeSocialImageUrls(
     [...frozenUrls, ...productImageUrls(product)],
     publication.image_url,
   );
+}
+
+function normalizeCreativeLayout(value: unknown, product?: JsonRecord) {
+  const layout = asObject(value);
+  const style = oneOf(layout.style, ["original", "editorial", "technical", "promotion"] as const, "original");
+  return {
+    style,
+    headline: optionalText(layout.headline, 120) || optionalText(product?.name, 120),
+    supporting_text: optionalText(layout.supporting_text, 240),
+    badge: optionalText(layout.badge, 80),
+    website: "climactiva.cl",
+  };
 }
 
 async function history(

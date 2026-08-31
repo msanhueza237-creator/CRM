@@ -1,16 +1,21 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarClock, CheckCircle2, ClipboardCheck, Facebook, FileText, Hash, Instagram, RefreshCw, Send, ShieldCheck, Sparkles, XCircle } from "lucide-react";
+import { AlertTriangle, BadgePercent, CalendarClock, CheckCircle2, ClipboardCheck, Facebook, FileText, Hash, ImageIcon, Instagram, LayoutTemplate, RefreshCw, Send, ShieldCheck, Sparkles, Wrench, XCircle } from "lucide-react";
 import {
   approveContentPublication,
+  attachContentCreatives,
+  fetchContentCreativeSource,
   generateSocialContent,
   publishContentPublication,
   rejectContentPublication,
+  removeContentCreatives,
   scheduleContentPublication,
+  uploadContentCreative,
 } from "../../lib/contentCenterApi";
-import type { ContentChannelCode, ContentPublication } from "../../types/content";
+import type { ContentChannelCode, ContentCreativeLayout, ContentProduct, ContentPublication, ContentVisualStyle } from "../../types/content";
 import { useAuth } from "../auth/AuthContext";
 import { ContentMediaGallery } from "./ContentMediaGallery";
-import { getProductMediaUrls, getPublicationMediaUrls } from "./contentMedia";
+import { defaultCreativeLayout, renderContentCreative } from "./contentCreative";
+import { getDesignedMediaCount, getOriginalPublicationMediaUrls, getProductMediaUrls, getPublicationMediaUrls } from "./contentMedia";
 import type { ContentCenterData } from "./useContentCenter";
 
 interface Props {
@@ -31,6 +36,10 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const [variants, setVariants] = useState(1);
   const [useHashtags, setUseHashtags] = useState(true);
   const [operationMode, setOperationMode] = useState<"manual" | "approval">("approval");
+  const [visualStyle, setVisualStyle] = useState<ContentVisualStyle>("editorial");
+  const [visualHeadline, setVisualHeadline] = useState("");
+  const [visualSupportingText, setVisualSupportingText] = useState("");
+  const [visualBadge, setVisualBadge] = useState("");
   const [generated, setGenerated] = useState<ContentPublication[]>([]);
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
@@ -51,12 +60,19 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
     if (!templateId && data.bootstrap?.templates[0]) setTemplateId(data.bootstrap.templates[0].id);
     if (!brandId && data.bootstrap?.brands[0]) setBrandId(data.bootstrap.brands[0].id);
   }, [brandId, data.bootstrap, templateId]);
+  useEffect(() => {
+    const defaults = defaultCreativeLayout(selectedProduct, visualStyle);
+    setVisualHeadline(defaults.headline);
+    setVisualSupportingText(defaults.supporting_text);
+    setVisualBadge(defaults.badge);
+  }, [selectedProduct, visualStyle]);
 
   function toggleChannel(channel: ContentChannelCode) {
     setChannels((current) => current.includes(channel) ? current.filter((item) => item !== channel) : [...current, channel]);
   }
 
   function generationInput(productId: string) {
+    const product = data.products.find((item) => item.id === productId);
     return {
       productId,
       channels,
@@ -69,7 +85,58 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
       variants,
       useHashtags,
       operationMode,
+      visualLayout: visualLayoutFor(product),
     };
+  }
+
+  function visualLayoutFor(product?: ContentProduct): ContentCreativeLayout {
+    if (!product || product.id !== selectedProduct?.id) return defaultCreativeLayout(product, visualStyle);
+    return {
+      style: visualStyle,
+      headline: visualHeadline.trim() || product.name,
+      supporting_text: visualSupportingText.trim(),
+      badge: visualBadge.trim(),
+      website: "climactiva.cl",
+    };
+  }
+
+  async function applyCreativeLayout(
+    publications: ContentPublication[],
+    product: ContentProduct,
+    layout: ContentCreativeLayout,
+  ) {
+    if (layout.style === "original" || !publications.length) return publications;
+    const sourcePublication = publications[0];
+    const sourceUrls = getOriginalPublicationMediaUrls(sourcePublication, product);
+    if (!sourceUrls.length) throw new Error("El producto no tiene imágenes para diagramar.");
+    const uploadedPaths: string[] = [];
+    const designedMediaUrls: string[] = [];
+    let attachmentStarted = false;
+    try {
+      for (let index = 0; index < sourceUrls.length; index += 1) {
+        setBusy(`design-${index + 1}-${sourceUrls.length}`);
+        const imageBlob = await fetchContentCreativeSource(sourcePublication.id, sourceUrls[index]);
+        const creativeBlob = await renderContentCreative({
+          imageBlob,
+          layout,
+          product,
+          publication: sourcePublication,
+          slideIndex: index,
+          slideCount: sourceUrls.length,
+        });
+        const upload = await uploadContentCreative(sourcePublication.id, creativeBlob, index);
+        uploadedPaths.push(upload.path);
+        designedMediaUrls.push(upload.publicUrl);
+      }
+      attachmentStarted = true;
+      const attached = await Promise.all(publications.map((publication) =>
+        attachContentCreatives(publication.id, designedMediaUrls, layout)
+      ));
+      return attached.map((result) => result.publication);
+    } catch (creativeError) {
+      if (!attachmentStarted) await removeContentCreatives(uploadedPaths);
+      throw creativeError;
+    }
   }
 
   async function submit(event: FormEvent) {
@@ -80,8 +147,19 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
     setNotice("");
     try {
       const result = await generateSocialContent(generationInput(selectedProductId));
-      setGenerated(result.publications);
-      setNotice(`${result.publications.length} borrador(es) creados con verificación de hechos.`);
+      let publications = result.publications;
+      if (visualStyle !== "original" && selectedProduct) {
+        try {
+          publications = await applyCreativeLayout(publications, selectedProduct, visualLayoutFor(selectedProduct));
+        } catch (creativeError) {
+          setGenerated(publications);
+          setError(`Los textos quedaron guardados, pero no se pudo crear la diagramación: ${creativeError instanceof Error ? creativeError.message : "error inesperado"}`);
+          await data.refresh();
+          return;
+        }
+      }
+      setGenerated(publications);
+      setNotice(`${publications.length} borrador(es) creados${visualStyle === "original" ? "" : " con piezas gráficas de marca"} y verificación de hechos.`);
       await data.refresh();
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "No se pudo generar el contenido.");
@@ -121,8 +199,9 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
     await act("alternative", async () => {
       await Promise.all(reviewableGenerated.map((item) => rejectContentPublication(item.id, "Borrador reemplazado para probar otro producto.")));
       const result = await generateSocialContent(generationInput(nextProduct.id));
+      const publications = await applyCreativeLayout(result.publications, nextProduct, defaultCreativeLayout(nextProduct, visualStyle));
       onProductChange(nextProduct.id);
-      setGenerated(result.publications);
+      setGenerated(publications);
       setNotice(`Se descartaron los borradores anteriores y se genero una alternativa para ${nextProduct.name}.`);
     });
   }
@@ -176,6 +255,22 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
             <label className="content-generator-field"><span>Personalidad</span><select value={brandId} onChange={(event) => setBrandId(event.target.value)}>{data.bootstrap?.brands.map((brand) => <option value={brand.id} key={brand.id}>{brand.name}</option>)}</select></label>
             <label className="content-generator-field content-variants-field"><span>Variantes por red</span><input type="number" min={1} max={3} value={variants} onChange={(event) => setVariants(Number(event.target.value))} /></label>
           </div>
+          <fieldset className="content-visual-picker">
+            <legend>Diagramación de imágenes</legend>
+            <button className={visualStyle === "original" ? "active" : ""} type="button" aria-pressed={visualStyle === "original"} onClick={() => setVisualStyle("original")}><ImageIcon size={18} /><span><strong>Original</strong><small>Fotografías sin intervención</small></span></button>
+            <button className={visualStyle === "editorial" ? "active" : ""} type="button" aria-pressed={visualStyle === "editorial"} onClick={() => setVisualStyle("editorial")}><LayoutTemplate size={18} /><span><strong>Editorial</strong><small>Título, beneficio y marca</small></span></button>
+            <button className={visualStyle === "technical" ? "active" : ""} type="button" aria-pressed={visualStyle === "technical"} onClick={() => setVisualStyle("technical")}><Wrench size={18} /><span><strong>Técnica</strong><small>Presentación profesional</small></span></button>
+            <button className={visualStyle === "promotion" ? "active" : ""} type="button" aria-pressed={visualStyle === "promotion"} onClick={() => setVisualStyle("promotion")}><BadgePercent size={18} /><span><strong>Promoción</strong><small>Precio o dato destacado</small></span></button>
+          </fieldset>
+          {visualStyle !== "original" ? <div className="content-visual-editor">
+            <div className="content-visual-editor-heading"><div><strong>Contenido dentro de la pieza</strong><span>Se aplicará a todas las imágenes disponibles, hasta 10 por carrusel.</span></div><span className={`content-visual-swatch ${visualStyle}`} aria-hidden="true" /></div>
+            <label className="content-generator-field"><span>Titular visual</span><input maxLength={120} value={visualHeadline} onChange={(event) => setVisualHeadline(event.target.value)} /></label>
+            <div className="content-generator-field-grid">
+              <label className="content-generator-field"><span>Dato destacado</span><input maxLength={80} value={visualBadge} onChange={(event) => setVisualBadge(event.target.value)} placeholder="SKU, medida o precio verificado" /></label>
+              <label className="content-generator-field"><span>Sitio web</span><input value="climactiva.cl" readOnly /></label>
+            </div>
+            <label className="content-generator-field"><span>Beneficio breve verificado</span><textarea maxLength={240} value={visualSupportingText} onChange={(event) => setVisualSupportingText(event.target.value)} /></label>
+          </div> : null}
         </section>
 
         <section className="content-generator-section">
@@ -194,7 +289,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
         {selectedProduct ? <ProductFacts product={selectedProduct} /> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={18} /> {error}</div> : null}
         {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}
-        <div className="content-generator-submit"><span>{channels.length ? `${channels.length} ${channels.length === 1 ? "canal seleccionado" : "canales seleccionados"}` : "Selecciona al menos un canal"}</span><button className="primary-button" type="submit" disabled={busy === "generate" || !selectedProductId || !channels.length}><Sparkles size={18} /> {busy === "generate" ? "Generando y verificando..." : "Generar borradores"}</button></div>
+        <div className="content-generator-submit"><span>{channels.length ? `${channels.length} ${channels.length === 1 ? "canal seleccionado" : "canales seleccionados"}` : "Selecciona al menos un canal"}</span><button className="primary-button" type="submit" disabled={Boolean(busy) || !selectedProductId || !channels.length}><Sparkles size={18} /> {busy === "generate" ? "Generando y verificando..." : busy.startsWith("design-") ? `Diagramando ${busy.split("-")[1]} de ${busy.split("-")[2]}...` : "Generar borradores"}</button></div>
       </form>
 
       <section className="content-generated-column">
@@ -203,10 +298,11 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
           const channel = data.bootstrap?.channels.find((item) => item.id === publication.channel_id);
           const publicationProduct = data.products.find((item) => item.id === publication.product_id);
           const publicationImages = getPublicationMediaUrls(publication, publicationProduct);
+          const designedMediaCount = getDesignedMediaCount(publication);
           const isAdmin = user?.role === "administrador";
           return (
             <article className="content-draft-card" key={publication.id}>
-              <div className="content-draft-card-heading"><span>{channel?.code === "instagram" ? <Instagram size={18} /> : <Facebook size={18} />}{channel?.name || "Red social"}</span><span className={`content-state ${publication.status}`}>{statusLabel(publication.status)}</span></div>
+              <div className="content-draft-card-heading"><span>{channel?.code === "instagram" ? <Instagram size={18} /> : <Facebook size={18} />}{channel?.name || "Red social"}</span>{designedMediaCount ? <span className="content-creative-status"><LayoutTemplate size={14} /> {designedMediaCount} {designedMediaCount === 1 ? "pieza diseñada" : "piezas diseñadas"}</span> : null}<span className={`content-state ${publication.status}`}>{statusLabel(publication.status)}</span></div>
               <ContentMediaGallery images={publicationImages} alt={publicationProduct?.name || "Producto"} />
               <div className="content-draft-copy"><p>{publication.body}</p>{publication.hashtags.length ? <div className="content-hashtags">{publication.hashtags.map((tag) => <span key={tag}>#{tag}</span>)}</div> : null}{publication.cta ? <strong>{publication.cta}</strong> : null}</div>
               <div className="content-draft-footer"><small>Modelo: {publication.model_name || "IA configurada"} · hechos verificados antes de guardar</small>
