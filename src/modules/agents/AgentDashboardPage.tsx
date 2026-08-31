@@ -1008,7 +1008,7 @@ function netUnitPrice(item: Snapshot) {
   const hasSourcePrice = Number(item.unit_price_source ?? 0) > 0;
   const sourcePrice = Number(item.unit_price_source ?? normalizedPrice);
 
-  // Regla comercial de Clima Activa: el precio original del catálogo Facto
+  // Regla comercial de Climactiva: el precio original del catálogo Facto
   // corresponde al valor final con IVA, incluso cuando el proveedor lo etiqueta
   // como unit_net. El dashboard siempre trabaja con el precio neto sin IVA.
   if (hasSourcePrice) return sourcePrice / CHILE_VAT_FACTOR;
@@ -4992,7 +4992,7 @@ function FinanceDashboard({
                 como ventas o compras cero; corresponden a meses aún no transcurridos.
               </p>
               <p className="finance-import-context">
-                <strong>Lectura operativa:</strong> Clima Activa observa que los meses de mayor venta
+                <strong>Lectura operativa:</strong> Climactiva observa que los meses de mayor venta
                 suelen seguir a llegadas de mercadería desde China. Aquí se comparan compras contables
                 y ventas; el cruce con la fecha real de arribo se incorporará desde Comercio Exterior
                 considerando el ciclo objetivo de 95 días.

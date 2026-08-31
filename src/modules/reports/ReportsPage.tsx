@@ -594,7 +594,7 @@ function buildLocalReport(companies: Company[], interactions: Interaction[], fil
   const contactRate = selected.length ? Math.round((contactable / selected.length) * 1000) / 10 : 0;
   return {
     toolName: "generate_professional_report",
-    title: filters.reportKind === "financial" ? "Informe financiero mensual" : "Informe comercial Clima Activa",
+    title: filters.reportKind === "financial" ? "Informe financiero mensual" : "Informe comercial Climactiva",
     subtitle: filters.reportKind === "financial" ? "Sin corte financiero local disponible." : "Vista parcial de cartera y actividad disponible en este navegador.",
     generatedAt: new Date().toISOString(),
     periodLabel: periodLabel(filters.periodDays),

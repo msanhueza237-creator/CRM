@@ -24,7 +24,7 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 const demoUser: AppUser = {
   id: "demo-admin",
   email: "admin@climactiva.local",
-  name: "Administrador Clima Activa",
+  name: "Administrador Climactiva",
   role: "administrador",
 };
 
@@ -34,7 +34,7 @@ function mapSession(session: Session | null): AppUser | null {
   return {
     id: session.user.id,
     email: session.user.email ?? "",
-    name: session.user.user_metadata?.full_name ?? "Usuario Clima Activa",
+    name: session.user.user_metadata?.full_name ?? "Usuario Climactiva",
     role: session.user.user_metadata?.role ?? "vendedor",
   };
 }

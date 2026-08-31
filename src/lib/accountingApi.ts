@@ -179,7 +179,7 @@ export function getAccountingReport(input: { entityId: string; kind: AccountingR
 export async function exportAccountingExcel(report: AccountingReport, title: string) {
   const ExcelJS = await import("exceljs");
   const workbook = new ExcelJS.Workbook();
-  workbook.creator = "Clima Activa CRM";
+  workbook.creator = "Climactiva CRM";
   const sheet = workbook.addWorksheet("Informe");
   const keys = Object.keys(report.rows[0] || {});
   sheet.addRow([title]);

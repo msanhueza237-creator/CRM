@@ -161,10 +161,10 @@ export const demoCampaigns: Campaign[] = [
 export const demoTemplates: MessageTemplate[] = [
   {
     id: "tpl-001",
-    name: "Presentacion comercial Clima Activa",
+    name: "Presentacion comercial Climactiva",
     category: "Presentacion",
     body:
-      "Hola {{nombre_contacto}}, soy de Clima Activa. Trabajamos insumos y herramientas para climatizacion y refrigeracion. Queremos evaluar condiciones comerciales para {{nombre_empresa}} en {{ciudad}}.",
+      "Hola {{nombre_contacto}}, soy de Climactiva. Trabajamos insumos y herramientas para climatizacion y refrigeracion. Queremos evaluar condiciones comerciales para {{nombre_empresa}} en {{ciudad}}.",
   },
   {
     id: "tpl-002",
@@ -182,10 +182,10 @@ export const demoTemplates: MessageTemplate[] = [
   },
   {
     id: "tpl-004",
-    name: "Invitacion cuenta instalador Clima Activa",
+    name: "Invitacion cuenta instalador Climactiva",
     category: "Instaladores",
     body:
-      "Hola {{nombre_contacto}}, desde Clima Activa queremos invitar a {{nombre_empresa}} a crear una cuenta de instalador. {{beneficio}} Tambien contamos con stock de {{producto_destacado}} para tus trabajos en {{ciudad}}. Si quieres, te ayudamos a activar la cuenta.",
+      "Hola {{nombre_contacto}}, desde Climactiva queremos invitar a {{nombre_empresa}} a crear una cuenta de instalador. {{beneficio}} Tambien contamos con stock de {{producto_destacado}} para tus trabajos en {{ciudad}}. Si quieres, te ayudamos a activar la cuenta.",
   },
 ];
 

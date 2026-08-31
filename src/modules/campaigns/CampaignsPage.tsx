@@ -277,14 +277,14 @@ function proposalTypeForCommercialSuggestion(channel: string): CampaignType {
 
 function commercialSuggestionMessage(segment: CommercialSuggestionSegment) {
   if (segment.id === "hvac_technicians") {
-    return `Hola {{nombre_contacto}},\n\nDesde Clima Activa queremos ayudarte con stock y soluciones para tus trabajos de climatización en {{ciudad}}. Contamos con {{producto_destacado}} y atención especializada para técnicos e instaladores.\n\n{{beneficio}}\n\n¿Te gustaría recibir información y disponibilidad?\n\nSaludos,\nEquipo Clima Activa`;
+    return `Hola {{nombre_contacto}},\n\nDesde Climactiva queremos ayudarte con stock y soluciones para tus trabajos de climatización en {{ciudad}}. Contamos con {{producto_destacado}} y atención especializada para técnicos e instaladores.\n\n{{beneficio}}\n\n¿Te gustaría recibir información y disponibilidad?\n\nSaludos,\nEquipo Climactiva`;
   }
 
   if (segment.id === "hvac_distribution") {
-    return `Hola {{nombre_contacto}},\n\nDesde Clima Activa queremos presentar una propuesta comercial para {{nombre_empresa}} en {{ciudad}}. Contamos con {{producto_destacado}}, stock y condiciones por volumen para distribuidores y tiendas HVAC.\n\n¿Podemos preparar una propuesta para ustedes?\n\nSaludos,\nEquipo Clima Activa`;
+    return `Hola {{nombre_contacto}},\n\nDesde Climactiva queremos presentar una propuesta comercial para {{nombre_empresa}} en {{ciudad}}. Contamos con {{producto_destacado}}, stock y condiciones por volumen para distribuidores y tiendas HVAC.\n\n¿Podemos preparar una propuesta para ustedes?\n\nSaludos,\nEquipo Climactiva`;
   }
 
-  return `Hola {{nombre_contacto}},\n\nDesde Clima Activa queremos retomar el contacto con {{nombre_empresa}}. Tenemos novedades y disponibilidad de {{producto_destacado}} que pueden ser útiles para sus próximos proyectos de climatización.\n\n¿Te gustaría que te enviemos una propuesta?\n\nSaludos,\nEquipo Clima Activa`;
+  return `Hola {{nombre_contacto}},\n\nDesde Climactiva queremos retomar el contacto con {{nombre_empresa}}. Tenemos novedades y disponibilidad de {{producto_destacado}} que pueden ser útiles para sus próximos proyectos de climatización.\n\n¿Te gustaría que te enviemos una propuesta?\n\nSaludos,\nEquipo Climactiva`;
 }
 
 function commercialReportFromTaskRows(rows: Row[]) {
@@ -812,7 +812,7 @@ export function CampaignsPage() {
         subject: "Condiciones comerciales preferentes y stock garantizado",
         potentialCompanies: vipCompanies,
         source: "legacy",
-        defaultMessage: `Hola {{nombre_contacto}},\n\nEsperamos que estés muy bien. Como socio comercial clave de Clima Activa en {{ciudad}}, queremos ofrecerte prioridad y condiciones especiales en nuestro catálogo de {{producto_destacado}}.\n\nRecuerda que tienes habilitado tu código de descuento {{cupon}} para tu próxima facturación.\n\nQuedamos atentos a tus pedidos.\n\nSaludos,\nEquipo Clima Activa`,
+        defaultMessage: `Hola {{nombre_contacto}},\n\nEsperamos que estés muy bien. Como socio comercial clave de Climactiva en {{ciudad}}, queremos ofrecerte prioridad y condiciones especiales en nuestro catálogo de {{producto_destacado}}.\n\nRecuerda que tienes habilitado tu código de descuento {{cupon}} para tu próxima facturación.\n\nQuedamos atentos a tus pedidos.\n\nSaludos,\nEquipo Climactiva`,
       },
       {
         id: "prop-tech",
@@ -825,7 +825,7 @@ export function CampaignsPage() {
         subject: "Herramientas técnicas premium en oferta",
         potentialCompanies: techCompanies,
         source: "legacy",
-        defaultMessage: `Estimado {{nombre_contacto}} de {{nombre_empresa}},\n\nEsperamos que sea una excelente temporada en {{ciudad}}. Desde Clima Activa te recordamos que contamos con stock de {{producto_destacado}} con un 10% de descuento usando el código {{cupon}}.\n\nEscríbenos directamente aquí para coordinar el despacho hoy mismo.\n\nAtentamente,\nClima Activa`,
+        defaultMessage: `Estimado {{nombre_contacto}} de {{nombre_empresa}},\n\nEsperamos que sea una excelente temporada en {{ciudad}}. Desde Climactiva te recordamos que contamos con stock de {{producto_destacado}} con un 10% de descuento usando el código {{cupon}}.\n\nEscríbenos directamente aquí para coordinar el despacho hoy mismo.\n\nAtentamente,\nClimactiva`,
       },
       {
         id: "prop-reactivation",
@@ -838,7 +838,7 @@ export function CampaignsPage() {
         subject: "¿Conversamos sobre tus próximos proyectos de climatización?",
         potentialCompanies: leadCompanies,
         source: "legacy",
-        defaultMessage: `Hola {{nombre_contacto}},\n\nTe escribimos de Clima Activa. Hace un tiempo estuvimos conversando sobre soluciones de climatización para {{nombre_empresa}}.\n\nQueremos reactivar el contacto contigo en {{ciudad}} y comentarte que tenemos disponibilidad inmediata de {{producto_destacado}}.\n\nAdemás, habilitamos el beneficio especial {{cupon}} para que puedas concretar tu proyecto con un descuento extra.\n\n¿Te gustaría que agendemos una breve llamada de 5 minutos?\n\nSaludos cordiales,\nClima Activa`,
+        defaultMessage: `Hola {{nombre_contacto}},\n\nTe escribimos de Climactiva. Hace un tiempo estuvimos conversando sobre soluciones de climatización para {{nombre_empresa}}.\n\nQueremos reactivar el contacto contigo en {{ciudad}} y comentarte que tenemos disponibilidad inmediata de {{producto_destacado}}.\n\nAdemás, habilitamos el beneficio especial {{cupon}} para que puedas concretar tu proyecto con un descuento extra.\n\n¿Te gustaría que agendemos una breve llamada de 5 minutos?\n\nSaludos cordiales,\nClimactiva`,
       },
     ];
 
@@ -924,7 +924,7 @@ export function CampaignsPage() {
         description: segment.reason,
         product: "soluciones, repuestos y herramientas para climatización HVAC",
         coupon: installerSegment ? DEFAULT_INSTALLER_BENEFIT : "",
-        subject: `${segment.name} · propuesta Clima Activa`,
+        subject: `${segment.name} · propuesta Climactiva`,
         potentialCompanies,
         defaultMessage: commercialSuggestionMessage(segment),
         source: "commercial_agent",
@@ -2406,7 +2406,7 @@ export function CampaignsPage() {
                     <div className="deliverability-panel">
                       <strong>Buenas practicas Gmail</strong>
                       <p>
-                        Envia segmentos pequenos, usa variables personalizadas, evita asuntos agresivos y agrega datos claros de contacto de Clima Activa / LatinChile.
+                        Envia segmentos pequenos, usa variables personalizadas, evita asuntos agresivos y agrega datos claros de contacto de Climactiva / LatinChile.
                         Para campanas recurrentes queda pendiente agregar baja/desuscripcion.
                       </p>
                     </div>

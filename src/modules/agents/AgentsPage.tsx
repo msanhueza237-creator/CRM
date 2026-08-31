@@ -1177,7 +1177,7 @@ export function AgentsPage() {
       <div className="page-heading agent-heading">
         <div>
           <span className="eyebrow">CENTRO OPERACIONAL</span>
-          <h1>Agentes Clima Activa</h1>
+          <h1>Agentes Climactiva</h1>
           <p>Analizan información y preparan propuestas. Ningún agente compra, cobra ni envía campañas sin aprobación.</p>
         </div>
         <button className="ghost-button" type="button" onClick={() => void load()}>

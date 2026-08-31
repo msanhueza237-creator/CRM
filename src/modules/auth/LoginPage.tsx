@@ -37,7 +37,7 @@ export function LoginPage() {
           <Snowflake size={30} />
         </div>
         <p>CRM comercial</p>
-        <h1>Clima Activa</h1>
+        <h1>Climactiva</h1>
         <span>Prospeccion, seguimiento y campanas para distribuidores, tiendas e instaladores.</span>
       </section>
 

@@ -53,7 +53,7 @@ export function AppLayout() {
         <div className="sidebar-brand">
           <Snowflake size={28} />
           <div>
-            <strong>Clima Activa</strong>
+            <strong>Climactiva</strong>
             <span>CRM Comercial</span>
           </div>
         </div>

@@ -407,7 +407,7 @@ export function DashboardPage() {
       <div className="page-heading executive-heading">
         <div>
           <p>Vista global del CRM</p>
-          <h1>Centro de control Clima Activa</h1>
+          <h1>Centro de control Climactiva</h1>
           <span>Empresas, prospección, campañas, agentes e integraciones reunidos en una sola lectura trazable.</span>
         </div>
         <div className="heading-actions">
@@ -554,7 +554,7 @@ export function DashboardPage() {
         <div className="source-authority-list global-authority-list">
           <AuthorityRow icon={CircleDollarSign} title="Facto ERP" badge="Manda" status={connectionStatus(dashboard, "facto")} detail={`Stock, documentos y cartera · ${formatCount(dashboard.productCounts.facto)} productos sincronizados.`} />
           <AuthorityRow icon={ShoppingCart} title="Tiendanube / Climactiva.cl" badge="Complementa" status={connectionStatus(dashboard, "tiendanube")} detail={`Ecommerce y compradores web · ${formatCount(dashboard.productCounts.tiendanube)} productos sincronizados.`} />
-          <AuthorityRow icon={ShieldCheck} title="CRM Clima Activa" badge="Decide" status="operativo" detail="Empresas, aprobación de prospectos, campañas, seguimiento y decisiones humanas." />
+          <AuthorityRow icon={ShieldCheck} title="CRM Climactiva" badge="Decide" status="operativo" detail="Empresas, aprobación de prospectos, campañas, seguimiento y decisiones humanas." />
         </div>
       </section>
 

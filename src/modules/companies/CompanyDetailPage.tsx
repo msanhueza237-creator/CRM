@@ -73,7 +73,7 @@ export function CompanyDetailPage() {
 
   const catalogOptions = [
     { id: "", name: "Ninguno (Solo mensaje)", url: "", label: "Sin adjunto" },
-    { id: "pdf", name: "Catálogo Clima Activa (PDF)", url: "https://climactiva.cl/catalogos/catalogo_general.pdf", label: "Catálogo PDF" },
+    { id: "pdf", name: "Catálogo Climactiva (PDF)", url: "https://climactiva.cl/catalogos/catalogo_general.pdf", label: "Catálogo PDF" },
     { id: "xlsx", name: "Lista de Precios 2026 (Excel)", url: "https://climactiva.cl/catalogos/lista_de_precios_2026.xlsx", label: "Lista Excel" },
     { id: "jpg", name: "Ofertas de Climatización (JPG)", url: "https://climactiva.cl/catalogos/ofertas_julio.jpg", label: "Ofertas JPG" },
     { id: "local", name: "Subir archivo local...", url: "", label: "Archivo Local" },
@@ -104,7 +104,7 @@ export function CompanyDetailPage() {
       updateInteractionField("result", `Mensaje enviado por WhatsApp${catalogObj ? ` con ${catalogObj.label}` : ""}`);
       updateInteractionField("nextAction", "Hacer seguimiento por WhatsApp");
     } else {
-      const subject = `Contacto Clima Activa - ${company!.name}`;
+      const subject = `Contacto Climactiva - ${company!.name}`;
       const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${company!.email}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(previewMessage)}`;
       window.open(gmailUrl, "_blank");
       
