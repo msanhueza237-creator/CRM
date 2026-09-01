@@ -125,6 +125,8 @@ assert.match(parserSource, /banco_estado/);
 assert.match(parserSource, /scotiabank/);
 assert.match(parserSource, /mercado_pago/);
 assert.match(parserSource, /fingerprint/);
+assert.match(parserSource, /findHeader\(rows, \["fecha", "descripcion", "cargo", "abono", "saldo"\]\)/);
+assert.match(parserSource, /columnIndexAny\(header, \["n doc", "numero documento", "documento"\]\)/);
 assert.match(factoExcelParserSource, /facto_unpaid_documents/);
 assert.match(factoExcelParserSource, /facto_checks_banco_estado/);
 assert.match(factoExcelParserSource, /facto_cash_scotiabank/);

@@ -94,7 +94,7 @@ function parseBancoEstado(workbook: XLSX.WorkBook): BankPreview {
 
 function parseScotiabank(workbook: XLSX.WorkBook): BankPreview {
   const rows = sheetRows(workbook, findSheet(workbook, "data"));
-  const headerIndex = findHeader(rows, ["fecha", "descripcion", "cargos", "abonos", "saldo"]);
+  const headerIndex = findHeader(rows, ["fecha", "descripcion", "cargo", "abono", "saldo"]);
   if (headerIndex < 0) throw new Error("No se encontró el encabezado de movimientos de Scotiabank.");
   const header = rows[headerIndex].map(normalizeText);
   const preamble = rows.slice(0, headerIndex).flat().map((value) => String(value || "")).join(" ");
@@ -108,9 +108,9 @@ function parseScotiabank(workbook: XLSX.WorkBook): BankPreview {
     rows: parseRows(rows, headerIndex, {
       date: columnIndex(header, "fecha"),
       description: columnIndex(header, "descripcion"),
-      operation: columnIndex(header, "n doc"),
-      debit: columnIndex(header, "cargos"),
-      credit: columnIndex(header, "abonos"),
+      operation: columnIndexAny(header, ["n doc", "numero documento", "documento"]),
+      debit: columnIndex(header, "cargo"),
+      credit: columnIndex(header, "abono"),
       balance: columnIndex(header, "saldo"),
     }, currency),
   };
@@ -216,6 +216,14 @@ function findHeader(rows: unknown[][], required: string[]) {
 
 function columnIndex(header: string[], label: string) {
   return header.findIndex((cell) => cell.includes(normalizeText(label)));
+}
+
+function columnIndexAny(header: string[], labels: string[]) {
+  for (const label of labels) {
+    const index = columnIndex(header, label);
+    if (index >= 0) return index;
+  }
+  return -1;
 }
 
 function rowObject(header: string[], row: unknown[]) {
