@@ -61,57 +61,73 @@ function detectProfile(workbook: XLSX.WorkBook, requested?: string): BankPreview
   if (normalized.includes("mercado")) return "mercado_pago";
 
   const names = workbook.SheetNames.map(normalizeText).join(" ");
-  if (names.includes("movimientos") && names.includes("resumen")) return "banco_estado";
-  const first = sheetRows(workbook, workbook.SheetNames[0], 30).flat().map(normalizeText).join(" ");
-  if (first.includes("release date") || first.includes("transaction net amount")) return "mercado_pago";
-  if (first.includes("cartola") || first.includes("n doc") || first.includes("cargos abonos saldo")) return "scotiabank";
+  if (names.includes("resumen") && (names.includes("movimientos") || names.includes("registros"))) return "banco_estado";
+  const sample = workbook.SheetNames
+    .flatMap((sheetName) => sheetRows(workbook, sheetName, 40).flat())
+    .map(normalizeText)
+    .join(" ");
+  if (sample.includes("release date") || sample.includes("transaction net amount")) return "mercado_pago";
+  if (sample.includes("chequera electronica") && sample.includes("n operacion")) return "banco_estado";
+  if (sample.includes("cartola") || sample.includes("n doc") || sample.includes("numero documento") || sample.includes("cargos abonos saldo")) return "scotiabank";
   throw new Error("No se reconoció el formato. Selecciona Scotiabank, BancoEstado o Mercado Pago.");
 }
 
 function parseBancoEstado(workbook: XLSX.WorkBook): BankPreview {
-  const rows = sheetRows(workbook, findSheet(workbook, "movimientos"));
+  const { rows, headerIndex } = findBankTable(workbook, ["movimientos", "registros"], [
+    ["fecha", "fecha movimiento", "fecha transaccion"],
+    ["descripcion", "detalle", "glosa"],
+    ["cheques cargos", "cargos", "cargo", "debitos", "debe"],
+    ["depositos abonos", "abonos", "abono", "creditos", "haber"],
+  ]);
   const statementRange = bancoEstadoStatementRange(sheetRows(workbook, findSheet(workbook, "resumen")));
-  const headerIndex = findHeader(rows, ["fecha", "descripcion", "cheques cargos", "depositos abonos"]);
   if (headerIndex < 0) throw new Error("No se encontró el encabezado de movimientos de BancoEstado.");
   const header = rows[headerIndex].map(normalizeText);
-  const accountColumn = columnIndex(header, "n cuenta");
-  const accountHint = String(rows[headerIndex + 1]?.[accountColumn] || "BancoEstado").trim();
+  const accountColumn = columnIndexAny(header, ["n cuenta", "numero cuenta", "cuenta"]);
+  const accountFromRows = accountColumn >= 0 ? String(rows[headerIndex + 1]?.[accountColumn] || "").trim() : "";
+  const accountHint = accountFromRows || findLabeledValue(workbook, ["chequera electronica", "numero cuenta", "n cuenta"]) || "BancoEstado";
   return {
     profile: "banco_estado",
     currency: "CLP",
     account_hint: accountHint,
     warnings: [],
     rows: parseRows(rows, headerIndex, {
-      date: columnIndex(header, "fecha"),
-      description: columnIndex(header, "descripcion"),
-      operation: columnIndex(header, "n operacion"),
-      debit: columnIndex(header, "cheques cargos"),
-      credit: columnIndex(header, "depositos abonos"),
-      balance: columnIndex(header, "saldo"),
+      date: columnIndexAny(header, ["fecha", "fecha movimiento", "fecha transaccion"]),
+      description: columnIndexAny(header, ["descripcion", "detalle", "glosa"]),
+      operation: columnIndexAny(header, ["n operacion", "numero operacion", "n doc", "numero documento", "documento"]),
+      debit: columnIndexAny(header, ["cheques cargos", "cargos", "cargo", "debitos", "debe"]),
+      credit: columnIndexAny(header, ["depositos abonos", "abonos", "abono", "creditos", "haber"]),
+      balance: columnIndexAny(header, ["saldo", "saldo diario", "saldo disponible"]),
     }, "CLP", statementRange),
   };
 }
 
 function parseScotiabank(workbook: XLSX.WorkBook): BankPreview {
-  const rows = sheetRows(workbook, findSheet(workbook, "data"));
-  const headerIndex = findHeader(rows, ["fecha", "descripcion", "cargo", "abono", "saldo"]);
+  const { rows, headerIndex } = findBankTable(workbook, ["data", "movimientos", "registros"], [
+    ["fecha", "fecha movimiento", "fecha transaccion"],
+    ["descripcion", "detalle", "glosa"],
+    ["cargos", "cargo", "debitos", "debe"],
+    ["abonos", "abono", "creditos", "haber"],
+  ]);
   if (headerIndex < 0) throw new Error("No se encontró el encabezado de movimientos de Scotiabank.");
   const header = rows[headerIndex].map(normalizeText);
   const preamble = rows.slice(0, headerIndex).flat().map((value) => String(value || "")).join(" ");
   const currency = /\bUSD\b|DOLAR/i.test(preamble) ? "USD" : "CLP";
   const accountMatch = preamble.match(/(?:cuenta|account)\D{0,15}([\d-]{5,})/i);
+  const accountHint = findLabeledValue(workbook, ["numero cuenta", "n cuenta", "cuenta"])
+    || accountMatch?.[1]
+    || `Scotiabank ${currency}`;
   return {
     profile: "scotiabank",
     currency,
-    account_hint: accountMatch?.[1] || `Scotiabank ${currency}`,
+    account_hint: accountHint,
     warnings: [],
     rows: parseRows(rows, headerIndex, {
-      date: columnIndex(header, "fecha"),
-      description: columnIndex(header, "descripcion"),
-      operation: columnIndexAny(header, ["n doc", "numero documento", "documento"]),
-      debit: columnIndex(header, "cargo"),
-      credit: columnIndex(header, "abono"),
-      balance: columnIndex(header, "saldo"),
+      date: columnIndexAny(header, ["fecha", "fecha movimiento", "fecha transaccion"]),
+      description: columnIndexAny(header, ["descripcion", "detalle", "glosa"]),
+      operation: columnIndexAny(header, ["n doc", "numero documento", "n operacion", "numero operacion", "documento"]),
+      debit: columnIndexAny(header, ["cargos", "cargo", "debitos", "debe"]),
+      credit: columnIndexAny(header, ["abonos", "abono", "creditos", "haber"]),
+      balance: columnIndexAny(header, ["saldo", "saldo diario", "saldo disponible"]),
     }, currency),
   };
 }
@@ -207,6 +223,28 @@ function findSheet(workbook: XLSX.WorkBook, expected: string) {
   return workbook.SheetNames.find((name) => normalizeText(name).includes(normalizeText(expected))) || workbook.SheetNames[0];
 }
 
+function findBankTable(workbook: XLSX.WorkBook, preferredSheets: string[], requiredAliases: string[][]) {
+  const preferred = workbook.SheetNames.filter((name) =>
+    preferredSheets.some((expected) => normalizeText(name).includes(normalizeText(expected)))
+  );
+  const candidates = [...preferred, ...workbook.SheetNames.filter((name) => !preferred.includes(name))];
+  for (const sheetName of candidates) {
+    const rows = sheetRows(workbook, sheetName);
+    const headerIndex = findHeaderAliases(rows, requiredAliases);
+    if (headerIndex >= 0) return { rows, headerIndex };
+  }
+  return { rows: [] as unknown[][], headerIndex: -1 };
+}
+
+function findHeaderAliases(rows: unknown[][], requiredAliases: string[][]) {
+  return rows.findIndex((row) => {
+    const normalized = row.map(normalizeText);
+    return requiredAliases.every((aliases) => aliases.some((label) =>
+      normalized.some((cell) => cell.includes(normalizeText(label)))
+    ));
+  });
+}
+
 function findHeader(rows: unknown[][], required: string[]) {
   return rows.findIndex((row) => {
     const normalized = row.map(normalizeText);
@@ -224,6 +262,21 @@ function columnIndexAny(header: string[], labels: string[]) {
     if (index >= 0) return index;
   }
   return -1;
+}
+
+function findLabeledValue(workbook: XLSX.WorkBook, labels: string[]) {
+  const normalizedLabels = labels.map(normalizeText);
+  for (const sheetName of workbook.SheetNames) {
+    for (const row of sheetRows(workbook, sheetName, 80)) {
+      for (let index = 0; index < row.length; index += 1) {
+        const cell = normalizeText(row[index]);
+        if (!normalizedLabels.some((label) => cell === label || cell.includes(label))) continue;
+        const value = row.slice(index + 1).find((candidate) => String(candidate || "").trim());
+        if (value !== undefined) return String(value).trim();
+      }
+    }
+  }
+  return "";
 }
 
 function rowObject(header: string[], row: unknown[]) {
