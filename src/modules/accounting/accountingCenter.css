@@ -611,7 +611,8 @@
 
 .accounting-reconcile-filters {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) repeat(2, minmax(120px, 0.45fr));
+  grid-template-columns: minmax(190px, 1.2fr) repeat(2, minmax(125px, 0.65fr)) minmax(150px, 0.75fr) 38px;
+  align-items: end;
   gap: 9px;
   margin-top: 16px;
 }
@@ -633,9 +634,15 @@
 }
 
 .accounting-reconcile-filters input,
+.accounting-reconcile-filters select,
 .accounting-candidate-search input,
 .accounting-reconcile-confirm input,
 .accounting-allocation-input input { width: 100%; }
+
+.accounting-filter-reset {
+  width: 38px;
+  height: 38px;
+}
 
 .accounting-filter-count {
   display: block;
@@ -701,7 +708,80 @@
 
 .accounting-candidate-search {
   display: block;
+}
+
+.accounting-candidate-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.35fr);
+  align-items: end;
+  gap: 10px;
   margin-top: 14px;
+}
+
+.accounting-candidate-toolbar > label { min-width: 0; }
+.accounting-candidate-toolbar > label > span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--accounting-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.accounting-candidate-toolbar select { width: 100%; }
+
+.accounting-payroll-assignment {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  margin-top: 12px;
+  padding: 13px;
+  border: 1px solid #9bcac3;
+  border-left: 4px solid var(--accounting-good);
+  border-radius: 5px;
+  background: #edf8f5;
+}
+
+.accounting-payroll-assignment.locked {
+  border-color: #e5c37f;
+  border-left-color: var(--accounting-warn);
+  background: #fff8e8;
+}
+
+.accounting-payroll-assignment > div:first-child {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.accounting-payroll-assignment svg { flex: 0 0 auto; color: var(--accounting-teal); }
+.accounting-payroll-assignment strong,
+.accounting-payroll-assignment span,
+.accounting-payroll-assignment small { display: block; overflow-wrap: anywhere; }
+.accounting-payroll-assignment span { margin-top: 3px; color: var(--accounting-ink); }
+.accounting-payroll-assignment small { margin-top: 5px; color: var(--accounting-muted); }
+
+.accounting-payroll-confirm {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 7px;
+  max-width: 310px;
+}
+.accounting-payroll-confirm > span { grid-column: 1 / -1; font-size: 12px; font-weight: 700; }
+
+.accounting-payroll-hint {
+  width: fit-content;
+  padding: 3px 6px;
+  border-radius: 3px;
+  background: #e4f4ef;
+  color: #176f60 !important;
+  font-weight: 800;
+}
+
+.accounting-payroll-hint.duplicate {
+  background: #fff0ed;
+  color: var(--accounting-danger) !important;
 }
 
 .accounting-overview-card,
@@ -1374,6 +1454,11 @@
   .accounting-reconcile-filters,
   .accounting-allocation-summary,
   .accounting-reconcile-confirm { grid-template-columns: 1fr; }
+  .accounting-candidate-toolbar,
+  .accounting-payroll-assignment { grid-template-columns: 1fr; }
+  .accounting-filter-reset { width: 100%; }
+  .accounting-payroll-confirm { grid-template-columns: 1fr; max-width: none; }
+  .accounting-payroll-confirm > span { grid-column: auto; }
   .accounting-suggested-plan { align-items: stretch; flex-direction: column; }
   .accounting-suggested-plan button,
   .accounting-reconcile-confirm button { width: 100%; justify-content: center; }

@@ -117,6 +117,17 @@ export function confirmAccountingReconciliation(input: { transactionId: string; 
   return accountingRequest<{ matched: number; allocated: number; remaining: number }>("reconciliation/confirm", { method: "POST", body: input });
 }
 
+export function classifyAccountingPayrollTransaction(input: { transactionId: string; employeeKey: "sisla" | "marco"; note?: string }) {
+  return accountingRequest<{
+    transactionId: string;
+    employee: { key: "sisla" | "marco"; name: string; taxId: string };
+    amountClp: number;
+    payrollPayableClp: number;
+    payrollExpenseClp: number;
+    entryId: string;
+  }>("reconciliation/payroll", { method: "POST", body: input });
+}
+
 export function previewExactAccountingReconciliations(input: { entityId: string; from: string; to: string }) {
   return accountingRequest<AccountingExactReconciliationPreview>("reconciliation/exact-preview", { method: "POST", body: input });
 }

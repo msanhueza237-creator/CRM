@@ -76,6 +76,7 @@ export function normalizeAccountingReconciliationProposal(value: unknown): Accou
     reconciliation_status: ["unmatched", "proposed", "partial", "matched", "ignored"].includes(String(transactionRecord.reconciliation_status))
       ? transactionRecord.reconciliation_status as AccountingBankTransaction["reconciliation_status"]
       : "unmatched",
+    metadata: asRecord(transactionRecord.metadata),
   };
   const movementAmount = Math.abs(finiteNumber(transaction.amount_clp));
   const incoming = finiteNumber(transaction.amount_clp) >= 0;

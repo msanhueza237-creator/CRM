@@ -14,7 +14,17 @@ import {
   selectVerifiedExactAllocation,
 } from "../supabase/functions/accounting-center/reconciliation-engine.ts";
 import { normalizeAccountingReconciliationProposal } from "../src/modules/accounting/reconciliationCompatibility.ts";
+import {
+  filterAndSortReconciliationTransactions,
+  identifyPayrollEmployee as identifyPayrollEmployeeInUi,
+  matchingPostedPayrollDuplicate,
+  reconciliationDocumentCandidates,
+} from "../src/modules/accounting/reconciliationSearch.ts";
 import { buildFactoCurrentStateAdjustment } from "../supabase/functions/accounting-center/facto-current-state.ts";
+import {
+  identifyPayrollEmployee,
+  protectedPayrollClassification,
+} from "../supabase/functions/accounting-center/payroll-employees.ts";
 
 const migration = (await readFile(new URL("../supabase/accounting_center.sql", import.meta.url), "utf8"))
   .replace(/create extension if not exists pgcrypto;/i, "");
@@ -63,6 +73,7 @@ assert.match(edgeSource, /index \+= 40/);
 assert.match(edgeSource, /suggestedExchangeRate/);
 assert.match(edgeSource, /Ingresa un tipo de cambio .*\/CLP válido/);
 assert.match(edgeSource, /route === "reconciliation\/confirm"/);
+assert.match(edgeSource, /route === "reconciliation\/payroll"/);
 assert.match(edgeSource, /route === "reconciliation\/exact-preview"/);
 assert.match(edgeSource, /route === "reconciliation\/exact-confirm"/);
 assert.match(edgeSource, /route === "ledger\/coverage"/);
@@ -149,6 +160,8 @@ assert.match(pageSource, /Descargar cartola original/);
 assert.match(pageSource, /accounting-bank-history/);
 assert.match(pageSource, /Se conservará el monto original y se guardará su equivalente contable en CLP/);
 assert.match(pageSource, /Usar propuesta/);
+assert.match(pageSource, /Buscar en todos los documentos abiertos/);
+assert.match(pageSource, /Asignar a sueldos/);
 assert.match(pageSource, /Conciliar coincidencias exactas/);
 assert.match(pageSource, /Preparar libro/);
 assert.match(pageSource, /Rentabilidad todavía no certificada/);
@@ -161,6 +174,69 @@ assert.match(pageSource, /ya están incluidos una sola vez/);
 assert.match(pageSource, /fallbackDashboard/);
 assert.match(pageSource, /ReconciliationErrorBoundary/);
 assert.match(pageSource, /No se pudo mostrar esta propuesta/);
+
+const orderedMovements = filterAndSortReconciliationTransactions([
+  {
+    id: "movement-marco", bank_account_id: "bank", transaction_date: "2026-08-31", value_date: null,
+    description: "TEF 15427713-7 Marco Emilio Sanhueza", reference: "5807565278", operation_number: null,
+    debit: 153040, credit: 0, amount: -153040, balance: null, currency: "CLP", exchange_rate: 1,
+    amount_clp: -153040, reconciliation_status: "unmatched", metadata: {},
+  },
+  {
+    id: "movement-sisla", bank_account_id: "bank", transaction_date: "2026-07-29", value_date: null,
+    description: "TEF 14186473-4 Sisla Muñoz", reference: "5807577526", operation_number: null,
+    debit: 500000, credit: 0, amount: -500000, balance: null, currency: "CLP", exchange_rate: 1,
+    amount_clp: -500000, reconciliation_status: "unmatched", metadata: {},
+  },
+], { query: "marco sanh", from: "2026-08-01", to: "2026-08-31", sort: "name-asc" });
+assert.deepEqual(orderedMovements.map((movement) => movement.id), ["movement-marco"]);
+assert.equal(filterAndSortReconciliationTransactions(orderedMovements, {
+  query: "31/08/2026", from: "", to: "", sort: "date-desc",
+}).length, 1);
+assert.equal(identifyPayrollEmployeeInUi("TEF 15427713-7 Marco Emilio Sa")?.key, "marco");
+assert.equal(matchingPostedPayrollDuplicate(orderedMovements[0], [{
+  ...orderedMovements[0],
+  id: "movement-marco-posted",
+  reconciliation_status: "matched",
+  metadata: { verified_classification: "salary_marco" },
+}])?.id, "movement-marco-posted");
+assert.equal(identifyPayrollEmployee("TEF 14186473-4 Sisla Munoz")?.key, "sisla");
+assert.match(protectedPayrollClassification({
+  classification_locked: true,
+  verified_classification: "loan_repayment_sisla",
+})?.message || "", /devolución de préstamo/i);
+
+const searchedDocuments = reconciliationDocumentCandidates({
+  proposalCandidates: [{
+    targetType: "receivable",
+    targetId: "marba",
+    score: 0.26,
+    confidence: "possible",
+    suggestedAmount: 219527,
+    evidence: ["Posible pago parcial"],
+    dateDifferenceDays: 2,
+    signals: { taxId: false, document: false, name: 0.2, date: true, amount: "partial" },
+    candidate: {
+      id: "marba", customer_name: "MARBA - Refrigeración, Aire Acondicionado SPA", customer_tax_id: "76.919.986-1",
+      document_number: "1549", issued_on: "2026-08-24", due_on: null, original_amount_clp: 473207,
+      paid_amount_clp: 0, balance_clp: 473207, reported_paid_amount_clp: null, reported_balance_clp: null,
+      reported_at: null, reported_source_batch_id: null, status: "pending", currency: "CLP",
+    },
+  }],
+  receivables: [{
+    id: "acondiparts", customer_name: "Acondiparts Center SPA", customer_tax_id: "77.111.222-3",
+    document_number: "1550", issued_on: "2026-08-28", due_on: null, original_amount_clp: 500000,
+    paid_amount_clp: 0, balance_clp: 500000, reported_paid_amount_clp: null, reported_balance_clp: null,
+    reported_at: null, reported_source_batch_id: null, status: "pending", currency: "CLP",
+  }],
+  payables: [],
+  incoming: true,
+  query: "acondi",
+  remainingAmount: 219527,
+  sort: "relevance",
+});
+assert.deepEqual(searchedDocuments.map((candidate) => candidate.targetId), ["acondiparts", "marba"]);
+assert.equal(searchedDocuments[0].signals.amount, "partial");
 
 const legacyProposal = normalizeAccountingReconciliationProposal({
   transaction: {

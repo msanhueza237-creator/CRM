@@ -7,6 +7,7 @@ import {
   type ReconciliationDocumentInput,
 } from "./reconciliation-engine.ts";
 import { buildFactoCurrentStateAdjustment } from "./facto-current-state.ts";
+import { identifyPayrollEmployee, protectedPayrollClassification } from "./payroll-employees.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -75,6 +76,10 @@ Deno.serve(async (request) => {
     if (route === "reconciliation/confirm" && request.method === "POST") {
       requirePermission(profile, "reconcile");
       return json(await confirmReconciliation(rest, profile, await readJson(request)), 200, request);
+    }
+    if (route === "reconciliation/payroll" && request.method === "POST") {
+      requirePermission(profile, "post");
+      return json(await classifyPayrollTransaction(rest, profile, await readJson(request)), 200, request);
     }
     if (route === "reconciliation/exact-preview" && request.method === "POST") {
       requirePermission(profile, "reconcile");
@@ -1641,6 +1646,144 @@ async function confirmReconciliation(rest: RestClient, profile: Profile, payload
     },
   }]);
   return { reconciliation, matched: total, allocated: allocatedAmount, remaining: Math.max(transactionAmount - allocatedAmount, 0) };
+}
+
+async function classifyPayrollTransaction(rest: RestClient, profile: Profile, payload: JsonRecord) {
+  const transactionId = requiredUuid(payload.transactionId);
+  const requestedEmployeeKey = requiredText(payload.employeeKey, 20);
+  const transaction = (await selectRows(rest,
+    `accounting_bank_transactions?select=*&id=eq.${transactionId}&limit=1`,
+  ))[0];
+  if (!transaction) throw new HttpError(404, "Movimiento bancario no encontrado.");
+  if (numeric(transaction.amount_clp) >= 0) {
+    throw new HttpError(409, "Solo un egreso bancario puede clasificarse como pago de remuneración.");
+  }
+
+  const employee = identifyPayrollEmployee(transaction.description);
+  if (!employee || employee.key !== requestedEmployeeKey) {
+    throw new HttpError(409, "La cartola no identifica de forma verificable a Sisla Muñoz o Marco Sanhueza.");
+  }
+  const entityId = String(transaction.entity_id);
+  const metadata = asObject(transaction.metadata);
+  const existingPayroll = (await selectRows(rest,
+    `accounting_journal_entries?select=id,status&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(`bank-payroll-manual:${transactionId}`)}&limit=1`,
+  ))[0];
+  if (existingPayroll) {
+    return {
+      transactionId,
+      employee,
+      amountClp: Math.round(Math.abs(numeric(transaction.amount_clp)) * 10000) / 10000,
+      payrollPayableClp: numeric(metadata.payroll_payable_clp),
+      payrollExpenseClp: numeric(metadata.payroll_expense_clp),
+      entryId: String(existingPayroll.id),
+      existing: true,
+    };
+  }
+  if (String(transaction.reconciliation_status || "") !== "unmatched") {
+    throw new HttpError(409, "El movimiento debe estar completamente pendiente para asignarlo a remuneraciones.");
+  }
+  const protectedClassification = protectedPayrollClassification(metadata);
+  if (protectedClassification) throw new HttpError(409, protectedClassification.message);
+
+  const amount = Math.round(Math.abs(numeric(transaction.amount_clp)) * 10000) / 10000;
+  if (amount <= 0.005) throw new HttpError(400, "El egreso no tiene un monto válido para remuneraciones.");
+  const sameDayTransactions = await selectRows(rest,
+    `accounting_bank_transactions?select=id,description,amount_clp,reconciliation_status,metadata&entity_id=eq.${entityId}&transaction_date=eq.${transaction.transaction_date}&amount_clp=eq.${numeric(transaction.amount_clp)}&id=neq.${transactionId}&limit=100`,
+  );
+  const postedDuplicate = sameDayTransactions.find((candidate) => {
+    const candidateEmployee = identifyPayrollEmployee(candidate.description);
+    const candidateMetadata = asObject(candidate.metadata);
+    return candidateEmployee?.key === employee.key
+      && String(candidate.reconciliation_status || "") === "matched"
+      && String(candidateMetadata.verified_classification || "") === `salary_${employee.key}`;
+  });
+  if (postedDuplicate) {
+    throw new HttpError(409, "Posible movimiento duplicado: ya existe una transferencia igual del mismo día contabilizada como sueldo.");
+  }
+  const previousReconciliations = await selectRows(rest,
+    `accounting_reconciliations?select=matched_amount_clp&bank_transaction_id=eq.${transactionId}&status=eq.confirmed&limit=1000`,
+  );
+  if (previousReconciliations.some((row) => numeric(row.matched_amount_clp) > 0.005)) {
+    throw new HttpError(409, "El egreso ya tiene asignaciones documentales y no puede reclasificarse completo como sueldo.");
+  }
+
+  const [accountRows, periods, bankAccount, stagedEntry] = await Promise.all([
+    selectAllRows(rest, `accounting_accounts?select=id,classification&entity_id=eq.${entityId}&active=eq.true&allows_posting=eq.true`),
+    selectAllRows(rest, `accounting_periods?select=id,starts_on,ends_on,status&entity_id=eq.${entityId}&status=neq.closed&order=starts_on.asc`),
+    selectRows(rest, `accounting_bank_accounts?select=id,ledger_account_id&id=eq.${transaction.bank_account_id}&entity_id=eq.${entityId}&limit=1`),
+    selectRows(rest, `accounting_journal_entries?select=id,status&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(`bank-transaction:${transactionId}`)}&limit=1`),
+  ]);
+  const accountByClassification = new Map(accountRows.map((account) => [String(account.classification), String(account.id)]));
+  const bankLedgerById = new Map(bankAccount.map((account) => [String(account.id), String(account.ledger_account_id)]));
+  if (!stagedEntry.length) {
+    await postBankTransaction(rest, profile, transaction, amount, periods, bankLedgerById, accountByClassification);
+  }
+  const payrollBalances = await currentAccountCreditBalances(rest, entityId, accountByClassification, ["payroll_payable"]);
+  const payableAvailable = Math.max(0, payrollBalances.get("payroll_payable") || 0);
+  const payrollPayableClp = Math.round(Math.min(amount, payableAvailable) * 10000) / 10000;
+  const payrollExpenseClp = Math.round((amount - payrollPayableClp) * 10000) / 10000;
+  const lines = [
+    ...(payrollPayableClp > 0.005
+      ? [postingLine(accountByClassification, "payroll_payable", payrollPayableClp, 0, `Pago de remuneración devengada a ${employee.name}`)]
+      : []),
+    ...(payrollExpenseClp > 0.005
+      ? [postingLine(accountByClassification, "payroll_expense", payrollExpenseClp, 0, `Remuneración pagada a ${employee.name}`)]
+      : []),
+    postingLine(accountByClassification, "suspense_asset", 0, amount, "Liberación de egreso bancario transitorio"),
+  ];
+  const entry = await postAutomatedEntry(rest, profile, {
+    entityId,
+    periodId: periodForDate(periods, String(transaction.transaction_date)),
+    date: String(transaction.transaction_date),
+    description: `Pago de remuneración confirmado: ${employee.name}`,
+    reference: String(transaction.operation_number || transaction.reference || transaction.id),
+    sourceType: "MANUAL",
+    sourceDocumentId: null,
+    sourceModule: "bank_payroll_classification",
+    idempotencyKey: `bank-payroll-manual:${transactionId}`,
+    currency: String(transaction.currency || "CLP"),
+    exchangeRate: Math.max(numeric(transaction.exchange_rate), 1),
+    lines,
+  });
+  const classifiedAt = new Date().toISOString();
+  const verifiedClassification = `salary_${employee.key}`;
+  await patchRows(rest, "accounting_bank_transactions", `id=eq.${transactionId}`, {
+    reconciliation_status: "matched",
+    metadata: {
+      ...metadata,
+      verified_classification: verifiedClassification,
+      classification_locked: true,
+      classification_policy: "human_confirmed_employee_salary",
+      employee_key: employee.key,
+      employee_name: employee.name,
+      employee_tax_id: employee.taxId,
+      classified_amount_clp: amount,
+      payroll_payable_clp: payrollPayableClp,
+      payroll_expense_clp: payrollExpenseClp,
+      payroll_entry_id: entry.id,
+      classified_at: classifiedAt,
+    },
+    updated_at: classifiedAt,
+  });
+  await insertRows(rest, "accounting_audit_events", [{
+    entity_id: entityId,
+    actor_id: profile.id,
+    action: "bank.payroll_classification_confirmed",
+    entity_type: "bank_transaction",
+    entity_id_text: transactionId,
+    reason: optionalText(payload.note, 500) || `Clasificación salarial confirmada para ${employee.name}.`,
+    previous_value: { reconciliation_status: transaction.reconciliation_status, metadata },
+    new_value: {
+      employee,
+      amount_clp: amount,
+      payroll_payable_clp: payrollPayableClp,
+      payroll_expense_clp: payrollExpenseClp,
+      journal_entry_id: entry.id,
+      classification: verifiedClassification,
+    },
+  }]);
+  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+  return { transactionId, employee, amountClp: amount, payrollPayableClp, payrollExpenseClp, entryId: entry.id, existing: false };
 }
 
 async function previewExactReconciliations(rest: RestClient, payload: JsonRecord) {

@@ -92,6 +92,7 @@ export interface AccountingBankTransaction {
   exchange_rate: number;
   amount_clp: number;
   reconciliation_status: "unmatched" | "proposed" | "partial" | "matched" | "ignored";
+  metadata: Record<string, unknown>;
 }
 
 export interface AccountingReceivable {

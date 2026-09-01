@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import {
   closeAccountingPeriod,
+  classifyAccountingPayrollTransaction,
   confirmExactAccountingReconciliations,
   confirmAccountingFactoExcel,
   confirmAccountingImport,
@@ -76,6 +77,15 @@ import type {
 } from "../../types/accounting";
 import { useAuth } from "../auth/AuthContext";
 import { useAccountingCenter } from "./useAccountingCenter";
+import {
+  filterAndSortReconciliationTransactions,
+  identifyPayrollEmployee,
+  matchingPostedPayrollDuplicate,
+  payrollClassificationLock,
+  reconciliationDocumentCandidates,
+  type ReconciliationDocumentSort,
+  type ReconciliationMovementSort,
+} from "./reconciliationSearch";
 import "./accountingCenter.css";
 
 const views: Array<{ id: AccountingView; label: string; icon: typeof Landmark }> = [
@@ -691,31 +701,47 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   const [movementQuery, setMovementQuery] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [movementSort, setMovementSort] = useState<ReconciliationMovementSort>("date-desc");
   const [candidateQuery, setCandidateQuery] = useState("");
+  const [candidateSort, setCandidateSort] = useState<ReconciliationDocumentSort>("relevance");
+  const [payrollConfirming, setPayrollConfirming] = useState(false);
   const [note, setNote] = useState("");
   const [exactFrom, setExactFrom] = useState("2026-01-01");
   const [exactTo, setExactTo] = useState(today());
   const [exactPreview, setExactPreview] = useState<AccountingExactReconciliationPreview | null>(null);
   const proposalRequest = useRef(0);
-  const normalizedMovementQuery = normalize(movementQuery);
-  const filteredTransactions = unmatched.filter((row) => {
-    const text = normalize(`${row.description} ${row.reference || ""} ${row.operation_number || ""}`);
-    return (!normalizedMovementQuery || text.includes(normalizedMovementQuery))
-      && (!from || row.transaction_date >= from)
-      && (!to || row.transaction_date <= to);
+  const invalidMovementRange = Boolean(from && to && from > to);
+  const filteredTransactions = invalidMovementRange ? [] : filterAndSortReconciliationTransactions(unmatched, {
+    query: movementQuery,
+    from,
+    to,
+    sort: movementSort,
   });
   const candidates = proposal?.candidates || [];
-  const normalizedCandidateQuery = normalize(candidateQuery);
-  const visibleCandidates = candidates.filter((candidate) => {
-    const document = candidate.candidate;
-    const name = candidate.targetType === "receivable" ? (document as AccountingReceivable).customer_name : (document as AccountingPayable).supplier_name;
-    const taxId = candidate.targetType === "receivable" ? (document as AccountingReceivable).customer_tax_id : (document as AccountingPayable).supplier_tax_id;
-    return !normalizedCandidateQuery || normalize(`${name} ${taxId || ""} ${document.document_number}`).includes(normalizedCandidateQuery);
-  });
+  const visibleCandidates = proposal && selected ? reconciliationDocumentCandidates({
+    proposalCandidates: candidates,
+    receivables: data.receivables,
+    payables: data.payables,
+    incoming: selected.amount_clp > 0,
+    query: candidateQuery,
+    remainingAmount: proposal.remainingAmount,
+    sort: candidateSort,
+  }) : [];
+  const candidateDocuments = new Map<string, AccountingReceivable | AccountingPayable>(
+    (selected?.amount_clp || 0) > 0
+      ? data.receivables.map((document) => [document.id, document] as const)
+      : data.payables.map((document) => [document.id, document] as const),
+  );
   const selectedTotal = Object.values(allocations).reduce((sum, value) => sum + Math.max(0, parseLocalizedNumber(value)), 0);
   const remainingAmount = proposal?.remainingAmount || 0;
-  const allocationErrors = candidates.some((candidate) => parseLocalizedNumber(allocations[candidate.targetId] || "0") > number(candidate.candidate.balance_clp) + 0.5);
+  const allocationErrors = Object.entries(allocations).some(([targetId, value]) => parseLocalizedNumber(value) > number(candidateDocuments.get(targetId)?.balance_clp) + 0.5);
   const invalidTotal = selectedTotal > remainingAmount + 0.5;
+  const payrollEmployee = selected && selected.amount_clp < 0 ? identifyPayrollEmployee(selected.description) : null;
+  const postedPayrollDuplicate = selected ? matchingPostedPayrollDuplicate(selected, data.bankTransactions) : null;
+  const payrollLock = selected ? payrollClassificationLock(selected) || (postedPayrollDuplicate
+    ? `Posible duplicado: ya existe una transferencia igual del ${date(postedPayrollDuplicate.transaction_date)} contabilizada como sueldo.`
+    : null) : null;
+  const canPostPayroll = data.profile.permissions.includes("post");
 
   function applySuggestedPlan(nextProposal: AccountingReconciliationProposal) {
     const next: Record<string, string> = {};
@@ -730,6 +756,8 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
     setCandidateBusy(true);
     setLocalError("");
     setCandidateQuery("");
+    setCandidateSort("relevance");
+    setPayrollConfirming(false);
     setNote("");
     setProposal(null);
     setAllocations({});
@@ -757,9 +785,10 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
 
   async function confirm() {
     if (!selected || !proposal) return;
-    const links = candidates.flatMap((candidate) => {
-      const amount = parseLocalizedNumber(allocations[candidate.targetId] || "0");
-      return amount > 0 ? [{ targetType: candidate.targetType, targetId: candidate.targetId, amount }] : [];
+    const targetType = selected.amount_clp > 0 ? "receivable" : "payable";
+    const links = Object.entries(allocations).flatMap(([targetId, value]) => {
+      const amount = parseLocalizedNumber(value);
+      return amount > 0 && candidateDocuments.has(targetId) ? [{ targetType, targetId, amount }] : [];
     });
     if (!links.length || invalidTotal || allocationErrors) return;
     const completed = await runAction(
@@ -772,6 +801,25 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
       setAllocations({});
       setSelected(null);
       setNote("");
+    }
+  }
+
+  async function confirmPayroll() {
+    if (!selected || !payrollEmployee || payrollLock) return;
+    const completed = await runAction(
+      "payroll",
+      () => classifyAccountingPayrollTransaction({
+        transactionId: selected.id,
+        employeeKey: payrollEmployee.key,
+        note: `Remuneración confirmada desde conciliación bancaria para ${payrollEmployee.name}.`,
+      }),
+      `Transferencia a ${payrollEmployee.name} clasificada y contabilizada como remuneración.`,
+    );
+    if (completed) {
+      setProposal(null);
+      setAllocations({});
+      setSelected(null);
+      setPayrollConfirming(false);
     }
   }
 
@@ -807,9 +855,12 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
         <label><span>Buscar movimiento</span><input placeholder="Nombre, RUT o referencia" type="search" value={movementQuery} onChange={(event) => setMovementQuery(event.target.value)} /></label>
         <label><span>Desde</span><input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
         <label><span>Hasta</span><input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+        <label><span>Orden</span><select value={movementSort} onChange={(event) => setMovementSort(event.target.value as ReconciliationMovementSort)}><option value="date-desc">Más recientes</option><option value="date-asc">Más antiguos</option><option value="name-asc">Nombre A–Z</option><option value="name-desc">Nombre Z–A</option><option value="amount-desc">Mayor monto</option></select></label>
+        <button className="icon-button accounting-filter-reset" aria-label="Limpiar filtros" title="Limpiar filtros" type="button" onClick={() => { setMovementQuery(""); setFrom(""); setTo(""); setMovementSort("date-desc"); }}><X size={17} /></button>
       </div>
+      {invalidMovementRange ? <div className="accounting-local-error">La fecha inicial no puede ser posterior a la fecha final.</div> : null}
       <small className="accounting-filter-count">Mostrando {filteredTransactions.length} de {unmatched.length} pendientes.</small>
-      {filteredTransactions.length ? <div className="accounting-transaction-list">{filteredTransactions.map((row) => <button className={selected?.id === row.id ? "active" : ""} key={row.id} type="button" onClick={() => void propose(row)}><span>{date(row.transaction_date)} {row.reconciliation_status === "partial" ? "· Parcial" : ""}</span><strong>{row.description}</strong><small>{row.reference || row.operation_number || "Sin referencia"}</small><b className={row.amount_clp >= 0 ? "positive" : "negative"}>{clp(row.amount_clp)}</b></button>)}</div> : <Empty icon={unmatched.length ? Search : CheckCircle2} text={unmatched.length ? "No hay movimientos que coincidan con los filtros." : "Todos los movimientos visibles están conciliados."} />}
+      {filteredTransactions.length ? <div className="accounting-transaction-list">{filteredTransactions.map((row) => { const employee = row.amount_clp < 0 ? identifyPayrollEmployee(row.description) : null; const duplicate = employee ? matchingPostedPayrollDuplicate(row, data.bankTransactions) : null; return <button className={selected?.id === row.id ? "active" : ""} key={row.id} type="button" onClick={() => void propose(row)}><span>{date(row.transaction_date)} {row.reconciliation_status === "partial" ? "· Parcial" : ""}</span><strong>{row.description}</strong><small>{row.reference || row.operation_number || "Sin referencia"}</small>{employee ? <small className={`accounting-payroll-hint ${duplicate ? "duplicate" : ""}`}>{duplicate ? "Posible duplicado ya contabilizado" : `Posible sueldo · ${employee.name}`}</small> : null}<b className={row.amount_clp >= 0 ? "positive" : "negative"}>{clp(row.amount_clp)}</b></button>; })}</div> : <Empty icon={unmatched.length ? Search : CheckCircle2} text={unmatched.length ? "No hay movimientos que coincidan con los filtros." : "Todos los movimientos visibles están conciliados."} />}
     </section>
 
     <section className="panel accounting-reconcile-candidates">
@@ -825,9 +876,17 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
           <div className={invalidTotal ? "invalid" : ""}><span>Asignado ahora</span><strong>{clp(selectedTotal)}</strong></div>
           <div><span>Restará</span><strong>{clp(Math.max(proposal.remainingAmount - selectedTotal, 0))}</strong></div>
         </div>
+        {payrollEmployee ? <div className={`accounting-payroll-assignment ${payrollLock ? "locked" : ""}`}>
+          <div><BadgeDollarSign size={22} /><div><strong>Posible remuneración · {payrollEmployee.name}</strong><span>{payrollEmployee.taxId} · {clp(Math.abs(selected?.amount_clp || 0))}</span><small>{payrollLock || "Clasifica el egreso completo con trazabilidad. Si existe remuneración devengada, primero rebaja esa obligación y evita duplicar el gasto."}</small></div></div>
+          {!payrollLock && canPostPayroll && selected?.reconciliation_status === "unmatched" ? (!payrollConfirming
+            ? <button className="ghost-button" type="button" onClick={() => setPayrollConfirming(true)}>Asignar a sueldos</button>
+            : <div className="accounting-payroll-confirm"><span>Confirma que este egreso corresponde íntegramente a sueldo.</span><button className="ghost-button" type="button" onClick={() => setPayrollConfirming(false)}>Cancelar</button><button className="primary-button" disabled={busy === "payroll"} type="button" onClick={() => void confirmPayroll()}>{busy === "payroll" ? "Contabilizando…" : `Confirmar ${clp(Math.abs(selected.amount_clp))}`}</button></div>) : null}
+          {!payrollLock && selected?.reconciliation_status === "partial" ? <small>El movimiento ya tiene una asignación parcial; debe revisarse antes de clasificarlo como sueldo.</small> : null}
+        </div> : null}
         {proposal.suggestedPlan ? <div className="accounting-suggested-plan"><div><strong>Sugerencia del motor</strong><span>{proposal.suggestedPlan.explanation}</span></div><button className="ghost-button" type="button" onClick={() => applySuggestedPlan(proposal)}>Usar propuesta</button></div> : null}
-        <label className="accounting-candidate-search"><span>Filtrar documentos</span><input placeholder="Cliente, proveedor, RUT o folio" type="search" value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} /></label>
-        {!candidates.length ? <Empty icon={Search} text="No se encontraron documentos suficientemente relacionados. Ajusta la búsqueda o revisa que Facto tenga el RUT y nombre correctos." /> : null}
+        <div className="accounting-candidate-toolbar"><label className="accounting-candidate-search"><span>Buscar en todos los documentos abiertos</span><input placeholder="Cliente, proveedor, RUT o folio" type="search" value={candidateQuery} onChange={(event) => setCandidateQuery(event.target.value)} /></label><label><span>Orden</span><select value={candidateSort} onChange={(event) => setCandidateSort(event.target.value as ReconciliationDocumentSort)}><option value="relevance">Mejor coincidencia</option><option value="date-desc">Emisión reciente</option><option value="date-asc">Emisión antigua</option><option value="name-asc">Nombre A–Z</option></select></label></div>
+        <small className="accounting-filter-count">{candidateQuery.trim() ? `${visibleCandidates.length} documento(s) encontrados en cuentas abiertas.` : `${visibleCandidates.length} coincidencia(s) sugeridas por el motor.`}</small>
+        {!visibleCandidates.length ? <Empty icon={Search} text={candidateQuery.trim() ? "No hay documentos abiertos que coincidan con el nombre, RUT o folio ingresado." : "No se encontraron documentos suficientemente relacionados. Usa el buscador para revisar todas las cuentas abiertas."} /> : null}
         <div className="accounting-candidate-list">{visibleCandidates.map((candidate) => {
           const document = candidate.candidate;
           const receivable = candidate.targetType === "receivable";
@@ -839,7 +898,7 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
           return <article className={checked ? "selected" : ""} key={candidate.targetId}>
             <label className="accounting-candidate-check"><input checked={checked} type="checkbox" onChange={(event) => toggleCandidate(candidate, event.target.checked)} /><span className="sr-only">Seleccionar {name}</span></label>
             <div className="accounting-candidate-details">
-              <div className="accounting-candidate-heading"><Status value={confidence(candidate.confidence)} tone={candidate.confidence === "exact" ? "success" : "review"} /><b>{Math.round(candidate.score * 100)}%</b></div>
+              <div className="accounting-candidate-heading"><Status value={candidate.evidence.includes("Resultado de búsqueda manual") ? "Búsqueda manual" : confidence(candidate.confidence)} tone={candidate.confidence === "exact" ? "success" : "review"} /><b>{candidate.evidence.includes("Resultado de búsqueda manual") ? "Revisar" : `${Math.round(candidate.score * 100)}%`}</b></div>
               <strong>{name}</strong>
               <span>{taxId || "Sin RUT"} · Documento {document.document_number}</span>
               <span>Emitido {date(document.issued_on)} · vence {date(document.due_on)} · saldo {clp(document.balance_clp)}</span>
@@ -848,10 +907,10 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
             <label className={`accounting-allocation-input ${overBalance ? "invalid" : ""}`}><span>Monto a asignar</span><input aria-invalid={overBalance} inputMode="numeric" type="text" value={allocations[candidate.targetId] || ""} placeholder={String(Math.round(candidate.suggestedAmount))} onChange={(event) => setAllocations((current) => ({ ...current, [candidate.targetId]: event.target.value }))} /><small>{overBalance ? "Supera el saldo" : candidate.signals.amount === "partial" ? "Abono parcial" : "Editable"}</small></label>
           </article>;
         })}</div>
-        {candidates.length ? <div className="accounting-reconcile-confirm">
+        {(visibleCandidates.length || selectedTotal > 0) ? <div className="accounting-reconcile-confirm">
           <label><span>Nota de conciliación</span><input maxLength={500} placeholder="Opcional" type="text" value={note} onChange={(event) => setNote(event.target.value)} /></label>
           {(invalidTotal || allocationErrors) ? <div className="accounting-local-error">Revisa los montos: no pueden superar el saldo del movimiento ni el saldo de cada documento.</div> : null}
-          <button className="primary-button" disabled={busy === "reconcile" || selectedTotal <= 0 || invalidTotal || allocationErrors} type="button" onClick={() => void confirm()}>{busy === "reconcile" ? "Confirmando…" : `Confirmar ${candidates.filter((candidate) => parseLocalizedNumber(allocations[candidate.targetId] || "0") > 0).length} asignación(es)`}</button>
+          <button className="primary-button" disabled={busy === "reconcile" || selectedTotal <= 0 || invalidTotal || allocationErrors} type="button" onClick={() => void confirm()}>{busy === "reconcile" ? "Confirmando…" : `Confirmar ${Object.values(allocations).filter((value) => parseLocalizedNumber(value) > 0).length} asignación(es)`}</button>
         </div> : null}
       </> : null}
     </section>
