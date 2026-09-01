@@ -7,6 +7,10 @@ import {
   bankMoney,
 } from "../supabase/functions/accounting-center/bank-normalizers.ts";
 import {
+  looksLikeMercadoPagoExport,
+  parseMercadoPagoSheets,
+} from "../supabase/functions/accounting-center/mercado-pago-normalizer.ts";
+import {
   buildSuggestedAllocationPlan,
   extractChileanTaxIds,
   rankReconciliationCandidates,
@@ -136,10 +140,42 @@ assert.match(parserSource, /banco_estado/);
 assert.match(parserSource, /scotiabank/);
 assert.match(parserSource, /mercado_pago/);
 assert.match(parserSource, /fingerprint/);
+assert.match(parserSource, /parseMercadoPagoSheets/);
 assert.match(parserSource, /findBankTable\(workbook, \["movimientos", "registros"\]/);
 assert.match(parserSource, /findBankTable\(workbook, \["data", "movimientos", "registros"\]/);
 assert.match(parserSource, /findHeaderAliases/);
 assert.match(parserSource, /"numero documento", "n operacion", "numero operacion"/);
+
+const mercadoPagoSpanish = parseMercadoPagoSheets([{
+  name: "Sheet0",
+  rows: [
+    ["Fecha de Pago", "Tipo de Operación", "Número de Movimiento", "Operación Relacionada", "Importe"],
+    ["2026-08-05T16:15:58Z", "Cobro", "2379586829368", "172235876428", 11163],
+    ["2026-08-05T16:15:58Z", "Costo de Mercado Pago", "2379586829370", "172235876428", -424],
+    ["2026-08-05T16:15:58Z", "Movimiento General", "2379586829371", "172235876428", 0],
+  ],
+}]);
+assert.equal(mercadoPagoSpanish.rows.length, 2);
+assert.equal(mercadoPagoSpanish.currency, "CLP");
+assert.equal(mercadoPagoSpanish.rows[0].transaction_date, "2026-08-05");
+assert.equal(mercadoPagoSpanish.rows[0].operation_number, "2379586829368");
+assert.equal(mercadoPagoSpanish.rows[0].reference, "172235876428");
+assert.equal(mercadoPagoSpanish.rows[0].credit, 11163);
+assert.equal(mercadoPagoSpanish.rows[1].debit, 424);
+assert.equal(looksLikeMercadoPagoExport([
+  "Fecha de Pago", "Tipo de Operación", "Número de Movimiento", "Operación Relacionada", "Importe",
+]), true);
+
+const mercadoPagoEnglish = parseMercadoPagoSheets([{
+  name: "Release report",
+  rows: [
+    ["Release date", "Transaction type", "Movement type", "Transaction ID", "Transaction net amount", "Currency description", "MP processing fee", "Store name"],
+    ["2026-07-15", "Payment", "Money release", "MP-100", 25000, "CLP", 950, "Climactiva"],
+  ],
+}]);
+assert.equal(mercadoPagoEnglish.rows.length, 1);
+assert.equal(mercadoPagoEnglish.rows[0].description, "Money release - Payment - Climactiva");
+assert.equal(mercadoPagoEnglish.rows[0].reference, "Comisión: 950");
 assert.match(factoExcelParserSource, /facto_unpaid_documents/);
 assert.match(factoExcelParserSource, /facto_checks_banco_estado/);
 assert.match(factoExcelParserSource, /facto_cash_scotiabank/);

@@ -5,6 +5,7 @@ import {
   bankMoney,
   type BankStatementDateRange,
 } from "./bank-normalizers.ts";
+import { looksLikeMercadoPagoExport, parseMercadoPagoSheets } from "./mercado-pago-normalizer.ts";
 
 export type NormalizedBankRow = {
   row_number: number;
@@ -62,11 +63,10 @@ function detectProfile(workbook: XLSX.WorkBook, requested?: string): BankPreview
 
   const names = workbook.SheetNames.map(normalizeText).join(" ");
   if (names.includes("resumen") && (names.includes("movimientos") || names.includes("registros"))) return "banco_estado";
-  const sample = workbook.SheetNames
-    .flatMap((sheetName) => sheetRows(workbook, sheetName, 40).flat())
-    .map(normalizeText)
-    .join(" ");
-  if (sample.includes("release date") || sample.includes("transaction net amount")) return "mercado_pago";
+  const sampleValues = workbook.SheetNames
+    .flatMap((sheetName) => sheetRows(workbook, sheetName, 40).flat());
+  const sample = sampleValues.map(normalizeText).join(" ");
+  if (looksLikeMercadoPagoExport(sampleValues)) return "mercado_pago";
   if (sample.includes("chequera electronica") && sample.includes("n operacion")) return "banco_estado";
   if (sample.includes("cartola") || sample.includes("n doc") || sample.includes("numero documento") || sample.includes("cargos abonos saldo")) return "scotiabank";
   throw new Error("No se reconoció el formato. Selecciona Scotiabank, BancoEstado o Mercado Pago.");
@@ -133,46 +133,17 @@ function parseScotiabank(workbook: XLSX.WorkBook): BankPreview {
 }
 
 function parseMercadoPago(workbook: XLSX.WorkBook): BankPreview {
-  const rows = sheetRows(workbook, workbook.SheetNames[0]);
-  const headerIndex = findHeader(rows, ["release date", "movement type", "transaction id", "transaction net amount"]);
-  if (headerIndex < 0) throw new Error("No se encontró el encabezado de movimientos de Mercado Pago.");
-  const header = rows[headerIndex].map(normalizeText);
-  const dateColumn = columnIndex(header, "release date");
-  const descriptionColumn = columnIndex(header, "transaction type");
-  const movementColumn = columnIndex(header, "movement type");
-  const operationColumn = columnIndex(header, "transaction id");
-  const amountColumn = columnIndex(header, "transaction net amount");
-  const currencyColumn = columnIndex(header, "currency description");
-  const feeColumn = columnIndex(header, "mp processing fee");
-  const storeColumn = columnIndex(header, "store name");
-  const parsed: NormalizedBankRow[] = [];
-  for (let index = headerIndex + 1; index < rows.length; index += 1) {
-    const source = rows[index];
-    const amount = bankMoney(source[amountColumn]);
-    const date = bankIsoDate(source[dateColumn]);
-    if (!date || !Number.isFinite(amount) || amount === 0) continue;
-    const movement = String(source[movementColumn] || "Movimiento").trim();
-    const transaction = String(source[descriptionColumn] || "").trim();
-    const store = String(source[storeColumn] || "").trim();
-    const currency = String(source[currencyColumn] || "CLP").trim().toUpperCase().slice(0, 3);
-    parsed.push({
-      row_number: index + 1,
-      transaction_date: date,
-      value_date: null,
-      description: [movement, transaction, store].filter(Boolean).join(" - "),
-      reference: feeColumn >= 0 ? `Comisión: ${bankMoney(source[feeColumn])}` : null,
-      operation_number: String(source[operationColumn] || "").trim() || null,
-      debit: amount < 0 ? Math.abs(amount) : 0,
-      credit: amount > 0 ? amount : 0,
-      amount,
-      balance: null,
-      currency,
-      fingerprint: "",
-      raw: rowObject(header, source),
-      errors: [],
-    });
-  }
-  return { profile: "mercado_pago", currency: "CLP", account_hint: "Mercado Pago", rows: parsed, warnings: [] };
+  const parsed = parseMercadoPagoSheets(workbook.SheetNames.map((name) => ({
+    name,
+    rows: sheetRows(workbook, name),
+  })));
+  return {
+    profile: "mercado_pago",
+    currency: parsed.currency,
+    account_hint: "Mercado Pago",
+    rows: parsed.rows,
+    warnings: parsed.warnings,
+  };
 }
 
 function parseRows(
@@ -242,13 +213,6 @@ function findHeaderAliases(rows: unknown[][], requiredAliases: string[][]) {
     return requiredAliases.every((aliases) => aliases.some((label) =>
       normalized.some((cell) => cell.includes(normalizeText(label)))
     ));
-  });
-}
-
-function findHeader(rows: unknown[][], required: string[]) {
-  return rows.findIndex((row) => {
-    const normalized = row.map(normalizeText);
-    return required.every((label) => normalized.some((cell) => cell.includes(normalizeText(label))));
   });
 }
 
