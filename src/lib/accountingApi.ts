@@ -8,6 +8,7 @@ import type {
   AccountingImportPreview,
   AccountingJournalDraft,
   AccountingExactReconciliationPreview,
+  AccountingExactReconciliationRunResult,
   AccountingLedgerCoverage,
   AccountingLedgerPrepareResult,
   AccountingReport,
@@ -102,7 +103,11 @@ export function previewAccountingImport(input: { entityId: string; profile: "aut
 }
 
 export function confirmAccountingImport(batchId: string, exchangeRate?: number) {
-  return accountingRequest<{ imported: number; existing?: boolean }>("imports/confirm", { method: "POST", body: { batchId, exchangeRate } });
+  return accountingRequest<{
+    imported: number;
+    existing?: boolean;
+    automaticReconciliation?: AccountingExactReconciliationRunResult;
+  }>("imports/confirm", { method: "POST", body: { batchId, exchangeRate, autoReconcileExact: true } });
 }
 
 export async function proposeAccountingReconciliation(transactionId: string) {
@@ -136,6 +141,13 @@ export function confirmExactAccountingReconciliations(input: AccountingExactReco
   return accountingRequest<{ confirmed: number; skipped: number; errors: Array<{ transactionId: string; error: string }> }>("reconciliation/exact-confirm", {
     method: "POST",
     body: { entityId: input.entityId, matches: input.matches },
+  });
+}
+
+export function runExactAccountingReconciliations(input: { entityId: string; from: string; to: string }) {
+  return accountingRequest<AccountingExactReconciliationRunResult>("reconciliation/exact-run", {
+    method: "POST",
+    body: input,
   });
 }
 

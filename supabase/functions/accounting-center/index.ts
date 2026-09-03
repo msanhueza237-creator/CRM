@@ -89,6 +89,10 @@ Deno.serve(async (request) => {
       requirePermission(profile, "reconcile");
       return json(await confirmExactReconciliations(rest, profile, await readJson(request)), 200, request);
     }
+    if (route === "reconciliation/exact-run" && request.method === "POST") {
+      requirePermission(profile, "reconcile");
+      return json(await runExactReconciliations(rest, profile, await readJson(request)), 200, request);
+    }
     if (route === "checks/create" && request.method === "POST") {
       requirePermission(profile, "entry");
       return json(await createCheck(rest, profile, await readJson(request)), 201, request);
@@ -169,7 +173,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   const entity = entities[0];
   if (!entity) throw new HttpError(409, "Falta aplicar la migración accounting_center.sql.");
   const entityId = String(entity.id);
-  const [accounts, periods, bankAccounts, bankTransactions, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns] = await Promise.all([
+  const [accounts, periods, bankAccounts, bankTransactions, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoConnectionRows, factoIntegrationRows] = await Promise.all([
     selectRows(rest, `accounting_accounts?select=*&entity_id=eq.${entityId}&order=code.asc`),
     selectRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
@@ -183,15 +187,27 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     selectRows(rest, `accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
     selectRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
     selectRows(rest, `accounting_facto_sync_runs?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=24`),
+    selectRows(rest, "integration_connections?select=provider,status,last_success_at&provider=eq.facto&limit=1"),
+    selectRows(rest, "integration_records?select=updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
   ]);
   const asOf = new Date().toISOString().slice(0, 10);
   const [summary, dashboard] = await Promise.all([
     rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: asOf }),
     buildDashboardAnalytics(rest, entityId, asOf, sources, accounts),
   ]);
+  const integrationUpdatedAt = dateTimeValue(factoIntegrationRows[0]?.updated_at);
+  const accountingSyncedAt = factoSyncRuns
+    .map((run) => dateTimeValue(run.completed_at))
+    .find(Boolean) || null;
+  const factoFreshness = {
+    connectionStatus: String(factoConnectionRows[0]?.status || "unknown"),
+    integrationUpdatedAt,
+    accountingSyncedAt,
+    stale: Boolean(integrationUpdatedAt && (!accountingSyncedAt || integrationUpdatedAt > accountingSyncedAt)),
+  };
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, sources, entries,
-    receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, summary, dashboard,
+    receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, summary, dashboard, factoFreshness,
     profile: { role: profile.role, permissions: [...rolePermissions[profile.role]] },
   };
 }
@@ -565,6 +581,7 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
     let controls = 0;
     let sourceRecords = 0;
     let backups = 0;
+    let reportedBalances = 0;
     let observedFrom: string | null = null;
     let observedTo: string | null = null;
     const includedCanonical = new Set<string>();
@@ -736,6 +753,9 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
       }
     }
 
+    const reportedResult = await syncFactoReportedBalances(rest, profile, requestId, entityId, fromDate, toDate);
+    reportedBalances = reportedResult.updated;
+
     const status = inconsistent > 0 ? "partial" : "completed";
     await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
       status,
@@ -757,15 +777,16 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
         accounting_policy: "document_only",
         backups,
         controls,
+        reported_balances: reportedBalances,
       },
     });
     await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
     await insertRows(rest, "accounting_audit_events", [{
       entity_id: entityId, actor_id: profile.id, action: "facto.history_synced", entity_type: "facto_sync_run",
       entity_id_text: runId, correlation_id: requestIdToUuid(requestId),
-      new_value: { from_date: fromDate, to_date: toDate, source_records: sourceRecords, accepted, inserted, updated, skipped, inconsistent, receivables, payables, backups },
+      new_value: { from_date: fromDate, to_date: toDate, source_records: sourceRecords, accepted, inserted, updated, skipped, inconsistent, receivables, payables, backups, reported_balances: reportedBalances },
     }]);
-    return { runId, status, fromDate, toDate, read: sourceRecords, accepted, inserted, updated, skipped, inconsistent, receivables, payables, controls, backups };
+    return { runId, status, fromDate, toDate, read: sourceRecords, accepted, inserted, updated, skipped, inconsistent, receivables, payables, controls, backups, reportedBalances };
   } catch (error) {
     await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
       status: "failed",
@@ -775,6 +796,93 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
     }).catch(() => []);
     throw error;
   }
+}
+
+async function syncFactoReportedBalances(
+  rest: RestClient,
+  profile: Profile,
+  requestId: string,
+  entityId: string,
+  fromDate: string,
+  toDate: string,
+) {
+  const snapshotRecord = (await selectRows(rest,
+    "integration_records?select=id,payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1",
+  ))[0];
+  if (!snapshotRecord) return { updated: 0, skipped: 0 };
+  const collections = asObject(asObject(snapshotRecord.payload).collections);
+  if (collections.authoritative !== true) return { updated: 0, skipped: 0 };
+  const details = Array.isArray(collections.documents_detail)
+    ? collections.documents_detail.map(asObject)
+    : [];
+  if (!details.length) return { updated: 0, skipped: 0 };
+
+  const [sources, receivables] = await Promise.all([
+    selectAllRows(rest,
+      `accounting_source_documents?select=id,external_id,folio,issued_on&entity_id=eq.${entityId}&source_type=eq.FACTO&issued_on=gte.${fromDate}&issued_on=lte.${toDate}`,
+    ),
+    selectAllRows(rest,
+      `accounting_receivables?select=id,source_document_id,original_amount_clp,paid_amount_clp,balance_clp,status,due_on&entity_id=eq.${entityId}`,
+    ),
+  ]);
+  const sourceByExternalId = new Map(sources.flatMap((source) => {
+    const value = String(source.external_id || "").trim();
+    return value ? [[value, source] as const] : [];
+  }));
+  const sourceByFolio = new Map(sources.flatMap((source) => {
+    const value = String(source.folio || "").trim();
+    return value ? [[value, source] as const] : [];
+  }));
+  const receivableBySourceId = new Map(receivables.map((row) => [String(row.source_document_id), row]));
+  const reportedAt = dateTimeValue(snapshotRecord.updated_at) || new Date().toISOString();
+  let updated = 0;
+  let skipped = 0;
+
+  for (const detail of details) {
+    const evidence = String(detail.balance_source || "");
+    if (!["facto_receivables", "facto_document_pdf"].includes(evidence)) {
+      skipped += 1;
+      continue;
+    }
+    if (detail.observed_amount === null || detail.observed_amount === undefined || detail.observed_amount === "") {
+      skipped += 1;
+      continue;
+    }
+    const source = sourceByExternalId.get(String(detail.document_id || "").trim())
+      || sourceByFolio.get(String(detail.document_number || "").trim());
+    const receivable = source ? receivableBySourceId.get(String(source.id)) : null;
+    const reportedBalance = numeric(detail.observed_amount);
+    const original = numeric(receivable?.original_amount_clp);
+    if (!receivable || reportedBalance < 0 || original <= 0 || reportedBalance > original + 0.5) {
+      skipped += 1;
+      continue;
+    }
+    await patchRows(rest, "accounting_receivables", `id=eq.${receivable.id}`, {
+      reported_paid_amount_clp: Math.max(0, original - reportedBalance),
+      reported_balance_clp: reportedBalance,
+      reported_at: reportedAt,
+      updated_at: new Date().toISOString(),
+    });
+    updated += 1;
+  }
+
+  if (updated || skipped) {
+    await insertRows(rest, "accounting_audit_events", [{
+      entity_id: entityId,
+      actor_id: profile.id,
+      action: "facto.reported_balances_synced",
+      entity_type: "integration_record",
+      entity_id_text: String(snapshotRecord.id),
+      correlation_id: requestIdToUuid(requestId),
+      new_value: {
+        updated,
+        skipped,
+        reported_at: reportedAt,
+        policy: "Solo saldos individualizados y explícitos de cobranza Facto; no modifica abonos conciliados con banco.",
+      },
+    }]);
+  }
+  return { updated, skipped };
 }
 
 async function syncForeignTrade(rest: RestClient, profile: Profile, requestId: string) {
@@ -1494,7 +1602,20 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
       exchange_rate: batchCurrency === "CLP" ? 1 : requestedRate,
     },
   }]);
-  return { imported: created.length, bankAccount };
+  const importedDates = rows
+    .map((row) => String(asObject(row.normalized_data).transaction_date || ""))
+    .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
+    .sort();
+  const automaticReconciliation = payload.autoReconcileExact === true
+    && rolePermissions[profile.role].has("reconcile")
+    && importedDates.length
+    ? await runExactReconciliations(rest, profile, {
+      entityId,
+      from: importedDates[0],
+      to: importedDates[importedDates.length - 1],
+    })
+    : null;
+  return { imported: created.length, bankAccount, automaticReconciliation };
 }
 
 async function proposeReconciliation(rest: RestClient, payload: JsonRecord) {
@@ -1894,6 +2015,12 @@ async function confirmExactReconciliations(rest: RestClient, profile: Profile, p
   }
   await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
   return { confirmed, skipped, errors };
+}
+
+async function runExactReconciliations(rest: RestClient, profile: Profile, payload: JsonRecord) {
+  const preview = await previewExactReconciliations(rest, payload);
+  const confirmation = await confirmExactReconciliations(rest, profile, preview);
+  return { ...preview, ...confirmation };
 }
 
 function reconciliationDocuments(rows: JsonRecord[], incoming: boolean): Array<ReconciliationDocumentInput<JsonRecord>> {
@@ -3532,7 +3659,21 @@ async function report(rest: RestClient, url: URL) {
   const from = requiredDate(url.searchParams.get("from"));
   const to = requiredDate(url.searchParams.get("to"));
   const kind = url.searchParams.get("kind") || "balance8";
-  if (kind === "balance8") return { kind, rows: await rpc(rest, "accounting_balance_eight_columns", { p_entity_id: entityId, p_from: from, p_to: to }) };
+  if (kind === "balance8") {
+    const rows = await rpc(rest, "accounting_balance_eight_columns", { p_entity_id: entityId, p_from: from, p_to: to });
+    const amountKeys = ["debits", "credits", "debit_balance", "credit_balance", "assets", "liabilities", "losses", "gains"];
+    const totals = Object.fromEntries(amountKeys.map((key) => [
+      key,
+      rows.reduce((sum, row) => sum + numericValue(asObject(row)[key]), 0),
+    ]));
+    return {
+      kind,
+      rows: [
+        ...rows,
+        { code: "TOTAL", account_name: "Totales", ...totals },
+      ],
+    };
+  }
   if (kind === "trial") return { kind, rows: await rpc(rest, "accounting_trial_balance", { p_entity_id: entityId, p_from: from, p_to: to }) };
   if (kind === "income") return { kind, rows: await rpc(rest, "accounting_income_statement", { p_entity_id: entityId, p_from: from, p_to: to }) };
   if (kind === "cashflow") return { kind, rows: await rpc(rest, "accounting_cash_flow", { p_entity_id: entityId, p_from: from, p_to: to }) };
@@ -4017,6 +4158,7 @@ function optionalText(value: unknown, max = 200) { return String(value || "").tr
 function requiredUuid(value: unknown) { const text = requiredText(value, 80); if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text)) throw new HttpError(400, "Identificador inválido."); return text; }
 function requiredDate(value: unknown) { const text = requiredText(value, 20); if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new HttpError(400, "Fecha inválida."); return text; }
 function positiveNumber(value: unknown) { const number = Number(value); if (!Number.isFinite(number) || number <= 0) throw new HttpError(400, "Monto inválido."); return number; }
+function numericValue(value: unknown) { const number = Number(value); return Number.isFinite(number) ? number : 0; }
 function asObject(value: unknown): JsonRecord { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}; }
 function numeric(value: unknown) {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;

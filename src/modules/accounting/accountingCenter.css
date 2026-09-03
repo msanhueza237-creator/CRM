@@ -52,6 +52,23 @@
 
 .accounting-facto-range input { min-height: 42px; }
 
+.accounting-facto-freshness {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+}
+
+.accounting-facto-freshness > span {
+  display: grid;
+  gap: 2px;
+  color: var(--accounting-muted);
+  font-size: 12px;
+}
+
+.accounting-facto-freshness strong { color: var(--accounting-ink); }
+
 .accounting-facto-result {
   display: grid;
   gap: 4px;
@@ -611,11 +628,39 @@
 
 .accounting-reconcile-filters {
   display: grid;
-  grid-template-columns: minmax(190px, 1.2fr) repeat(2, minmax(125px, 0.65fr)) minmax(150px, 0.75fr) 38px;
+  grid-template-columns: minmax(0, 1fr) 38px;
   align-items: end;
   gap: 9px;
   margin-top: 16px;
 }
+
+.accounting-reconcile-search,
+.accounting-reconcile-date-range { grid-column: 1 / -1; }
+
+.accounting-reconcile-date-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.accounting-reconcile-date-range label { min-width: 0; }
+
+.accounting-reconcile-auto-action {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #acd1d4;
+  border-left: 4px solid var(--accounting-teal);
+  background: #f1f9f9;
+}
+
+.accounting-reconcile-auto-action .primary-button {
+  width: 100%;
+  justify-content: center;
+}
+
+.accounting-reconcile-auto-action small { color: var(--accounting-muted); }
 
 .accounting-reconcile-filters label,
 .accounting-candidate-search,
@@ -981,6 +1026,15 @@
 .accounting-center-table td small { display: block; margin-top: 3px; color: var(--accounting-muted); }
 .accounting-center-table .positive { color: var(--accounting-good); font-weight: 800; }
 .accounting-center-table .negative { color: var(--accounting-danger); font-weight: 800; }
+.accounting-center-table .accounting-report-total td {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  border-top: 2px solid #0b7d86;
+  background: #e8f4f2;
+  color: #173f46;
+  font-weight: 800;
+}
 
 .accounting-modal-backdrop {
   position: fixed;
@@ -1457,6 +1511,7 @@
   .accounting-candidate-toolbar,
   .accounting-payroll-assignment { grid-template-columns: 1fr; }
   .accounting-filter-reset { width: 100%; }
+  .accounting-reconcile-date-range { grid-template-columns: 1fr; }
   .accounting-payroll-confirm { grid-template-columns: 1fr; max-width: none; }
   .accounting-payroll-confirm > span { grid-column: auto; }
   .accounting-suggested-plan { align-items: stretch; flex-direction: column; }

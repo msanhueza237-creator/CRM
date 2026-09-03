@@ -20,6 +20,7 @@ import {
   ReceiptText,
   RefreshCw,
   Scale,
+  ScanSearch,
   Search,
   ShieldCheck,
   TrendingDown,
@@ -31,7 +32,6 @@ import {
 import {
   closeAccountingPeriod,
   classifyAccountingPayrollTransaction,
-  confirmExactAccountingReconciliations,
   confirmAccountingFactoExcel,
   confirmAccountingImport,
   confirmAccountingReconciliation,
@@ -47,10 +47,10 @@ import {
   prepareAccountingLedger,
   previewAccountingFactoExcel,
   previewAccountingImport,
-  previewExactAccountingReconciliations,
   proposeAccountingReconciliation,
   refreshAccountingControls,
   reverseAccountingEntry,
+  runExactAccountingReconciliations,
   syncAccountingFacto,
   syncAccountingForeignTrade,
   uploadAccountingEvidence,
@@ -63,7 +63,7 @@ import type {
   AccountingFactoSyncResult,
   AccountingFactoExcelPreview,
   AccountingFactoExcelProfile,
-  AccountingExactReconciliationPreview,
+  AccountingExactReconciliationRunResult,
   AccountingImportPreview,
   AccountingJournalDraft,
   AccountingJournalEntry,
@@ -570,9 +570,10 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
 
   return <div className="accounting-view-stack">
     <section className="panel accounting-facto-sync">
-      <div className="accounting-panel-heading"><div><p>Integración Facto en solo lectura</p><h2>Carga histórica con respaldo</h2><span>Prioriza la API para documentos tributarios. No marca facturas como pagadas ni crea asientos sin evidencia conciliada.</span></div><button className="ghost-button" disabled={Boolean(busy)} type="button" onClick={() => void runAction("foreign-trade", syncAccountingForeignTrade, "Comercio Exterior sincronizado como evidencia; ningún costo fue contabilizado automáticamente.")}><RefreshCw className={busy === "foreign-trade" ? "spin" : ""} size={17} /> Comercio Exterior</button></div>
-      <div className="accounting-facto-range"><label>Desde<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>Hasta<input type="date" max={today()} value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary-button" disabled={Boolean(busy) || !fromDate || !toDate || fromDate > toDate} type="button" onClick={() => void syncFactoRange()}><RefreshCw className={busy === "facto" ? "spin" : ""} size={17} /> {busy === "facto" ? "Consolidando…" : "Cargar desde Facto"}</button></div>
-      {result ? <div className="accounting-facto-result"><strong>{result.accepted} documentos del período</strong><span>{result.inserted} nuevos · {result.updated} actualizados · {result.backups} respaldos de origen</span><small>{result.receivables} cuentas por cobrar · {result.payables} cuentas por pagar · {result.inconsistent} por revisar</small></div> : null}
+      <div className="accounting-panel-heading"><div><p>Integración Facto en solo lectura</p><h2>Carga histórica con respaldo</h2><span>Los documentos y saldos de cobranza individualizados se actualizan desde Facto. Los pagos bancarios conservan su conciliación independiente.</span></div><button className="ghost-button" disabled={Boolean(busy)} type="button" onClick={() => void runAction("foreign-trade", syncAccountingForeignTrade, "Comercio Exterior sincronizado como evidencia; ningún costo fue contabilizado automáticamente.")}><RefreshCw className={busy === "foreign-trade" ? "spin" : ""} size={17} /> Comercio Exterior</button></div>
+      <div className="accounting-facto-range"><label>Desde<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>Hasta<input type="date" max={today()} value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary-button" disabled={Boolean(busy) || !fromDate || !toDate || fromDate > toDate} type="button" onClick={() => void syncFactoRange()}><RefreshCw className={busy === "facto" ? "spin" : ""} size={17} /> {busy === "facto" ? "Consolidando…" : "Actualizar ahora"}</button></div>
+      <div className="accounting-facto-freshness"><span><strong>Conector Facto</strong>{data.factoFreshness.integrationUpdatedAt ? dateTime(data.factoFreshness.integrationUpdatedAt) : "Sin lectura disponible"}</span><span><strong>Finanzas CRM</strong>{data.factoFreshness.accountingSyncedAt ? dateTime(data.factoFreshness.accountingSyncedAt) : "Pendiente"}</span><Status value={data.factoFreshness.stale ? "Actualización pendiente" : "Sincronizado"} tone={data.factoFreshness.stale ? "review" : "success"} /></div>
+      {result ? <div className="accounting-facto-result"><strong>{result.accepted} documentos del período</strong><span>{result.inserted} nuevos · {result.updated} actualizados · {result.backups} respaldos de origen</span><small>{result.receivables} cuentas por cobrar · {result.payables} cuentas por pagar · {result.reportedBalances} saldos Facto actualizados · {result.inconsistent} por revisar</small></div> : null}
       <div className="accounting-facto-history"><h3>Historial de sincronización API</h3>{data.factoSyncRuns.length ? data.factoSyncRuns.map((run) => <article key={run.id}><div><strong>{date(run.from_date)} al {date(run.to_date)}</strong><span>{dateTime(run.created_at)}</span></div><Status value={run.status === "completed" ? "Completada" : run.status === "partial" ? "Con observaciones" : run.status === "failed" ? "Fallida" : "En curso"} tone={run.status === "completed" ? "success" : run.status === "failed" ? "danger" : "review"} /><p>{run.in_range_records} documentos · {run.inserted_records} nuevos · {run.updated_records} actualizados · {run.inconsistent_records} observaciones</p>{run.error_message ? <small>{run.error_message}</small> : null}</article>) : <Empty icon={RefreshCw} text="Todavía no hay cargas históricas registradas." />}</div>
     </section>
 
@@ -699,16 +700,14 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   const [candidateBusy, setCandidateBusy] = useState(false);
   const [localError, setLocalError] = useState("");
   const [movementQuery, setMovementQuery] = useState("");
-  const [from, setFrom] = useState("");
-  const [to, setTo] = useState("");
+  const [from, setFrom] = useState("2026-01-01");
+  const [to, setTo] = useState(today());
   const [movementSort, setMovementSort] = useState<ReconciliationMovementSort>("date-desc");
   const [candidateQuery, setCandidateQuery] = useState("");
   const [candidateSort, setCandidateSort] = useState<ReconciliationDocumentSort>("relevance");
   const [payrollConfirming, setPayrollConfirming] = useState(false);
   const [note, setNote] = useState("");
-  const [exactFrom, setExactFrom] = useState("2026-01-01");
-  const [exactTo, setExactTo] = useState(today());
-  const [exactPreview, setExactPreview] = useState<AccountingExactReconciliationPreview | null>(null);
+  const [exactResult, setExactResult] = useState<AccountingExactReconciliationRunResult | null>(null);
   const proposalRequest = useRef(0);
   const invalidMovementRange = Boolean(from && to && from > to);
   const filteredTransactions = invalidMovementRange ? [] : filterAndSortReconciliationTransactions(unmatched, {
@@ -823,42 +822,32 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
     }
   }
 
-  async function previewExact() {
-    setLocalError("");
-    try {
-      setExactPreview(await previewExactAccountingReconciliations({ entityId: data.entity.id, from: exactFrom, to: exactTo }));
-    } catch (caught) {
-      setLocalError(caught instanceof Error ? caught.message : "No se pudieron revisar las coincidencias exactas.");
-    }
-  }
-
-  async function confirmExact() {
-    if (!exactPreview?.matches.length) return;
-    const completed = await runAction(
+  async function reconcileExactMatches() {
+    if (invalidMovementRange || !from || !to) return;
+    await runAction(
       "exact-reconcile",
-      () => confirmExactAccountingReconciliations(exactPreview),
-      `${exactPreview.matches.length} conciliación(es) exacta(s) confirmadas y auditadas.`,
+      async () => {
+        const result = await runExactAccountingReconciliations({ entityId: data.entity.id, from, to });
+        setExactResult(result);
+        return result;
+      },
+      "Detección automática terminada. Solo se conciliaron coincidencias exactas revalidadas.",
     );
-    if (completed) setExactPreview(null);
   }
 
   return <div className="accounting-view-stack">
-    <section className="panel accounting-automation-panel">
-      <div className="accounting-panel-heading"><div><p>Automatización conservadora</p><h2>Conciliar coincidencias exactas</h2><span>Solo propone monto total exacto más RUT o folio exacto, con una única coincidencia posible. Los pagos parciales y ambiguos quedan para revisión humana.</span></div></div>
-      <div className="accounting-automation-controls"><label>Desde<input type="date" value={exactFrom} onChange={(event) => setExactFrom(event.target.value)} /></label><label>Hasta<input max={today()} type="date" value={exactTo} onChange={(event) => setExactTo(event.target.value)} /></label><button className="ghost-button" disabled={Boolean(busy) || exactFrom > exactTo} type="button" onClick={() => void previewExact()}><Search size={17} /> Buscar exactas</button>{exactPreview?.matches.length ? <button className="primary-button" disabled={Boolean(busy)} type="button" onClick={() => void confirmExact()}><CheckCircle2 size={17} /> {busy === "exact-reconcile" ? "Confirmando…" : `Confirmar ${exactPreview.matches.length}`}</button> : null}</div>
-      {exactPreview ? <div className="accounting-exact-summary"><strong>{exactPreview.matches.length} coincidencia(s) exacta(s)</strong><span>{exactPreview.untouched} movimientos requieren revisión · {exactPreview.reviewed} revisados</span>{exactPreview.matches.slice(0, 5).map((match) => <small key={match.transactionId}>{date(match.transactionDate)} · {match.description} · {clp(match.amountClp)} → {match.counterpartyName} · {match.documentNumber}</small>)}</div> : null}
-    </section>
     <div className="accounting-reconcile-layout">
     <section className="panel accounting-reconcile-movements">
       <div className="accounting-panel-heading"><div><p>Cartola normalizada</p><h2>Movimientos pendientes</h2><span>Busca por nombre, RUT, referencia o fecha.</span></div><Status value={`${unmatched.length} pendientes`} tone={unmatched.length ? "review" : "success"} /></div>
       <div className="accounting-reconcile-filters">
-        <label><span>Buscar movimiento</span><input placeholder="Nombre, RUT o referencia" type="search" value={movementQuery} onChange={(event) => setMovementQuery(event.target.value)} /></label>
-        <label><span>Desde</span><input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
-        <label><span>Hasta</span><input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
-        <label><span>Orden</span><select value={movementSort} onChange={(event) => setMovementSort(event.target.value as ReconciliationMovementSort)}><option value="date-desc">Más recientes</option><option value="date-asc">Más antiguos</option><option value="name-asc">Nombre A–Z</option><option value="name-desc">Nombre Z–A</option><option value="amount-desc">Mayor monto</option></select></label>
-        <button className="icon-button accounting-filter-reset" aria-label="Limpiar filtros" title="Limpiar filtros" type="button" onClick={() => { setMovementQuery(""); setFrom(""); setTo(""); setMovementSort("date-desc"); }}><X size={17} /></button>
+        <label className="accounting-reconcile-search"><span>Buscar movimiento</span><input placeholder="Nombre, RUT o referencia" type="search" value={movementQuery} onChange={(event) => setMovementQuery(event.target.value)} /></label>
+        <div className="accounting-reconcile-date-range"><label><span>Desde</span><input max={to || today()} type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label><span>Hasta</span><input min={from || undefined} max={today()} type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label></div>
+        <label className="accounting-reconcile-sort"><span>Orden</span><select value={movementSort} onChange={(event) => setMovementSort(event.target.value as ReconciliationMovementSort)}><option value="date-desc">Más recientes</option><option value="date-asc">Más antiguos</option><option value="name-asc">Nombre A–Z</option><option value="name-desc">Nombre Z–A</option><option value="amount-desc">Mayor monto</option></select></label>
+        <button className="icon-button accounting-filter-reset" aria-label="Restablecer filtros" title="Restablecer filtros" type="button" onClick={() => { setMovementQuery(""); setFrom("2026-01-01"); setTo(today()); setMovementSort("date-desc"); setExactResult(null); }}><X size={17} /></button>
       </div>
       {invalidMovementRange ? <div className="accounting-local-error">La fecha inicial no puede ser posterior a la fecha final.</div> : null}
+      <div className="accounting-reconcile-auto-action"><button className="primary-button" disabled={Boolean(busy) || invalidMovementRange || !from || !to} type="button" onClick={() => void reconcileExactMatches()}><ScanSearch className={busy === "exact-reconcile" ? "spin" : ""} size={17} />{busy === "exact-reconcile" ? "Detectando…" : "Detección automática"}</button><small>Conciliar coincidencias exactas: exige monto e identidad inequívoca; lo dudoso queda pendiente.</small></div>
+      {exactResult ? <div className="accounting-exact-summary"><strong>{exactResult.confirmed} conciliación(es) exacta(s) confirmadas</strong><span>{exactResult.untouched + exactResult.skipped} movimientos quedaron para revisión · {exactResult.reviewed} revisados</span>{exactResult.errors.length ? <small>{exactResult.errors.length} coincidencia(s) cambiaron durante la revisión y no se aplicaron.</small> : null}</div> : null}
       <small className="accounting-filter-count">Mostrando {filteredTransactions.length} de {unmatched.length} pendientes.</small>
       {filteredTransactions.length ? <div className="accounting-transaction-list">{filteredTransactions.map((row) => { const employee = row.amount_clp < 0 ? identifyPayrollEmployee(row.description) : null; const duplicate = employee ? matchingPostedPayrollDuplicate(row, data.bankTransactions) : null; return <button className={selected?.id === row.id ? "active" : ""} key={row.id} type="button" onClick={() => void propose(row)}><span>{date(row.transaction_date)} {row.reconciliation_status === "partial" ? "· Parcial" : ""}</span><strong>{row.description}</strong><small>{row.reference || row.operation_number || "Sin referencia"}</small>{employee ? <small className={`accounting-payroll-hint ${duplicate ? "duplicate" : ""}`}>{duplicate ? "Posible duplicado ya contabilizado" : `Posible sueldo · ${employee.name}`}</small> : null}<b className={row.amount_clp >= 0 ? "positive" : "negative"}>{clp(row.amount_clp)}</b></button>; })}</div> : <Empty icon={unmatched.length ? Search : CheckCircle2} text={unmatched.length ? "No hay movimientos que coincidan con los filtros." : "Todos los movimientos visibles están conciliados."} />}
     </section>
@@ -998,7 +987,7 @@ function ControlsView({ data, busy, runAction }: ActionViewProps) {
   return <section className="panel"><div className="accounting-panel-heading"><div><p>Cuadratura automática</p><h2>Centro de Control Financiero</h2><span>Las inconsistencias quedan visibles hasta resolver su causa; no se ocultan.</span></div><button className="ghost-button" disabled={Boolean(busy)} type="button" onClick={() => void runAction("controls", () => refreshAccountingControls(data.entity.id), "Controles financieros actualizados.")}><RefreshCw className={busy === "controls" ? "spin" : ""} size={17} /> Ejecutar controles</button></div>{data.controls.length ? <div className="accounting-findings-list">{data.controls.map((finding) => <article className={finding.severity} key={finding.id}><span>{finding.severity === "error" ? <AlertTriangle /> : <Search />}</span><div><strong>{finding.title}</strong><p>{finding.detail || "Requiere revisión del origen."}</p><small>{humanize(finding.entity_type || "sistema")} · {dateTime(finding.detected_at)}</small></div>{finding.amount_clp ? <b>{clp(finding.amount_clp)}</b> : null}</article>)}</div> : <Empty icon={CheckCircle2} text="No hay hallazgos abiertos en este momento." />}</section>;
 }
 
-function ReportTable({ report }: { report: AccountingReport }) { const keys = Object.keys(report.rows[0] || {}); if (!report.rows.length) return <Empty icon={FileSpreadsheet} text="El período no tiene movimientos contabilizados para este informe." />; return <Table headers={keys.map(humanize)}>{report.rows.map((row, index) => <tr key={index}>{keys.map((key) => <td data-label={humanize(key)} key={key}>{typeof row[key] === "number" || /debit|credit|balance|assets|liabilit|loss|gain|amount|inflow|outflow|net_flow/i.test(key) ? clp(number(row[key])) : String(row[key] ?? "—")}</td>)}</tr>)}</Table>; }
+function ReportTable({ report }: { report: AccountingReport }) { const keys = Object.keys(report.rows[0] || {}); if (!report.rows.length) return <Empty icon={FileSpreadsheet} text="El período no tiene movimientos contabilizados para este informe." />; return <Table headers={keys.map(humanize)}>{report.rows.map((row, index) => <tr className={row.code === "TOTAL" ? "accounting-report-total" : undefined} key={index}>{keys.map((key) => <td data-label={humanize(key)} key={key}>{typeof row[key] === "number" || /debit|credit|balance|assets|liabilit|loss|gain|amount|inflow|outflow|net_flow/i.test(key) ? clp(number(row[key])) : String(row[key] ?? "—")}</td>)}</tr>)}</Table>; }
 function Table({ headers, children }: { headers: string[]; children: React.ReactNode }) { return <div className="accounting-table-wrap"><table className="accounting-center-table"><thead><tr>{headers.map((header) => <th key={header}>{header}</th>)}</tr></thead><tbody>{children}</tbody></table></div>; }
 function Status({ value, tone }: { value: string; tone: "success" | "review" | "danger" | "neutral" }) { return <span className={`accounting-status ${tone}`}>{value}</span>; }
 function Empty({ icon: Icon, text, spinning = false }: { icon: typeof Landmark; text: string; spinning?: boolean }) { return <div className="accounting-empty"><Icon className={spinning ? "spin" : ""} size={26} /><span>{text}</span></div>; }

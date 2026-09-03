@@ -80,6 +80,9 @@ assert.match(edgeSource, /route === "reconciliation\/confirm"/);
 assert.match(edgeSource, /route === "reconciliation\/payroll"/);
 assert.match(edgeSource, /route === "reconciliation\/exact-preview"/);
 assert.match(edgeSource, /route === "reconciliation\/exact-confirm"/);
+assert.match(edgeSource, /route === "reconciliation\/exact-run"/);
+assert.match(edgeSource, /facto\.reported_balances_synced/);
+assert.match(edgeSource, /autoReconcileExact/);
 assert.match(edgeSource, /route === "ledger\/coverage"/);
 assert.match(edgeSource, /route === "ledger\/prepare"/);
 assert.match(edgeSource, /route === "ledger\/payroll-accruals"/);
@@ -199,6 +202,7 @@ assert.match(pageSource, /Usar propuesta/);
 assert.match(pageSource, /Buscar en todos los documentos abiertos/);
 assert.match(pageSource, /Asignar a sueldos/);
 assert.match(pageSource, /Conciliar coincidencias exactas/);
+assert.match(pageSource, /Detección automática/);
 assert.match(pageSource, /Preparar libro/);
 assert.match(pageSource, /Rentabilidad todavía no certificada/);
 assert.match(pageSource, /Posición y desempeño financiero/);
@@ -467,6 +471,13 @@ assert.deepEqual(verifiedExactSelection.links, [{
   targetId: reconciliationDocuments[0].targetId,
   amount: 1_000_000,
 }]);
+
+const taxOnlyExactWithSeveralOpenDocuments = rankReconciliationCandidates(
+  { ...reconciliationTransaction, amountClp: 1_000_000, reference: "Pago facturas" },
+  reconciliationDocuments.slice(0, 2),
+  1_000_000,
+);
+assert.equal(selectVerifiedExactAllocation(taxOnlyExactWithSeveralOpenDocuments, 1_000_000), null);
 
 const verifiedPartialSelection = selectVerifiedExactAllocation(partialRank, 300_000);
 assert.ok(verifiedPartialSelection);

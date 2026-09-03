@@ -297,15 +297,23 @@ export function selectVerifiedExactAllocation<T>(
 
   const exactSingle = selectUniqueExactReconciliation(ranked, amount);
   if (exactSingle) {
-    return {
-      candidates: [exactSingle.candidate],
-      links: [{
-        targetType: exactSingle.candidate.targetType,
-        targetId: exactSingle.candidate.targetId,
-        amount,
-      }],
-      reason: exactSingle.reason,
-    };
+    const sameTaxIdDocuments = ranked.filter((candidate) =>
+      candidate.document.balanceClp > 0.5
+      && candidate.signals.taxId
+      && candidate.groupKey === exactSingle.candidate.groupKey
+    );
+    const identityIsUnambiguous = exactSingle.candidate.signals.document || sameTaxIdDocuments.length === 1;
+    if (identityIsUnambiguous) {
+      return {
+        candidates: [exactSingle.candidate],
+        links: [{
+          targetType: exactSingle.candidate.targetType,
+          targetId: exactSingle.candidate.targetId,
+          amount,
+        }],
+        reason: exactSingle.reason,
+      };
+    }
   }
 
   const verified = ranked.filter((candidate) =>

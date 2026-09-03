@@ -230,6 +230,14 @@ export interface AccountingFactoSyncResult {
   payables: number;
   controls: number;
   backups: number;
+  reportedBalances: number;
+}
+
+export interface AccountingFactoFreshness {
+  connectionStatus: string;
+  integrationUpdatedAt: string | null;
+  accountingSyncedAt: string | null;
+  stale: boolean;
 }
 
 export interface AccountingSummary {
@@ -318,6 +326,7 @@ export interface AccountingBootstrap {
   factoSyncRuns: AccountingFactoSyncRun[];
   summary: AccountingSummary;
   dashboard: AccountingDashboardAnalytics;
+  factoFreshness: AccountingFactoFreshness;
   profile: { role: AccountingRole; permissions: string[] };
 }
 
@@ -435,6 +444,12 @@ export interface AccountingExactReconciliationPreview {
   untouched: number;
   matches: AccountingExactReconciliationMatch[];
   policy: string;
+}
+
+export interface AccountingExactReconciliationRunResult extends AccountingExactReconciliationPreview {
+  confirmed: number;
+  skipped: number;
+  errors: Array<{ transactionId: string; error: string }>;
 }
 
 export interface AccountingLedgerCoverage {
