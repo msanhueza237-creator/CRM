@@ -25,6 +25,7 @@ import {
   reconciliationDocumentCandidates,
 } from "../src/modules/accounting/reconciliationSearch.ts";
 import { buildFactoCurrentStateAdjustment } from "../supabase/functions/accounting-center/facto-current-state.ts";
+import { analyzeFactoReceivablesSnapshot } from "../supabase/functions/accounting-center/facto-receivables.ts";
 import {
   identifyPayrollEmployee,
   protectedPayrollClassification,
@@ -39,6 +40,7 @@ const factoOutstandingSnapshotMigration = await readFile(new URL("../supabase/ac
 const controlsRefreshFix = await readFile(new URL("../supabase/accounting_control_findings_refresh_fix.sql", import.meta.url), "utf8");
 const bankRealityMigration = await readFile(new URL("../supabase/accounting_bank_reality.sql", import.meta.url), "utf8");
 const bankTraceabilityMigration = await readFile(new URL("../supabase/accounting_bank_traceability_reality.sql", import.meta.url), "utf8");
+const factoLiveReceivablesMigration = await readFile(new URL("../supabase/accounting_facto_receivables_live_state.sql", import.meta.url), "utf8");
 const sislaLoanMigration = await readFile(new URL("../supabase/accounting_reclassify_sisla_loan_repayment.sql", import.meta.url), "utf8");
 const edgeSource = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
 const parserSource = await readFile(new URL("../supabase/functions/accounting-center/bank-parsers.ts", import.meta.url), "utf8");
@@ -91,6 +93,40 @@ assert.match(edgeSource, /route === "reconciliation\/exact-preview"/);
 assert.match(edgeSource, /route === "reconciliation\/exact-confirm"/);
 assert.match(edgeSource, /route === "reconciliation\/exact-run"/);
 assert.match(edgeSource, /facto\.reported_balances_synced/);
+assert.match(edgeSource, /analyzeFactoReceivablesSnapshot/);
+assert.match(factoLiveReceivablesMigration, /facto\.live_receivables_snapshot_applied/);
+assert.match(factoLiveReceivablesMigration, /bank_allocations_unchanged/);
+
+const completeFactoPortfolio = analyzeFactoReceivablesSnapshot({
+  authoritative: true,
+  mode: "facto_document_pdf",
+  as_of: "2026-09-03",
+  observed_amount: 474401,
+  overdue_amount: 0,
+  documents: 4,
+  classification_status: "complete",
+  unclassified_documents: 0,
+  pdf_coverage: {
+    percent: 1,
+    documents_examined: 418,
+    documents_with_pdf: 418,
+    documents_with_balance: 4,
+  },
+  documents_detail: [{ document_id: "503" }, { document_id: "706" }, { document_id: "710" }, { document_id: "826" }],
+});
+assert.equal(completeFactoPortfolio.canCloseMissing, true);
+assert.equal(completeFactoPortfolio.amountClp, 474401);
+assert.equal(completeFactoPortfolio.documentCount, 4);
+assert.equal(analyzeFactoReceivablesSnapshot({
+  authoritative: true,
+  mode: "facto_document_pdf",
+  classification_status: "complete",
+  unclassified_documents: 0,
+  pdf_coverage: { percent: 0.8, documents_examined: 100, documents_with_pdf: 80, documents_with_balance: 1 },
+  documents_detail: [{ document_id: "1" }],
+}).canCloseMissing, false);
+assert.match(pageSource, /Pendientes en Facto/);
+assert.match(pageSource, /Banco conciliado:/);
 assert.match(edgeSource, /autoReconcileExact/);
 assert.match(edgeSource, /route === "ledger\/coverage"/);
 assert.match(edgeSource, /route === "ledger\/prepare"/);

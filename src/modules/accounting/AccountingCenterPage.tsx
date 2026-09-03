@@ -178,7 +178,7 @@ export function AccountingCenterPage() {
           {activeView === "facto" ? <FactoView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "banks" ? <BankImportView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "reconcile" ? <ReconciliationErrorBoundary><ReconciliationView data={data} busy={busy} runAction={runAction} /></ReconciliationErrorBoundary> : null}
-          {activeView === "receivables" ? <ReceivablesView rows={data.receivables} /> : null}
+          {activeView === "receivables" ? <ReceivablesView data={data} /> : null}
           {activeView === "payables" ? <PayablesView rows={data.payables} /> : null}
           {activeView === "checks" ? <ChecksView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "periods" ? <PeriodsView data={data} isAdmin={user?.role === "administrador"} busy={busy} runAction={runAction} /> : null}
@@ -212,16 +212,21 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   const dashboard = data.dashboard ?? fallbackDashboard(summary.as_of);
   const result = dashboard.current;
   const expenses = dashboard.expenseBreakdown;
+  const factoReceivables = data.factoReceivables;
   const available = number(summary.bank_clp) + number(summary.bank_usd_clp);
   const portfolioChecks = data.checks.filter((check) => check.status === "portfolio");
   const checksPortfolio = portfolioChecks.reduce((total, check) => total + number(check.amount_clp), 0);
   const position = available + number(summary.receivables) + checksPortfolio - number(summary.payables);
+  const factoReceivablesDetail = factoReceivables?.authoritative
+    ? `${factoReceivables.documentCount} documento(s) pendientes en Facto · corte ${shortDate(factoReceivables.asOf || summary.as_of)}`
+    : "Saldo operativo pendiente de validar con Facto";
   const documentaryBasis = dashboard.basis === "documentary" || dashboard.basis === "mixed";
   const dashboardWarnings = Array.isArray(dashboard.warnings) ? dashboard.warnings : [];
   const resultIsProvisional = summary.provisional || dashboard.costCoverage.missingSalesCost > 0 || documentaryBasis;
   const cards: Array<{ label: string; value: string; detail: string; view: AccountingView; icon: typeof Landmark; tone?: string; trend?: number | null }> = [
     { label: "Disponible", value: clp(available), detail: `${summary.bank_balance_basis === "verified_control" ? "Control bancario verificado" : "Saldo contable"} · CLP ${clp(summary.bank_clp)} · USD equiv. ${clp(summary.bank_usd_clp)}`, view: "banks", icon: WalletCards },
     { label: "Posición financiera", value: clp(position), detail: "Disponible + cobros + cheques − obligaciones", view: "reports", icon: Scale, tone: position < 0 ? "danger" : "positive" },
+    { label: "Cuentas por cobrar", value: clp(summary.receivables), detail: factoReceivablesDetail, view: "receivables", icon: CircleDollarSign, tone: number(summary.receivables_overdue) > 0 ? "warning" : "positive" },
     { label: `Ventas ${dashboard.year}`, value: clp(result.sales), detail: "Ingresos contabilizados acumulados", view: "reports", icon: BadgeDollarSign, trend: dashboard.comparison.sales },
     { label: "Costo de ventas", value: clp(result.costs), detail: `${formatPercent(dashboard.costCoverage.percentage)} de facturas con costo exacto`, view: "ledger", icon: ReceiptText, tone: dashboard.costCoverage.missingSalesCost ? "warning" : "" },
     { label: `Costo laboral ${dashboard.year}`, value: clp(expenses.laborTotal), detail: `Sueldos ${clp(expenses.salaries)} · PREVIRED ${clp(expenses.pensionContributions)}`, view: "ledger", icon: WalletCards },
@@ -955,18 +960,48 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   </div>;
 }
 
-function ReceivablesView({ rows }: { rows: AccountingReceivable[] }) {
+function ReceivablesView({ data }: { data: AccountingBootstrap }) {
+  const factoReceivables = data.factoReceivables;
   const [bucket, setBucket] = useState("all");
   const [query, setQuery] = useState("");
   const [from, setFrom] = useState("2026-01-01");
   const [to, setTo] = useState(today());
-  const [status, setStatus] = useState("all");
-  const filtered = rows.filter((row) => {
+  const [status, setStatus] = useState("facto-open");
+  const filtered = data.receivables.filter((row) => {
     const matchesQuery = !query || normalize(`${row.customer_name} ${row.customer_tax_id || ""} ${row.document_number}`).includes(normalize(query));
     const matchesDates = (!from || row.issued_on >= from) && (!to || row.issued_on <= to);
-    return matchesQuery && matchesDates && (bucket === "all" || agingBucket(row.due_on) === bucket) && (status === "all" || row.status === status);
+    const operational = operationalReceivableBalance(row);
+    const matchesStatus = status === "all"
+      || (status === "facto-open" && operational > 0.5)
+      || (status === "facto-paid" && row.reported_balance_clp !== null && operational <= 0.5)
+      || (status === "bank-pending" && number(row.balance_clp) > 0.5);
+    return matchesQuery && matchesDates && matchesStatus && (bucket === "all" || agingBucket(row.due_on) === bucket);
   });
-  return <section className="panel"><div className="accounting-panel-heading"><div><p>Cobranza</p><h2>Cuentas por cobrar</h2><span>Saldo Facto es información operacional; saldo confirmado solo cambia con pagos bancarios conciliados.</span></div><strong>{clp(filtered.reduce((sum, row) => sum + number(row.reported_balance_clp ?? row.balance_clp), 0))}</strong></div><div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Cliente, RUT o documento" /><label>Emisión desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Emisión hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><label>Antigüedad<select value={bucket} onChange={(event) => setBucket(event.target.value)}><option value="all">Todos los vencimientos</option><option value="current">Por vencer</option><option value="1-30">1–30 días</option><option value="31-60">31–60 días</option><option value="61-90">61–90 días</option><option value="91-120">91–120 días</option><option value="120+">Más de 120 días</option></select></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Todos</option><option value="pending">Pendiente</option><option value="partial">Pago parcial</option><option value="paid">Pagada</option><option value="overdue">Vencida</option></select></label></div>{filtered.length ? <Table headers={["Cliente", "Documento", "Emisión", "Vencimiento", "Original", "Abonos", "Saldo operativo", "Estado"]}>{filtered.map((row) => { const reported = row.reported_balance_clp !== null; return <tr key={row.id}><td data-label="Cliente"><strong>{row.customer_name}</strong><small>{row.customer_tax_id || ""}</small></td><td data-label="Documento">{row.document_number}</td><td data-label="Emisión">{date(row.issued_on)}</td><td data-label="Vencimiento">{date(row.due_on)}<small>{agingLabel(row.due_on)}</small></td><td data-label="Original">{clp(row.original_amount_clp)}</td><td data-label="Abonos">{clp(reported ? row.reported_paid_amount_clp : row.paid_amount_clp)}<small>{reported ? `Confirmado banco: ${clp(row.paid_amount_clp)}` : "Confirmado"}</small></td><td data-label="Saldo operativo"><strong>{clp(reported ? row.reported_balance_clp : row.balance_clp)}</strong><small>{reported ? `Facto · confirmado: ${clp(row.balance_clp)}` : "Conciliado"}</small></td><td data-label="Estado"><Status value={reported ? "Informado por Facto" : humanize(row.status)} tone={row.status === "paid" ? "success" : agingBucket(row.due_on) === "current" ? "neutral" : "review"} /></td></tr>; })}</Table> : <Empty icon={Search} text="No hay cuentas por cobrar que coincidan con los filtros." />}</section>;
+  const total = filtered.reduce((sum, row) => sum + operationalReceivableBalance(row), 0);
+  return <section className="panel">
+    <div className="accounting-panel-heading">
+      <div><p>Cobranza Facto</p><h2>Cuentas por cobrar</h2><span>La cartera operacional de Facto y la conciliación bancaria se mantienen separadas y trazables.</span></div>
+      <div className="accounting-receivables-total"><strong>{clp(total)}</strong><small>{filtered.length} documento(s) · corte {shortDate(factoReceivables?.asOf || data.summary.as_of)}</small></div>
+    </div>
+    <div className="accounting-source-note"><ShieldCheck size={16} /><span>{factoReceivables?.authoritative ? `Facto informa ${clp(factoReceivables.amountClp)} en ${factoReceivables.documentCount} documento(s).` : "La cartera Facto aún no tiene una foto autoritativa."} El saldo conciliado con bancos no se sobrescribe.</span></div>
+    <div className="accounting-filter-grid">
+      <SearchField value={query} onChange={setQuery} placeholder="Cliente, RUT o documento" />
+      <label>Emisión desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>
+      <label>Emisión hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label>
+      <label>Antigüedad<select value={bucket} onChange={(event) => setBucket(event.target.value)}><option value="all">Todos los vencimientos</option><option value="current">Por vencer</option><option value="1-30">1–30 días</option><option value="31-60">31–60 días</option><option value="61-90">61–90 días</option><option value="91-120">91–120 días</option><option value="120+">Más de 120 días</option></select></label>
+      <label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="facto-open">Pendientes en Facto</option><option value="facto-paid">Pagadas en Facto</option><option value="bank-pending">Pendientes de conciliación bancaria</option><option value="all">Todos los documentos</option></select></label>
+    </div>
+    {filtered.length ? <Table headers={["Cliente", "Documento", "Emisión", "Vencimiento", "Original", "Abonos Facto", "Saldo Facto", "Estado"]}>{filtered.map((row) => {
+      const reported = row.reported_balance_clp !== null;
+      const operational = operationalReceivableBalance(row);
+      const statusLabel = !reported ? humanize(row.status) : operational <= 0.5 ? "Pagada en Facto" : number(row.reported_paid_amount_clp) > 0 ? "Pago parcial Facto" : "Pendiente en Facto";
+      return <tr key={row.id}><td data-label="Cliente"><strong>{row.customer_name}</strong><small>{row.customer_tax_id || ""}</small></td><td data-label="Documento">{row.document_number}</td><td data-label="Emisión">{date(row.issued_on)}</td><td data-label="Vencimiento">{date(row.due_on)}<small>{agingLabel(row.due_on)}</small></td><td data-label="Original">{clp(row.original_amount_clp)}</td><td data-label="Abonos Facto">{clp(reported ? row.reported_paid_amount_clp : row.paid_amount_clp)}<small>Banco conciliado: {clp(row.paid_amount_clp)}</small></td><td data-label="Saldo Facto"><strong>{clp(operational)}</strong><small>Banco pendiente: {clp(row.balance_clp)}</small></td><td data-label="Estado"><Status value={statusLabel} tone={reported && operational <= 0.5 ? "success" : agingBucket(row.due_on) === "current" ? "neutral" : "review"} /></td></tr>;
+    })}</Table> : <Empty icon={Search} text="No hay cuentas por cobrar que coincidan con los filtros." />}
+  </section>;
+}
+
+function operationalReceivableBalance(row: AccountingReceivable) {
+  return number(row.reported_balance_clp ?? row.balance_clp);
 }
 
 function PayablesView({ rows }: { rows: AccountingPayable[] }) {

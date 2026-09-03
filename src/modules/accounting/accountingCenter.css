@@ -32,6 +32,37 @@
   flex-wrap: wrap;
 }
 
+.accounting-receivables-total {
+  display: grid !important;
+  justify-items: end;
+  gap: 2px;
+  text-align: right;
+}
+
+.accounting-receivables-total strong {
+  color: var(--accounting-ink);
+  font-size: 1.35rem;
+}
+
+.accounting-receivables-total small {
+  color: var(--accounting-muted);
+  font-size: 0.76rem;
+}
+
+.accounting-source-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 11px 12px;
+  border-left: 3px solid var(--accounting-good);
+  background: #eef8f4;
+  color: #1d5f4d;
+  font-size: 0.84rem;
+}
+
+.accounting-source-note svg { flex: 0 0 auto; margin-top: 1px; }
+
 .accounting-facto-range {
   display: grid;
   grid-template-columns: minmax(180px, 240px) minmax(180px, 240px) minmax(220px, max-content);
@@ -1501,6 +1532,7 @@
   .accounting-heading,
   .accounting-panel-heading,
   .accounting-modal-heading { align-items: flex-start; flex-direction: column; }
+  .accounting-receivables-total { justify-items: start; text-align: left; }
   .accounting-heading-actions,
   .accounting-export-actions,
   .accounting-source-actions { width: 100%; }

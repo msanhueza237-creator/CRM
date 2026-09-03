@@ -7,6 +7,7 @@ import {
   type ReconciliationDocumentInput,
 } from "./reconciliation-engine.ts";
 import { buildFactoCurrentStateAdjustment } from "./facto-current-state.ts";
+import { analyzeFactoReceivablesSnapshot } from "./facto-receivables.ts";
 import { identifyPayrollEmployee, protectedPayrollClassification } from "./payroll-employees.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -193,7 +194,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     selectRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
     selectRows(rest, `accounting_facto_sync_runs?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=24`),
     selectRows(rest, "integration_connections?select=provider,status,last_success_at&provider=eq.facto&limit=1"),
-    selectRows(rest, "integration_records?select=updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
+    selectRows(rest, "integration_records?select=id,payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
   ]);
   const asOf = new Date().toISOString().slice(0, 10);
   const [rawSummary, dashboard] = await Promise.all([
@@ -201,11 +202,18 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     buildDashboardAnalytics(rest, entityId, asOf, sources, accounts),
   ]);
   const bankReality = await buildBankReality(rest, entityId, bankAccounts, bankTransactions, bankBalanceSnapshots);
+  const latestFactoCollections = analyzeFactoReceivablesSnapshot(
+    asObject(asObject(factoIntegrationRows[0]?.payload).collections),
+  );
   const summary = {
     ...asObject(rawSummary),
     bank_clp: bankReality.availableClp,
     bank_usd_clp: bankReality.availableUsdClp,
     bank_balance_basis: bankReality.basis,
+    ...(latestFactoCollections.authoritative ? {
+      receivables: latestFactoCollections.amountClp,
+      receivables_overdue: latestFactoCollections.overdueClp,
+    } : {}),
   };
   const integrationUpdatedAt = dateTimeValue(factoIntegrationRows[0]?.updated_at);
   const accountingSyncedAt = factoSyncRuns
@@ -220,6 +228,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, bankReality, sources, entries,
     receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, summary, dashboard, factoFreshness,
+    factoReceivables: latestFactoCollections,
     profile: { role: profile.role, permissions: [...rolePermissions[profile.role]] },
   };
 }
@@ -898,7 +907,7 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
     }
 
     const reportedResult = await syncFactoReportedBalances(rest, profile, requestId, entityId, fromDate, toDate);
-    reportedBalances = reportedResult.updated;
+    reportedBalances = reportedResult.updated + reportedResult.cleared;
 
     const status = inconsistent > 0 ? "partial" : "completed";
     await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
@@ -953,17 +962,16 @@ async function syncFactoReportedBalances(
   const snapshotRecord = (await selectRows(rest,
     "integration_records?select=id,payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1",
   ))[0];
-  if (!snapshotRecord) return { updated: 0, skipped: 0 };
+  if (!snapshotRecord) return { updated: 0, cleared: 0, skipped: 0 };
   const collections = asObject(asObject(snapshotRecord.payload).collections);
-  if (collections.authoritative !== true) return { updated: 0, skipped: 0 };
-  const details = Array.isArray(collections.documents_detail)
-    ? collections.documents_detail.map(asObject)
-    : [];
-  if (!details.length) return { updated: 0, skipped: 0 };
+  const portfolio = analyzeFactoReceivablesSnapshot(collections);
+  if (!portfolio.authoritative) return { updated: 0, cleared: 0, skipped: 0 };
+  const details = portfolio.details;
+  if (!details.length && !portfolio.canCloseMissing) return { updated: 0, cleared: 0, skipped: 0 };
 
   const [sources, receivables] = await Promise.all([
     selectAllRows(rest,
-      `accounting_source_documents?select=id,external_id,folio,issued_on&entity_id=eq.${entityId}&source_type=eq.FACTO&issued_on=gte.${fromDate}&issued_on=lte.${toDate}`,
+      `accounting_source_documents?select=id,external_id,folio,issued_on,document_type&entity_id=eq.${entityId}&source_type=eq.FACTO&issued_on=gte.${fromDate}&issued_on=lte.${toDate}`,
     ),
     selectAllRows(rest,
       `accounting_receivables?select=id,source_document_id,original_amount_clp,paid_amount_clp,balance_clp,status,due_on&entity_id=eq.${entityId}`,
@@ -973,14 +981,17 @@ async function syncFactoReportedBalances(
     const value = String(source.external_id || "").trim();
     return value ? [[value, source] as const] : [];
   }));
-  const sourceByFolio = new Map(sources.flatMap((source) => {
-    const value = String(source.folio || "").trim();
-    return value ? [[value, source] as const] : [];
-  }));
+  const sourcesByFolio = new Map<string, JsonRecord[]>();
+  for (const source of sources) {
+    const folio = String(source.folio || "").trim();
+    if (folio) sourcesByFolio.set(folio, [...(sourcesByFolio.get(folio) || []), source]);
+  }
   const receivableBySourceId = new Map(receivables.map((row) => [String(row.source_document_id), row]));
   const reportedAt = dateTimeValue(snapshotRecord.updated_at) || new Date().toISOString();
   let updated = 0;
+  let cleared = 0;
   let skipped = 0;
+  const matchedReceivableIds = new Set<string>();
 
   for (const detail of details) {
     const evidence = String(detail.balance_source || "");
@@ -992,8 +1003,9 @@ async function syncFactoReportedBalances(
       skipped += 1;
       continue;
     }
+    const folioMatches = sourcesByFolio.get(String(detail.document_number || "").trim()) || [];
     const source = sourceByExternalId.get(String(detail.document_id || "").trim())
-      || sourceByFolio.get(String(detail.document_number || "").trim());
+      || (folioMatches.length === 1 ? folioMatches[0] : null);
     const receivable = source ? receivableBySourceId.get(String(source.id)) : null;
     const reportedBalance = numeric(detail.observed_amount);
     const original = numeric(receivable?.original_amount_clp);
@@ -1007,10 +1019,29 @@ async function syncFactoReportedBalances(
       reported_at: reportedAt,
       updated_at: new Date().toISOString(),
     });
+    matchedReceivableIds.add(String(receivable.id));
     updated += 1;
   }
 
-  if (updated || skipped) {
+  if (portfolio.canCloseMissing) {
+    const now = new Date().toISOString();
+    for (const source of sources) {
+      const receivable = receivableBySourceId.get(String(source.id));
+      if (!receivable || matchedReceivableIds.has(String(receivable.id))) continue;
+      if (!["sales_invoice", "sales_receipt"].includes(String(source.document_type || ""))) continue;
+      const original = numeric(receivable.original_amount_clp);
+      if (original <= 0) continue;
+      await patchRows(rest, "accounting_receivables", `id=eq.${receivable.id}`, {
+        reported_paid_amount_clp: original,
+        reported_balance_clp: 0,
+        reported_at: reportedAt,
+        updated_at: now,
+      });
+      cleared += 1;
+    }
+  }
+
+  if (updated || cleared || skipped) {
     await insertRows(rest, "accounting_audit_events", [{
       entity_id: entityId,
       actor_id: profile.id,
@@ -1020,13 +1051,17 @@ async function syncFactoReportedBalances(
       correlation_id: requestIdToUuid(requestId),
       new_value: {
         updated,
+        cleared,
         skipped,
         reported_at: reportedAt,
-        policy: "Solo saldos individualizados y explícitos de cobranza Facto; no modifica abonos conciliados con banco.",
+        snapshot_as_of: portfolio.asOf,
+        snapshot_amount_clp: portfolio.amountClp,
+        complete_portfolio: portfolio.canCloseMissing,
+        policy: "Actualiza la cartera operacional Facto sin modificar abonos ni conciliaciones bancarias.",
       },
     }]);
   }
-  return { updated, skipped };
+  return { updated, cleared, skipped };
 }
 
 async function syncForeignTrade(rest: RestClient, profile: Profile, requestId: string) {

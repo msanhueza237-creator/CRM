@@ -290,6 +290,16 @@ export interface AccountingFactoFreshness {
   stale: boolean;
 }
 
+export interface AccountingFactoReceivablesSnapshot {
+  authoritative: boolean;
+  canCloseMissing: boolean;
+  asOf: string | null;
+  mode: string;
+  amountClp: number;
+  overdueClp: number;
+  documentCount: number;
+}
+
 export interface AccountingSummary {
   as_of: string;
   bank_clp: number;
@@ -380,6 +390,7 @@ export interface AccountingBootstrap {
   summary: AccountingSummary;
   dashboard: AccountingDashboardAnalytics;
   factoFreshness: AccountingFactoFreshness;
+  factoReceivables?: AccountingFactoReceivablesSnapshot;
   profile: { role: AccountingRole; permissions: string[] };
 }
 
