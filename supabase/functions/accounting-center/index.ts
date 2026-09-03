@@ -69,6 +69,10 @@ Deno.serve(async (request) => {
       requirePermission(profile, "import");
       return json(await confirmImport(rest, profile, await readJson(request)), 200, request);
     }
+    if (route === "bank-balances/confirm" && request.method === "POST") {
+      requirePermission(profile, "post");
+      return json(await confirmBankBalance(rest, profile, await readJson(request)), 200, request);
+    }
     if (route === "reconciliation/propose" && request.method === "POST") {
       requirePermission(profile, "reconcile");
       return json(await proposeReconciliation(rest, await readJson(request)), 200, request);
@@ -173,11 +177,12 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   const entity = entities[0];
   if (!entity) throw new HttpError(409, "Falta aplicar la migración accounting_center.sql.");
   const entityId = String(entity.id);
-  const [accounts, periods, bankAccounts, bankTransactions, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoConnectionRows, factoIntegrationRows] = await Promise.all([
+  const [accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoConnectionRows, factoIntegrationRows] = await Promise.all([
     selectRows(rest, `accounting_accounts?select=*&entity_id=eq.${entityId}&order=code.asc`),
     selectRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
     selectRows(rest, `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&order=transaction_date.desc&limit=250`),
+    selectRows(rest, `accounting_bank_balance_snapshots?select=*&entity_id=eq.${entityId}&status=eq.verified&order=as_of_date.desc,created_at.desc&limit=100`),
     selectRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast&limit=1000`),
     selectRows(rest, `accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
     selectRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
@@ -191,10 +196,17 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     selectRows(rest, "integration_records?select=updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
   ]);
   const asOf = new Date().toISOString().slice(0, 10);
-  const [summary, dashboard] = await Promise.all([
+  const [rawSummary, dashboard] = await Promise.all([
     rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: asOf }),
     buildDashboardAnalytics(rest, entityId, asOf, sources, accounts),
   ]);
+  const bankReality = await buildBankReality(rest, entityId, bankAccounts, bankTransactions, bankBalanceSnapshots);
+  const summary = {
+    ...asObject(rawSummary),
+    bank_clp: bankReality.availableClp,
+    bank_usd_clp: bankReality.availableUsdClp,
+    bank_balance_basis: bankReality.basis,
+  };
   const integrationUpdatedAt = dateTimeValue(factoIntegrationRows[0]?.updated_at);
   const accountingSyncedAt = factoSyncRuns
     .map((run) => dateTimeValue(run.completed_at))
@@ -206,10 +218,142 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     stale: Boolean(integrationUpdatedAt && (!accountingSyncedAt || integrationUpdatedAt > accountingSyncedAt)),
   };
   return {
-    entity, accounts, periods, bankAccounts, bankTransactions, sources, entries,
+    entity, accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, bankReality, sources, entries,
     receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, summary, dashboard, factoFreshness,
     profile: { role: profile.role, permissions: [...rolePermissions[profile.role]] },
   };
+}
+
+async function buildBankReality(
+  rest: RestClient,
+  entityId: string,
+  bankAccounts: JsonRecord[],
+  recentTransactions: JsonRecord[],
+  snapshots: JsonRecord[],
+) {
+  const ledgerAccountIds = [...new Set(bankAccounts.map((account) => String(account.ledger_account_id || "")).filter(Boolean))];
+  const [ledgerLines, allStatementRows] = await Promise.all([
+    ledgerAccountIds.length
+      ? selectAllRows(rest, `accounting_journal_lines?select=account_id,debit_clp,credit_clp,accounting_journal_entries!inner(entity_id,status)&account_id=in.(${ledgerAccountIds.join(",")})&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&order=id.asc`)
+      : Promise.resolve([]),
+    selectAllRows(rest, `accounting_bank_transactions?select=id,bank_account_id,import_batch_id,transaction_date,balance,currency,exchange_rate,created_at,metadata&entity_id=eq.${entityId}&balance=not.is.null&reconciliation_status=neq.ignored&order=transaction_date.desc,created_at.desc`),
+  ]);
+  const ledgerBalances = new Map<string, number>();
+  for (const line of ledgerLines) {
+    const accountId = String(line.account_id || "");
+    ledgerBalances.set(accountId, (ledgerBalances.get(accountId) || 0) + numeric(line.debit_clp) - numeric(line.credit_clp));
+  }
+  const transactionRows = allStatementRows.length ? allStatementRows : recentTransactions;
+  const batchIds = [...new Set(transactionRows.map((row) => String(row.import_batch_id || "")).filter(Boolean))];
+  const batches = batchIds.length
+    ? await selectAllRows(rest, `accounting_import_batches?select=id,file_name,storage_path&id=in.(${batchIds.join(",")})`)
+    : [];
+  const batchMap = new Map(batches.map((batch) => [String(batch.id), batch]));
+  const groups = new Map<string, JsonRecord[]>();
+  for (const account of bankAccounts.filter((row) => row.active !== false)) {
+    const key = `${String(account.institution || "")}|${String(account.currency || "CLP")}|${String(account.ledger_account_id || "")}`;
+    groups.set(key, [...(groups.get(key) || []), account]);
+  }
+  const rows = [...groups.values()].map((accounts) => {
+    const accountIds = new Set(accounts.map((account) => String(account.id)));
+    const ledgerAccountId = String(accounts[0]?.ledger_account_id || "");
+    const currency = String(accounts[0]?.currency || "CLP");
+    const statement = transactionRows
+      .filter((row) => accountIds.has(String(row.bank_account_id)))
+      .sort((left, right) => bankRealitySequence(right).localeCompare(bankRealitySequence(left)))[0] || null;
+    const snapshot = snapshots
+      .filter((row) => accountIds.has(String(row.bank_account_id)))
+      .sort((left, right) => `${right.as_of_date}|${right.created_at}`.localeCompare(`${left.as_of_date}|${left.created_at}`))[0] || null;
+    const statementDate = String(statement?.transaction_date || "");
+    const snapshotDate = String(snapshot?.as_of_date || "");
+    const useSnapshot = Boolean(snapshot && (!statementDate || snapshotDate >= statementDate));
+    const ledgerBalanceClp = Math.round((ledgerBalances.get(ledgerAccountId) || 0) * 10000) / 10000;
+    const statementRate = Math.max(numeric(statement?.exchange_rate), 1);
+    const statementBalance = statement ? numeric(statement.balance) : null;
+    const statementBalanceClp = statementBalance === null ? null : Math.round(statementBalance * statementRate * 10000) / 10000;
+    const verifiedBalance = useSnapshot ? numeric(snapshot.balance) : statementBalance;
+    const verifiedBalanceClp = useSnapshot ? numeric(snapshot.balance_clp) : statementBalanceClp;
+    const basis = useSnapshot ? "verified" : statement ? "statement" : "ledger";
+    const controlBalanceClp = verifiedBalanceClp === null ? ledgerBalanceClp : verifiedBalanceClp;
+    const preferredAccount = accounts.find((account) => snapshot && String(account.id) === String(snapshot.bank_account_id))
+      || accounts.find((account) => !normalizeText(account.account_number_masked).includes("pendiente"))
+      || accounts[0];
+    const sourceBatch = statement ? batchMap.get(String(statement.import_batch_id || "")) : null;
+    return {
+      key: `${String(preferredAccount.institution)}-${currency}-${ledgerAccountId}`,
+      bankAccountId: String(preferredAccount.id),
+      ledgerAccountId,
+      institution: String(preferredAccount.institution || "Banco"),
+      accountName: String(preferredAccount.account_name || "Cuenta bancaria"),
+      accountNumberMasked: String(preferredAccount.account_number_masked || ""),
+      currency,
+      ledgerBalanceClp,
+      statementBalance,
+      statementBalanceClp,
+      statementDate: statementDate || null,
+      statementFileName: sourceBatch ? String(sourceBatch.file_name || "") : null,
+      statementStoragePath: sourceBatch ? String(sourceBatch.storage_path || "") : null,
+      verifiedBalance,
+      verifiedBalanceClp: controlBalanceClp,
+      verifiedAt: useSnapshot ? snapshotDate : statementDate || null,
+      verifiedSource: useSnapshot ? String(snapshot.source_reference || snapshot.source_type || "Saldo verificado") : sourceBatch ? String(sourceBatch.file_name || "Cartola") : "Libro Mayor",
+      basis,
+      differenceClp: Math.round((controlBalanceClp - ledgerBalanceClp) * 10000) / 10000,
+      notes: useSnapshot ? String(snapshot.notes || "") : "",
+    };
+  }).sort((left, right) => `${left.institution}|${left.currency}`.localeCompare(`${right.institution}|${right.currency}`));
+  return {
+    asOf: rows.map((row) => row.verifiedAt).filter(Boolean).sort().at(-1) || null,
+    basis: rows.some((row) => row.basis === "verified") ? "verified_control" : rows.some((row) => row.basis === "statement") ? "statements" : "ledger",
+    availableClp: Math.round(rows.filter((row) => row.currency === "CLP").reduce((sum, row) => sum + row.verifiedBalanceClp, 0) * 10000) / 10000,
+    availableUsdClp: Math.round(rows.filter((row) => row.currency !== "CLP").reduce((sum, row) => sum + row.verifiedBalanceClp, 0) * 10000) / 10000,
+    ledgerClp: Math.round(rows.filter((row) => row.currency === "CLP").reduce((sum, row) => sum + row.ledgerBalanceClp, 0) * 10000) / 10000,
+    varianceClp: Math.round(rows.filter((row) => row.currency === "CLP").reduce((sum, row) => sum + row.differenceClp, 0) * 10000) / 10000,
+    accounts: rows,
+  };
+}
+
+function bankRealitySequence(row: JsonRecord) {
+  const metadata = asObject(row.metadata);
+  return `${String(row.transaction_date || "")}|${String(row.created_at || "")}|${String(Math.trunc(numeric(metadata.source_row))).padStart(10, "0")}|${String(row.id || "")}`;
+}
+
+async function confirmBankBalance(rest: RestClient, profile: Profile, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  const bankAccountId = requiredUuid(payload.bankAccountId);
+  const asOfDate = requiredDate(payload.asOfDate);
+  const balance = Math.round(numeric(payload.balance) * 10000) / 10000;
+  if (!Number.isFinite(balance) || balance < 0) throw new HttpError(400, "Ingresa un saldo bancario válido.");
+  const account = (await selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&id=eq.${bankAccountId}&active=eq.true&limit=1`))[0];
+  if (!account) throw new HttpError(404, "La cuenta bancaria no existe o está inactiva.");
+  const currency = String(account.currency || "CLP").toUpperCase();
+  const exchangeRate = currency === "CLP" ? 1 : positiveNumber(payload.exchangeRate);
+  const sourceReference = optionalText(payload.sourceReference, 180) || "Saldo confirmado por Finanzas";
+  const snapshot = (await upsertRows(rest, "accounting_bank_balance_snapshots", [{
+    entity_id: entityId,
+    bank_account_id: bankAccountId,
+    as_of_date: asOfDate,
+    balance,
+    currency,
+    exchange_rate: exchangeRate,
+    balance_clp: Math.round(balance * exchangeRate * 10000) / 10000,
+    source_type: "MANUAL",
+    source_reference: sourceReference,
+    status: "verified",
+    notes: optionalText(payload.notes, 500) || null,
+    created_by: profile.id,
+    updated_at: new Date().toISOString(),
+  }], "bank_account_id,as_of_date,source_reference"))[0];
+  await insertRows(rest, "accounting_audit_events", [{
+    entity_id: entityId,
+    actor_id: profile.id,
+    action: "bank.balance_verified",
+    entity_type: "bank_account",
+    entity_id_text: bankAccountId,
+    reason: optionalText(payload.notes, 500) || "Saldo de tesorería confirmado para control contra Libro Mayor.",
+    new_value: { snapshot_id: snapshot.id, as_of_date: asOfDate, balance, currency, exchange_rate: exchangeRate, source_reference: sourceReference },
+  }]);
+  return { snapshot };
 }
 
 type DashboardResultTotals = {
@@ -1036,14 +1180,15 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
       rest,
       `accounting_exchange_rates?select=rate,rate_date,source,status&from_currency=eq.${preview.currency}&to_currency=eq.CLP${latestTransactionDate ? `&rate_date=lte.${latestTransactionDate}` : ""}&order=rate_date.desc,created_at.desc&limit=1`,
     ))[0] || null;
-  const duplicateSet = await existingBankFingerprints(
+  const duplicateRows = await existingBankDuplicateRows(
     rest,
-    String(bankAccount.id),
-    preview.rows.map((row) => row.fingerprint),
+    entityId,
+    bankAccount,
+    preview.rows,
   );
-  const valid = preview.rows.filter((row) => !row.errors.length && !duplicateSet.has(row.fingerprint));
+  const valid = preview.rows.filter((row) => !row.errors.length && !duplicateRows.has(row.row_number));
   const invalid = preview.rows.filter((row) => row.errors.length);
-  const duplicates = preview.rows.filter((row) => duplicateSet.has(row.fingerprint));
+  const duplicates = preview.rows.filter((row) => duplicateRows.has(row.row_number));
   const batchData = {
     entity_id: entityId,
     source_type: sourceType(preview.profile),
@@ -1071,7 +1216,7 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
     batch_id: batch.id,
     row_number: row.row_number,
     fingerprint: row.fingerprint,
-    status: row.errors.length ? "invalid" : duplicateSet.has(row.fingerprint) ? "duplicate" : "new",
+    status: row.errors.length ? "invalid" : duplicateRows.has(row.row_number) ? "duplicate" : "new",
     normalized_data: row,
     validation_errors: row.errors,
   })));
@@ -1080,26 +1225,81 @@ async function previewImport(rest: RestClient, profile: Profile, payload: JsonRe
     bankAccount,
     suggestedExchangeRate,
     summary: { total: preview.rows.length, new: valid.length, duplicates: duplicates.length, errors: invalid.length },
-    rows: preview.rows.slice(0, 300),
+    rows: preview.rows.slice(0, 300).map((row) => ({
+      ...row,
+      status: row.errors.length ? "invalid" : duplicateRows.has(row.row_number) ? "duplicate" : "new",
+    })),
   };
 }
 
-async function existingBankFingerprints(rest: RestClient, bankAccountId: string, fingerprints: string[]) {
-  const duplicateSet = new Set<string>();
-  const uniqueFingerprints = [...new Set(fingerprints.filter(Boolean))];
+async function existingBankDuplicateRows(rest: RestClient, entityId: string, bankAccount: JsonRecord, previewInput: unknown[]) {
+  const duplicateRows = new Set<number>();
+  const previewRows = previewInput.map(asObject);
+  const validRows = previewRows.filter((row) => !Array.isArray(row.errors) || row.errors.length === 0);
+  if (!validRows.length) return duplicateRows;
+  const relatedAccounts = await selectAllRows(rest,
+    `accounting_bank_accounts?select=id&entity_id=eq.${entityId}&institution=eq.${encodeURIComponent(String(bankAccount.institution || ""))}&currency=eq.${encodeURIComponent(String(bankAccount.currency || "CLP"))}`,
+  );
+  const accountIds = relatedAccounts.map((row) => String(row.id)).filter(Boolean);
+  const dates = validRows.map((row) => String(row.transaction_date || "")).filter(Boolean).sort();
+  if (!accountIds.length || !dates.length) return duplicateRows;
+  const existing = await selectAllRows(rest,
+    `accounting_bank_transactions?select=id,transaction_date,description,operation_number,reference,amount,currency,fingerprint,reconciliation_status&entity_id=eq.${entityId}&bank_account_id=in.(${accountIds.join(",")})&transaction_date=gte.${dates[0]}&transaction_date=lte.${dates[dates.length - 1]}&reconciliation_status=neq.ignored&order=created_at.asc,id.asc`,
+  );
+  const used = new Set<string>();
 
-  // PostgREST receives filters in the URL. Large bank statements can easily
-  // exceed the proxy URI limit when every SHA-256 fingerprint is sent at once.
-  for (let index = 0; index < uniqueFingerprints.length; index += 40) {
-    const chunk = uniqueFingerprints.slice(index, index + 40);
-    const rows = await selectRows(
-      rest,
-      `accounting_bank_transactions?select=fingerprint&bank_account_id=eq.${bankAccountId}&fingerprint=in.(${chunk.join(",")})`,
-    );
-    rows.forEach((row) => duplicateSet.add(String(row.fingerprint)));
+  for (const row of validRows) {
+    const match = existing.find((candidate) => !used.has(String(candidate.id)) && String(candidate.fingerprint || "") === String(row.fingerprint || ""));
+    if (!match) continue;
+    used.add(String(match.id));
+    duplicateRows.add(Math.trunc(numeric(row.row_number)));
   }
 
-  return duplicateSet;
+  for (const row of validRows.filter((candidate) => !duplicateRows.has(Math.trunc(numeric(candidate.row_number))))) {
+    const operationKey = bankOperationKey(row);
+    if (!operationKey) continue;
+    const matches = existing.filter((candidate) => !used.has(String(candidate.id)) && bankOperationKey(candidate) === operationKey);
+    if (matches.length !== 1) continue;
+    used.add(String(matches[0].id));
+    duplicateRows.add(Math.trunc(numeric(row.row_number)));
+  }
+
+  const remainingRows = validRows.filter((row) => !duplicateRows.has(Math.trunc(numeric(row.row_number))));
+  const previewGroups = new Map<string, JsonRecord[]>();
+  for (const row of remainingRows) {
+    const key = bankSemanticKey(row);
+    previewGroups.set(key, [...(previewGroups.get(key) || []), row]);
+  }
+  for (const [key, rows] of previewGroups) {
+    const matches = existing.filter((candidate) => !used.has(String(candidate.id)) && bankSemanticKey(candidate) === key);
+    const count = Math.min(rows.length, matches.length);
+    for (let index = 0; index < count; index += 1) {
+      duplicateRows.add(Math.trunc(numeric(rows[index].row_number)));
+      used.add(String(matches[index].id));
+    }
+  }
+  return duplicateRows;
+}
+
+function bankSemanticKey(value: unknown) {
+  const row = asObject(value);
+  return [
+    String(row.transaction_date || ""),
+    String(row.currency || "CLP").toUpperCase(),
+    numeric(row.amount).toFixed(4),
+    normalizeText(row.description),
+  ].join("|");
+}
+
+function bankOperationKey(value: unknown) {
+  const row = asObject(value);
+  const reference = meaningfulBankReference(row.operation_number) || meaningfulBankReference(row.reference);
+  return reference ? `${String(row.transaction_date || "")}|${String(row.currency || "CLP")}|${numeric(row.amount).toFixed(4)}|${reference}` : "";
+}
+
+function meaningfulBankReference(value: unknown) {
+  const normalized = normalizeDocumentNumber(value);
+  return normalized && !/^0+$/.test(normalized) ? normalized : "";
 }
 
 async function previewFactoExcel(rest: RestClient, profile: Profile, payload: JsonRecord) {
@@ -1562,7 +1762,19 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
     throw new HttpError(400, `Ingresa un tipo de cambio ${batchCurrency}/CLP válido para confirmar la cartola.`);
   }
   const bankAccount = await bankAccountForBatch(rest, entityId, String(batch.source_type), String(summary.account_hint || ""), String(summary.currency || "CLP"));
-  const created = await upsertRows(rest, "accounting_bank_transactions", rows.map((row) => {
+  const duplicateRowNumbers = await existingBankDuplicateRows(rest, entityId, bankAccount, rows.map((row) => ({
+    ...asObject(row.normalized_data),
+    row_number: row.row_number,
+    errors: [],
+  })));
+  const acceptedRows = rows.filter((row) => !duplicateRowNumbers.has(Math.trunc(numeric(row.row_number))));
+  const duplicateImportRowIds = rows
+    .filter((row) => duplicateRowNumbers.has(Math.trunc(numeric(row.row_number))))
+    .map((row) => String(row.id));
+  if (duplicateImportRowIds.length) {
+    await patchRows(rest, "accounting_import_rows", `id=in.(${duplicateImportRowIds.join(",")})`, { status: "duplicate" });
+  }
+  const created = await upsertRows(rest, "accounting_bank_transactions", acceptedRows.map((row) => {
     const data = asObject(row.normalized_data);
     const rowCurrency = String(data.currency || batchCurrency).toUpperCase();
     const documentedRate = numeric(data.exchange_rate);
@@ -1586,24 +1798,41 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
       exchange_rate: rate,
       amount_clp: Number(data.amount || 0) * rate,
       fingerprint: row.fingerprint,
-      metadata: { source_row: row.row_number },
+      metadata: {
+        source_row: row.row_number,
+        semantic_key: bankSemanticKey(data),
+        source_file_name: batch.file_name,
+        import_profile: batch.import_profile,
+      },
     };
   }), "bank_account_id,fingerprint", true);
-  await patchRows(rest, "accounting_import_batches", `id=eq.${batchId}`, { status: "imported", updated_at: new Date().toISOString() });
-  await patchRows(rest, "accounting_import_rows", `batch_id=eq.${batchId}&status=eq.new`, { status: "imported" });
+  const duplicateCount = numeric(batch.duplicate_count) + duplicateImportRowIds.length + Math.max(acceptedRows.length - created.length, 0);
+  await patchRows(rest, "accounting_import_batches", `id=eq.${batchId}`, {
+    status: "imported",
+    new_count: created.length,
+    duplicate_count: duplicateCount,
+    summary: { ...summary, confirmed_new_count: created.length, confirmed_duplicate_count: duplicateCount },
+    updated_at: new Date().toISOString(),
+  });
+  if (acceptedRows.length) {
+    await patchRows(rest, "accounting_import_rows", `batch_id=eq.${batchId}&status=eq.new`, { status: "imported" });
+  }
+  const posting = await postImportedBankFlow(rest, profile, entityId, created);
   await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
   await insertRows(rest, "accounting_audit_events", [{
     entity_id: entityId, actor_id: profile.id, action: "bank_import.confirmed", entity_type: "import_batch",
     entity_id_text: batchId,
     new_value: {
       imported: created.length,
+      duplicates: duplicateCount,
       bank_account_id: bankAccount.id,
       currency: batchCurrency,
       exchange_rate: batchCurrency === "CLP" ? 1 : requestedRate,
+      posting,
     },
   }]);
-  const importedDates = rows
-    .map((row) => String(asObject(row.normalized_data).transaction_date || ""))
+  const importedDates = created
+    .map((row) => String(row.transaction_date || ""))
     .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value))
     .sort();
   const automaticReconciliation = payload.autoReconcileExact === true
@@ -1615,7 +1844,94 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
       to: importedDates[importedDates.length - 1],
     })
     : null;
-  return { imported: created.length, bankAccount, automaticReconciliation };
+  const reconciliationPosting = automaticReconciliation && created.length
+    ? await postPendingReconciliationsForTransactions(rest, profile, entityId, created.map((row) => String(row.id)))
+    : { posted: 0, errors: [] };
+  await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
+  return { imported: created.length, duplicates: duplicateCount, bankAccount, posting, automaticReconciliation, reconciliationPosting };
+}
+
+async function postingContext(rest: RestClient, entityId: string) {
+  const [accounts, periods, bankAccounts] = await Promise.all([
+    selectAllRows(rest, `accounting_accounts?select=id,classification&entity_id=eq.${entityId}&active=eq.true&allows_posting=eq.true`),
+    selectAllRows(rest, `accounting_periods?select=id,starts_on,ends_on,status&entity_id=eq.${entityId}&status=neq.closed`),
+    selectAllRows(rest, `accounting_bank_accounts?select=id,ledger_account_id&entity_id=eq.${entityId}`),
+  ]);
+  return {
+    accounts: new Map(accounts.map((account) => [String(account.classification), String(account.id)])),
+    periods,
+    bankLedgerById: new Map(bankAccounts.map((account) => [String(account.id), String(account.ledger_account_id)])),
+  };
+}
+
+async function postImportedBankFlow(rest: RestClient, profile: Profile, entityId: string, transactions: JsonRecord[]) {
+  if (!transactions.length) return { bankEntries: 0, payrollEntries: 0, balanceAdjustments: 0, errors: [] };
+  const context = await postingContext(rest, entityId);
+  const existing = await selectAllRows(rest, `accounting_journal_entries?select=idempotency_key&entity_id=eq.${entityId}&status=in.(posted,reversed)`);
+  const keys = new Set(existing.map((entry) => String(entry.idempotency_key || "")));
+  let bankEntries = 0;
+  let payrollEntries = 0;
+  const errors: JsonRecord[] = [];
+  for (const transaction of transactions) {
+    try {
+      const bankKey = `bank-transaction:${transaction.id}`;
+      if (!keys.has(bankKey)) {
+        await postBankTransaction(rest, profile, transaction, Math.abs(numeric(transaction.amount_clp)), context.periods, context.bankLedgerById, context.accounts);
+        keys.add(bankKey);
+        bankEntries += 1;
+      }
+      const employee = isAutomaticKnownEmployeePayroll(transaction)
+        ? identifyPayrollEmployee(transaction.description)
+        : null;
+      if (employee && !protectedPayrollClassification(asObject(transaction.metadata))) {
+        const result = await classifyPayrollTransaction(rest, profile, {
+          transactionId: transaction.id,
+          employeeKey: employee.key,
+          automation: "known_employee",
+          note: `Regla gerencial aprobada: transferencia identificada por RUT y nombre como remuneración de ${employee.name}.`,
+        });
+        if (!result.existing) payrollEntries += 1;
+      }
+    } catch (error) {
+      errors.push({ transactionId: transaction.id, error: error instanceof Error ? error.message : "Error inesperado." });
+    }
+  }
+  const balanceAdjustments = errors.length
+    ? 0
+    : await postBankBalanceAdjustments(rest, profile, entityId, transactions, context.periods, context.bankLedgerById, context.accounts);
+  return { bankEntries, payrollEntries, balanceAdjustments, errors };
+}
+
+function isAutomaticKnownEmployeePayroll(transaction: JsonRecord) {
+  const amount = Math.abs(numeric(transaction.amount_clp));
+  return numeric(transaction.amount_clp) < 0
+    && amount > 0
+    && amount <= 2000000
+    && Boolean(identifyPayrollEmployee(transaction.description));
+}
+
+async function postPendingReconciliationsForTransactions(rest: RestClient, profile: Profile, entityId: string, transactionIds: string[]) {
+  if (!transactionIds.length) return { posted: 0, errors: [] };
+  const context = await postingContext(rest, entityId);
+  const [reconciliations, entries] = await Promise.all([
+    selectAllRows(rest, `accounting_reconciliations?select=*,accounting_bank_transactions!inner(*)&entity_id=eq.${entityId}&status=eq.confirmed&bank_transaction_id=in.(${transactionIds.join(",")})`),
+    selectAllRows(rest, `accounting_journal_entries?select=idempotency_key&entity_id=eq.${entityId}&status=in.(posted,reversed)`),
+  ]);
+  const keys = new Set(entries.map((entry) => String(entry.idempotency_key || "")));
+  let posted = 0;
+  const errors: JsonRecord[] = [];
+  for (const reconciliation of reconciliations) {
+    const key = `bank-reconciliation:${reconciliation.id}`;
+    if (keys.has(key)) continue;
+    try {
+      await postConfirmedReconciliation(rest, profile, reconciliation, context.periods, context.bankLedgerById, context.accounts);
+      keys.add(key);
+      posted += 1;
+    } catch (error) {
+      errors.push({ reconciliationId: reconciliation.id, error: error instanceof Error ? error.message : "Error inesperado." });
+    }
+  }
+  return { posted, errors };
 }
 
 async function proposeReconciliation(rest: RestClient, payload: JsonRecord) {
@@ -1772,6 +2088,8 @@ async function confirmReconciliation(rest: RestClient, profile: Profile, payload
 async function classifyPayrollTransaction(rest: RestClient, profile: Profile, payload: JsonRecord) {
   const transactionId = requiredUuid(payload.transactionId);
   const requestedEmployeeKey = requiredText(payload.employeeKey, 20);
+  const automaticKnownEmployee = payload.automation === "known_employee";
+  const payrollEntryKey = automaticKnownEmployee ? `bank-payroll-known-employee:${transactionId}` : `bank-payroll-manual:${transactionId}`;
   const transaction = (await selectRows(rest,
     `accounting_bank_transactions?select=*&id=eq.${transactionId}&limit=1`,
   ))[0];
@@ -1787,7 +2105,7 @@ async function classifyPayrollTransaction(rest: RestClient, profile: Profile, pa
   const entityId = String(transaction.entity_id);
   const metadata = asObject(transaction.metadata);
   const existingPayroll = (await selectRows(rest,
-    `accounting_journal_entries?select=id,status&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(`bank-payroll-manual:${transactionId}`)}&limit=1`,
+    `accounting_journal_entries?select=id,status&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(payrollEntryKey)}&limit=1`,
   ))[0];
   if (existingPayroll) {
     return {
@@ -1845,12 +2163,12 @@ async function classifyPayrollTransaction(rest: RestClient, profile: Profile, pa
   const payrollExpenseClp = Math.round((amount - payrollPayableClp) * 10000) / 10000;
   const lines = [
     ...(payrollPayableClp > 0.005
-      ? [postingLine(accountByClassification, "payroll_payable", payrollPayableClp, 0, `Pago de remuneración devengada a ${employee.name}`)]
+      ? [{ ...postingLine(accountByClassification, "payroll_payable", payrollPayableClp, 0, `Pago de remuneración devengada a ${employee.name}`), metadata: payrollLineMetadata(transaction, employee, "payroll_payable") }]
       : []),
     ...(payrollExpenseClp > 0.005
-      ? [postingLine(accountByClassification, "payroll_expense", payrollExpenseClp, 0, `Remuneración pagada a ${employee.name}`)]
+      ? [{ ...postingLine(accountByClassification, "payroll_expense", payrollExpenseClp, 0, `Remuneración pagada a ${employee.name}`), metadata: payrollLineMetadata(transaction, employee, "payroll_expense") }]
       : []),
-    postingLine(accountByClassification, "suspense_asset", 0, amount, "Liberación de egreso bancario transitorio"),
+    { ...postingLine(accountByClassification, "suspense_asset", 0, amount, "Liberación de egreso bancario transitorio"), metadata: payrollLineMetadata(transaction, employee, "suspense_release") },
   ];
   const entry = await postAutomatedEntry(rest, profile, {
     entityId,
@@ -1858,10 +2176,10 @@ async function classifyPayrollTransaction(rest: RestClient, profile: Profile, pa
     date: String(transaction.transaction_date),
     description: `Pago de remuneración confirmado: ${employee.name}`,
     reference: String(transaction.operation_number || transaction.reference || transaction.id),
-    sourceType: "MANUAL",
+    sourceType: automaticKnownEmployee ? "SYSTEM" : "MANUAL",
     sourceDocumentId: null,
-    sourceModule: "bank_payroll_classification",
-    idempotencyKey: `bank-payroll-manual:${transactionId}`,
+    sourceModule: automaticKnownEmployee ? "bank_payroll_rule" : "bank_payroll_classification",
+    idempotencyKey: payrollEntryKey,
     currency: String(transaction.currency || "CLP"),
     exchangeRate: Math.max(numeric(transaction.exchange_rate), 1),
     lines,
@@ -1874,7 +2192,7 @@ async function classifyPayrollTransaction(rest: RestClient, profile: Profile, pa
       ...metadata,
       verified_classification: verifiedClassification,
       classification_locked: true,
-      classification_policy: "human_confirmed_employee_salary",
+      classification_policy: automaticKnownEmployee ? "management_approved_known_employee" : "human_confirmed_employee_salary",
       employee_key: employee.key,
       employee_name: employee.name,
       employee_tax_id: employee.taxId,
@@ -1889,7 +2207,7 @@ async function classifyPayrollTransaction(rest: RestClient, profile: Profile, pa
   await insertRows(rest, "accounting_audit_events", [{
     entity_id: entityId,
     actor_id: profile.id,
-    action: "bank.payroll_classification_confirmed",
+    action: automaticKnownEmployee ? "bank.payroll_classification_automated" : "bank.payroll_classification_confirmed",
     entity_type: "bank_transaction",
     entity_id_text: transactionId,
     reason: optionalText(payload.note, 500) || `Clasificación salarial confirmada para ${employee.name}.`,
@@ -1901,10 +2219,24 @@ async function classifyPayrollTransaction(rest: RestClient, profile: Profile, pa
       payroll_expense_clp: payrollExpenseClp,
       journal_entry_id: entry.id,
       classification: verifiedClassification,
+      automation: automaticKnownEmployee ? "known_employee" : "manual",
     },
   }]);
   await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
   return { transactionId, employee, amountClp: amount, payrollPayableClp, payrollExpenseClp, entryId: entry.id, existing: false };
+}
+
+function payrollLineMetadata(transaction: JsonRecord, employee: { key: string; name: string; taxId: string }, classification: string) {
+  return {
+    bank_transaction_id: transaction.id,
+    bank_account_id: transaction.bank_account_id,
+    employee_key: employee.key,
+    employee_name: employee.name,
+    employee_tax_id: employee.taxId,
+    operation_number: transaction.operation_number || null,
+    bank_description: transaction.description || null,
+    classification,
+  };
 }
 
 async function previewExactReconciliations(rest: RestClient, payload: JsonRecord) {
@@ -2583,14 +2915,21 @@ async function postBankTransaction(
   const bankAccount = bankLedgerById.get(String(transaction.bank_account_id || ""));
   if (!bankAccount) throw new Error("La cuenta bancaria no tiene cuenta contable asociada.");
   const suspense = postingAccount(accounts, incoming ? "suspense_liability" : "suspense_asset");
+  const evidence = {
+    bank_transaction_id: transaction.id,
+    bank_account_id: transaction.bank_account_id,
+    import_batch_id: transaction.import_batch_id || null,
+    operation_number: transaction.operation_number || null,
+    bank_description: transaction.description || null,
+  };
   const lines = incoming
     ? [
-      { accountId: bankAccount, debit: amount, credit: 0, description: "Ingreso bancario pendiente de clasificar" },
-      { accountId: suspense, debit: 0, credit: amount, description: "Contrapartida transitoria de ingreso bancario" },
+      { accountId: bankAccount, debit: amount, credit: 0, description: "Ingreso bancario pendiente de clasificar", metadata: evidence },
+      { accountId: suspense, debit: 0, credit: amount, description: "Contrapartida transitoria de ingreso bancario", metadata: evidence },
     ]
     : [
-      { accountId: suspense, debit: amount, credit: 0, description: "Contrapartida transitoria de egreso bancario" },
-      { accountId: bankAccount, debit: 0, credit: amount, description: "Egreso bancario pendiente de clasificar" },
+      { accountId: suspense, debit: amount, credit: 0, description: "Contrapartida transitoria de egreso bancario", metadata: evidence },
+      { accountId: bankAccount, debit: 0, credit: amount, description: "Egreso bancario pendiente de clasificar", metadata: evidence },
     ];
   await postAutomatedEntry(rest, profile, {
     entityId: String(transaction.entity_id),
@@ -2697,14 +3036,17 @@ async function postBankBalanceAdjustments(
     const statementBalance = Math.round(numeric(transaction.balance) * Math.max(numeric(transaction.exchange_rate), 1) * 10000) / 10000;
     const difference = Math.round((statementBalance - ledgerBalance) * 10000) / 10000;
     if (Math.abs(difference) < 0.5) continue;
+    const pendingAsset = accounts.has("bank_balance_pending_asset") ? "bank_balance_pending_asset" : "suspense_asset";
+    const pendingLiability = accounts.has("bank_balance_pending_liability") ? "bank_balance_pending_liability" : "suspense_liability";
+    const evidence = { bank_transaction_id: transaction.id, bank_account_id: bankId, statement_balance_clp: statementBalance, previous_ledger_balance_clp: ledgerBalance };
     const adjustmentLines = difference > 0
       ? [
-        { accountId: bankAccount, debit: difference, credit: 0, description: "Ajuste controlado a saldo de cartola" },
-        postingLine(accounts, "suspense_liability", 0, difference, "Saldo inicial o brecha bancaria por identificar"),
+        { accountId: bankAccount, debit: difference, credit: 0, description: "Control contra saldo final de cartola", metadata: evidence },
+        { ...postingLine(accounts, pendingLiability, 0, difference, "Movimientos bancarios anteriores pendientes de respaldar"), metadata: evidence },
       ]
       : [
-        postingLine(accounts, "suspense_asset", Math.abs(difference), 0, "Saldo inicial o brecha bancaria por identificar"),
-        { accountId: bankAccount, debit: 0, credit: Math.abs(difference), description: "Ajuste controlado a saldo de cartola" },
+        { ...postingLine(accounts, pendingAsset, Math.abs(difference), 0, "Movimientos bancarios anteriores pendientes de respaldar"), metadata: evidence },
+        { accountId: bankAccount, debit: 0, credit: Math.abs(difference), description: "Control contra saldo final de cartola", metadata: evidence },
       ];
     await postAutomatedEntry(rest, profile, {
       entityId,
@@ -2714,6 +3056,7 @@ async function postBankBalanceAdjustments(
       reference: String(transaction.operation_number || transaction.reference || transaction.id),
       sourceType: "SYSTEM",
       sourceDocumentId: null,
+      sourceModule: "bank_statement_control",
       idempotencyKey,
       currency: String(transaction.currency || "CLP"),
       exchangeRate: Math.max(numeric(transaction.exchange_rate), 1),
@@ -3666,12 +4009,34 @@ async function report(rest: RestClient, url: URL) {
       key,
       rows.reduce((sum, row) => sum + numericValue(asObject(row)[key]), 0),
     ]));
+    const debitCreditDifference = numeric(totals.debits) - numeric(totals.credits);
+    const balanceDifference = numeric(totals.debit_balance) - numeric(totals.credit_balance);
+    const presentationDifference = numeric(totals.assets) + numeric(totals.losses) - numeric(totals.liabilities) - numeric(totals.gains);
+    const netResult = numeric(totals.gains) - numeric(totals.losses);
+    const [bankAccounts, bankTransactions, snapshots] = await Promise.all([
+      selectAllRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&active=eq.true&order=institution.asc`),
+      selectAllRows(rest, `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&reconciliation_status=neq.ignored&order=transaction_date.desc,created_at.desc`),
+      selectAllRows(rest, `accounting_bank_balance_snapshots?select=*&entity_id=eq.${entityId}&status=eq.verified&order=as_of_date.desc,created_at.desc`),
+    ]);
+    const bankReality = await buildBankReality(rest, entityId, bankAccounts, bankTransactions, snapshots);
     return {
       kind,
       rows: [
         ...rows,
         { code: "TOTAL", account_name: "Totales", ...totals },
       ],
+      summary: {
+        totals,
+        losses: numeric(totals.losses),
+        gains: numeric(totals.gains),
+        netResult,
+        resultType: netResult > 0.005 ? "profit" : netResult < -0.005 ? "loss" : "balanced",
+        debitCreditDifference,
+        balanceDifference,
+        presentationDifference,
+        balanced: Math.abs(debitCreditDifference) < 0.5 && Math.abs(balanceDifference) < 0.5 && Math.abs(presentationDifference) < 0.5,
+        bankReality,
+      },
     };
   }
   if (kind === "trial") return { kind, rows: await rpc(rest, "accounting_trial_balance", { p_entity_id: entityId, p_from: from, p_to: to }) };
@@ -3714,7 +4079,7 @@ async function report(rest: RestClient, url: URL) {
     const accountId = requiredUuid(url.searchParams.get("accountId"));
     const account = (await selectRows(rest, `accounting_accounts?select=id,code,name,normal_balance&entity_id=eq.${entityId}&id=eq.${accountId}&limit=1`))[0];
     if (!account) throw new HttpError(404, "La cuenta solicitada no existe en esta empresa.");
-    const rawRows = await selectRows(rest, `accounting_journal_lines?select=line_number,debit_clp,credit_clp,currency,description,accounting_journal_entries!inner(entry_date,entry_number,description,reference,status)&account_id=eq.${accountId}&accounting_journal_entries.entry_date=gte.${from}&accounting_journal_entries.entry_date=lte.${to}&accounting_journal_entries.status=in.(posted,reversed)&limit=5000`);
+    const rawRows = await selectRows(rest, `accounting_journal_lines?select=line_number,debit_clp,credit_clp,currency,description,metadata,accounting_journal_entries!inner(entry_date,entry_number,description,reference,source_type,source_module,source_document_id,idempotency_key,status)&account_id=eq.${accountId}&accounting_journal_entries.entry_date=gte.${from}&accounting_journal_entries.entry_date=lte.${to}&accounting_journal_entries.status=in.(posted,reversed)&limit=5000`);
     rawRows.sort((left, right) => {
       const leftEntry = asObject(left.accounting_journal_entries);
       const rightEntry = asObject(right.accounting_journal_entries);
@@ -3722,20 +4087,45 @@ async function report(rest: RestClient, url: URL) {
         || numeric(leftEntry.entry_number) - numeric(rightEntry.entry_number)
         || numeric(left.line_number) - numeric(right.line_number);
     });
+    const transactionIds = [...new Set(rawRows.map((line) => accountingLineBankTransactionId(line)).filter(Boolean))];
+    const sourceDocumentIds = [...new Set(rawRows.map((line) => String(asObject(line.accounting_journal_entries).source_document_id || "")).filter(Boolean))];
+    const [transactions, sourceDocuments] = await Promise.all([
+      transactionIds.length
+        ? selectAllRows(rest, `accounting_bank_transactions?select=id,transaction_date,description,reference,operation_number,import_batch_id,metadata,accounting_bank_accounts(institution,account_name),accounting_import_batches(file_name)&id=in.(${transactionIds.join(",")})`)
+        : Promise.resolve([]),
+      sourceDocumentIds.length
+        ? selectAllRows(rest, `accounting_source_documents?select=id,folio,counterpart_name,counterpart_tax_id,source_type&id=in.(${sourceDocumentIds.join(",")})`)
+        : Promise.resolve([]),
+    ]);
+    const transactionMap = new Map(transactions.map((transaction) => [String(transaction.id), transaction]));
+    const sourceDocumentMap = new Map(sourceDocuments.map((document) => [String(document.id), document]));
     let runningBalance = 0;
     const creditNature = account.normal_balance === "credit";
     const rows = rawRows.map((line) => {
       const entry = asObject(line.accounting_journal_entries);
       const debit = numeric(line.debit_clp);
       const credit = numeric(line.credit_clp);
+      const transaction = transactionMap.get(accountingLineBankTransactionId(line)) || null;
+      const transactionMetadata = asObject(transaction?.metadata);
+      const bankAccount = asObject(transaction?.accounting_bank_accounts);
+      const importBatch = asObject(transaction?.accounting_import_batches);
+      const sourceDocument = sourceDocumentMap.get(String(entry.source_document_id || "")) || null;
+      const employee = identifyPayrollEmployee(transaction?.description || entry.description);
       runningBalance += creditNature ? credit - debit : debit - credit;
       return {
         fecha: entry.entry_date,
         comprobante: entry.entry_number,
         cuenta_codigo: account.code,
         cuenta: account.name,
-        glosa: line.description || entry.description,
+        glosa_asiento: entry.description,
+        detalle: line.description || entry.description,
+        contraparte: employee?.name || transactionMetadata.employee_name || sourceDocument?.counterpart_name || "—",
+        rut: employee?.taxId || transactionMetadata.employee_tax_id || sourceDocument?.counterpart_tax_id || "—",
+        banco: bankAccount.institution || "—",
+        numero_operacion: transaction?.operation_number || transaction?.reference || entry.reference || "—",
+        archivo_origen: importBatch.file_name || (sourceDocument ? sourceDocument.source_type : "—"),
         referencia: entry.reference || "",
+        origen: entry.source_module || entry.source_type || "—",
         debe_clp: debit,
         haber_clp: credit,
         saldo_acumulado_clp: runningBalance,
@@ -3744,6 +4134,15 @@ async function report(rest: RestClient, url: URL) {
     return { kind, rows };
   }
   throw new HttpError(400, "Informe no soportado.");
+}
+
+function accountingLineBankTransactionId(line: JsonRecord) {
+  const metadata = asObject(line.metadata);
+  const explicit = String(metadata.bank_transaction_id || "");
+  if (/^[0-9a-f-]{36}$/i.test(explicit)) return explicit;
+  const entry = asObject(line.accounting_journal_entries);
+  const match = String(entry.idempotency_key || "").match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
+  return match?.[1] || "";
 }
 
 function normalizeFactoDocument(payload: JsonRecord, purchase: boolean, externalId: string) {
@@ -3987,7 +4386,7 @@ async function ensureBankAccount(rest: RestClient, entityId: string, preview: { 
 
 async function bankAccountForBatch(rest: RestClient, entityId: string, source: string, accountHint: string, currency: string) {
   const institution = source === "BANCO_ESTADO" ? "BancoEstado" : source === "MERCADO_PAGO" ? "Mercado Pago" : "Scotiabank";
-  const rows = await selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&institution=eq.${encodeURIComponent(institution)}&account_number_masked=eq.${encodeURIComponent(accountHint)}&currency=eq.${currency}&limit=1`);
+  const rows = await selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&institution=eq.${encodeURIComponent(institution)}&account_number_masked=eq.${encodeURIComponent(accountHint)}&currency=eq.${currency}&active=eq.true&limit=1`);
   if (rows[0]) return rows[0];
   const accountCode = source === "BANCO_ESTADO"
     ? "1.1.03"
@@ -4000,10 +4399,29 @@ async function bankAccountForBatch(rest: RestClient, entityId: string, source: s
     `accounting_accounts?select=id&entity_id=eq.${entityId}&code=eq.${accountCode}&allows_posting=eq.true&limit=1`,
   ))[0];
   if (!account) throw new HttpError(409, `Falta una cuenta contable para ${institution} ${currency}.`);
+  const compatible = await selectAllRows(rest,
+    `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&institution=eq.${encodeURIComponent(institution)}&currency=eq.${currency}&ledger_account_id=eq.${account.id}&active=eq.true&order=created_at.asc`,
+  );
+  if (compatible.length === 1 && isGenericBankAccountHint(compatible[0].account_number_masked, institution, currency)) {
+    const updated = await patchRows(rest, "accounting_bank_accounts", `id=eq.${compatible[0].id}`, {
+      account_number_masked: accountHint,
+      account_name: `${institution} ${currency}`,
+      updated_at: new Date().toISOString(),
+    });
+    if (updated[0]) return updated[0];
+  }
   return (await insertRows(rest, "accounting_bank_accounts", [{
     entity_id: entityId, institution, account_name: `${institution} ${currency}`,
     account_number_masked: accountHint, currency, ledger_account_id: account.id,
   }]))[0];
+}
+
+function isGenericBankAccountHint(value: unknown, institution: string, currency: string) {
+  const normalized = normalizeText(value);
+  return !normalized
+    || normalized.includes("pendiente cartola")
+    || normalized === normalizeText(`${institution} ${currency}`)
+    || normalized === normalizeText(institution);
 }
 
 async function downloadStorage(rest: RestClient, path: string) {

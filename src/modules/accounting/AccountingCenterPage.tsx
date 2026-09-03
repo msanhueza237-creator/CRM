@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import {
   closeAccountingPeriod,
+  confirmAccountingBankBalance,
   classifyAccountingPayrollTransaction,
   confirmAccountingFactoExcel,
   confirmAccountingImport,
@@ -219,7 +220,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   const dashboardWarnings = Array.isArray(dashboard.warnings) ? dashboard.warnings : [];
   const resultIsProvisional = summary.provisional || dashboard.costCoverage.missingSalesCost > 0 || documentaryBasis;
   const cards: Array<{ label: string; value: string; detail: string; view: AccountingView; icon: typeof Landmark; tone?: string; trend?: number | null }> = [
-    { label: "Disponible", value: clp(available), detail: `CLP ${clp(summary.bank_clp)} · USD equiv. ${clp(summary.bank_usd_clp)}`, view: "banks", icon: WalletCards },
+    { label: "Disponible", value: clp(available), detail: `${summary.bank_balance_basis === "verified_control" ? "Control bancario verificado" : "Saldo contable"} · CLP ${clp(summary.bank_clp)} · USD equiv. ${clp(summary.bank_usd_clp)}`, view: "banks", icon: WalletCards },
     { label: "Posición financiera", value: clp(position), detail: "Disponible + cobros + cheques − obligaciones", view: "reports", icon: Scale, tone: position < 0 ? "danger" : "positive" },
     { label: `Ventas ${dashboard.year}`, value: clp(result.sales), detail: "Ingresos contabilizados acumulados", view: "reports", icon: BadgeDollarSign, trend: dashboard.comparison.sales },
     { label: "Costo de ventas", value: clp(result.costs), detail: `${formatPercent(dashboard.costCoverage.percentage)} de facturas con costo exacto`, view: "ledger", icon: ReceiptText, tone: dashboard.costCoverage.missingSalesCost ? "warning" : "" },
@@ -616,6 +617,21 @@ function BankImportView({ data, busy, runAction }: ActionViewProps) {
   const [profile, setProfile] = useState<"auto" | "scotiabank" | "banco_estado" | "mercado_pago">("auto");
   const [preview, setPreview] = useState<AccountingImportPreview | null>(null);
   const [localError, setLocalError] = useState("");
+  const bankReality = data.bankReality || {
+    asOf: null,
+    basis: "ledger" as const,
+    availableClp: data.summary.bank_clp,
+    availableUsdClp: data.summary.bank_usd_clp,
+    ledgerClp: data.summary.bank_clp,
+    varianceClp: 0,
+    accounts: [],
+  };
+  const firstReality = bankReality.accounts[0];
+  const [balanceAccountId, setBalanceAccountId] = useState(firstReality?.bankAccountId || "");
+  const [balanceValue, setBalanceValue] = useState(firstReality?.verifiedBalance === null || firstReality?.verifiedBalance === undefined ? "" : String(firstReality.verifiedBalance));
+  const [balanceDate, setBalanceDate] = useState(today());
+  const [balanceSource, setBalanceSource] = useState("Saldo confirmado por tesorería");
+  const selectedReality = bankReality.accounts.find((account) => account.bankAccountId === balanceAccountId) || firstReality;
   async function prepare() {
     if (!file) return;
     setLocalError("");
@@ -624,8 +640,39 @@ function BankImportView({ data, busy, runAction }: ActionViewProps) {
       setPreview(await previewAccountingImport({ entityId: data.entity.id, profile, storagePath, fileName: file.name }));
     } catch (caught) { setLocalError(caught instanceof Error ? caught.message : "No se pudo analizar la cartola."); }
   }
+  function selectBalanceAccount(accountId: string) {
+    const selected = bankReality.accounts.find((account) => account.bankAccountId === accountId);
+    setBalanceAccountId(accountId);
+    setBalanceValue(selected?.verifiedBalance === null || selected?.verifiedBalance === undefined ? "" : String(selected.verifiedBalance));
+  }
+  async function saveVerifiedBalance() {
+    if (!selectedReality) return;
+    const balance = parseLocalizedNumber(balanceValue);
+    if (balance < 0) {
+      setLocalError("El saldo disponible no puede ser negativo.");
+      return;
+    }
+    await runAction("bank-balance", () => confirmAccountingBankBalance({
+      entityId: data.entity.id,
+      bankAccountId: selectedReality.bankAccountId,
+      asOfDate: balanceDate,
+      balance,
+      sourceReference: balanceSource,
+      notes: "Saldo de control de tesorería; no crea ingresos, gastos ni asientos contables.",
+    }), "Saldo bancario verificado y comparado con el Libro Mayor.");
+  }
   const bankBatches = data.batches.filter((batch) => ["SCOTIABANK", "BANCO_ESTADO", "MERCADO_PAGO"].includes(batch.source_type));
-  return <div className="accounting-bank-layout">
+  return <div className="accounting-view-stack">
+    <section className="panel accounting-bank-reality">
+      <div className="accounting-panel-heading"><div><p>Control de tesorería</p><h2>Saldos verificados y Libro Mayor</h2><span>El saldo disponible se muestra como realidad bancaria. La diferencia contable permanece visible hasta importar y clasificar todos los movimientos.</span></div><strong>{clp(bankReality.availableClp)}</strong></div>
+      <div className="accounting-bank-reality-grid">{bankReality.accounts.map((account) => <article key={account.key}>
+        <div className="accounting-bank-reality-title"><Landmark size={18} /><div><strong>{account.institution} · {account.currency}</strong><span>{account.accountNumberMasked}</span></div><Status value={account.basis === "verified" ? "Verificado" : account.basis === "statement" ? "Cartola" : "Libro"} tone={account.basis === "ledger" ? "review" : "success"} /></div>
+        <dl><div><dt>Disponible confirmado</dt><dd>{account.currency === "CLP" ? clp(account.verifiedBalance) : currencyMoney(account.verifiedBalance, account.currency)}</dd></div><div><dt>Saldo Libro Mayor</dt><dd>{clp(account.ledgerBalanceClp)}</dd></div><div><dt>Diferencia por canalizar</dt><dd className={Math.abs(account.differenceClp) >= 0.5 ? "review" : "ok"}>{clp(account.differenceClp)}</dd></div></dl>
+        <small>{account.verifiedAt ? `Al ${date(account.verifiedAt)} · ${account.verifiedSource}` : "Sin saldo externo verificado"}</small>
+      </article>)}</div>
+      {data.profile.permissions.includes("post") && selectedReality ? <div className="accounting-bank-balance-form"><label>Cuenta<select value={balanceAccountId} onChange={(event) => selectBalanceAccount(event.target.value)}>{bankReality.accounts.map((account) => <option key={account.key} value={account.bankAccountId}>{account.institution} · {account.currency} · {account.accountNumberMasked}</option>)}</select></label><label>Saldo disponible<input inputMode="decimal" value={balanceValue} onChange={(event) => setBalanceValue(event.target.value)} /></label><label>Fecha de confirmación<input max={today()} type="date" value={balanceDate} onChange={(event) => setBalanceDate(event.target.value)} /></label><label>Respaldo<input value={balanceSource} onChange={(event) => setBalanceSource(event.target.value)} /></label><button className="primary-button" disabled={busy === "bank-balance" || !balanceDate || !balanceValue.trim()} type="button" onClick={() => void saveVerifiedBalance()}><ClipboardCheck size={17} /> {busy === "bank-balance" ? "Guardando…" : "Confirmar saldo"}</button></div> : null}
+    </section>
+    <div className="accounting-bank-layout">
     <section className="panel accounting-import-card">
       <div className="accounting-panel-heading">
         <div>
@@ -671,6 +718,7 @@ function BankImportView({ data, busy, runAction }: ActionViewProps) {
       </article>)}</div> : <Empty icon={FileSpreadsheet} text="Aún no hay cartolas bancarias importadas." />}
     </section>
     {preview ? <ImportPreviewDialog preview={preview} busy={busy} close={() => setPreview(null)} runAction={runAction} /> : null}
+    </div>
   </div>;
 }
 
@@ -689,7 +737,7 @@ function ImportPreviewDialog({ preview, busy, close, runAction }: { preview: Acc
     );
     if (completed) close();
   }
-  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide"><div className="accounting-modal-heading"><div><p>Revisión obligatoria</p><h2>Previsualizar cartola</h2><span>{preview.batch.file_name} · cuenta {preview.bankAccount.currency}</span></div><button aria-label="Cerrar" className="icon-button" type="button" onClick={close}><X /></button></div><div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Total</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevos</span><span><strong>{preview.summary.duplicates}</strong>Duplicados</span><span className="warning"><strong>{preview.summary.errors}</strong>Errores</span></div>{foreignCurrency ? <div className="accounting-currency-conversion"><div><strong>Cartola detectada en {preview.bankAccount.currency}</strong><span>Se conservará el monto original y se guardará su equivalente contable en CLP.</span></div><label className="accounting-rate-field"><span>Tipo de cambio {preview.bankAccount.currency}/CLP</span><input aria-invalid={!validRate} inputMode="decimal" placeholder="Ej.: 990,50" required type="text" value={exchangeRate} onChange={(event) => setExchangeRate(event.target.value)} /><small>{preview.suggestedExchangeRate ? `Sugerido: ${money(preview.suggestedExchangeRate.rate)} · ${date(preview.suggestedExchangeRate.rate_date)} · ${preview.suggestedExchangeRate.source}` : "Ingresa el tipo de cambio contable aplicable a esta cartola."}</small>{validRate && sampleAmount > 0 ? <small>Referencia: {currencyMoney(sampleAmount, preview.bankAccount.currency)} = {clp(sampleAmount * parsedRate)}</small> : null}</label></div> : null}<Table headers={["Fila", "Fecha", "Descripción", "Referencia", "Cargo", "Abono", "Saldo", "Validación"]}>{preview.rows.slice(0, 100).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.row_number}</td><td data-label="Fecha">{date(row.transaction_date)}</td><td data-label="Descripción">{row.description}</td><td data-label="Referencia">{row.operation_number || row.reference || "—"}</td><td data-label="Cargo">{currencyMoney(row.debit, row.currency)}</td><td data-label="Abono">{currencyMoney(row.credit, row.currency)}</td><td data-label="Saldo">{row.balance === null ? "—" : currencyMoney(row.balance, row.currency)}</td><td data-label="Validación"><Status value={row.errors.length ? row.errors.join(", ") : "Correcto"} tone={row.errors.length ? "danger" : "success"} /></td></tr>)}</Table><div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy === "confirm-import" || preview.summary.new === 0 || !validRate} type="button" onClick={() => void confirm()}>{busy === "confirm-import" ? "Importando…" : `Importar ${preview.summary.new} movimientos`}</button></div></section></div>;
+  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide"><div className="accounting-modal-heading"><div><p>Revisión obligatoria</p><h2>Previsualizar cartola</h2><span>{preview.batch.file_name} · cuenta {preview.bankAccount.currency}</span></div><button aria-label="Cerrar" className="icon-button" type="button" onClick={close}><X /></button></div><div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Total</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevos</span><span><strong>{preview.summary.duplicates}</strong>Duplicados</span><span className="warning"><strong>{preview.summary.errors}</strong>Errores</span></div>{foreignCurrency ? <div className="accounting-currency-conversion"><div><strong>Cartola detectada en {preview.bankAccount.currency}</strong><span>Se conservará el monto original y se guardará su equivalente contable en CLP.</span></div><label className="accounting-rate-field"><span>Tipo de cambio {preview.bankAccount.currency}/CLP</span><input aria-invalid={!validRate} inputMode="decimal" placeholder="Ej.: 990,50" required type="text" value={exchangeRate} onChange={(event) => setExchangeRate(event.target.value)} /><small>{preview.suggestedExchangeRate ? `Sugerido: ${money(preview.suggestedExchangeRate.rate)} · ${date(preview.suggestedExchangeRate.rate_date)} · ${preview.suggestedExchangeRate.source}` : "Ingresa el tipo de cambio contable aplicable a esta cartola."}</small>{validRate && sampleAmount > 0 ? <small>Referencia: {currencyMoney(sampleAmount, preview.bankAccount.currency)} = {clp(sampleAmount * parsedRate)}</small> : null}</label></div> : null}<Table headers={["Fila", "Fecha", "Descripción", "Referencia", "Cargo", "Abono", "Saldo", "Validación"]}>{preview.rows.slice(0, 100).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.row_number}</td><td data-label="Fecha">{date(row.transaction_date)}</td><td data-label="Descripción">{row.description}</td><td data-label="Referencia">{row.operation_number || row.reference || "—"}</td><td data-label="Cargo">{currencyMoney(row.debit, row.currency)}</td><td data-label="Abono">{currencyMoney(row.credit, row.currency)}</td><td data-label="Saldo">{row.balance === null ? "—" : currencyMoney(row.balance, row.currency)}</td><td data-label="Validación"><Status value={row.status === "duplicate" ? "Duplicado" : row.errors.length ? row.errors.join(", ") : "Nuevo"} tone={row.status === "duplicate" ? "neutral" : row.errors.length ? "danger" : "success"} /></td></tr>)}</Table><div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy === "confirm-import" || preview.summary.new === 0 || !validRate} type="button" onClick={() => void confirm()}>{busy === "confirm-import" ? "Importando y canalizando…" : `Importar y canalizar ${preview.summary.new}`}</button></div></section></div>;
 }
 
 function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
@@ -980,7 +1028,19 @@ function ReportsView({ data }: { data: AccountingBootstrap }) {
   const [error, setError] = useState("");
   const title = reportTitle(kind);
   async function generate() { setBusy(true); setError(""); try { setReport(await getAccountingReport({ entityId: data.entity.id, kind, from, to, accountId: kind === "ledger" ? accountId : undefined })); } catch (caught) { setError(caught instanceof Error ? caught.message : "No se pudo generar el informe."); } finally { setBusy(false); } }
-  return <div className="accounting-view-stack"><section className="panel accounting-report-controls"><div className="accounting-panel-heading"><div><p>Informes derivados del libro</p><h2>Centro de informes</h2><span>Las cifras no se ingresan manualmente: se reconstruyen desde asientos contabilizados y movimientos bancarios importados.</span></div></div><div className="accounting-form-grid report"><label>Informe<select value={kind} onChange={(event) => setKind(event.target.value as typeof kind)}><option value="balance8">Balance de 8 columnas</option><option value="trial">Balance de comprobación y saldos</option><option value="income">Estado de Resultados</option><option value="cashflow">Flujo de Caja bancario</option><option value="journal">Libro Diario</option><option value="ledger">Libro Mayor</option></select></label>{kind === "ledger" ? <label>Cuenta<select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{data.accounts.filter((row) => row.allows_posting).map((row) => <option key={row.id} value={row.id}>{row.code} · {row.name}</option>)}</select></label> : null}<label>Desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><button className="primary-button" disabled={busy} type="button" onClick={() => void generate()}>{busy ? <LoaderCircle className="spin" size={17} /> : <Scale size={17} />} Generar</button></div>{error ? <div className="accounting-local-error">{error}</div> : null}</section>{report ? <section className="panel"><div className="accounting-panel-heading"><div><p>{date(from)} al {date(to)}</p><h2>{title}</h2><span className="accounting-provisional-note">Informe provisional mientras el período permanezca abierto.</span></div><div className="accounting-export-actions"><button className="ghost-button" type="button" onClick={() => void exportAccountingExcel(report, title)}><Download size={17} /> Excel</button><button className="ghost-button" type="button" onClick={() => void exportAccountingPdf(report, title)}><Download size={17} /> PDF</button></div></div><ReportTable report={report} /></section> : null}</div>;
+  return <div className="accounting-view-stack"><section className="panel accounting-report-controls"><div className="accounting-panel-heading"><div><p>Informes derivados del libro</p><h2>Centro de informes</h2><span>Las cifras no se ingresan manualmente: se reconstruyen desde asientos contabilizados y movimientos bancarios importados.</span></div></div><div className="accounting-form-grid report"><label>Informe<select value={kind} onChange={(event) => setKind(event.target.value as typeof kind)}><option value="balance8">Balance de 8 columnas</option><option value="trial">Balance de comprobación y saldos</option><option value="income">Estado de Resultados</option><option value="cashflow">Flujo de Caja bancario</option><option value="journal">Libro Diario</option><option value="ledger">Libro Mayor</option></select></label>{kind === "ledger" ? <label>Cuenta<select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{data.accounts.filter((row) => row.allows_posting).map((row) => <option key={row.id} value={row.id}>{row.code} · {row.name}</option>)}</select></label> : null}<label>Desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><button className="primary-button" disabled={busy} type="button" onClick={() => void generate()}>{busy ? <LoaderCircle className="spin" size={17} /> : <Scale size={17} />} Generar</button></div>{error ? <div className="accounting-local-error">{error}</div> : null}</section>{report ? <section className="panel"><div className="accounting-panel-heading"><div><p>{date(from)} al {date(to)}</p><h2>{title}</h2><span className="accounting-provisional-note">Informe provisional mientras el período permanezca abierto.</span></div><div className="accounting-export-actions"><button className="ghost-button" type="button" onClick={() => void exportAccountingExcel(report, title)}><Download size={17} /> Excel</button><button className="ghost-button" type="button" onClick={() => void exportAccountingPdf(report, title)}><Download size={17} /> PDF</button></div></div>{report.kind === "balance8" && report.summary ? <BalanceReportSummary report={report} /> : null}<ReportTable report={report} /></section> : null}</div>;
+}
+
+function BalanceReportSummary({ report }: { report: AccountingReport }) {
+  const summary = report.summary!;
+  const bankReality = summary.bankReality;
+  return <div className="accounting-balance-summary">
+    <div className="accounting-balance-result"><span>Pérdidas del período</span><strong>{clp(summary.losses)}</strong></div>
+    <div className="accounting-balance-result"><span>Ganancias del período</span><strong>{clp(summary.gains)}</strong></div>
+    <div className={`accounting-balance-result principal ${summary.netResult < 0 ? "negative" : ""}`}><span>Resultado neto</span><strong>{summary.resultType === "profit" ? `Ganancia ${clp(summary.netResult)}` : summary.resultType === "loss" ? `Pérdida ${clp(Math.abs(summary.netResult))}` : clp(0)}</strong></div>
+    <div className={`accounting-balance-result ${summary.balanced ? "balanced" : "negative"}`}><span>Cuadratura</span><strong>{summary.balanced ? "Balance cuadrado" : `Diferencia ${clp(summary.presentationDifference)}`}</strong></div>
+    {bankReality ? <div className="accounting-treasury-reconciliation"><div><span>Disponible bancario verificado</span><strong>{clp(bankReality.availableClp)}</strong><small>Control de tesorería al {date(bankReality.asOf)}</small></div><div><span>Bancos según Libro Mayor</span><strong>{clp(bankReality.ledgerClp)}</strong><small>Diferencia pendiente: {clp(bankReality.varianceClp)}</small></div><p><ShieldCheck size={16} /> La diferencia bancaria se informa para supervisión y no se convierte en ganancia o pérdida sin sus movimientos de respaldo.</p></div> : null}
+  </div>;
 }
 
 function ControlsView({ data, busy, runAction }: ActionViewProps) {

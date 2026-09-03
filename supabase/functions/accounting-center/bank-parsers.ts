@@ -50,6 +50,7 @@ export async function parseBankWorkbook(bytes: Uint8Array, requestedProfile?: st
       row.reference || "",
       row.amount.toFixed(4),
       normalizeText(row.description),
+      row.operation_number || row.reference ? "" : String(row.balance ?? ""),
     ].join("|")),
   })));
   return result;
@@ -66,8 +67,9 @@ function detectProfile(workbook: XLSX.WorkBook, requested?: string): BankPreview
   const sampleValues = workbook.SheetNames
     .flatMap((sheetName) => sheetRows(workbook, sheetName, 40).flat());
   const sample = sampleValues.map(normalizeText).join(" ");
+  const compactSample = compactLabel(sample);
   if (looksLikeMercadoPagoExport(sampleValues)) return "mercado_pago";
-  if (sample.includes("chequera electronica") && sample.includes("n operacion")) return "banco_estado";
+  if (compactSample.includes("chequeraelectronica") && compactSample.includes("noperacion")) return "banco_estado";
   if (sample.includes("cartola") || sample.includes("n doc") || sample.includes("numero documento") || sample.includes("cargos abonos saldo")) return "scotiabank";
   throw new Error("No se reconoció el formato. Selecciona Scotiabank, BancoEstado o Mercado Pago.");
 }
@@ -211,13 +213,13 @@ function findHeaderAliases(rows: unknown[][], requiredAliases: string[][]) {
   return rows.findIndex((row) => {
     const normalized = row.map(normalizeText);
     return requiredAliases.every((aliases) => aliases.some((label) =>
-      normalized.some((cell) => cell.includes(normalizeText(label)))
+      normalized.some((cell) => headerIncludes(cell, label))
     ));
   });
 }
 
 function columnIndex(header: string[], label: string) {
-  return header.findIndex((cell) => cell.includes(normalizeText(label)));
+  return header.findIndex((cell) => headerIncludes(cell, label));
 }
 
 function columnIndexAny(header: string[], labels: string[]) {
@@ -249,6 +251,17 @@ function rowObject(header: string[], row: unknown[]) {
 
 function normalizeText(value: unknown) {
   return String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function compactLabel(value: unknown) {
+  return normalizeText(value).replace(/\s+/g, "");
+}
+
+function headerIncludes(cell: unknown, label: unknown) {
+  const normalizedCell = normalizeText(cell);
+  const normalizedLabel = normalizeText(label);
+  return normalizedCell.includes(normalizedLabel)
+    || compactLabel(normalizedCell).includes(compactLabel(normalizedLabel));
 }
 
 function nullableMoney(value: unknown) {

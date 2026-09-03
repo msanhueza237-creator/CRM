@@ -105,9 +105,23 @@ export function previewAccountingImport(input: { entityId: string; profile: "aut
 export function confirmAccountingImport(batchId: string, exchangeRate?: number) {
   return accountingRequest<{
     imported: number;
+    duplicates: number;
     existing?: boolean;
+    posting?: { bankEntries: number; payrollEntries: number; balanceAdjustments: number; errors: Array<{ transactionId: string; error: string }> };
     automaticReconciliation?: AccountingExactReconciliationRunResult;
   }>("imports/confirm", { method: "POST", body: { batchId, exchangeRate, autoReconcileExact: true } });
+}
+
+export function confirmAccountingBankBalance(input: {
+  entityId: string;
+  bankAccountId: string;
+  asOfDate: string;
+  balance: number;
+  exchangeRate?: number;
+  sourceReference?: string;
+  notes?: string;
+}) {
+  return accountingRequest<{ snapshot: { id: string } }>("bank-balances/confirm", { method: "POST", body: input });
 }
 
 export async function proposeAccountingReconciliation(transactionId: string) {
@@ -212,6 +226,16 @@ export async function exportAccountingExcel(report: AccountingReport, title: str
   sheet.getRow(2).font = { bold: true, color: { argb: "FFFFFFFF" } };
   sheet.getRow(2).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0B6670" } };
   report.rows.forEach((row) => sheet.addRow(keys.map((key) => row[key] ?? "")));
+  if (report.kind === "balance8" && report.summary) {
+    sheet.addRow([]);
+    const summaryTitle = sheet.addRow(["Resumen del Balance de 8 Columnas"]);
+    summaryTitle.font = { bold: true, size: 13, color: { argb: "FF0B6670" } };
+    for (const [label, value] of balanceSummaryRows(report)) {
+      const row = sheet.addRow([label, value]);
+      row.getCell(1).font = { bold: true };
+      if (typeof value === "number") row.getCell(2).numFmt = "$#,##0;[Red]-$#,##0";
+    }
+  }
   sheet.columns.forEach((column) => { column.width = 18; });
   const buffer = await workbook.xlsx.writeBuffer();
   downloadBlob(new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${slug(title)}.xlsx`);
@@ -224,11 +248,25 @@ export async function exportAccountingPdf(report: AccountingReport, title: strin
   pdf.setFontSize(16);
   pdf.setTextColor(11, 102, 112);
   pdf.text(title, 14, 16);
+  const pageWidth = pdf.internal.pageSize.getWidth();
+  let y = 25;
+  if (report.kind === "balance8" && report.summary) {
+    pdf.setFontSize(8);
+    pdf.setTextColor(40, 55, 60);
+    const summaryRows = balanceSummaryRows(report);
+    summaryRows.forEach(([label, value], index) => {
+      const x = index % 2 === 0 ? 14 : pageWidth / 2 + 4;
+      const summaryY = 23 + Math.floor(index / 2) * 5;
+      pdf.setFont("helvetica", "bold");
+      pdf.text(`${label}:`, x, summaryY);
+      pdf.setFont("helvetica", "normal");
+      pdf.text(formatReportSummaryValue(value), x + 43, summaryY);
+    });
+    y = 45;
+  }
   pdf.setFontSize(7);
   pdf.setTextColor(40, 55, 60);
-  const pageWidth = pdf.internal.pageSize.getWidth();
   const cellWidth = Math.max((pageWidth - 28) / Math.max(keys.length, 1), 18);
-  let y = 25;
   keys.forEach((key, index) => pdf.text(humanizeKey(key).slice(0, 18), 14 + index * cellWidth, y));
   y += 5;
   for (const row of report.rows) {
@@ -237,6 +275,26 @@ export async function exportAccountingPdf(report: AccountingReport, title: strin
     y += 4.5;
   }
   pdf.save(`${slug(title)}.pdf`);
+}
+
+function balanceSummaryRows(report: AccountingReport): Array<[string, number | string]> {
+  const summary = report.summary;
+  if (!summary) return [];
+  return [
+    ["Pérdidas del período", summary.losses],
+    ["Ganancias del período", summary.gains],
+    ["Resultado neto", summary.netResult],
+    ["Cuadratura", summary.balanced ? "Balance cuadrado" : `Diferencia ${formatReportSummaryValue(summary.presentationDifference)}`],
+    ["Disponible bancario verificado", summary.bankReality.availableClp],
+    ["Bancos según Libro Mayor", summary.bankReality.ledgerClp],
+    ["Diferencia pendiente de canalizar", summary.bankReality.varianceClp],
+  ];
+}
+
+function formatReportSummaryValue(value: number | string) {
+  return typeof value === "number"
+    ? new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(value)
+    : value;
 }
 
 function humanizeKey(value: string) {

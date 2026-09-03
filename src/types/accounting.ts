@@ -74,6 +74,56 @@ export interface AccountingBankAccount {
   account_name: string;
   account_number_masked: string;
   currency: string;
+  ledger_account_id: string;
+  active: boolean;
+}
+
+export interface AccountingBankBalanceSnapshot {
+  id: string;
+  bank_account_id: string;
+  as_of_date: string;
+  balance: number;
+  currency: string;
+  exchange_rate: number;
+  balance_clp: number;
+  source_type: string;
+  source_reference: string;
+  status: string;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface AccountingBankRealityAccount {
+  key: string;
+  bankAccountId: string;
+  ledgerAccountId: string;
+  institution: string;
+  accountName: string;
+  accountNumberMasked: string;
+  currency: string;
+  ledgerBalanceClp: number;
+  statementBalance: number | null;
+  statementBalanceClp: number | null;
+  statementDate: string | null;
+  statementFileName: string | null;
+  statementStoragePath: string | null;
+  verifiedBalance: number | null;
+  verifiedBalanceClp: number;
+  verifiedAt: string | null;
+  verifiedSource: string;
+  basis: "verified" | "statement" | "ledger";
+  differenceClp: number;
+  notes: string;
+}
+
+export interface AccountingBankReality {
+  asOf: string | null;
+  basis: "verified_control" | "statements" | "ledger";
+  availableClp: number;
+  availableUsdClp: number;
+  ledgerClp: number;
+  varianceClp: number;
+  accounts: AccountingBankRealityAccount[];
 }
 
 export interface AccountingBankTransaction {
@@ -256,6 +306,7 @@ export interface AccountingSummary {
   open_controls: number;
   pending_entries: number;
   provisional: boolean;
+  bank_balance_basis?: string;
 }
 
 export interface AccountingDashboardTotals {
@@ -315,6 +366,8 @@ export interface AccountingBootstrap {
   periods: AccountingPeriod[];
   bankAccounts: AccountingBankAccount[];
   bankTransactions: AccountingBankTransaction[];
+  bankBalanceSnapshots: AccountingBankBalanceSnapshot[];
+  bankReality: AccountingBankReality;
   sources: AccountingSourceDocument[];
   entries: AccountingJournalEntry[];
   receivables: AccountingReceivable[];
@@ -344,6 +397,7 @@ export interface AccountingImportPreviewRow {
   currency: string;
   fingerprint: string;
   errors: string[];
+  status: "new" | "duplicate" | "invalid";
 }
 
 export interface AccountingImportPreview {
@@ -485,6 +539,18 @@ export interface AccountingReportRow {
 export interface AccountingReport {
   kind: "balance8" | "trial" | "journal" | "ledger" | "income" | "cashflow";
   rows: AccountingReportRow[];
+  summary?: {
+    totals: Record<string, number>;
+    losses: number;
+    gains: number;
+    netResult: number;
+    resultType: "profit" | "loss" | "balanced";
+    debitCreditDifference: number;
+    balanceDifference: number;
+    presentationDifference: number;
+    balanced: boolean;
+    bankReality: AccountingBankReality;
+  };
 }
 
 export interface AccountingJournalDraft {
