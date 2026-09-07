@@ -28,7 +28,10 @@ const choice = (...values: string[]) => ({
   enum: [...values, null],
 });
 const paging = {
-  query: string,
+  query: {
+    ...string,
+    description: "Nombre, RUT, SKU o termino solicitado por el usuario (por ejemplo rejilla). Usa null solo cuando no haya un filtro de texto; no descartes un nombre mencionado.",
+  },
   offset: integer(0, 10000),
   limit: integer(1, 100),
 };
@@ -396,10 +399,10 @@ export class ToolRegistry {
     this.add(
       "search_products",
       "products",
-      "Busca por nombre o SKU. Stock de Facto, precio publicado y demanda observada. stock_filter: all, zero, low, unknown. No interpretar stock desconocido como cero.",
+      "Busca por nombre o SKU usando query. Ejemplo: productos de rejilla requiere query=rejilla. Stock de Facto, precio publicado y demanda observada. stock_filter: all, known, zero, low, unknown. known exige cantidad disponible verificada, incluso cero. No interpretar stock desconocido como cero.",
       {
         ...paging,
-        stock_filter: choice("all", "zero", "low", "unknown"),
+        stock_filter: choice("all", "known", "zero", "low", "unknown"),
         threshold: integer(0, 1000000),
       },
       async (args) => {
@@ -445,7 +448,9 @@ export class ToolRegistry {
                 ? p.stock !== null && p.stock < Number(args.threshold ?? 10)
                 : args.stock_filter === "unknown"
                   ? !p.stock_known
-                  : true,
+                  : args.stock_filter === "known"
+                    ? p.stock !== null
+                    : true,
           )
           .sort((a, b) => String(a.name).localeCompare(String(b.name), "es"));
         return tableResult(
@@ -1146,7 +1151,7 @@ export class ToolRegistry {
       },
       async (args) => {
         const data = await this.source.all(
-          "business_agent_tasks?select=id,agent_type,action,status,result,error_code,completed_at,updated_at&order=id.asc",
+          "business_agent_tasks?select=id,agent_type,action,status,result_summary:result->>summary,result_human_summary:result->>humanSummary,error_code,completed_at,updated_at&order=id.asc",
         );
         const filtered = data
           .filter((d) => !args.agent || d.agent_type === args.agent)
@@ -1164,10 +1169,10 @@ export class ToolRegistry {
               "updated_at",
             ]),
             summary: String(
-              object(d.result).summary ||
-                object(d.result).humanSummary ||
+              d.result_summary ||
+                d.result_human_summary ||
                 "Sin resumen estructurado",
-            ),
+            ).slice(0, 4000),
           }));
         return tableResult(
           "get_agent_activity",

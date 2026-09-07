@@ -2,7 +2,7 @@
 
 ## Estado
 
-Implementacion local de las etapas de lectura y experiencia de conversacion de la propuesta. No se ha desplegado a produccion ni se han cambiado saldos, documentos, pagos, stock o datos de Facto durante esta implementacion.
+Implementacion publicada en produccion el 2026-09-07 en `https://crm.latinchile.cl/copiloto`. Incluye las etapas de lectura y experiencia de conversacion de la propuesta. No se han cambiado saldos, documentos, pagos, stock o datos de Facto durante esta implementacion; las pruebas crean solamente conversaciones y su auditoria normal.
 
 La ruta existente `/copiloto` carga la nueva pantalla. El backend utiliza el modelo configurado en `OPENAI_COPILOT_MODEL`, o `OPENAI_TEXT_MODEL`, con `gpt-4.1-mini` como ultimo fallback. No se han cambiado credenciales ni contratado servicios nuevos.
 
@@ -53,6 +53,21 @@ Rollback: volver a los archivos/build anteriores de Copiloto y accounting-center
 - `npm run build` y `npm run lint`.
 - Con Vite en `http://localhost:5179`, `node scripts/test-copilot-ui.mjs`: usa Chrome headless y fixtures de red, nunca modifica produccion. Verifica 1440/1280/390/360 px, Markdown seguro, historial, Excel autorizado y cancelacion. Evidencia local en `test-results/copilot/` (ignorada por git).
 
-Pendiente antes de considerar la salida productiva validada: migracion/despliegue coordinado, pruebas con el modelo y las sesiones reales del entorno y comparacion de cifras contra los modulos al mismo corte.
+## Verificacion en produccion, 2026-09-07
+
+- Commit inicial `f0038d8` subido a `origin/main`; Dokploy completo el build Docker y publico los assets nuevos. La ruta `/copiloto` responde HTTP 200 y carga `CentralCopilotPage-Co-Wo9xk.js`.
+- Respaldo en el VPS: `/root/climactiva-backups/copilot-central-20260907-f0038d8/`. Incluye dump de las cinco tablas Copilot, tar de ambas funciones y referencia del servicio/imagen anterior. Dump comprobado con `pg_restore --list`; imagen anterior etiquetada `crm-climactiva-crm-hkjzwz:before-copilot-f0038d8`.
+- Aplicada solo `supabase/copilot_central.sql`. Las 17 conversaciones anteriores permanecen. No se ejecutaron las migraciones contables pendientes ajenas a esta tarea.
+- Publicados todos los archivos de `crm-copilot` y el `index.ts` de `accounting-center`. `/health` devuelve `engine=central`, `contractVersion=1`; una consulta de historial sin sesion devuelve HTTP 401.
+- Prueba de Chrome con la sesion administrativa y pruebas API autenticadas con la identidad de operaciones existente del VPS. Las credenciales temporales permanecen en memoria; no se crearon usuarios ni se modificaron roles.
+- La primera prueba detecto que el modelo omitio el filtro de rejilla. Se agregaron descripciones explicitas a los filtros, opcion `known` para stock y una instruccion para no sustituir una busqueda especifica por el catalogo general. La repeticion real con rejilla + stock conocido devolvio cero coincidencias correctamente, sin inventar stock ni mostrar otros productos.
+- Resumen financiero y cartera devuelven el mismo total de CLP 11.287.934 y 17 documentos pendientes, al corte consultado. Finanzas conserva sus advertencias de resultado provisional y costos faltantes.
+- Historial y endpoint de exportacion recuperan exactamente el mensaje respaldado. La importacion proxima consulta tambien su detalle de 89 lineas.
+- La prueba del informe conjunto detecto exceso de memoria por cargar los resultados completos de 373 tareas de agentes. Se reemplazo la carga por proyeccion SQL de sus resúmenes y estados; los resultados completos no se cargan ni se envian al modelo. Se limito cada resumen mostrado a 4.000 caracteres.
+- Informe conjunto repetido exitosamente: productos, clientes, finanzas, importaciones, campanas, contenido y agentes. Siete secciones, sin fuentes fallidas; estado parcial por las limitaciones contables comunicadas.
+- Suite local final: 30 pruebas Copilot aprobadas, `deno check` de ambas funciones correcto, compilacion y pruebas contables correctas. Pruebas de interfaz 1440/1280/390/360 px, historial, Markdown seguro y exportaciones aprobadas con fixtures.
+- No hay usuarios activos no administradores disponibles en produccion para una prueba de sesion de otro rol. Las restricciones por rol, historial y exportacion fueron verificadas en las pruebas automatizadas; no se alteraron cuentas para simularlo.
+
+Las limitaciones de las fuentes indicadas arriba siguen vigentes. Desplegar el Copiloto no certifica la contabilidad ni convierte un dato de stock desconocido en existencia disponible.
 
 Referencia de render seguro utilizada: [documentacion oficial de react-markdown](https://github.com/remarkjs/react-markdown).

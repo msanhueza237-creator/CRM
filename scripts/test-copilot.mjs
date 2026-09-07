@@ -234,7 +234,7 @@ function fixture(role = "administrador") {
           id: "agent1",
           agent_type: "foreign_trade",
           status: "completed",
-          result: { summary: "Operacion revisada" },
+          result_summary: "Operacion revisada",
           updated_at: stamp,
         },
       ];
@@ -332,6 +332,18 @@ test("Stock cero no incluye stock desconocido, pagina y total independientes", a
   assert.equal(page.coverage.totalMatched, 3);
   assert.equal(page.coverage.nextOffset, 2);
 });
+test("Busqueda por producto y stock conocido conserva ambos filtros", async () => {
+  const { registry } = fixture();
+  const found = await registry.execute("search_products", { query: "rejilla", stock_filter: "known", limit: 5 });
+  assert.equal(found.coverage.totalMatched, 1);
+  assert.equal(found.table.rows[0].sku, "20X15INY");
+  assert.equal(found.table.rows[0].stock, 8);
+  const empty = await registry.execute("search_products", { query: "desconocido", stock_filter: "known" });
+  assert.equal(empty.coverage.totalMatched, 0);
+  assert.equal(empty.status, "empty");
+  const zero = await registry.execute("search_products", { query: "agotado", stock_filter: "known" });
+  assert.equal(zero.table.rows[0].stock, 0);
+});
 test("Precios de segmentos no se inventan; lista de origen conserva moneda ID", async () => {
   const { registry } = fixture();
   assert.equal(
@@ -344,6 +356,15 @@ test("Precios de segmentos no se inventan; lista de origen conserva moneda ID", 
   });
   assert.equal(source.table.rows[0].currency_id, 39);
   assert.equal(source.table.rows[0].total, 5950);
+});
+
+test("Actividad de agentes consulta resumen proyectado, no resultados masivos", async () => {
+  const { registry, accesses } = fixture();
+  const result = await registry.execute("get_agent_activity", {});
+  assert.equal(result.table.rows[0].summary, "Operacion revisada");
+  const path = accesses.find(path => path.startsWith("business_agent_tasks?"));
+  assert.ok(path.includes("result_summary:result->>summary"));
+  assert.ok(!path.includes(",result,"));
 });
 test("Cartera fixture: 17 documentos CLP 11287934, no suma saldos informados y conciliados", async () => {
   const result = await fixture().registry.execute("get_accounts_receivable", {
