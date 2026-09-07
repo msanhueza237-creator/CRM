@@ -18,7 +18,7 @@ Como consecuencia, 155 documentos no incluidos en esos cuatro saldos fueron marc
 con saldo reportado cero. La auditoría conservó el evento y permitió identificar el
 alcance exacto; no se modificaron pagos bancarios ni conciliaciones.
 
-## Corrección local
+## Corrección aplicada
 
 - Una foto solo puede reemplazar el total de cobranza si declara cobertura completa.
 - La cantidad de documentos debe coincidir con el detalle.
@@ -30,10 +30,16 @@ alcance exacto; no se modificaron pagos bancarios ni conciliaciones.
 
 ## Estado
 
-La corrección está validada localmente. No se aplicó ninguna modificación a producción.
-La reconstrucción exige una lectura web completa o el Excel vigente exportado desde
-`Documentos impagos`; el archivo recibido a continuación aporta ese detalle sin distribuir
-manualmente el total entre facturas.
+La corrección fue desplegada en producción el 2026-09-07. El archivo vigente exportado
+desde `Documentos impagos` quedó almacenado como evidencia del lote
+`c780c6f8-b15e-4798-b13a-bdbea1565530` y se aplicó como cartera completa para el período
+2026-01-01 al 2026-09-07.
+
+Durante la comprobación posterior se detectó que la sincronización histórica aceptaba la
+foto Excel como completa, pero todavía omitía sus detalles por no reconocer el origen
+`facto_excel`. El commit `e39b5cc` centralizó los orígenes verificados y agregó una prueba
+de regresión. Después de repetir el ciclo completo, la sincronización actualizó 17 saldos,
+omitió 0 y conservó el total de CLP 11.287.934.
 
 ## Evidencia recibida
 
@@ -46,3 +52,14 @@ manualmente el total entre facturas.
 
 La suma de las facturas emitidas coincide con el control Facto: neto `$28.164.014`, IVA
 `$5.351.170`, total `$33.515.184`, pagado `$22.227.250` e impago `$11.287.934`.
+
+## Control final de producción
+
+- Dashboard: 17 cuentas por cobrar, total `$11.287.934`.
+- Cuentas por pagar: 8 obligaciones, total `$12.867.255,19`.
+- Notas de crédito con saldo positivo: 0.
+- Movimientos bancarios: 1.097 antes y después.
+- Conciliaciones: 189 antes y después.
+- Vínculos de conciliación: 190 antes y después.
+- Asientos contables: 1.747 antes y después.
+- Líneas contables: 3.799 antes y después.
