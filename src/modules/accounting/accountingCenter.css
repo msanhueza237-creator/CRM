@@ -127,6 +127,49 @@
 .accounting-facto-history article small { color: var(--muted); }
 .accounting-facto-history article p { margin: 0; }
 
+.accounting-facto-browser-sync {
+  border-top: 3px solid var(--accounting-teal);
+}
+
+.accounting-facto-browser-history article {
+  grid-template-columns: minmax(190px, 1fr) max-content minmax(260px, 1.4fr) max-content;
+}
+
+.accounting-facto-browser-history .small-command {
+  white-space: nowrap;
+}
+
+.accounting-facto-preview-modal {
+  width: min(1180px, calc(100vw - 32px));
+}
+
+.accounting-sync-events {
+  display: grid;
+  gap: 0;
+  margin-top: 16px;
+  border-top: 1px solid var(--accounting-line);
+}
+
+.accounting-sync-events h3 {
+  margin: 14px 0 8px;
+  font-size: 0.95rem;
+}
+
+.accounting-sync-events p {
+  display: grid;
+  grid-template-columns: 135px 140px minmax(0, 1fr);
+  gap: 10px;
+  margin: 0;
+  padding: 8px 0;
+  border-top: 1px solid var(--accounting-soft);
+  color: var(--accounting-muted);
+  font-size: 0.8rem;
+}
+
+.accounting-sync-events strong {
+  color: var(--accounting-ink);
+}
+
 .accounting-facto-support-grid {
   display: grid;
   grid-template-columns: minmax(300px, 0.78fr) minmax(0, 1.22fr);
@@ -195,6 +238,10 @@
   .accounting-facto-history article { grid-template-columns: 1fr max-content; }
   .accounting-facto-history article p,
   .accounting-facto-history article > small { grid-column: 1 / -1; }
+  .accounting-facto-browser-history article { grid-template-columns: minmax(0, 1fr) max-content; }
+  .accounting-facto-browser-history article p { grid-column: 1 / -1; }
+  .accounting-facto-browser-history article .small-command { grid-column: 1 / -1; width: 100%; justify-content: center; }
+  .accounting-sync-events p { grid-template-columns: 1fr; gap: 3px; }
 }
 
 .accounting-heading,

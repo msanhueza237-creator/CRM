@@ -283,6 +283,99 @@ export interface AccountingFactoSyncResult {
   reportedBalances: number;
 }
 
+export type AccountingFactoReceivablesSyncStatus =
+  | "pending"
+  | "running"
+  | "preview_ready"
+  | "applying"
+  | "completed"
+  | "partial"
+  | "failed"
+  | "cancelled";
+
+export type AccountingFactoReceivablesSyncAction =
+  | "create"
+  | "update"
+  | "close"
+  | "unchanged"
+  | "ambiguous"
+  | "invalid";
+
+export interface AccountingFactoReceivablesSyncRun {
+  id: string;
+  task_id: string | null;
+  status: AccountingFactoReceivablesSyncStatus;
+  trigger_type: "manual" | "copilot" | "development" | string;
+  sync_method: string;
+  run_mode: "dry_run" | "apply" | string;
+  from_date: string;
+  to_date: string;
+  source_as_of: string | null;
+  read_count: number;
+  written_count: number;
+  summary: Record<string, unknown>;
+  coverage: Record<string, unknown>;
+  error_code: string | null;
+  error_message: string | null;
+  duration_ms: number | null;
+  approved_at: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  updated_at: string;
+}
+
+export interface AccountingFactoReceivablesSyncItem {
+  id: string;
+  run_id: string;
+  external_id: string | null;
+  canonical_key: string;
+  action: AccountingFactoReceivablesSyncAction;
+  match_confidence: "exact" | "high" | "possible" | "none";
+  matched_source_document_id: string | null;
+  matched_receivable_id: string | null;
+  previous_payload: Record<string, unknown>;
+  normalized_payload: Record<string, unknown>;
+  validation_errors: string[];
+  evidence: Record<string, unknown>;
+  observed_at: string;
+  applied_at: string | null;
+}
+
+export interface AccountingFactoReceivablesSyncEvent {
+  id: string;
+  level: "debug" | "info" | "warning" | "error";
+  stage: string;
+  message: string;
+  metrics: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface AccountingFactoReceivablesSyncDetail {
+  run: AccountingFactoReceivablesSyncRun;
+  items: AccountingFactoReceivablesSyncItem[];
+  events: AccountingFactoReceivablesSyncEvent[];
+}
+
+export interface AccountingFactoReceivablesPreviewRequest {
+  runId: string;
+  taskId: string;
+  status: "pending";
+  mode: "dry_run";
+  fromDate: string;
+  toDate: string;
+}
+
+export interface AccountingFactoReceivablesApplyResult {
+  runId: string;
+  created: number;
+  updated: number;
+  closed: number;
+  unchanged: number;
+  bankMovementsCreated: 0;
+  journalEntriesCreated: 0;
+}
+
 export interface AccountingFactoFreshness {
   connectionStatus: string;
   integrationUpdatedAt: string | null;
@@ -387,6 +480,7 @@ export interface AccountingBootstrap {
   controls: AccountingControlFinding[];
   batches: AccountingImportBatch[];
   factoSyncRuns: AccountingFactoSyncRun[];
+  factoReceivableSyncRuns: AccountingFactoReceivablesSyncRun[];
   summary: AccountingSummary;
   dashboard: AccountingDashboardAnalytics;
   factoFreshness: AccountingFactoFreshness;

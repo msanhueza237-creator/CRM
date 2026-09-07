@@ -254,6 +254,7 @@ async function handleAgentHubRoute(
             "payments",
             "inventory_snapshots",
             "financial_snapshots",
+            "receivables",
             "customers",
             "commercial_snapshots",
           ]
@@ -287,6 +288,171 @@ async function handleAgentHubRoute(
         return { body: { ok: true, accepted: rows.length } };
       },
     );
+  }
+
+  if (operation === "facto-receivables/event") {
+    const lease = await requireFactoReceivablesLease(context, payload);
+    const level = requiredString(payload.level || "info", "level", 20);
+    if (!["debug", "info", "warning", "error"].includes(level)) {
+      throw new RequestValidationError("Unsupported event level");
+    }
+    const stage = requiredString(payload.stage, "stage", 80);
+    const message = requiredString(payload.message, "message", 500);
+    const metrics = asObject(payload.metrics);
+    const { error } = await context.supabase.from("agent_task_events").insert({
+      task_id: lease.taskId,
+      level,
+      stage,
+      message,
+      metrics: { ...metrics, run_id: lease.runId },
+    });
+    if (error) return rpcErrorResult(error);
+    return json({ ok: true });
+  }
+
+  if (operation === "facto-receivables/claim") {
+    const workerId = requiredString(payload.worker_id, "worker_id", 120);
+    const leaseSeconds = clampNumber(String(payload.lease_seconds ?? "300"), 30, 600, 300);
+    const claimed = await context.supabase.rpc("claim_facto_receivables_sync_task", {
+      p_worker_id: workerId,
+      p_lease_seconds: leaseSeconds,
+    });
+    if (claimed.error) return rpcErrorResult(claimed.error);
+    const row = Array.isArray(claimed.data) ? claimed.data[0] : claimed.data;
+    if (!row) return json({ task: null });
+    return json({ task: row.task, lease_token: row.lease_token, lease_expires_at: row.lease_expires_at });
+  }
+
+  if (operation === "facto-receivables/stage") {
+    const lease = await requireFactoReceivablesLease(context, payload);
+    if (!Array.isArray(payload.items) || payload.items.length < 1 || payload.items.length > 100) {
+      throw new RequestValidationError("items must contain between 1 and 100 records");
+    }
+    const staged = await context.supabase.rpc("accounting_stage_facto_receivable_sync_items", {
+      p_run_id: lease.runId,
+      p_items: payload.items.map((item) => asObject(item)),
+    });
+    if (staged.error) return rpcErrorResult(staged.error);
+    await context.supabase.from("agent_task_events").insert({
+      task_id: lease.taskId,
+      level: "info",
+      stage: "staging",
+      message: `Lote de ${payload.items.length} documento(s) normalizado(s) y comparado(s).`,
+      metrics: { run_id: lease.runId, batch_size: payload.items.length, result: staged.data },
+    });
+    return json({ ok: true, preview: staged.data });
+  }
+
+  if (operation === "facto-receivables/finalize") {
+    const lease = await requireFactoReceivablesLease(context, payload);
+    const coverage = asObject(payload.coverage);
+    const sourceAsOf = requiredString(payload.source_as_of, "source_as_of", 60);
+    if (Number.isNaN(Date.parse(sourceAsOf))) throw new RequestValidationError("source_as_of must be an ISO date");
+    const actionNames = ["create", "update", "close", "unchanged", "ambiguous", "invalid"];
+    const counts = await Promise.all(actionNames.map(async (action) => {
+      const result = await context.supabase
+        .from("integration_sync_items")
+        .select("id", { count: "exact", head: true })
+        .eq("run_id", lease.runId)
+        .eq("action", action);
+      if (result.error) throw new Error(result.error.message);
+      return [action, result.count || 0] as const;
+    }));
+    const actions = Object.fromEntries(counts);
+    const total = Object.values(actions).reduce((sum, value) => sum + Number(value || 0), 0);
+    const extractedRows = safeNonNegativeInteger(coverage.extracted_rows);
+    const expectedRows = nullableNonNegativeInteger(coverage.expected_rows);
+    const complete = coverage.complete === true
+      && (expectedRows === null || extractedRows >= expectedRows)
+      && (total > 0 || coverage.verified_zero === true);
+    const status = complete ? "preview_ready" : "partial";
+    const errorCode = complete ? null : total === 0 ? "EMPTY_UNVERIFIED" : "INCOMPLETE_EXTRACTION";
+    const errorMessage = complete
+      ? null
+      : total === 0
+      ? "La lectura vacía no se consideró una cartera pagada sin evidencia explícita."
+      : "Facto entregó una lectura parcial; no se permite aplicarla al CRM.";
+    const summary = {
+      actions,
+      items: total,
+      api_documents: safeNonNegativeInteger(payload.api_documents),
+      browser_rows: safeNonNegativeInteger(payload.browser_rows),
+      overdue_documents: safeNonNegativeInteger(payload.overdue_documents),
+      partial_payment_documents: safeNonNegativeInteger(payload.partial_payment_documents),
+      warnings: Array.isArray(payload.warnings) ? payload.warnings.slice(0, 100).map((item) => String(item).slice(0, 300)) : [],
+      bank_movements_created: 0,
+      journal_entries_created: 0,
+    };
+    const now = new Date().toISOString();
+    const runUpdate = await context.supabase.from("integration_sync_runs").update({
+      status,
+      read_count: total,
+      source_as_of: sourceAsOf,
+      summary,
+      coverage: { ...coverage, complete },
+      error_code: errorCode,
+      error_message: errorMessage,
+      finished_at: now,
+      duration_ms: Math.max(0, Date.now() - Date.parse(String(lease.run.created_at || now))),
+      updated_at: now,
+    }).eq("id", lease.runId);
+    if (runUpdate.error) return rpcErrorResult(runUpdate.error);
+    await context.supabase.from("agent_task_events").insert({
+      task_id: lease.taskId,
+      level: complete ? "info" : "warning",
+      stage: complete ? "preview_ready" : "partial",
+      message: complete
+        ? "Previsualización terminada. Ningún dato financiero fue aplicado automáticamente."
+        : errorMessage,
+      metrics: { run_id: lease.runId, ...summary, coverage: { ...coverage, complete } },
+    });
+    const completed = await context.supabase.rpc("complete_business_agent_task", {
+      p_task_id: lease.taskId,
+      p_worker_id: lease.workerId,
+      p_lease_token: lease.leaseToken,
+      p_result: {
+        summary: complete
+          ? `Previsualización Facto lista con ${total} documento(s).`
+          : `Lectura Facto parcial con ${total} documento(s); no aplicable.`,
+        run_id: lease.runId,
+        status,
+        actions,
+      },
+    });
+    if (completed.error) return rpcErrorResult(completed.error);
+    return json({ ok: true, run_id: lease.runId, status, items: total, actions, coverage: { ...coverage, complete } });
+  }
+
+  if (operation === "facto-receivables/fail") {
+    const lease = await requireFactoReceivablesLease(context, payload);
+    const errorCode = requiredString(payload.error_code || "FACTO_SYNC_FAILED", "error_code", 120);
+    const message = requiredString(payload.message || "La lectura Facto falló.", "message", 800);
+    const now = new Date().toISOString();
+    const runUpdate = await context.supabase.from("integration_sync_runs").update({
+      status: "failed",
+      error_code: errorCode,
+      error_message: message,
+      error_detail: asObject(payload.detail),
+      finished_at: now,
+      duration_ms: Math.max(0, Date.now() - Date.parse(String(lease.run.created_at || now))),
+      updated_at: now,
+    }).eq("id", lease.runId);
+    if (runUpdate.error) return rpcErrorResult(runUpdate.error);
+    await context.supabase.from("agent_task_events").insert({
+      task_id: lease.taskId,
+      level: "error",
+      stage: "failed",
+      message,
+      metrics: { run_id: lease.runId, error_code: errorCode },
+    });
+    const failed = await context.supabase.rpc("fail_business_agent_task", {
+      p_task_id: lease.taskId,
+      p_worker_id: lease.workerId,
+      p_lease_token: lease.leaseToken,
+      p_error: errorCode,
+    });
+    if (failed.error) return rpcErrorResult(failed.error);
+    return json({ ok: true, run_id: lease.runId, status: "failed" });
   }
 
   if (operation === "commercial/schedule") {
@@ -684,6 +850,59 @@ async function handleAgentHubRoute(
       return { body: { ok: true } };
     },
   );
+}
+
+async function requireFactoReceivablesLease(context: RouteContext, payload: JsonRecord) {
+  const runId = requiredString(payload.run_id, "run_id", 36);
+  const taskId = requiredString(payload.task_id, "task_id", 36);
+  const workerId = requiredString(payload.worker_id, "worker_id", 120);
+  const leaseToken = requiredString(payload.lease_token, "lease_token", 36);
+  if (![runId, taskId, leaseToken].every(isUuid)) {
+    throw new RequestValidationError("run_id, task_id and lease_token must be UUID values");
+  }
+  const [taskResult, runResult] = await Promise.all([
+    context.supabase.from("business_agent_tasks")
+      .select("id,status,agent_type,action,worker_id,lease_token,lease_expires_at")
+      .eq("id", taskId)
+      .maybeSingle(),
+    context.supabase.from("integration_sync_runs")
+      .select("id,task_id,status,provider,resource,created_at")
+      .eq("id", runId)
+      .eq("task_id", taskId)
+      .eq("provider", "facto")
+      .eq("resource", "receivables")
+      .maybeSingle(),
+  ]);
+  if (taskResult.error) throw new Error(taskResult.error.message);
+  if (runResult.error) throw new Error(runResult.error.message);
+  const task = taskResult.data;
+  const run = runResult.data;
+  const leaseExpiresAt = Date.parse(String(task?.lease_expires_at || ""));
+  if (!task || !run
+      || task.agent_type !== "collections"
+      || task.action !== "sync_facto_receivables"
+      || task.status !== "in_progress"
+      || task.worker_id !== workerId
+      || task.lease_token !== leaseToken
+      || !Number.isFinite(leaseExpiresAt)
+      || leaseExpiresAt <= Date.now()) {
+    throw new RequestValidationError("The Facto task lease is invalid or expired");
+  }
+  if (!["pending", "running"].includes(String(run.status || ""))) {
+    throw new RequestValidationError("The Facto sync run no longer accepts worker updates");
+  }
+  return { runId, taskId, workerId, leaseToken, run: asObject(run) };
+}
+
+function safeNonNegativeInteger(value: unknown) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+}
+
+function nullableNonNegativeInteger(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : null;
 }
 
 async function collectExecutiveSignals(

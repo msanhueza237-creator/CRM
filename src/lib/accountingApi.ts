@@ -2,6 +2,9 @@ import { getSupabaseFunctionUrl, isSupabaseConfigured, supabase } from "./supaba
 import type {
   AccountingBootstrap,
   AccountingFactoSyncResult,
+  AccountingFactoReceivablesApplyResult,
+  AccountingFactoReceivablesPreviewRequest,
+  AccountingFactoReceivablesSyncDetail,
   AccountingFactoExcelPreview,
   AccountingFactoExcelProfile,
   AccountingFactoExcelResult,
@@ -44,6 +47,18 @@ export function getAccountingBootstrap() {
 
 export function syncAccountingFacto(input: { fromDate: string; toDate: string }) {
   return accountingRequest<AccountingFactoSyncResult>("facto/sync", { method: "POST", body: input });
+}
+
+export function requestAccountingFactoReceivablesPreview(input: { fromDate: string; toDate: string; triggerType?: "manual" | "copilot" | "development" }) {
+  return accountingRequest<AccountingFactoReceivablesPreviewRequest>("facto-receivables/preview", { method: "POST", body: input });
+}
+
+export function getAccountingFactoReceivablesSyncRun(runId: string) {
+  return accountingRequest<AccountingFactoReceivablesSyncDetail>(`facto-receivables/runs/${encodeURIComponent(runId)}`);
+}
+
+export function applyAccountingFactoReceivablesPreview(runId: string) {
+  return accountingRequest<AccountingFactoReceivablesApplyResult>("facto-receivables/apply", { method: "POST", body: { runId } });
 }
 
 export function previewAccountingFactoExcel(input: {

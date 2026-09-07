@@ -3,7 +3,7 @@ type JsonRecord = Record<string, unknown>;
 type Profile = {
   id: string;
   full_name: string;
-  role: "administrador" | "vendedor" | "visualizador";
+  role: "administrador" | "finanzas" | "vendedor" | "visualizador";
   active: boolean;
 };
 
@@ -270,7 +270,7 @@ const jsonHeaders = {
 
 const promptVersion = "copilot-content-center-2026-08-20";
 const defaultTenantId = "default";
-const allowedRoles = new Set(["administrador", "vendedor", "visualizador"]);
+const allowedRoles = new Set(["administrador", "finanzas", "vendedor", "visualizador"]);
 const agentDefinitions = [
   { type: "commercial", label: "Comercial" },
   { type: "marketing", label: "Marketing" },
@@ -675,6 +675,10 @@ async function runReadOnlyTools(
   requestedCampaignId = "",
 ): Promise<ToolResult[]> {
   const results: ToolResult[] = [];
+  if (mentionsFactoReceivablesSync(message)) {
+    results.push(await requestFactoReceivablesPreview(rest, context, message));
+    return results;
+  }
   if (mentionsSocialContentGeneration(message)) {
     results.push(await getContentCenterContext(rest, message));
     results.push(await prepareSocialContentDraft(rest, context, message));
@@ -769,6 +773,60 @@ async function runReadOnlyTools(
   }
 
   return results;
+}
+
+async function requestFactoReceivablesPreview(
+  rest: RestClient,
+  context: ToolContext,
+  message: string,
+): Promise<ToolResult> {
+  const { fromDate, toDate } = factoReceivablesRange(message, context.timezone);
+  try {
+    const response = await fetch(`${rest.url}/functions/v1/accounting-center/facto-receivables/preview`, {
+      method: "POST",
+      headers: {
+        apikey: rest.anonKey,
+        Authorization: `Bearer ${context.accessToken}`,
+        "Content-Type": "application/json",
+        "x-request-id": context.requestId,
+      },
+      body: JSON.stringify({ fromDate, toDate, triggerType: "copilot" }),
+    });
+    const payload = await response.json().catch(() => ({})) as JsonRecord;
+    if (!response.ok) {
+      return {
+        ok: false,
+        data: { toolName: "preview_facto_receivables", fromDate, toDate },
+        humanSummary: String(payload.error || "No se pudo solicitar la previsualización de cobranza Facto."),
+        evidence: [],
+        warnings: ["No se modificó ningún saldo financiero."],
+        riskLevel: "low",
+        requiresConfirmation: false,
+        errorCode: `FACTO_PREVIEW_${response.status}`,
+      };
+    }
+    const runId = String(payload.runId || "");
+    return {
+      ok: true,
+      data: { ...payload, toolName: "preview_facto_receivables" },
+      humanSummary: `Se solicitó una lectura de cobranza Facto del ${fromDate} al ${toDate}. Quedará como previsualización para revisión en Finanzas; todavía no cambia saldos.`,
+      evidence: runId ? [{ entityType: "integration_sync_run", entityId: runId, label: "Previsualización Facto" }] : [],
+      warnings: ["El navegador opera en solo lectura y la aplicación posterior requiere revisión humana."],
+      riskLevel: "low",
+      requiresConfirmation: false,
+    };
+  } catch {
+    return {
+      ok: false,
+      data: { toolName: "preview_facto_receivables", fromDate, toDate },
+      humanSummary: "El servicio financiero no respondió al solicitar la previsualización Facto.",
+      evidence: [],
+      warnings: ["No se modificó ningún saldo financiero."],
+      riskLevel: "low",
+      requiresConfirmation: false,
+      errorCode: "FACTO_PREVIEW_UNAVAILABLE",
+    };
+  }
 }
 
 async function getContentCenterContext(rest: RestClient, message: string): Promise<ToolResult> {
@@ -3309,6 +3367,37 @@ function mentionsReport(message: string) {
     "rentabilidad", "utilidad", "margen", "ventas", "compras", "resultado financiero",
     "flujo de caja", "cuanto vendimos", "cuanto compramos", "cuanto ganamos",
   ].some((word) => text.includes(word));
+}
+
+function mentionsFactoReceivablesSync(message: string) {
+  const text = normalize(message).replace(/\s+/g, " ").trim();
+  const action = /\b(actualiza|actualizar|sincroniza|sincronizar|previsualiza|previsualizar|revisa|revisar|consulta|consultar)\b/.test(text);
+  const subject = /\b(documentos? impagos?|facturas? vencidas?|cartera|cobranza)\b/.test(text);
+  const explicitFacto = /\bfacto\b/.test(text);
+  return action && subject && (explicitFacto || /\b(actualiza|actualizar|sincroniza|sincronizar) (la )?(cartera|cobranza|documentos? impagos?)\b/.test(text));
+}
+
+function factoReceivablesRange(message: string, timezone: string) {
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const explicitDates = message.match(/\b20\d{2}-\d{2}-\d{2}\b/g) || [];
+  if (explicitDates.length >= 2) {
+    return {
+      fromDate: explicitDates[0] <= explicitDates[1] ? explicitDates[0] : explicitDates[1],
+      toDate: explicitDates[0] <= explicitDates[1] ? explicitDates[1] : explicitDates[0],
+    };
+  }
+  const requestedYear = Number(message.match(/\b(20\d{2})\b/)?.[1] || today.slice(0, 4));
+  const currentYear = Number(today.slice(0, 4));
+  const safeYear = requestedYear >= 2000 && requestedYear <= currentYear ? requestedYear : currentYear;
+  return {
+    fromDate: `${safeYear}-01-01`,
+    toDate: safeYear === currentYear ? today : `${safeYear}-12-31`,
+  };
 }
 
 function mentionsFinancialAnalysis(message: string) {

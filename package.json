@@ -11,6 +11,11 @@
     "test:content": "node --experimental-strip-types scripts/test-content-center.mjs",
     "test:foreign-trade": "node --experimental-strip-types scripts/test-foreign-trade-center.mjs",
     "test:accounting": "node --experimental-strip-types scripts/test-accounting-center.mjs",
+    "test:facto-connector": "node --experimental-transform-types --test services/facto-connector/tests/*.test.ts",
+    "typecheck:facto-connector": "tsc -p services/facto-connector/tsconfig.json",
+    "facto:receivables:once": "node --experimental-transform-types services/facto-connector/src/worker.ts",
+    "facto:receivables:watch": "node --experimental-transform-types services/facto-connector/src/worker.ts --watch",
+    "facto:receivables:phase4": "node --experimental-transform-types services/facto-connector/src/phase4-diagnostic.ts",
     "test:prospecting": "node scripts/test-prospecting-contract.mjs",
     "commit": "node scripts/commit.js"
   },
@@ -20,6 +25,7 @@
     "exceljs": "^4.4.0",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.468.0",
+    "playwright": "^1.63.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.26.2",
@@ -27,6 +33,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.4",
+    "@types/node": "^26.5.0",
     "@types/react": "^18.3.5",
     "@types/react-dom": "^18.3.0",
     "@typescript-eslint/eslint-plugin": "^8.5.0",

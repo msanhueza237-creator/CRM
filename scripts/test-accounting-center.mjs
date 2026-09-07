@@ -39,6 +39,7 @@ const factoCheckSettlementMigration = await readFile(new URL("../supabase/accoun
 const factoOutstandingSnapshotMigration = await readFile(new URL("../supabase/accounting_facto_outstanding_snapshot.sql", import.meta.url), "utf8");
 const controlsRefreshFix = await readFile(new URL("../supabase/accounting_control_findings_refresh_fix.sql", import.meta.url), "utf8");
 const bankRealityMigration = await readFile(new URL("../supabase/accounting_bank_reality.sql", import.meta.url), "utf8");
+const factoReceivablesBrowserMigration = await readFile(new URL("../supabase/facto_receivables_browser_sync.sql", import.meta.url), "utf8");
 const bankTraceabilityMigration = await readFile(new URL("../supabase/accounting_bank_traceability_reality.sql", import.meta.url), "utf8");
 const factoLiveReceivablesMigration = await readFile(new URL("../supabase/accounting_facto_receivables_live_state.sql", import.meta.url), "utf8");
 const sislaLoanMigration = await readFile(new URL("../supabase/accounting_reclassify_sisla_loan_repayment.sql", import.meta.url), "utf8");
@@ -46,8 +47,25 @@ const edgeSource = await readFile(new URL("../supabase/functions/accounting-cent
 const parserSource = await readFile(new URL("../supabase/functions/accounting-center/bank-parsers.ts", import.meta.url), "utf8");
 const factoExcelParserSource = await readFile(new URL("../supabase/functions/accounting-center/facto-excel-parsers.ts", import.meta.url), "utf8");
 const pageSource = await readFile(new URL("../src/modules/accounting/AccountingCenterPage.tsx", import.meta.url), "utf8");
+const agentHubSource = await readFile(new URL("../supabase/functions/crm-agent/index.ts", import.meta.url), "utf8");
+const copilotSource = await readFile(new URL("../supabase/functions/crm-copilot/index.ts", import.meta.url), "utf8");
 
 assert.match(edgeSource, /route === "facto\/sync"/);
+assert.match(edgeSource, /route === "facto-receivables\/preview"/);
+assert.match(edgeSource, /route === "facto-receivables\/apply"/);
+assert.match(edgeSource, /accounting_apply_facto_receivables_sync_run/);
+assert.match(edgeSource, /accounting_request_facto_receivables_preview/);
+assert.match(agentHubSource, /operation === "facto-receivables\/stage"/);
+assert.match(agentHubSource, /operation === "facto-receivables\/claim"/);
+assert.match(agentHubSource, /operation === "facto-receivables\/finalize"/);
+assert.match(copilotSource, /mentionsFactoReceivablesSync/);
+assert.match(copilotSource, /toolName: "preview_facto_receivables"/);
+assert.match(pageSource, /Previsualizar cobranza Facto/);
+assert.match(factoReceivablesBrowserMigration, /integration_sync_items/);
+assert.match(factoReceivablesBrowserMigration, /claim_facto_receivables_sync_task/);
+assert.match(factoReceivablesBrowserMigration, /accounting_request_facto_receivables_preview/);
+assert.match(factoReceivablesBrowserMigration, /bank_movements_created', 0/);
+assert.match(factoReceivablesBrowserMigration, /journal_entries_created', 0/);
 assert.match(edgeSource, /route === "facto\/cost-entry"/);
 assert.match(edgeSource, /facto-cost:/);
 assert.match(edgeSource, /sourceModule: "facto_accounting_entry"/);
@@ -629,10 +647,122 @@ await db.exec(factoExcelMigration);
 await db.exec(factoCheckSettlementMigration);
 await db.exec(factoOutstandingSnapshotMigration);
 await db.exec(bankRealityMigration);
+await db.exec(`
+  create table public.integration_connections (
+    provider text primary key,
+    enabled boolean not null default false,
+    read_only boolean not null default true,
+    status text not null default 'pending_configuration',
+    message text,
+    last_checked_at timestamptz,
+    last_success_at timestamptz,
+    metadata jsonb not null default '{}'::jsonb,
+    updated_at timestamptz not null default now()
+  );
+  insert into public.integration_connections(provider, enabled, read_only, status)
+  values ('facto', true, true, 'connected');
+
+  create table public.business_agent_tasks (
+    id uuid primary key default gen_random_uuid(),
+    agent_type text not null,
+    action text not null,
+    payload jsonb not null default '{}'::jsonb,
+    status text not null default 'pending',
+    priority smallint not null default 50,
+    requested_by uuid references auth.users(id),
+    worker_id text,
+    lease_token uuid,
+    lease_expires_at timestamptz,
+    attempts integer not null default 0,
+    result jsonb,
+    error_code text,
+    created_at timestamptz not null default now(),
+    started_at timestamptz,
+    completed_at timestamptz,
+    updated_at timestamptz not null default now()
+  );
+
+  create table public.agent_task_events (
+    id uuid primary key default gen_random_uuid(),
+    task_id uuid not null references public.business_agent_tasks(id) on delete cascade,
+    level text not null default 'info',
+    stage text not null,
+    message text not null,
+    metrics jsonb not null default '{}'::jsonb,
+    created_at timestamptz not null default now()
+  );
+
+  create table public.integration_sync_runs (
+    id uuid primary key default gen_random_uuid(),
+    provider text not null references public.integration_connections(provider),
+    resource text not null,
+    status text not null default 'pending' check (status in ('pending','running','completed','partial','failed')),
+    read_count integer not null default 0 check (read_count >= 0),
+    written_count integer not null default 0 check (written_count >= 0),
+    error_code text,
+    started_at timestamptz,
+    finished_at timestamptz,
+    created_at timestamptz not null default now()
+  );
+
+  create table public.integration_records (
+    id uuid primary key default gen_random_uuid(),
+    provider text not null references public.integration_connections(provider),
+    resource text not null,
+    external_id text not null,
+    payload jsonb not null,
+    payload_hash text not null,
+    observed_at timestamptz not null default now(),
+    updated_at timestamptz not null default now(),
+    unique(provider, resource, external_id)
+  );
+`);
+await db.exec(factoReceivablesBrowserMigration);
 
 const entity = await db.query(`select id from public.accounting_entities where tax_id='77.724.382-9'`);
 assert.equal(entity.rows.length, 1);
 const entityId = entity.rows[0].id;
+
+const requestedPreview = await db.query(`
+  select public.accounting_request_facto_receivables_preview(
+    $1::uuid,$2::uuid,'2026-01-01','2026-09-07','development',
+    '00000000-0000-4000-8000-000000000090'::uuid
+  ) value
+`, [entityId, adminId]);
+assert.equal(requestedPreview.rows[0].value.status, "pending");
+assert.equal(requestedPreview.rows[0].value.mode, "dry_run");
+const atomicPreviewRunId = requestedPreview.rows[0].value.runId;
+const atomicPreviewTaskId = requestedPreview.rows[0].value.taskId;
+const atomicPreviewLinks = await db.query(`
+  select r.task_id,t.payload->>'run_id' payload_run_id,
+    (select count(*)::int from public.agent_task_events e where e.task_id=t.id) event_count
+  from public.integration_sync_runs r
+  join public.business_agent_tasks t on t.id=r.task_id
+  where r.id=$1
+`, [atomicPreviewRunId]);
+assert.equal(atomicPreviewLinks.rows[0].task_id, atomicPreviewTaskId);
+assert.equal(atomicPreviewLinks.rows[0].payload_run_id, atomicPreviewRunId);
+assert.equal(atomicPreviewLinks.rows[0].event_count, 1);
+await db.query(`update public.integration_sync_runs set status='cancelled' where id=$1`, [atomicPreviewRunId]);
+await db.query(`update public.business_agent_tasks set status='cancelled' where id=$1`, [atomicPreviewTaskId]);
+
+const queuedTasks = await db.query(`
+  insert into public.business_agent_tasks(agent_type,action,payload,status,priority,requested_by)
+  values
+    ('collections','send_collection_reminder','{}'::jsonb,'pending',100,$1),
+    ('collections','sync_facto_receivables','{"mode":"dry_run","read_only":true}'::jsonb,'pending',75,$1)
+  returning id,action
+`, [adminId]);
+const expectedFactoTaskId = queuedTasks.rows.find((row) => row.action === "sync_facto_receivables").id;
+const claimedFactoTask = await db.query(`
+  select * from public.claim_facto_receivables_sync_task('facto-test-worker',300)
+`);
+assert.equal(claimedFactoTask.rows.length, 1);
+assert.equal(claimedFactoTask.rows[0].task.id, expectedFactoTaskId);
+const untouchedCollectionsTask = await db.query(`
+  select status from public.business_agent_tasks where action='send_collection_reminder'
+`);
+assert.equal(untouchedCollectionsTask.rows[0].status, "pending");
 
 const syncRun = await db.query(`
   insert into public.accounting_facto_sync_runs(entity_id,from_date,to_date,status,requested_by)
@@ -836,6 +966,181 @@ await assert.rejects(
     [JSON.stringify({ ...payload, reference: "CLOSED" }), adminId],
   ),
   /período abierto/i,
+);
+
+await db.query(`
+  update public.accounting_source_documents
+  set external_id='facto-test-100', counterpart_tax_id='77.724.382-9'
+  where id=$1
+`, [sourceDocumentId]);
+const journalCountBeforeFactoPreview = await db.query(`select count(*)::int count from public.accounting_journal_entries`);
+const receivablesRun = await db.query(`
+  insert into public.integration_sync_runs(
+    provider,resource,status,entity_id,requested_by,from_date,to_date,coverage
+  ) values ('facto','receivables','pending',$1,$2,'2026-01-01','2026-09-07','{}'::jsonb)
+  returning id
+`, [entityId, adminId]);
+const receivablesRunId = receivablesRun.rows[0].id;
+const previewItem = {
+  canonical_key: "facto:sale:facto-test-100",
+  raw_payload_hash: "test-hash",
+  validation_errors: [],
+  evidence: {
+    api: { verified: true, external_id: "facto-test-100" },
+    browser: { verified: true, section: "Documentos impagos" },
+    matching: { strategy: "external_id", candidates: 1 },
+  },
+  normalized: {
+    external_id: "facto-test-100",
+    document_type: "sales_invoice",
+    folio: "100",
+    customer_tax_id: "777243829",
+    customer_name: "Cliente prueba",
+    issued_on: "2026-01-10",
+    due_on: "2026-02-10",
+    currency: "CLP",
+    exchange_rate: 1,
+    net_amount: 100000,
+    tax_amount: 19000,
+    exempt_amount: 0,
+    original_amount: 119000,
+    original_amount_clp: 119000,
+    outstanding_amount_clp: 50000,
+    reported_paid_amount_clp: 69000,
+    status: "Parcial",
+    days_overdue: 209,
+    partial_payments: [{ amount_clp: 69000, source: "facto_unpaid_grid", bank_confirmed: false }],
+    api_verified: true,
+    browser_verified: true,
+    closure_evidence: false,
+    observed_at: "2026-09-07T12:00:00.000Z",
+    source_created_at: "2026-01-10T12:00:00.000Z",
+  },
+};
+const newPreviewItem = {
+  ...previewItem,
+  canonical_key: "facto:sale:facto-new-200",
+  normalized: {
+    ...previewItem.normalized,
+    external_id: "facto-new-200",
+    folio: "200",
+    customer_tax_id: "968927108",
+    customer_name: "Cliente Facto nuevo",
+    issued_on: "2026-08-27",
+    due_on: "2026-09-27",
+    net_amount: 200000,
+    tax_amount: 38000,
+    original_amount: 238000,
+    original_amount_clp: 238000,
+    outstanding_amount_clp: 238000,
+    reported_paid_amount_clp: 0,
+    status: "Pendiente",
+    days_overdue: 0,
+    partial_payments: [],
+    observed_at: "2026-09-07T12:00:00.000Z",
+    source_created_at: "2026-08-27T12:00:00.000Z",
+  },
+};
+const unknownClosedPreviewItem = {
+  ...previewItem,
+  canonical_key: "facto:sale:facto-unknown-closed-300",
+  evidence: {
+    api: { verified: true, external_id: "facto-unknown-closed-300" },
+    browser: { verified: false, absent_from_complete_unpaid_portfolio: true },
+    matching: { strategy: "complete_portfolio_absence", candidates: 1 },
+  },
+  normalized: {
+    ...newPreviewItem.normalized,
+    external_id: "facto-unknown-closed-300",
+    folio: "300",
+    outstanding_amount_clp: 0,
+    reported_paid_amount_clp: 238000,
+    status: "paid_or_absent_from_unpaid_portfolio",
+    browser_verified: false,
+    closure_evidence: true,
+  },
+};
+const staged = await db.query(
+  `select public.accounting_stage_facto_receivable_sync_items($1::uuid,$2::jsonb) value`,
+  [receivablesRunId, JSON.stringify([previewItem, newPreviewItem, unknownClosedPreviewItem])],
+);
+assert.equal(Number(staged.rows[0].value.items), 3);
+const stagedActions = await db.query(`select action,match_confidence from public.integration_sync_items where run_id=$1 order by action`, [receivablesRunId]);
+assert.deepEqual(stagedActions.rows, [
+  { action: "create", match_confidence: "exact" },
+  { action: "unchanged", match_confidence: "exact" },
+  { action: "update", match_confidence: "exact" },
+]);
+
+await db.query(`
+  update public.integration_sync_runs
+  set status='preview_ready', coverage='{"complete":true,"verified_zero":false}'::jsonb
+  where id=$1
+`, [receivablesRunId]);
+const appliedPreview = await db.query(
+  `select public.accounting_apply_facto_receivables_sync_run($1::uuid,$2::uuid,$3::uuid) value`,
+  [receivablesRunId, adminId, "00000000-0000-4000-8000-000000000099"],
+);
+assert.equal(Number(appliedPreview.rows[0].value.updated), 1);
+assert.equal(Number(appliedPreview.rows[0].value.created), 1);
+assert.equal(Number(appliedPreview.rows[0].value.unchanged), 1);
+assert.equal(Number(appliedPreview.rows[0].value.bankMovementsCreated), 0);
+assert.equal(Number(appliedPreview.rows[0].value.journalEntriesCreated), 0);
+const preservedReceivable = await db.query(`
+  select paid_amount_clp,reported_paid_amount_clp,reported_balance_clp,status
+  from public.accounting_receivables where id=$1
+`, [receivableId]);
+assert.equal(Number(preservedReceivable.rows[0].paid_amount_clp), 0);
+assert.equal(Number(preservedReceivable.rows[0].reported_paid_amount_clp), 69000);
+assert.equal(Number(preservedReceivable.rows[0].reported_balance_clp), 50000);
+assert.equal(preservedReceivable.rows[0].status, "overdue");
+const createdFactoReceivable = await db.query(`
+  select r.customer_name,r.document_number,r.original_amount_clp,r.reported_balance_clp,r.paid_amount_clp,r.status
+  from public.accounting_receivables r
+  join public.accounting_source_documents s on s.id=r.source_document_id
+  where s.external_id='facto-new-200'
+`);
+assert.deepEqual(createdFactoReceivable.rows[0], {
+  customer_name: "Cliente Facto nuevo",
+  document_number: "200",
+  original_amount_clp: "238000.0000",
+  reported_balance_clp: "238000.0000",
+  paid_amount_clp: "0.0000",
+  status: "pending",
+});
+const unknownClosedReceivable = await db.query(`
+  select count(*)::int count
+  from public.accounting_receivables r
+  join public.accounting_source_documents s on s.id=r.source_document_id
+  where s.external_id='facto-unknown-closed-300'
+`);
+assert.equal(unknownClosedReceivable.rows[0].count, 0);
+const journalCountAfterFactoPreview = await db.query(`select count(*)::int count from public.accounting_journal_entries`);
+assert.equal(journalCountAfterFactoPreview.rows[0].count, journalCountBeforeFactoPreview.rows[0].count);
+const preservedFactoEvidence = await db.query(`
+  select count(*)::int count from public.integration_records
+  where provider='facto' and resource='receivables' and external_id='facto:sale:facto-test-100'
+`);
+assert.equal(preservedFactoEvidence.rows[0].count, 1);
+await assert.rejects(
+  db.query(
+    `select public.accounting_apply_facto_receivables_sync_run($1::uuid,$2::uuid,$3::uuid)`,
+    [receivablesRunId, adminId, "00000000-0000-4000-8000-000000000100"],
+  ),
+  /no está lista para aplicar/i,
+);
+
+const incompleteRun = await db.query(`
+  insert into public.integration_sync_runs(provider,resource,status,entity_id,requested_by,from_date,to_date,coverage)
+  values ('facto','receivables','preview_ready',$1,$2,'2026-01-01','2026-09-07','{"complete":false}'::jsonb)
+  returning id
+`, [entityId, adminId]);
+await assert.rejects(
+  db.query(
+    `select public.accounting_apply_facto_receivables_sync_run($1::uuid,$2::uuid,$3::uuid)`,
+    [incompleteRun.rows[0].id, adminId, "00000000-0000-4000-8000-000000000101"],
+  ),
+  /no tiene cobertura completa/i,
 );
 
 console.log("Centro contable: migración, doble partida, inmutabilidad, reversa, balances y cierre verificados.");

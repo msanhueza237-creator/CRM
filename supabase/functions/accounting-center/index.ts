@@ -42,6 +42,18 @@ Deno.serve(async (request) => {
       requirePermission(profile, "import");
       return json(await syncFacto(rest, profile, requestId, await readJson(request)), 200, request);
     }
+    if (route === "facto-receivables/preview" && request.method === "POST") {
+      requirePermission(profile, "import");
+      return json(await requestFactoReceivablesPreview(rest, profile, requestId, await readJson(request)), 202, request);
+    }
+    if (route.startsWith("facto-receivables/runs/") && request.method === "GET") {
+      requirePermission(profile, "view");
+      return json(await getFactoReceivablesSyncRun(rest, route.split("/").at(-1) || ""), 200, request);
+    }
+    if (route === "facto-receivables/apply" && request.method === "POST") {
+      requirePermission(profile, "import");
+      return json(await applyFactoReceivablesPreview(rest, profile, requestId, await readJson(request)), 200, request);
+    }
     if (route === "facto/cost-entry" && request.method === "POST") {
       requirePermission(profile, "post");
       return json(await postFactoCostEntry(rest, profile, requestId, await readJson(request)), 200, request);
@@ -178,7 +190,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   const entity = entities[0];
   if (!entity) throw new HttpError(409, "Falta aplicar la migración accounting_center.sql.");
   const entityId = String(entity.id);
-  const [accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoConnectionRows, factoIntegrationRows] = await Promise.all([
+  const [accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, factoConnectionRows, factoIntegrationRows] = await Promise.all([
     selectRows(rest, `accounting_accounts?select=*&entity_id=eq.${entityId}&order=code.asc`),
     selectRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
@@ -193,6 +205,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     selectRows(rest, `accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
     selectRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
     selectRows(rest, `accounting_facto_sync_runs?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=24`),
+    selectRows(rest, `integration_sync_runs?select=*&entity_id=eq.${entityId}&provider=eq.facto&resource=eq.receivables&order=created_at.desc&limit=12`),
     selectRows(rest, "integration_connections?select=provider,status,last_success_at&provider=eq.facto&limit=1"),
     selectRows(rest, "integration_records?select=id,payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
   ]);
@@ -227,7 +240,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   };
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, bankReality, sources, entries,
-    receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, summary, dashboard, factoFreshness,
+    receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, summary, dashboard, factoFreshness,
     factoReceivables: latestFactoCollections,
     profile: { role: profile.role, permissions: [...rolePermissions[profile.role]] },
   };
@@ -692,6 +705,71 @@ async function createAccount(rest: RestClient, profile: Profile, payload: JsonRe
     new_value: { code, name, account_type: accountType, classification, parent_id: parentId || null },
   }]);
   return { id: String(account.id) };
+}
+
+async function requestFactoReceivablesPreview(
+  rest: RestClient,
+  profile: Profile,
+  requestId: string,
+  payload: JsonRecord,
+) {
+  const entity = (await selectRows(rest, "accounting_entities?select=id&active=eq.true&order=created_at.asc&limit=1"))[0];
+  if (!entity) throw new HttpError(409, "Falta aplicar la migración contable.");
+  const entityId = String(entity.id);
+  const fromDate = requiredDate(payload.fromDate);
+  const toDate = requiredDate(payload.toDate);
+  if (fromDate > toDate) throw new HttpError(400, "La fecha inicial no puede ser posterior a la fecha final.");
+  if (toDate > new Date().toISOString().slice(0, 10)) throw new HttpError(400, "La lectura Facto no puede terminar en una fecha futura.");
+  const triggerType = optionalText(payload.triggerType, 30) || "manual";
+  if (!["manual", "copilot", "development"].includes(triggerType)) throw new HttpError(400, "Origen de sincronización inválido.");
+  const correlationId = requestIdToUuid(requestId);
+  return asObject(await rpc(rest, "accounting_request_facto_receivables_preview", {
+    p_entity_id: entityId,
+    p_actor_id: profile.id,
+    p_from_date: fromDate,
+    p_to_date: toDate,
+    p_trigger_type: triggerType,
+    p_correlation_id: correlationId,
+  }));
+}
+
+async function getFactoReceivablesSyncRun(rest: RestClient, rawRunId: string) {
+  const runId = requiredUuid(rawRunId);
+  const entity = (await selectRows(rest, "accounting_entities?select=id&active=eq.true&order=created_at.asc&limit=1"))[0];
+  if (!entity) throw new HttpError(409, "Falta aplicar la migración contable.");
+  const run = (await selectRows(rest,
+    `integration_sync_runs?select=*&id=eq.${runId}&entity_id=eq.${entity.id}&provider=eq.facto&resource=eq.receivables&limit=1`,
+  ))[0];
+  if (!run) throw new HttpError(404, "No existe la previsualización Facto solicitada.");
+  const taskId = String(run.task_id || "");
+  const [items, events] = await Promise.all([
+    selectAllRows(rest, `integration_sync_items?select=*&run_id=eq.${runId}&order=action.asc,created_at.asc`),
+    taskId
+      ? selectRows(rest, `agent_task_events?select=id,level,stage,message,metrics,created_at&task_id=eq.${taskId}&order=created_at.asc&limit=250`)
+      : Promise.resolve([]),
+  ]);
+  return { run, items, events };
+}
+
+async function applyFactoReceivablesPreview(
+  rest: RestClient,
+  profile: Profile,
+  requestId: string,
+  payload: JsonRecord,
+) {
+  const runId = requiredUuid(payload.runId);
+  const entity = (await selectRows(rest, "accounting_entities?select=id&active=eq.true&order=created_at.asc&limit=1"))[0];
+  if (!entity) throw new HttpError(409, "Falta aplicar la migración contable.");
+  const run = (await selectRows(rest,
+    `integration_sync_runs?select=id,entity_id,status&provider=eq.facto&resource=eq.receivables&id=eq.${runId}&entity_id=eq.${entity.id}&limit=1`,
+  ))[0];
+  if (!run) throw new HttpError(404, "No existe la previsualización Facto solicitada.");
+  const result = asObject(await rpc(rest, "accounting_apply_facto_receivables_sync_run", {
+    p_run_id: runId,
+    p_actor_id: profile.id,
+    p_correlation_id: requestIdToUuid(requestId),
+  }));
+  return result;
 }
 
 async function syncFacto(rest: RestClient, profile: Profile, requestId: string, payload: JsonRecord) {

@@ -1,4 +1,4 @@
-import { Component, FormEvent, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, FormEvent, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -31,6 +31,7 @@ import {
 } from "lucide-react";
 import {
   closeAccountingPeriod,
+  applyAccountingFactoReceivablesPreview,
   confirmAccountingBankBalance,
   classifyAccountingPayrollTransaction,
   confirmAccountingFactoExcel,
@@ -43,6 +44,7 @@ import {
   exportAccountingExcel,
   exportAccountingPdf,
   getAccountingLedgerCoverage,
+  getAccountingFactoReceivablesSyncRun,
   getAccountingReport,
   postAccountingEntry,
   prepareAccountingLedger,
@@ -50,6 +52,7 @@ import {
   previewAccountingImport,
   proposeAccountingReconciliation,
   refreshAccountingControls,
+  requestAccountingFactoReceivablesPreview,
   reverseAccountingEntry,
   runExactAccountingReconciliations,
   syncAccountingFacto,
@@ -62,6 +65,8 @@ import type {
   AccountingBootstrap,
   AccountingDashboardMonth,
   AccountingFactoSyncResult,
+  AccountingFactoReceivablesSyncDetail,
+  AccountingFactoReceivablesSyncRun,
   AccountingFactoExcelPreview,
   AccountingFactoExcelProfile,
   AccountingExactReconciliationRunResult,
@@ -534,6 +539,9 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
   const [fromDate, setFromDate] = useState("2026-01-01");
   const [toDate, setToDate] = useState(today());
   const [result, setResult] = useState<AccountingFactoSyncResult | null>(null);
+  const [receivablesPreview, setReceivablesPreview] = useState<AccountingFactoReceivablesSyncDetail | null>(null);
+  const [receivablesPreviewLoading, setReceivablesPreviewLoading] = useState(false);
+  const [receivablesError, setReceivablesError] = useState("");
   const [query, setQuery] = useState("");
   const [documentFrom, setDocumentFrom] = useState("2026-01-01");
   const [documentTo, setDocumentTo] = useState(today());
@@ -555,12 +563,50 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
     return matchesQuery && matchesFrom && matchesTo && matchesSource && matchesStatus;
   });
 
+  useEffect(() => {
+    const runId = receivablesPreview?.run.id;
+    const status = receivablesPreview?.run.status;
+    if (!runId || !["pending", "running", "applying"].includes(String(status || ""))) return;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      void getAccountingFactoReceivablesSyncRun(runId).then((detail) => {
+        if (!cancelled) setReceivablesPreview(detail);
+      }).catch(() => undefined);
+    }, 2_500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [receivablesPreview?.run.id, receivablesPreview?.run.status]);
+
   async function syncFactoRange() {
     await runAction("facto", async () => {
       const response = await syncAccountingFacto({ fromDate, toDate });
       setResult(response);
       return response;
     }, "Carga histórica Facto terminada y respaldada en Finanzas.");
+  }
+
+  async function loadReceivablesPreview(runId: string) {
+    setReceivablesError("");
+    setReceivablesPreviewLoading(true);
+    try {
+      setReceivablesPreview(await getAccountingFactoReceivablesSyncRun(runId));
+    } catch (caught) {
+      setReceivablesError(caught instanceof Error ? caught.message : "No se pudo abrir la previsualización Facto.");
+    } finally {
+      setReceivablesPreviewLoading(false);
+    }
+  }
+
+  async function requestReceivablesPreview() {
+    let queuedRunId = "";
+    const queued = await runAction("facto-receivables-preview", async () => {
+      const response = await requestAccountingFactoReceivablesPreview({ fromDate, toDate, triggerType: "manual" });
+      queuedRunId = response.runId;
+      return response;
+    }, "Lectura Facto solicitada en modo previsualización. No se modificó ningún saldo.");
+    if (queued && queuedRunId) await loadReceivablesPreview(queuedRunId);
   }
 
   async function prepareFactoExcel() {
@@ -575,6 +621,13 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
   }
 
   return <div className="accounting-view-stack">
+    <section className="panel accounting-facto-browser-sync">
+      <div className="accounting-panel-heading"><div><p>API primero · navegador complementario</p><h2>Previsualizar cobranza Facto</h2><span>Consulta documentos por API y usa navegación de solo lectura únicamente para saldos, vencimientos y pagos parciales que la API no entrega.</span></div><ShieldCheck size={24} /></div>
+      <div className="accounting-facto-range"><label>Desde<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>Hasta<input type="date" max={today()} value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary-button" disabled={Boolean(busy) || !fromDate || !toDate || fromDate > toDate} type="button" onClick={() => void requestReceivablesPreview()}><ScanSearch className={busy === "facto-receivables-preview" ? "spin" : ""} size={17} /> {busy === "facto-receivables-preview" ? "Solicitando…" : "Preparar previsualización"}</button></div>
+      <div className="accounting-source-note"><ShieldCheck size={16} /><span>La preparación no cambia cuentas por cobrar. Después podrás revisar cada alta, actualización o cierre antes de aplicarlo. Facto permanece en modo solo lectura.</span></div>
+      {receivablesError ? <div className="accounting-local-error"><AlertTriangle size={16} />{receivablesError}</div> : null}
+      <div className="accounting-facto-history accounting-facto-browser-history"><h3>Lecturas de cobranza</h3>{(data.factoReceivableSyncRuns || []).length ? (data.factoReceivableSyncRuns || []).map((run) => <article key={run.id}><div><strong>{date(run.from_date)} al {date(run.to_date)}</strong><span>{dateTime(run.created_at)} · {factoReceivableRunMethod(run)}</span></div><Status value={factoReceivableRunStatus(run.status)} tone={factoReceivableRunTone(run.status)} /><p>{factoReceivableRunSummary(run)}</p><button className="small-command" disabled={receivablesPreviewLoading} type="button" onClick={() => void loadReceivablesPreview(run.id)}>{receivablesPreviewLoading ? "Abriendo…" : "Revisar"}</button></article>) : <Empty icon={ScanSearch} text="Todavía no hay lecturas automáticas de cobranza." />}</div>
+    </section>
     <section className="panel accounting-facto-sync">
       <div className="accounting-panel-heading"><div><p>Integración Facto en solo lectura</p><h2>Carga histórica con respaldo</h2><span>Los documentos y saldos de cobranza individualizados se actualizan desde Facto. Los pagos bancarios conservan su conciliación independiente.</span></div><button className="ghost-button" disabled={Boolean(busy)} type="button" onClick={() => void runAction("foreign-trade", syncAccountingForeignTrade, "Comercio Exterior sincronizado como evidencia; ningún costo fue contabilizado automáticamente.")}><RefreshCw className={busy === "foreign-trade" ? "spin" : ""} size={17} /> Comercio Exterior</button></div>
       <div className="accounting-facto-range"><label>Desde<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>Hasta<input type="date" max={today()} value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary-button" disabled={Boolean(busy) || !fromDate || !toDate || fromDate > toDate} type="button" onClick={() => void syncFactoRange()}><RefreshCw className={busy === "facto" ? "spin" : ""} size={17} /> {busy === "facto" ? "Consolidando…" : "Actualizar ahora"}</button></div>
@@ -605,7 +658,48 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
       {filteredSources.length ? <Table headers={["Fuente", "Fecha", "Documento", "Contraparte", "Total", "Calidad", "Estado"]}>{filteredSources.map((row) => <tr key={row.id}><td data-label="Fuente"><Status value={row.source_type === "FACTO" ? "Facto" : "Comercio Exterior"} tone="neutral" /></td><td data-label="Fecha">{date(row.issued_on)}</td><td data-label="Documento"><strong>{humanize(row.document_type)} {row.folio || ""}</strong></td><td data-label="Contraparte">{row.counterpart_name || "Sin identificar"}<small>{row.counterpart_tax_id || ""}</small></td><td data-label="Total">{clp(row.total_clp)}<small>{row.currency !== "CLP" ? `${money(row.total_amount)} ${row.currency}` : ""}</small></td><td data-label="Calidad"><Status value={humanize(row.data_quality)} tone={row.data_quality === "validated" ? "success" : "review"} /></td><td data-label="Estado">{humanize(row.status)}</td></tr>)}</Table> : <Empty icon={Search} text="No hay documentos que coincidan con estos filtros." />}
     </section>
     {preview ? <FactoExcelPreviewDialog preview={preview} busy={busy} close={() => setPreview(null)} runAction={runAction} /> : null}
+    {receivablesPreview ? <FactoReceivablesPreviewDialog detail={receivablesPreview} busy={busy} close={() => setReceivablesPreview(null)} runAction={runAction} /> : null}
   </div>;
+}
+
+function FactoReceivablesPreviewDialog({ detail, busy, close, runAction }: {
+  detail: AccountingFactoReceivablesSyncDetail;
+  busy: string;
+  close: () => void;
+  runAction: ActionRunner;
+}) {
+  const { run, items, events } = detail;
+  const counts = items.reduce<Record<string, number>>((result, item) => {
+    result[item.action] = (result[item.action] || 0) + 1;
+    return result;
+  }, {});
+  const blockers = (counts.ambiguous || 0) + (counts.invalid || 0);
+  const coverageComplete = run.coverage.complete === true;
+  const canApply = run.status === "preview_ready" && coverageComplete && blockers === 0 && items.length > 0;
+
+  async function applyPreview() {
+    const applied = await runAction(
+      "apply-facto-receivables",
+      () => applyAccountingFactoReceivablesPreview(run.id),
+      "Cobranza Facto actualizada desde la previsualización aprobada. Bancos y contabilidad no fueron modificados.",
+    );
+    if (applied) close();
+  }
+
+  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide accounting-facto-preview-modal"><div className="accounting-modal-heading"><div><p>Revisión humana obligatoria</p><h2>Previsualización de cobranza Facto</h2><span>{date(run.from_date)} al {date(run.to_date)} · {factoReceivableRunStatus(run.status)}</span></div><button className="icon-button" aria-label="Cerrar" type="button" onClick={close}><X /></button></div>
+    <div className="accounting-preview-kpis"><span><strong>{items.length}</strong>Documentos</span><span className="positive"><strong>{counts.create || 0}</strong>Nuevos</span><span><strong>{counts.update || 0}</strong>Actualizan</span><span><strong>{counts.close || 0}</strong>Pagados</span><span className={blockers ? "warning" : "positive"}><strong>{blockers}</strong>Por revisar</span></div>
+    <div className="accounting-source-note"><ShieldCheck size={16} /><span>Esta lectura separa documento, pago, banco y asiento. Al aprobar solo se actualiza el saldo operativo informado por Facto; no se inventa un abono ni se contabiliza caja.</span></div>
+    {!coverageComplete ? <div className="accounting-review-note"><AlertTriangle size={16} /><span>{run.error_message || "La extracción todavía está en curso o quedó incompleta. No puede aplicarse."}</span></div> : null}
+    {blockers ? <div className="accounting-review-note"><AlertTriangle size={16} /><span>Hay {blockers} documento(s) ambiguo(s) o inválido(s). Ningún cambio puede aplicarse hasta resolverlos en una nueva lectura.</span></div> : null}
+    {items.length ? <Table headers={["Acción", "Documento", "Cliente", "Emisión / vencimiento", "Original", "Saldo anterior", "Saldo Facto", "Validación"]}>{items.map((item) => {
+      const next = item.normalized_payload;
+      const previous = item.previous_payload;
+      const previousBalance = previous.facto_reported_balance_clp ?? previous.crm_balance_clp;
+      return <tr key={item.id}><td data-label="Acción"><Status value={factoReceivableAction(item.action)} tone={factoReceivableActionTone(item.action)} /></td><td data-label="Documento"><strong>{String(next.folio || "Sin folio")}</strong><small>{humanize(String(next.document_type || "documento"))}</small></td><td data-label="Cliente">{String(next.customer_name || "Sin identificar")}<small>{String(next.customer_tax_id || "")}</small></td><td data-label="Emisión / vencimiento">{date(String(next.issued_on || ""))}<small>{next.due_on ? `Vence ${date(String(next.due_on))}` : "Sin vencimiento informado"}</small></td><td data-label="Original">{clp(number(next.original_amount_clp))}</td><td data-label="Saldo anterior">{previousBalance === null || previousBalance === undefined ? "—" : clp(number(previousBalance))}</td><td data-label="Saldo Facto"><strong>{clp(number(next.outstanding_amount_clp))}</strong>{number(next.reported_paid_amount_clp) > 0 ? <small>Pagado informado {clp(number(next.reported_paid_amount_clp))}</small> : null}</td><td data-label="Validación">{item.validation_errors.length ? <Status value={item.validation_errors.map(humanize).join(" · ")} tone="danger" /> : <Status value={item.match_confidence === "exact" ? "Coincidencia exacta" : "Verificado"} tone="success" />}</td></tr>;
+    })}</Table> : <Empty icon={run.status === "pending" || run.status === "running" ? LoaderCircle : ScanSearch} text={run.status === "pending" || run.status === "running" ? "El worker local todavía está consultando Facto." : "La lectura no entregó documentos aplicables."} />}
+    {events.length ? <div className="accounting-sync-events"><h3>Trazabilidad de la lectura</h3>{events.map((event) => <p key={event.id}><span>{dateTime(event.created_at)}</span><strong>{humanize(event.stage)}</strong>{event.message}</p>)}</div> : null}
+    <div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cerrar</button><button className="primary-button" disabled={!canApply || Boolean(busy)} type="button" onClick={() => void applyPreview()}>{busy === "apply-facto-receivables" ? "Aplicando…" : "Aprobar y actualizar cobranza"}</button></div>
+  </section></div>;
 }
 
 function FactoExcelPreviewDialog({ preview, busy, close, runAction }: { preview: AccountingFactoExcelPreview; busy: string; close: () => void; runAction: ActionRunner }) {
@@ -1108,6 +1202,12 @@ function agingBucket(due: string | null) { if (!due) return "current"; const day
 function agingLabel(due: string | null) { const bucket = agingBucket(due); return bucket === "current" ? "Por vencer" : `${bucket} días`; }
 function periodLabel(value: string) { return new Date(`${value}T12:00:00`).toLocaleDateString("es-CL", { month: "long", year: "numeric" }); }
 function reportTitle(kind: AccountingReport["kind"]) { return ({ balance8: "Balance de 8 columnas", trial: "Balance de comprobación y saldos", income: "Estado de Resultados", cashflow: "Flujo de Caja bancario", journal: "Libro Diario", ledger: "Libro Mayor" } as Record<string, string>)[kind]; }
+function factoReceivableRunStatus(value: AccountingFactoReceivablesSyncRun["status"]) { return ({ pending: "En espera", running: "Leyendo Facto", preview_ready: "Lista para revisar", applying: "Aplicando", completed: "Aplicada", partial: "Lectura parcial", failed: "Fallida", cancelled: "Cancelada" } as Record<string, string>)[value] || humanize(value); }
+function factoReceivableRunTone(value: AccountingFactoReceivablesSyncRun["status"]): "success" | "review" | "danger" | "neutral" { if (["preview_ready", "completed"].includes(value)) return "success"; if (["failed", "partial", "cancelled"].includes(value)) return "danger"; return value === "pending" ? "neutral" : "review"; }
+function factoReceivableRunMethod(run: AccountingFactoReceivablesSyncRun) { return run.sync_method === "api_browser" ? "API + navegación segura" : humanize(run.sync_method); }
+function factoReceivableRunSummary(run: AccountingFactoReceivablesSyncRun) { const actions = run.summary.actions && typeof run.summary.actions === "object" ? run.summary.actions as Record<string, unknown> : {}; return `${number(run.read_count)} documentos · ${number(actions.create)} nuevos · ${number(actions.update)} actualizan · ${number(actions.close)} pagados · ${number(run.summary.overdue_documents)} vencidos · ${number(actions.ambiguous) + number(actions.invalid)} por revisar`; }
+function factoReceivableAction(value: string) { return ({ create: "Nuevo", update: "Actualizar", close: "Marcar pagado", unchanged: "Sin cambios", ambiguous: "Coincidencia dudosa", invalid: "Datos inválidos" } as Record<string, string>)[value] || humanize(value); }
+function factoReceivableActionTone(value: string): "success" | "review" | "danger" | "neutral" { if (["create", "update", "close"].includes(value)) return "success"; if (["ambiguous", "invalid"].includes(value)) return "danger"; return "neutral"; }
 function factoProfileLabel(value: string) { return factoExcelProfiles.find((item) => item.id === value)?.label || humanize(value); }
 function factoPreviewColumns(profile: AccountingFactoExcelProfile): { headers: string[]; values: (data: Record<string, unknown>) => React.ReactNode[] } {
   if (profile === "facto_unpaid_documents") return {
