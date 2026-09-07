@@ -218,17 +218,28 @@ async function bootstrap(rest: RestClient, profile: Profile) {
   const latestFactoCollections = analyzeFactoReceivablesSnapshot(
     asObject(asObject(factoIntegrationRows[0]?.payload).collections),
   );
+  const integrationUpdatedAt = dateTimeValue(factoIntegrationRows[0]?.updated_at);
+  const rowsStampedByLatestSnapshot = integrationUpdatedAt
+    ? receivables.filter((row) => dateTimeValue(row.reported_at) === integrationUpdatedAt).length
+    : 0;
+  const invalidPartialSnapshotClosure = latestFactoCollections.detailsVerified
+    && !latestFactoCollections.portfolioComplete
+    && rowsStampedByLatestSnapshot > latestFactoCollections.details.length;
   const summary = {
     ...asObject(rawSummary),
     bank_clp: bankReality.availableClp,
     bank_usd_clp: bankReality.availableUsdClp,
     bank_balance_basis: bankReality.basis,
+    receivables_data_quality: invalidPartialSnapshotClosure
+      ? "invalid_partial_snapshot"
+      : latestFactoCollections.authoritative ? "verified_full_snapshot" : "operational",
+    receivables_suppressed: invalidPartialSnapshotClosure,
+    receivables_snapshot_rows: rowsStampedByLatestSnapshot,
     ...(latestFactoCollections.authoritative ? {
       receivables: latestFactoCollections.amountClp,
       receivables_overdue: latestFactoCollections.overdueClp,
     } : {}),
   };
-  const integrationUpdatedAt = dateTimeValue(factoIntegrationRows[0]?.updated_at);
   const accountingSyncedAt = factoSyncRuns
     .map((run) => dateTimeValue(run.completed_at))
     .find(Boolean) || null;
@@ -1043,7 +1054,7 @@ async function syncFactoReportedBalances(
   if (!snapshotRecord) return { updated: 0, cleared: 0, skipped: 0 };
   const collections = asObject(asObject(snapshotRecord.payload).collections);
   const portfolio = analyzeFactoReceivablesSnapshot(collections);
-  if (!portfolio.authoritative) return { updated: 0, cleared: 0, skipped: 0 };
+  if (!portfolio.detailsVerified && !portfolio.canCloseMissing) return { updated: 0, cleared: 0, skipped: 0 };
   const details = portfolio.details;
   if (!details.length && !portfolio.canCloseMissing) return { updated: 0, cleared: 0, skipped: 0 };
 
@@ -1134,6 +1145,8 @@ async function syncFactoReportedBalances(
         reported_at: reportedAt,
         snapshot_as_of: portfolio.asOf,
         snapshot_amount_clp: portfolio.amountClp,
+        portfolio_authoritative: portfolio.authoritative,
+        details_verified: portfolio.detailsVerified,
         complete_portfolio: portfolio.canCloseMissing,
         policy: "Actualiza la cartera operacional Facto sin modificar abonos ni conciliaciones bancarias.",
       },
@@ -1423,6 +1436,34 @@ async function previewFactoExcel(rest: RestClient, profile: Profile, payload: Js
   const bytes = await downloadStorage(rest, storagePath);
   const fileHash = await sha256Bytes(bytes);
   const preview = await parseFactoExcelWorkbook(bytes, requestedProfile);
+  const today = new Date().toISOString().slice(0, 10);
+  let portfolioSummary: JsonRecord = {};
+  if (preview.profile === "facto_unpaid_documents") {
+    const coverageTo = payload.toDate ? requiredDate(payload.toDate) : today;
+    const coverageFrom = payload.fromDate ? requiredDate(payload.fromDate) : `${coverageTo.slice(0, 4)}-01-01`;
+    if (coverageFrom > coverageTo || coverageTo > today) {
+      throw new HttpError(400, "El período del respaldo Facto es inválido.");
+    }
+    const outOfRange = preview.rows.filter((row) => {
+      const issuedOn = String(asObject(row.data).issued_on || "");
+      return issuedOn && (issuedOn < coverageFrom || issuedOn > coverageTo);
+    });
+    if (outOfRange.length) {
+      throw new HttpError(409, `El archivo contiene ${outOfRange.length} documento(s) fuera del período seleccionado.`);
+    }
+    const receivableRows = preview.rows.filter((row) => factoOpenBalanceKind(asObject(row.data)) === "receivable");
+    const payableRows = preview.rows.filter((row) => factoOpenBalanceKind(asObject(row.data)) === "payable");
+    portfolioSummary = {
+      portfolio_complete: true,
+      coverage_from: coverageFrom,
+      coverage_to: coverageTo,
+      receivables_documents: receivableRows.length,
+      receivables_total_clp: receivableRows.reduce((sum, row) => sum + numeric(asObject(row.data).reported_balance_clp), 0),
+      payables_documents: payableRows.length,
+      payables_total_clp: payableRows.reduce((sum, row) => sum + numeric(asObject(row.data).reported_balance_clp), 0),
+      evidence_sha256: fileHash,
+    };
+  }
   const existingBatch = await selectRows(rest,
     `accounting_import_batches?select=id,status,created_at&entity_id=eq.${entityId}&source_type=eq.${preview.source_type}&file_hash=eq.${fileHash}&limit=1`,
   );
@@ -1444,7 +1485,7 @@ async function previewFactoExcel(rest: RestClient, profile: Profile, payload: Js
     new_count: valid.length,
     duplicate_count: duplicates.length,
     error_count: invalid.length,
-    summary: { ...preview.summary, warnings: preview.warnings, evidence_kind: "facto_excel" },
+    summary: { ...preview.summary, ...portfolioSummary, warnings: preview.warnings, evidence_kind: "facto_excel" },
     imported_by: profile.id,
   }]))[0];
   await insertRows(rest, "accounting_import_rows", preview.rows.map((row) => ({
@@ -1459,7 +1500,7 @@ async function previewFactoExcel(rest: RestClient, profile: Profile, payload: Js
     batch,
     profile: preview.profile,
     warnings: preview.warnings,
-    summary: { total: preview.rows.length, new: valid.length, duplicates: duplicates.length, errors: invalid.length, ...preview.summary },
+    summary: { total: preview.rows.length, new: valid.length, duplicates: duplicates.length, errors: invalid.length, ...preview.summary, ...portfolioSummary },
     rows: preview.rows.slice(0, 500),
   };
 }
@@ -1480,28 +1521,41 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
   const sourceDocuments = await selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO`);
   const receivables = await selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}`);
   const payables = await selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}`);
+  const batchSummary = asObject(batch.summary);
+  const portfolioAsOf = String(batchSummary.coverage_to || new Date().toISOString().slice(0, 10));
   const receivableBySource = new Map(receivables.map((row) => [String(row.source_document_id), row]));
   const payableBySource = new Map(payables.map((row) => [String(row.source_document_id), row]));
   let imported = 0;
   let linked = 0;
   let unmatched = 0;
   let duplicates = 0;
+  let adjustmentDocuments = 0;
   const duplicateImportRowIds: string[] = [];
   const processedImportRowIds: string[] = [];
+  const outstandingReceivableIds = new Set<string>();
+  const outstandingPayableIds = new Set<string>();
 
   if (String(batch.source_type) === "COLLECTIONS") {
     for (const row of importRows) {
       const data = asObject(row.normalized_data);
+      const balanceKind = factoOpenBalanceKind(data);
+      if (!balanceKind) {
+        adjustmentDocuments += 1;
+        imported += 1;
+        processedImportRowIds.push(String(row.id));
+        continue;
+      }
+      const direction = balanceKind === "receivable" ? "sale" : "purchase";
       let source = findFactoSourceDocument(sourceDocuments, data);
       let target = source
-        ? String(data.direction) === "sale" ? receivableBySource.get(String(source.id)) : payableBySource.get(String(source.id))
+        ? direction === "sale" ? receivableBySource.get(String(source.id)) : payableBySource.get(String(source.id))
         : null;
-      if (!target && ["sale", "purchase"].includes(String(data.direction || ""))) {
+      if (!target) {
         const created = await ensureFactoWorkbookDocument(rest, entityId, batch, row, data);
         source = created.source;
         target = created.target;
         sourceDocuments.push(source);
-        if (String(data.direction) === "sale") receivableBySource.set(String(source.id), target);
+        if (direction === "sale") receivableBySource.set(String(source.id), target);
         else payableBySource.set(String(source.id), target);
       }
       if (!target) {
@@ -1515,10 +1569,10 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
         ? "paid"
         : reportedPaid > 0
         ? "partial"
-        : dueOn && dueOn < new Date().toISOString().slice(0, 10)
+        : dueOn && dueOn < portfolioAsOf
         ? "overdue"
         : "pending";
-      const table = String(data.direction) === "sale" ? "accounting_receivables" : "accounting_payables";
+      const table = direction === "sale" ? "accounting_receivables" : "accounting_payables";
       await patchRows(rest, table, `id=eq.${target.id}`, {
         reported_paid_amount_clp: reportedPaid,
         reported_balance_clp: reportedBalance,
@@ -1529,6 +1583,8 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
       });
       imported += 1;
       linked += 1;
+      if (balanceKind === "receivable") outstandingReceivableIds.add(String(target.id));
+      else outstandingPayableIds.add(String(target.id));
       processedImportRowIds.push(String(row.id));
     }
   } else if (String(batch.source_type) === "CHECKS") {
@@ -1595,12 +1651,39 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
 
   const invalid = Number(batch.error_count || 0);
   const status = invalid || unmatched ? "partial" : "imported";
+  const completeOutstandingPortfolio = String(batch.source_type) === "COLLECTIONS"
+    && String(batch.import_profile) === "facto_unpaid_documents"
+    && batchSummary.portfolio_complete === true
+    && invalid === 0
+    && unmatched === 0;
+  let portfolioSnapshot: JsonRecord | null = null;
+  if (completeOutstandingPortfolio) {
+    const closed = asObject(await rpc(rest, "accounting_apply_facto_outstanding_snapshot", {
+      p_entity_id: entityId,
+      p_batch_id: batchId,
+      p_as_of: portfolioAsOf,
+      p_receivable_ids: [...outstandingReceivableIds],
+      p_payable_ids: [...outstandingPayableIds],
+    }));
+    const published = await publishFactoExcelReceivablesSnapshot(
+      rest,
+      entityId,
+      batch,
+      profile.id,
+      portfolioAsOf,
+      [...outstandingReceivableIds],
+      sourceDocuments,
+    );
+    portfolioSnapshot = { ...closed, ...published };
+  }
   const finalSummary = {
-    ...asObject(batch.summary),
+    ...batchSummary,
     imported,
     linked,
     unmatched,
     duplicates,
+    adjustment_documents: adjustmentDocuments,
+    portfolio_snapshot: portfolioSnapshot,
     confirmed_at: new Date().toISOString(),
   };
   await patchRows(rest, "accounting_import_batches", `id=eq.${batchId}`, {
@@ -1627,10 +1710,145 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
     entity_type: "import_batch",
     entity_id_text: batchId,
     correlation_id: requestIdToUuid(requestId),
-    new_value: { source_type: batch.source_type, import_profile: batch.import_profile, imported, linked, unmatched, duplicates, invalid },
+    new_value: { source_type: batch.source_type, import_profile: batch.import_profile, imported, linked, unmatched, duplicates, invalid, adjustment_documents: adjustmentDocuments, portfolio_snapshot: portfolioSnapshot },
   }]);
   await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });
-  return { imported, linked, unmatched, duplicates, invalid, status, summary: finalSummary };
+  return { imported, linked, unmatched, duplicates, invalid, status, summary: finalSummary, portfolioSnapshot };
+}
+
+async function publishFactoExcelReceivablesSnapshot(
+  rest: RestClient,
+  entityId: string,
+  batch: JsonRecord,
+  actorId: string,
+  asOf: string,
+  receivableIds: string[],
+  sourceDocuments: JsonRecord[],
+) {
+  const summary = asObject(batch.summary);
+  const rows = receivableIds.length
+    ? await selectAllRows(rest, `accounting_receivables?select=*&id=in.(${receivableIds.join(",")})`)
+    : [];
+  const openRows = rows.filter((row) => numeric(row.reported_balance_clp ?? row.balance_clp) > 0.5);
+  const expectedDocuments = Math.trunc(numeric(summary.receivables_documents));
+  const expectedAmount = numeric(summary.receivables_total_clp);
+  const amountClp = openRows.reduce((sum, row) => sum + numeric(row.reported_balance_clp ?? row.balance_clp), 0);
+  if (openRows.length !== expectedDocuments || Math.abs(amountClp - expectedAmount) > 0.5) {
+    throw new HttpError(409, "El detalle de cuentas por cobrar no cuadra con el total del Excel Facto.");
+  }
+
+  const sourceById = new Map(sourceDocuments.map((row) => [String(row.id), row]));
+  const asOfTime = Date.parse(`${asOf}T00:00:00Z`);
+  const next30 = Number.isFinite(asOfTime) ? new Date(asOfTime + 30 * 86400000).toISOString().slice(0, 10) : asOf;
+  const details = openRows
+    .map((row) => {
+      const source = sourceById.get(String(row.source_document_id)) || {};
+      const dueOn = String(row.due_on || "");
+      const overdue = Boolean(dueOn && dueOn < asOf);
+      return {
+        document_id: source.external_id || row.source_document_id,
+        document_number: row.document_number,
+        document_type: source.document_type || "sales_invoice",
+        customer: row.customer_name,
+        tax_id: row.customer_tax_id,
+        issued_on: row.issued_on,
+        due_on: row.due_on,
+        original_amount: numeric(row.original_amount_clp),
+        observed_amount: numeric(row.reported_balance_clp ?? row.balance_clp),
+        reported_paid_amount: numeric(row.reported_paid_amount_clp),
+        currency: row.currency || "CLP",
+        days_overdue: overdue ? Math.max(0, daysBetween(asOf, dueOn)) : 0,
+        balance_source: "facto_excel",
+      };
+    })
+    .sort((left, right) => String(left.issued_on || "").localeCompare(String(right.issued_on || "")) || String(left.document_number || "").localeCompare(String(right.document_number || "")));
+  const customerMap = new Map<string, { name: string; tax_id: string | null; amount: number; overdue: number; due_next_30: number; documents: number; max_days_overdue: number; folios: string[] }>();
+  for (const detail of details) {
+    const key = `${normalizeTaxForMatch(detail.tax_id)}|${normalizeText(detail.customer)}`;
+    const customer = customerMap.get(key) || {
+      name: String(detail.customer || "Cliente no identificado"),
+      tax_id: detail.tax_id ? String(detail.tax_id) : null,
+      amount: 0,
+      overdue: 0,
+      due_next_30: 0,
+      documents: 0,
+      max_days_overdue: 0,
+      folios: [],
+    };
+    customer.amount += detail.observed_amount;
+    customer.documents += 1;
+    customer.folios.push(String(detail.document_number || ""));
+    if (detail.due_on && String(detail.due_on) < asOf) customer.overdue += detail.observed_amount;
+    if (detail.due_on && String(detail.due_on) >= asOf && String(detail.due_on) <= next30) customer.due_next_30 += detail.observed_amount;
+    customer.max_days_overdue = Math.max(customer.max_days_overdue, detail.days_overdue);
+    customerMap.set(key, customer);
+  }
+  const overdueDetails = details.filter((detail) => detail.due_on && String(detail.due_on) < asOf);
+  const collections = {
+    mode: "facto_excel",
+    source: `Excel Facto respaldado: ${String(batch.file_name || batch.id)}`,
+    authoritative: true,
+    receivables_available: true,
+    portfolio_complete: true,
+    payments_available: false,
+    as_of: asOf,
+    coverage_from: summary.coverage_from || `${asOf.slice(0, 4)}-01-01`,
+    reviewed_documents: expectedDocuments,
+    observed_amount: amountClp,
+    overdue_amount: overdueDetails.reduce((sum, detail) => sum + detail.observed_amount, 0),
+    due_next_30: details.filter((detail) => detail.due_on && String(detail.due_on) >= asOf && String(detail.due_on) <= next30).reduce((sum, detail) => sum + detail.observed_amount, 0),
+    documents: details.length,
+    overdue_documents: overdueDetails.length,
+    payments_registered: 0,
+    payment_count: 0,
+    classification_status: "complete",
+    unclassified_documents: 0,
+    aging: [],
+    customers: [...customerMap.values()].sort((left, right) => right.amount - left.amount),
+    payments_by_month: [],
+    documents_detail: details,
+    source_batch_id: batch.id,
+    source_file_sha256: summary.evidence_sha256 || batch.file_hash,
+    disclaimer: "Cartera completa respaldada por Excel Facto; no representa conciliación bancaria ni asiento contable.",
+  };
+  const latest = (await selectRows(rest, "integration_records?select=id,payload,external_id&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"))[0];
+  const financialPayload = { ...asObject(latest?.payload), receivables_available: true, collections };
+  const recordData = {
+    payload: financialPayload,
+    payload_hash: await sha256Text(JSON.stringify(financialPayload)),
+    observed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  const record = latest
+    ? (await patchRows(rest, "integration_records", `id=eq.${latest.id}`, recordData))[0]
+    : (await insertRows(rest, "integration_records", [{
+      provider: "facto",
+      resource: "financial_snapshots",
+      external_id: `facto-financial-${entityId}`,
+      ...recordData,
+    }]))[0];
+  await insertRows(rest, "accounting_audit_events", [{
+    entity_id: entityId,
+    actor_id: actorId,
+    action: "facto.receivables_excel_snapshot_published",
+    entity_type: "integration_record",
+    entity_id_text: String(record?.id || latest?.id || ""),
+    reason: "El Excel Facto completo y cuadrado reemplazó únicamente la foto operativa de cuentas por cobrar.",
+    new_value: {
+      batch_id: batch.id,
+      file_name: batch.file_name,
+      as_of: asOf,
+      documents: details.length,
+      amount_clp: amountClp,
+      evidence_sha256: summary.evidence_sha256 || batch.file_hash,
+    },
+  }]);
+  return {
+    published: true,
+    integration_record_id: record?.id || latest?.id || null,
+    receivables_documents: details.length,
+    receivables_total_clp: amountClp,
+  };
 }
 
 async function consolidateFactoCheckRows(
@@ -3902,8 +4120,9 @@ async function applyFactoCurrentState(rest: RestClient, profile: Profile, payloa
 
   for (const importRow of importRows) {
     const data = asObject(importRow.normalized_data);
-    const direction = String(data.direction || "");
-    if (!['sale', 'purchase'].includes(direction)) continue;
+    const balanceKind = factoOpenBalanceKind(data);
+    if (!balanceKind) continue;
+    const direction = balanceKind === "receivable" ? "sale" : "purchase";
     let source = findFactoSourceDocument(sourceDocuments, data);
     let target = source
       ? direction === "sale" ? receivableBySource.get(String(source.id)) : payableBySource.get(String(source.id))
@@ -3916,7 +4135,7 @@ async function applyFactoCurrentState(rest: RestClient, profile: Profile, payloa
       if (direction === "sale") receivableBySource.set(String(source.id), target);
       else payableBySource.set(String(source.id), target);
     }
-    if (!target) {
+    if (!target || !source) {
       unmatchedRows += 1;
       continue;
     }
@@ -4116,11 +4335,11 @@ async function report(rest: RestClient, url: URL) {
   const to = requiredDate(url.searchParams.get("to"));
   const kind = url.searchParams.get("kind") || "balance8";
   if (kind === "balance8") {
-    const rows = await rpc(rest, "accounting_balance_eight_columns", { p_entity_id: entityId, p_from: from, p_to: to });
+    const rows = await rpc(rest, "accounting_balance_eight_columns", { p_entity_id: entityId, p_from: from, p_to: to }) as unknown[];
     const amountKeys = ["debits", "credits", "debit_balance", "credit_balance", "assets", "liabilities", "losses", "gains"];
     const totals = Object.fromEntries(amountKeys.map((key) => [
       key,
-      rows.reduce((sum, row) => sum + numericValue(asObject(row)[key]), 0),
+      rows.reduce<number>((sum, row) => sum + numericValue(asObject(row)[key]), 0),
     ]));
     const debitCreditDifference = numeric(totals.debits) - numeric(totals.credits);
     const balanceDifference = numeric(totals.debit_balance) - numeric(totals.credit_balance);
@@ -4348,6 +4567,18 @@ function findFactoSourceDocument(documents: JsonRecord[], data: JsonRecord) {
     })
     .sort((a, b) => b.score - a.score);
   return candidates[0]?.row || null;
+}
+
+function factoOpenBalanceKind(data: JsonRecord): "receivable" | "payable" | null {
+  const declared = String(data.balance_kind || "");
+  if (declared === "receivable" || declared === "payable") return declared;
+  if (declared === "adjustment" || declared === "informational") return null;
+  const documentType = String(data.document_type || "").toLowerCase();
+  if (documentType.endsWith("_credit_note") || documentType.endsWith("_receipt") || documentType.endsWith("_exempt_receipt")) return null;
+  const direction = String(data.direction || "");
+  if (direction === "sale") return "receivable";
+  if (direction === "purchase") return "payable";
+  return null;
 }
 
 async function ensureFactoWorkbookDocument(

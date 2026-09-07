@@ -114,8 +114,11 @@ assert.match(edgeSource, /facto\.reported_balances_synced/);
 assert.match(edgeSource, /analyzeFactoReceivablesSnapshot/);
 assert.match(factoLiveReceivablesMigration, /facto\.live_receivables_snapshot_applied/);
 assert.match(factoLiveReceivablesMigration, /bank_allocations_unchanged/);
+assert.match(factoLiveReceivablesMigration, /portfolio_complete/);
+assert.match(factoLiveReceivablesMigration, /v_detail_count <> v_document_count/);
+assert.doesNotMatch(factoLiveReceivablesMigration, /v_with_pdf >= v_examined/);
 
-const completeFactoPortfolio = analyzeFactoReceivablesSnapshot({
+const partialFactoPortfolio = analyzeFactoReceivablesSnapshot({
   authoritative: true,
   mode: "facto_document_pdf",
   as_of: "2026-09-03",
@@ -130,11 +133,62 @@ const completeFactoPortfolio = analyzeFactoReceivablesSnapshot({
     documents_with_pdf: 418,
     documents_with_balance: 4,
   },
-  documents_detail: [{ document_id: "503" }, { document_id: "706" }, { document_id: "710" }, { document_id: "826" }],
+  documents_detail: [
+    { document_id: "503", observed_amount: 19837, balance_source: "facto_document_pdf" },
+    { document_id: "706", observed_amount: 225624, balance_source: "facto_document_pdf" },
+    { document_id: "710", observed_amount: 91830, balance_source: "facto_document_pdf" },
+    { document_id: "826", observed_amount: 137110, balance_source: "facto_document_pdf" },
+  ],
 });
+assert.equal(partialFactoPortfolio.authoritative, false);
+assert.equal(partialFactoPortfolio.detailsVerified, true);
+assert.equal(partialFactoPortfolio.canCloseMissing, false);
+assert.equal(partialFactoPortfolio.amountClp, 474401);
+assert.equal(partialFactoPortfolio.documentCount, 4);
+const completeFactoPortfolio = analyzeFactoReceivablesSnapshot({
+  authoritative: true,
+  portfolio_complete: true,
+  mode: "facto_receivables",
+  as_of: "2026-09-07",
+  observed_amount: 11287934,
+  overdue_amount: 11287934,
+  documents: 2,
+  documents_detail: [
+    { document_id: "710", observed_amount: 91830, balance_source: "facto_receivables" },
+    { document_id: "820", observed_amount: 11196104, balance_source: "facto_receivables" },
+  ],
+});
+assert.equal(completeFactoPortfolio.authoritative, true);
+assert.equal(completeFactoPortfolio.portfolioComplete, true);
 assert.equal(completeFactoPortfolio.canCloseMissing, true);
-assert.equal(completeFactoPortfolio.amountClp, 474401);
-assert.equal(completeFactoPortfolio.documentCount, 4);
+const factoExcelBalances = [19837, 7062, 109480, 100000, 1, 225624, 91830, 1791207, 321885, 1, 545050, 3374177, 473207, 3404824, 378524, 308115, 137110];
+const completeFactoExcelPortfolio = analyzeFactoReceivablesSnapshot({
+  authoritative: true,
+  portfolio_complete: true,
+  mode: "facto_excel",
+  as_of: "2026-09-07",
+  observed_amount: 11287934,
+  documents: factoExcelBalances.length,
+  documents_detail: factoExcelBalances.map((amount, index) => ({
+    document_id: `facto-excel-${index + 1}`,
+    observed_amount: amount,
+    balance_source: "facto_excel",
+  })),
+});
+assert.equal(completeFactoExcelPortfolio.authoritative, true);
+assert.equal(completeFactoExcelPortfolio.documentCount, 17);
+assert.equal(completeFactoExcelPortfolio.amountClp, 11287934);
+assert.equal(analyzeFactoReceivablesSnapshot({
+  authoritative: true,
+  portfolio_complete: true,
+  mode: "facto_receivables",
+  observed_amount: 200,
+  documents: 2,
+  documents_detail: [
+    { document_id: "duplicated", observed_amount: 100, balance_source: "facto_receivables" },
+    { document_id: "duplicated", observed_amount: 100, balance_source: "facto_receivables" },
+  ],
+}).canCloseMissing, false);
 assert.equal(analyzeFactoReceivablesSnapshot({
   authoritative: true,
   mode: "facto_document_pdf",
@@ -164,12 +218,18 @@ assert.match(edgeSource, /bank-reconciliation:/);
 assert.match(factoCheckSettlementMigration, /source_business_key/);
 assert.match(factoCheckSettlementMigration, /accounting_reconciliation_check_target_uidx/);
 assert.match(factoOutstandingSnapshotMigration, /accounting_apply_facto_outstanding_snapshot/);
+assert.match(factoOutstandingSnapshotMigration, /portfolio_complete/);
+assert.match(factoOutstandingSnapshotMigration, /coverage_from/);
 assert.match(factoOutstandingSnapshotMigration, /No crea evidencia ni conciliaciones bancarias/);
 assert.match(edgeSource, /bank-payroll-settlement:/);
 assert.match(edgeSource, /bank-internal-transfer:/);
 assert.match(edgeSource, /verified_payroll_description/);
 assert.match(edgeSource, /exact_own_company_pair/);
 assert.match(edgeSource, /ensureFactoWorkbookDocument/);
+assert.match(edgeSource, /publishFactoExcelReceivablesSnapshot/);
+assert.match(edgeSource, /factoOpenBalanceKind/);
+assert.match(factoExcelParserSource, /balance_kind/);
+assert.match(factoExcelParserSource, /adjustment_documents/);
 assert.match(edgeSource, /facto-workbook:/);
 assert.match(edgeSource, /batch\.status === "imported"/);
 assert.match(edgeSource, /bank-transaction:/);
@@ -796,6 +856,43 @@ const receivable = await db.query(`
   returning id
 `, [entityId, sourceDocumentId]);
 const receivableId = receivable.rows[0].id;
+const snapshotScopeDocuments = await db.query(`
+  with sources as (
+    insert into public.accounting_source_documents(
+      entity_id,source_type,source_key,document_type,folio,counterpart_name,issued_on,total_amount,total_clp
+    ) values
+      ($1,'FACTO','test:invoice:scope-2026','sales_invoice','scope-2026','Cliente cerrado','2026-02-10',25000,25000),
+      ($1,'FACTO','test:invoice:scope-2025','sales_invoice','scope-2025','Cliente histórico','2025-12-15',30000,30000)
+    returning id,folio,counterpart_name,issued_on,total_clp
+  )
+  insert into public.accounting_receivables(
+    entity_id,source_document_id,customer_name,document_number,issued_on,original_amount,original_amount_clp,status
+  )
+  select $1,id,counterpart_name,folio,issued_on,total_clp,total_clp,
+    case when issued_on < date '2026-01-01' then 'written_off' else 'pending' end
+  from sources
+  returning id,document_number
+`, [entityId]);
+const scoped2026ReceivableId = snapshotScopeDocuments.rows.find((row) => row.document_number === "scope-2026").id;
+const scoped2025ReceivableId = snapshotScopeDocuments.rows.find((row) => row.document_number === "scope-2025").id;
+const outstandingSnapshotBatch = await db.query(`
+  insert into public.accounting_import_batches(
+    entity_id,source_type,import_profile,status,file_name,file_hash,row_count,new_count,summary,imported_by
+  ) values ($1,'COLLECTIONS','facto_unpaid_documents','previewed','documento.xlsx','snapshot-hash',1,1,
+    '{"portfolio_complete":true,"coverage_from":"2026-01-01","coverage_to":"2026-09-07"}'::jsonb,$2)
+  returning id
+`, [entityId, adminId]);
+const scopedSnapshot = await db.query(`
+  select public.accounting_apply_facto_outstanding_snapshot($1,$2,'2026-09-07',array[$3]::uuid[],'{}'::uuid[]) value
+`, [entityId, outstandingSnapshotBatch.rows[0].id, receivableId]);
+assert.equal(Number(scopedSnapshot.rows[0].value.receivables_closed), 1);
+const scopedBalances = await db.query(`
+  select id,reported_balance_clp,status from public.accounting_receivables where id in ($1,$2) order by id
+`, [scoped2026ReceivableId, scoped2025ReceivableId]);
+assert.equal(Number(scopedBalances.rows.find((row) => row.id === scoped2026ReceivableId).reported_balance_clp), 0);
+assert.equal(scopedBalances.rows.find((row) => row.id === scoped2025ReceivableId).reported_balance_clp, null);
+await db.query(`delete from public.accounting_receivables where id in ($1,$2)`, [scoped2026ReceivableId, scoped2025ReceivableId]);
+await db.query(`delete from public.accounting_source_documents where source_key in ('test:invoice:scope-2026','test:invoice:scope-2025')`);
 const paymentBatch = await db.query(`
   insert into public.accounting_import_batches(
     entity_id,source_type,import_profile,status,file_name,file_hash,row_count,new_count,imported_by
@@ -973,11 +1070,17 @@ await db.query(`
   set external_id='facto-test-100', counterpart_tax_id='77.724.382-9'
   where id=$1
 `, [sourceDocumentId]);
+await db.query(`
+  insert into public.integration_records(provider,resource,external_id,payload,payload_hash,observed_at)
+  values ('facto','financial_snapshots','facto-financial-test',
+    '{"net_sales":100000,"collections":{"mode":"unavailable"}}'::jsonb,
+    'financial-before','2026-09-06T12:00:00Z')
+`);
 const journalCountBeforeFactoPreview = await db.query(`select count(*)::int count from public.accounting_journal_entries`);
 const receivablesRun = await db.query(`
   insert into public.integration_sync_runs(
-    provider,resource,status,entity_id,requested_by,from_date,to_date,coverage
-  ) values ('facto','receivables','pending',$1,$2,'2026-01-01','2026-09-07','{}'::jsonb)
+    provider,resource,status,entity_id,requested_by,from_date,to_date,source_as_of,coverage
+  ) values ('facto','receivables','pending',$1,$2,'2026-01-01','2026-09-07','2026-09-07T12:00:00Z','{}'::jsonb)
   returning id
 `, [entityId, adminId]);
 const receivablesRunId = receivablesRun.rows[0].id;
@@ -1084,8 +1187,18 @@ const appliedPreview = await db.query(
 assert.equal(Number(appliedPreview.rows[0].value.updated), 1);
 assert.equal(Number(appliedPreview.rows[0].value.created), 1);
 assert.equal(Number(appliedPreview.rows[0].value.unchanged), 1);
+assert.equal(appliedPreview.rows[0].value.snapshotPublished, true);
 assert.equal(Number(appliedPreview.rows[0].value.bankMovementsCreated), 0);
 assert.equal(Number(appliedPreview.rows[0].value.journalEntriesCreated), 0);
+const publishedCollections = await db.query(`
+  select payload->'collections' collections
+  from public.integration_records
+  where provider='facto' and resource='financial_snapshots' and external_id='facto-financial-test'
+`);
+assert.equal(publishedCollections.rows[0].collections.portfolio_complete, true);
+assert.equal(Number(publishedCollections.rows[0].collections.observed_amount), 288000);
+assert.equal(Number(publishedCollections.rows[0].collections.documents), 2);
+assert.equal(publishedCollections.rows[0].collections.documents_detail.length, 2);
 const preservedReceivable = await db.query(`
   select paid_amount_clp,reported_paid_amount_clp,reported_balance_clp,status
   from public.accounting_receivables where id=$1

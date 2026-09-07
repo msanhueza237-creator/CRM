@@ -385,6 +385,8 @@ export interface AccountingFactoFreshness {
 
 export interface AccountingFactoReceivablesSnapshot {
   authoritative: boolean;
+  detailsVerified: boolean;
+  portfolioComplete: boolean;
   canCloseMissing: boolean;
   asOf: string | null;
   mode: string;
@@ -410,6 +412,9 @@ export interface AccountingSummary {
   pending_entries: number;
   provisional: boolean;
   bank_balance_basis?: string;
+  receivables_data_quality?: "verified_full_snapshot" | "operational" | "invalid_partial_snapshot";
+  receivables_suppressed?: boolean;
+  receivables_snapshot_rows?: number;
 }
 
 export interface AccountingDashboardTotals {

@@ -514,6 +514,10 @@ declare
   v_closed integer := 0;
   v_unchanged integer := 0;
   v_blockers integer := 0;
+  v_collections jsonb;
+  v_financial_snapshot_id uuid;
+  v_financial_payload jsonb;
+  v_snapshot_published boolean := false;
 begin
   if auth.role() <> 'service_role' then
     raise exception 'Solo el servicio financiero puede aplicar una previsualización Facto.';
@@ -678,6 +682,109 @@ begin
     where id = v_item.id;
   end loop;
 
+  with open_items as (
+    select normalized_payload as item
+    from public.integration_sync_items
+    where run_id = p_run_id
+      and jsonb_array_length(validation_errors) = 0
+      and coalesce(nullif(normalized_payload->>'outstanding_amount_clp', '')::numeric, 0) > 0.5
+      and coalesce((normalized_payload->>'browser_verified')::boolean, false) is true
+  ), customer_rows as (
+    select
+      coalesce(nullif(item->>'customer_name', ''), 'Cliente no identificado') as customer_name,
+      nullif(item->>'customer_tax_id', '') as customer_tax_id,
+      sum((item->>'outstanding_amount_clp')::numeric) as amount,
+      sum(case when nullif(item->>'due_on', '')::date < coalesce(v_run.source_as_of::date, v_run.to_date, current_date)
+        then (item->>'outstanding_amount_clp')::numeric else 0 end) as overdue,
+      count(*)::integer as documents,
+      max(greatest(0, coalesce(v_run.source_as_of::date, v_run.to_date, current_date) - nullif(item->>'due_on', '')::date))::integer as max_days_overdue,
+      array_agg(item->>'folio' order by item->>'issued_on', item->>'folio') as folios
+    from open_items
+    group by coalesce(nullif(item->>'customer_name', ''), 'Cliente no identificado'), nullif(item->>'customer_tax_id', '')
+  )
+  select jsonb_build_object(
+    'mode', 'facto_receivables',
+    'source', 'Facto API + Cobranza web de solo lectura',
+    'authoritative', true,
+    'receivables_available', true,
+    'portfolio_complete', true,
+    'payments_available', false,
+    'as_of', coalesce(v_run.source_as_of::date, v_run.to_date, current_date),
+    'reviewed_documents', v_run.read_count,
+    'observed_amount', coalesce((select sum((item->>'outstanding_amount_clp')::numeric) from open_items), 0),
+    'overdue_amount', coalesce((select sum((item->>'outstanding_amount_clp')::numeric) from open_items
+      where nullif(item->>'due_on', '')::date < coalesce(v_run.source_as_of::date, v_run.to_date, current_date)), 0),
+    'due_next_30', coalesce((select sum((item->>'outstanding_amount_clp')::numeric) from open_items
+      where nullif(item->>'due_on', '')::date between coalesce(v_run.source_as_of::date, v_run.to_date, current_date)
+        and coalesce(v_run.source_as_of::date, v_run.to_date, current_date) + 30), 0),
+    'documents', (select count(*) from open_items),
+    'overdue_documents', (select count(*) from open_items
+      where nullif(item->>'due_on', '')::date < coalesce(v_run.source_as_of::date, v_run.to_date, current_date)),
+    'payments_registered', 0,
+    'payment_count', 0,
+    'classification_status', 'complete',
+    'unclassified_documents', 0,
+    'aging', '[]'::jsonb,
+    'customers', coalesce((select jsonb_agg(jsonb_build_object(
+      'name', customer_name,
+      'tax_id', customer_tax_id,
+      'amount', amount,
+      'overdue', overdue,
+      'due_next_30', 0,
+      'documents', documents,
+      'max_days_overdue', max_days_overdue,
+      'folios', to_jsonb(folios)
+    ) order by amount desc) from customer_rows), '[]'::jsonb),
+    'payments_by_month', '[]'::jsonb,
+    'documents_detail', coalesce((select jsonb_agg(jsonb_build_object(
+      'document_id', item->>'external_id',
+      'document_number', item->>'folio',
+      'document_type', item->>'document_type',
+      'customer', item->>'customer_name',
+      'tax_id', item->>'customer_tax_id',
+      'issued_on', item->>'issued_on',
+      'due_on', item->>'due_on',
+      'original_amount', (item->>'original_amount_clp')::numeric,
+      'observed_amount', (item->>'outstanding_amount_clp')::numeric,
+      'reported_paid_amount', (item->>'reported_paid_amount_clp')::numeric,
+      'currency', item->>'currency',
+      'days_overdue', greatest(0, coalesce(v_run.source_as_of::date, v_run.to_date, current_date) - nullif(item->>'due_on', '')::date),
+      'balance_source', 'facto_receivables'
+    ) order by item->>'issued_on', item->>'folio') from open_items), '[]'::jsonb),
+    'disclaimer', 'Cartera completa leída desde Facto; no representa conciliación bancaria ni asiento contable.'
+  ) into v_collections;
+
+  select id, payload into v_financial_snapshot_id, v_financial_payload
+  from public.integration_records
+  where provider = 'facto' and resource = 'financial_snapshots'
+  order by updated_at desc
+  limit 1
+  for update;
+
+  if v_financial_snapshot_id is not null then
+    v_financial_payload := coalesce(v_financial_payload, '{}'::jsonb) || jsonb_build_object(
+      'receivables_available', true,
+      'collections', v_collections
+    );
+    update public.integration_records
+    set payload = v_financial_payload,
+        payload_hash = md5(v_financial_payload::text),
+        observed_at = coalesce(v_run.source_as_of, now()),
+        updated_at = now()
+    where id = v_financial_snapshot_id;
+    v_snapshot_published := true;
+
+    insert into public.accounting_audit_events(
+      entity_id, actor_id, action, entity_type, entity_id_text,
+      reason, new_value, correlation_id
+    ) values (
+      v_run.entity_id, p_actor_id, 'facto.receivables_snapshot_published',
+      'integration_record', v_financial_snapshot_id::text,
+      'La cartera completa aprobada reemplazó únicamente la sección de cobranza del corte financiero.',
+      v_collections, p_correlation_id
+    );
+  end if;
+
   update public.integration_sync_runs
   set status = 'completed', run_mode = 'apply',
       written_count = v_created + v_updated + v_closed,
@@ -700,6 +807,7 @@ begin
     'updated', v_updated,
     'closed', v_closed,
     'unchanged', v_unchanged,
+    'snapshotPublished', v_snapshot_published,
     'bankMovementsCreated', 0,
     'journalEntriesCreated', 0
   );

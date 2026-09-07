@@ -15,6 +15,8 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
+  v_batch public.accounting_import_batches%rowtype;
+  v_from_date date;
   v_receivables_closed integer := 0;
   v_payables_closed integer := 0;
 begin
@@ -22,15 +24,27 @@ begin
     raise exception 'Esta operación requiere service_role';
   end if;
 
-  if not exists (
-    select 1
-    from public.accounting_import_batches b
-    where b.id = p_batch_id
-      and b.entity_id = p_entity_id
-      and b.source_type = 'COLLECTIONS'
-      and b.import_profile = 'facto_unpaid_documents'
-  ) then
+  select * into v_batch
+  from public.accounting_import_batches b
+  where b.id = p_batch_id
+    and b.entity_id = p_entity_id
+    and b.source_type = 'COLLECTIONS'
+    and b.import_profile = 'facto_unpaid_documents'
+  for update;
+
+  if v_batch.id is null then
     raise exception 'La foto de documentos impagos Facto no existe o no corresponde a la empresa';
+  end if;
+  if coalesce((v_batch.summary->>'portfolio_complete')::boolean, false) is not true then
+    raise exception 'El respaldo Facto no fue validado como una cartera completa';
+  end if;
+
+  v_from_date := coalesce(
+    nullif(v_batch.summary->>'coverage_from', '')::date,
+    date_trunc('year', p_as_of)::date
+  );
+  if p_as_of is null or v_from_date > p_as_of then
+    raise exception 'La cobertura temporal de la foto Facto es inválida';
   end if;
 
   update public.accounting_receivables r
@@ -48,7 +62,7 @@ begin
       where d.id = r.source_document_id
         and d.entity_id = p_entity_id
         and d.source_type = 'FACTO'
-        and d.issued_on <= p_as_of
+        and d.issued_on between v_from_date and p_as_of
     );
   get diagnostics v_receivables_closed = row_count;
 
@@ -67,13 +81,14 @@ begin
       where d.id = p.source_document_id
         and d.entity_id = p_entity_id
         and d.source_type = 'FACTO'
-        and d.issued_on <= p_as_of
+        and d.issued_on between v_from_date and p_as_of
     );
   get diagnostics v_payables_closed = row_count;
 
   return jsonb_build_object(
     'receivables_closed', v_receivables_closed,
     'payables_closed', v_payables_closed,
+    'coverage_from', v_from_date,
     'as_of', p_as_of,
     'batch_id', p_batch_id
   );

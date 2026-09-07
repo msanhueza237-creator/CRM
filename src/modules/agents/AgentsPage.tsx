@@ -936,6 +936,7 @@ export function AgentsPage() {
               collections?: {
                 mode?: string;
                 authoritative?: boolean;
+                portfolio_complete?: boolean;
                 overdue_amount?: number;
                 documents_detail?: Array<{
                   document_id?: string;
@@ -952,6 +953,7 @@ export function AgentsPage() {
         const verifiedCollections = (
           ["facto_receivables", "facto_document_pdf"].includes(collections?.mode ?? "")
           && collections?.authoritative === true
+          && collections?.portfolio_complete === true
         );
         const documents = verifiedCollections
           ? (collections?.documents_detail ?? []).filter((item) => Number(item.observed_amount ?? 0) > 0)

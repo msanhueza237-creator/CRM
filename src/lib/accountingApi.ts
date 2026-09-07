@@ -66,6 +66,8 @@ export function previewAccountingFactoExcel(input: {
   profile: AccountingFactoExcelProfile;
   storagePath: string;
   fileName: string;
+  fromDate?: string;
+  toDate?: string;
 }) {
   return accountingRequest<AccountingFactoExcelPreview>("facto-excel/preview", { method: "POST", body: input });
 }

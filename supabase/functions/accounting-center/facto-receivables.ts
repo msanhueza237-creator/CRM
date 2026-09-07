@@ -2,6 +2,8 @@ type JsonRecord = Record<string, unknown>;
 
 export type FactoReceivablesSnapshot = {
   authoritative: boolean;
+  detailsVerified: boolean;
+  portfolioComplete: boolean;
   canCloseMissing: boolean;
   asOf: string | null;
   mode: string;
@@ -12,39 +14,54 @@ export type FactoReceivablesSnapshot = {
 };
 
 export function analyzeFactoReceivablesSnapshot(input: JsonRecord): FactoReceivablesSnapshot {
-  const details = Array.isArray(input.documents_detail)
+  const rawDetails = Array.isArray(input.documents_detail)
     ? input.documents_detail.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item))
     : [];
-  const coverage = asObject(input.pdf_coverage);
-  const examined = finite(coverage.documents_examined);
-  const withPdf = finite(coverage.documents_with_pdf);
-  const withBalance = finite(coverage.documents_with_balance);
-  const percent = finite(coverage.percent);
-  const authoritative = input.authoritative === true;
   const mode = String(input.mode || input.source || "");
+  const supportedMode = ["facto_receivables", "facto_document_pdf", "facto_excel", "manual_facto_verification"].includes(mode);
+  const sourceVerified = input.authoritative === true && supportedMode;
   const explicitComplete = input.portfolio_complete === true;
-  const completePdfReview = mode === "facto_document_pdf"
-    && examined > 0
-    && withPdf >= examined
-    && percent >= 0.999
-    && withBalance === details.length
-    && String(input.classification_status || "") === "complete"
-    && finite(input.unclassified_documents) === 0;
+  const amountClp = Math.max(0, finite(input.observed_amount));
+  const documentCount = Math.max(0, Math.trunc(finite(input.documents)));
+  const details = rawDetails.filter((detail) => {
+    const evidence = String(detail.balance_source || mode);
+    const rawAmount = detail.observed_amount;
+    const amount = Number(rawAmount);
+    return ["facto_receivables", "facto_document_pdf", "facto_excel", "manual_facto_verification"].includes(evidence)
+      && rawAmount !== null
+      && rawAmount !== undefined
+      && rawAmount !== ""
+      && Number.isFinite(amount)
+      && amount >= 0;
+  });
+  const detailKeys = details.map((detail) => String(detail.document_id || "").trim() || [
+    String(detail.document_type || "").trim(),
+    String(detail.document_number || "").trim(),
+    String(detail.tax_id || detail.customer_tax_id || "").trim(),
+  ].join("|"));
+  const uniqueDetailKeys = new Set(detailKeys.filter(Boolean));
+  const detailsUniquelyIdentified = detailKeys.every((key) => key && key !== "||")
+    && uniqueDetailKeys.size === details.length;
+  const detailTotal = details.reduce((sum, detail) => sum + Number(detail.observed_amount), 0);
+  const completeBreakdown = documentCount === 0
+    ? details.length === 0 && amountClp <= 0.5
+    : details.length === documentCount
+      && detailsUniquelyIdentified
+      && Math.abs(detailTotal - amountClp) <= 0.5;
+  const portfolioComplete = sourceVerified && explicitComplete && completeBreakdown;
 
   return {
-    authoritative,
-    canCloseMissing: authoritative && (explicitComplete || completePdfReview),
+    authoritative: portfolioComplete,
+    detailsVerified: sourceVerified && details.length > 0,
+    portfolioComplete,
+    canCloseMissing: portfolioComplete,
     asOf: isoDate(input.as_of),
     mode,
-    amountClp: Math.max(0, finite(input.observed_amount)),
+    amountClp,
     overdueClp: Math.max(0, finite(input.overdue_amount)),
-    documentCount: Math.max(0, Math.trunc(finite(input.documents))),
+    documentCount,
     details,
   };
-}
-
-function asObject(value: unknown): JsonRecord {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
 }
 
 function finite(value: unknown) {

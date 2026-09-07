@@ -221,17 +221,22 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   const available = number(summary.bank_clp) + number(summary.bank_usd_clp);
   const portfolioChecks = data.checks.filter((check) => check.status === "portfolio");
   const checksPortfolio = portfolioChecks.reduce((total, check) => total + number(check.amount_clp), 0);
-  const position = available + number(summary.receivables) + checksPortfolio - number(summary.payables);
-  const factoReceivablesDetail = factoReceivables?.authoritative
+  const receivablesSuppressed = summary.receivables_suppressed === true;
+  const position = receivablesSuppressed ? null : available + number(summary.receivables) + checksPortfolio - number(summary.payables);
+  const factoReceivablesDetail = receivablesSuppressed
+    ? "Lectura parcial anterior aislada · requiere corte Facto completo"
+    : factoReceivables?.authoritative
     ? `${factoReceivables.documentCount} documento(s) pendientes en Facto · corte ${shortDate(factoReceivables.asOf || summary.as_of)}`
+    : factoReceivables?.detailsVerified
+      ? `${factoReceivables.documentCount} saldo(s) individual(es) verificado(s) · cartera completa pendiente`
     : "Saldo operativo pendiente de validar con Facto";
   const documentaryBasis = dashboard.basis === "documentary" || dashboard.basis === "mixed";
   const dashboardWarnings = Array.isArray(dashboard.warnings) ? dashboard.warnings : [];
   const resultIsProvisional = summary.provisional || dashboard.costCoverage.missingSalesCost > 0 || documentaryBasis;
   const cards: Array<{ label: string; value: string; detail: string; view: AccountingView; icon: typeof Landmark; tone?: string; trend?: number | null }> = [
     { label: "Disponible", value: clp(available), detail: `${summary.bank_balance_basis === "verified_control" ? "Control bancario verificado" : "Saldo contable"} · CLP ${clp(summary.bank_clp)} · USD equiv. ${clp(summary.bank_usd_clp)}`, view: "banks", icon: WalletCards },
-    { label: "Posición financiera", value: clp(position), detail: "Disponible + cobros + cheques − obligaciones", view: "reports", icon: Scale, tone: position < 0 ? "danger" : "positive" },
-    { label: "Cuentas por cobrar", value: clp(summary.receivables), detail: factoReceivablesDetail, view: "receivables", icon: CircleDollarSign, tone: number(summary.receivables_overdue) > 0 ? "warning" : "positive" },
+    { label: "Posición financiera", value: position === null ? "En revisión" : clp(position), detail: position === null ? "La cartera debe cuadrarse antes de calcular esta posición" : "Disponible + cobros + cheques − obligaciones", view: "reports", icon: Scale, tone: position !== null && position < 0 ? "danger" : position === null ? "warning" : "positive" },
+    { label: "Cuentas por cobrar", value: receivablesSuppressed ? "En revisión" : clp(summary.receivables), detail: factoReceivablesDetail, view: "receivables", icon: CircleDollarSign, tone: receivablesSuppressed || number(summary.receivables_overdue) > 0 ? "warning" : "positive" },
     { label: `Ventas ${dashboard.year}`, value: clp(result.sales), detail: "Ingresos contabilizados acumulados", view: "reports", icon: BadgeDollarSign, trend: dashboard.comparison.sales },
     { label: "Costo de ventas", value: clp(result.costs), detail: `${formatPercent(dashboard.costCoverage.percentage)} de facturas con costo exacto`, view: "ledger", icon: ReceiptText, tone: dashboard.costCoverage.missingSalesCost ? "warning" : "" },
     { label: `Costo laboral ${dashboard.year}`, value: clp(expenses.laborTotal), detail: `Sueldos ${clp(expenses.salaries)} · PREVIRED ${clp(expenses.pensionContributions)}`, view: "ledger", icon: WalletCards },
@@ -240,7 +245,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   ];
   const bestSalesMonth = dashboard.monthly.reduce<AccountingDashboardMonth | null>((best, month) => !best || month.sales > best.sales ? month : best, null);
   const latestMonth = dashboard.monthly[dashboard.monthly.length - 1] || null;
-  const workingCapitalBase = Math.max(available + number(summary.receivables) + checksPortfolio, number(summary.payables), 1);
+  const workingCapitalBase = Math.max(available + (receivablesSuppressed ? 0 : number(summary.receivables)) + checksPortfolio, number(summary.payables), 1);
   return (
     <div className="accounting-view-stack">
       <section className="panel accounting-executive-band">
@@ -318,7 +323,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
         <button className="panel accounting-position-panel" type="button" onClick={() => navigate("reports")}>
           <div className="accounting-panel-heading"><div><p>Estructura financiera</p><h2>Activos líquidos y compromisos</h2><span>Comparación operativa, no reemplaza el balance general.</span></div><ArrowRight size={19} /></div>
           <FinancialPositionRow label="Disponible" value={available} maximum={workingCapitalBase} tone="available" />
-          <FinancialPositionRow label="Cuentas por cobrar" value={number(summary.receivables)} maximum={workingCapitalBase} tone="receivable" />
+          <FinancialPositionRow label="Cuentas por cobrar" value={receivablesSuppressed ? null : number(summary.receivables)} maximum={workingCapitalBase} tone="receivable" />
           <FinancialPositionRow label={`Cheques en cartera (${portfolioChecks.length})`} value={checksPortfolio} maximum={workingCapitalBase} tone="checks" />
           <FinancialPositionRow label="Cuentas por pagar" value={number(summary.payables)} maximum={workingCapitalBase} tone="payable" />
         </button>
@@ -400,8 +405,9 @@ function FinancialResultRows({ result }: { result: AccountingBootstrap["dashboar
   return <div className="accounting-result-rows">{rows.map((row) => <div key={row.label}><div><span>{row.label}</span><strong>{clp(row.value)}</strong></div><span className="accounting-result-track"><i className={row.tone} style={{ width: `${Math.max(2, Math.min(100, Math.abs(row.value) / maximum * 100))}%` }} /></span></div>)}</div>;
 }
 
-function FinancialPositionRow({ label, value, maximum, tone }: { label: string; value: number; maximum: number; tone: string }) {
-  return <div className="accounting-position-row"><div><span>{label}</span><strong>{clp(value)}</strong></div><span className="accounting-position-track"><i className={tone} style={{ width: `${Math.max(value ? 2 : 0, Math.min(100, value / maximum * 100))}%` }} /></span></div>;
+function FinancialPositionRow({ label, value, maximum, tone }: { label: string; value: number | null; maximum: number; tone: string }) {
+  const percentage = value === null ? 0 : Math.max(value ? 2 : 0, Math.min(100, value / maximum * 100));
+  return <div className="accounting-position-row"><div><span>{label}</span><strong>{value === null ? "En revisión" : clp(value)}</strong></div><span className="accounting-position-track"><i className={tone} style={{ width: `${percentage}%` }} /></span></div>;
 }
 
 function formatPercent(value: number | null) {
@@ -614,7 +620,14 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
     setLocalError("");
     try {
       const storagePath = await uploadAccountingEvidence(data.entity.id, file);
-      setPreview(await previewAccountingFactoExcel({ entityId: data.entity.id, profile, storagePath, fileName: file.name }));
+      setPreview(await previewAccountingFactoExcel({
+        entityId: data.entity.id,
+        profile,
+        storagePath,
+        fileName: file.name,
+        fromDate,
+        toDate,
+      }));
     } catch (caught) {
       setLocalError(caught instanceof Error ? caught.message : "No se pudo analizar el respaldo Facto.");
     }
@@ -641,6 +654,7 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
         <div className="accounting-panel-heading"><div><p>Información complementaria</p><h2>Cargar Excel de Facto</h2><span>Se conserva el archivo original, se previsualiza y solo después de confirmar se integra.</span></div><FileSpreadsheet size={24} /></div>
         <label>Contenido del archivo<select value={profile} onChange={(event) => setProfile(event.target.value as AccountingFactoExcelProfile)}>{factoExcelProfiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
         <p className="accounting-profile-help">{selectedProfile.help}</p>
+        {profile === "facto_unpaid_documents" ? <p className="accounting-profile-help"><strong>Corte completo:</strong> {date(fromDate)} al {date(toDate)}</p> : null}
         <label className="accounting-file-drop"><Upload size={30} /><strong>{file?.name || "Selecciona un archivo Excel"}</strong><span>XLS o XLSX · máximo 25 MB · original privado</span><input accept=".xls,.xlsx" type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>
         {localError ? <div className="accounting-local-error"><AlertTriangle size={16} />{localError}</div> : null}
         <button className="primary-button" disabled={!file || Boolean(busy)} type="button" onClick={() => void prepareFactoExcel()}><Search size={17} /> Previsualizar y validar</button>
@@ -1056,6 +1070,7 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
 
 function ReceivablesView({ data }: { data: AccountingBootstrap }) {
   const factoReceivables = data.factoReceivables;
+  const receivablesSuppressed = data.summary.receivables_suppressed === true;
   const [bucket, setBucket] = useState("all");
   const [query, setQuery] = useState("");
   const [from, setFrom] = useState("2026-01-01");
@@ -1075,9 +1090,9 @@ function ReceivablesView({ data }: { data: AccountingBootstrap }) {
   return <section className="panel">
     <div className="accounting-panel-heading">
       <div><p>Cobranza Facto</p><h2>Cuentas por cobrar</h2><span>La cartera operacional de Facto y la conciliación bancaria se mantienen separadas y trazables.</span></div>
-      <div className="accounting-receivables-total"><strong>{clp(total)}</strong><small>{filtered.length} documento(s) · corte {shortDate(factoReceivables?.asOf || data.summary.as_of)}</small></div>
+      <div className="accounting-receivables-total"><strong>{receivablesSuppressed ? "En revisión" : clp(total)}</strong><small>{receivablesSuppressed ? `Subtotal no utilizable · ${data.summary.receivables_snapshot_rows || 0} filas afectadas por una lectura parcial` : `${filtered.length} documento(s) · corte ${shortDate(factoReceivables?.asOf || data.summary.as_of)}`}</small></div>
     </div>
-    <div className="accounting-source-note"><ShieldCheck size={16} /><span>{factoReceivables?.authoritative ? `Facto informa ${clp(factoReceivables.amountClp)} en ${factoReceivables.documentCount} documento(s).` : "La cartera Facto aún no tiene una foto autoritativa."} El saldo conciliado con bancos no se sobrescribe.</span></div>
+    <div className="accounting-source-note"><ShieldCheck size={16} /><span>{factoReceivables?.authoritative ? `Facto informa ${clp(factoReceivables.amountClp)} en ${factoReceivables.documentCount} documento(s), con detalle completo y cuadrado.` : factoReceivables?.detailsVerified ? `Facto verificó ${factoReceivables.documentCount} saldo(s) por ${clp(factoReceivables.amountClp)}, pero la cobertura es parcial y no reemplaza la cartera completa.` : "La cartera Facto aún no tiene una foto completa y trazable."} El saldo conciliado con bancos no se sobrescribe.</span></div>
     <div className="accounting-filter-grid">
       <SearchField value={query} onChange={setQuery} placeholder="Cliente, RUT o documento" />
       <label>Emisión desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label>

@@ -78,6 +78,8 @@ function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExce
     const paid = Math.max(0, money(raw.pagado));
     const reportedBalance = Math.max(0, money(raw.impago));
     const direction = documentDirection(documentTypeLabel);
+    const documentType = normalizedDocumentType(documentTypeLabel);
+    const balanceKind = openBalanceKind(direction, documentType);
     const errors: string[] = [];
     if (!documentNumber) errors.push("Número de documento faltante.");
     if (!issuedOn) errors.push("Fecha inválida.");
@@ -91,8 +93,9 @@ function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExce
       errors,
       data: {
         document_type_label: documentTypeLabel,
-        document_type: normalizedDocumentType(documentTypeLabel),
+        document_type: documentType,
         direction,
+        balance_kind: balanceKind,
         issued_on: issuedOn,
         document_number: documentNumber,
         counterpart_name: textAt(raw, "emisor receptor"),
@@ -117,11 +120,19 @@ function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExce
     profile,
     source_type: "COLLECTIONS",
     rows: parsed,
-    warnings: ["Los saldos se registran como informados por Facto; la cartola bancaria confirmará los pagos."],
+    warnings: [
+      "Los saldos se registran como informados por Facto; la cartola bancaria confirmará los pagos.",
+      "Las notas de crédito permanecen como evidencia documental y nunca se convierten en una cuenta por cobrar o pagar positiva.",
+    ],
     summary: {
       total_clp: sum(parsed, "total_clp"),
       reported_paid_clp: sum(parsed, "reported_paid_clp"),
       reported_balance_clp: sum(parsed, "reported_balance_clp"),
+      receivables_documents: parsed.filter((row) => row.data.balance_kind === "receivable").length,
+      receivables_total_clp: parsed.filter((row) => row.data.balance_kind === "receivable").reduce((total, row) => total + Number(row.data.reported_balance_clp || 0), 0),
+      payables_documents: parsed.filter((row) => row.data.balance_kind === "payable").length,
+      payables_total_clp: parsed.filter((row) => row.data.balance_kind === "payable").reduce((total, row) => total + Number(row.data.reported_balance_clp || 0), 0),
+      adjustment_documents: parsed.filter((row) => row.data.balance_kind === "adjustment").length,
     },
   };
 }
@@ -265,6 +276,14 @@ function normalizedDocumentType(label: string) {
   if (value.includes("factura") && value.includes("exenta")) return `${direction}_exempt_invoice`;
   if (value.includes("factura")) return `${direction}_invoice`;
   return `${direction}_document`;
+}
+
+function openBalanceKind(direction: string | null, documentType: string) {
+  if (documentType.endsWith("_credit_note")) return "adjustment";
+  if (documentType.endsWith("_receipt") || documentType.endsWith("_exempt_receipt")) return "informational";
+  if (direction === "sale") return "receivable";
+  if (direction === "purchase") return "payable";
+  return "informational";
 }
 
 function sheetRows(workbook: XLSX.WorkBook, maxRows?: number): unknown[][] {

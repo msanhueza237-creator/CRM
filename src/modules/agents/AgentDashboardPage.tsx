@@ -550,39 +550,6 @@ type CollectionReport = {
   disclaimer: string;
 };
 
-const FACTO_MANUAL_RECEIVABLES_VERIFICATION: CollectionReport = {
-  mode: "manual_facto_verification",
-  source: "Facto web - Cobranza - Documentos impagos",
-  authoritative: true,
-  receivables_available: true,
-  portfolio_complete: false,
-  payments_available: false,
-  as_of: "2026-07-31T12:00:00-04:00",
-  reviewed_documents: 18,
-  reviewed_amount: 30_756_397,
-  observed_amount: 30_756_397,
-  overdue_amount: 0,
-  due_next_30: 0,
-  documents: 18,
-  overdue_documents: 0,
-  payments_registered: 0,
-  payment_count: 0,
-  aging: [],
-  customers: [
-    { name: "ANDREA DE LA LUZ GARAY MUNOZ", tax_id: "12.899.411-4", amount: 10_819_287, overdue: 0, due_next_30: 0, documents: 1, max_days_overdue: 0, folios: ["1.534"] },
-    { name: "MARIA ANGELICA ROJAS SANDOVAL", tax_id: "8.455.967-9", amount: 6_595_772, overdue: 0, due_next_30: 0, documents: 3, max_days_overdue: 0, folios: ["1.422", "1.508", "1.523"] },
-    { name: "MEGAFRIO SUR SPA", tax_id: "77.073.845-8", amount: 3_900_687, overdue: 0, due_next_30: 0, documents: 4, max_days_overdue: 0, folios: ["1.429", "1.444", "1.519", "1.520"] },
-    { name: "ACONDIPARTS CENTER SPA", tax_id: "76.792.857-2", amount: 3_396_759, overdue: 0, due_next_30: 0, documents: 2, max_days_overdue: 0, folios: ["1.512", "1.522"] },
-    { name: "MARBA - REFRIGERACION, AIRE ACONDICIONADO, CLIMATIZACION SPA", tax_id: "76.919.986-1", amount: 2_902_930, overdue: 0, due_next_30: 0, documents: 2, max_days_overdue: 0, folios: ["1.510", "1.535"] },
-    { name: "AIRE ACONDICIONADO LUIS SEBASTIAN VERGARA MARQUEZ E.I.R.L.", tax_id: "76.705.500-5", amount: 2_875_351, overdue: 0, due_next_30: 0, documents: 1, max_days_overdue: 0, folios: ["1.517"] },
-    { name: "MORETO CLIMA LIMITADA", tax_id: "76.344.054-0", amount: 225_624, overdue: 0, due_next_30: 0, documents: 1, max_days_overdue: 0, folios: ["1.513"] },
-    { name: "CLIMATIZA MYM SPA", tax_id: "77.956.938-1", amount: 20_150, overdue: 0, due_next_30: 0, documents: 3, max_days_overdue: 0, folios: ["1.353", "1.367", "1.447"] },
-    { name: "ELECTRONICOS ARCO SPA", tax_id: "77.339.672-8", amount: 19_837, overdue: 0, due_next_30: 0, documents: 1, max_days_overdue: 0, folios: ["1.420"] },
-  ],
-  payments_by_month: [],
-  disclaimer: "Corte verificado manualmente en Facto el 31-07-2026. No se actualiza automaticamente y sera reemplazado por la ruta API oficial de documentos impagos.",
-};
-
 type DocumentaryCashFlow = {
   net_sales: number;
   net_purchases: number;
@@ -4295,7 +4262,6 @@ function AccountingDashboard({
   const documentaryResult = Number(controls.documentary_result_before_inventory ?? 0);
   const f29Variance = Number(controls.f29_sales_variance ?? 0);
   const inventoryCost = Number(controls.current_inventory_cost ?? 0);
-  const receivablesVerified = Number(FACTO_MANUAL_RECEIVABLES_VERIFICATION.observed_amount ?? 0);
   const totals = snapshot.prebalance_rows.reduce(
     (result, row) => ({
       debit: result.debit + Number(row.sum_debit ?? 0),
@@ -4398,7 +4364,7 @@ function AccountingDashboard({
         <div className="accounting-profit-signals">
           <article><span>Resultado documental provisional</span><strong>{formatCurrency.format(documentaryResult)}</strong><small>Ventas menos compras documentadas y costo empleador</small></article>
           <article><span>Inventario actual a costo</span><strong>{formatCurrency.format(inventoryCost)}</strong><small>Capital inmovilizado; no es gasto mientras permanezca en stock</small></article>
-          <article><span>Cuentas por cobrar verificadas</span><strong>{formatCurrency.format(receivablesVerified)}</strong><small>Corte manual Facto; pendiente de ruta API oficial</small></article>
+          <article><span>Cuentas por cobrar verificadas</span><strong>Pendiente</strong><small>Requiere un corte Facto completo, vigente y cuadrado</small></article>
           <article><span>Resultado tributario 2025</span><strong>{formatCurrency.format(Number(taxFolder?.prior_year_taxable_base ?? 0))}</strong><small>Referencia oficial del año anterior, no utilidad 2026</small></article>
         </div>
         <div className="notice-banner warning">
@@ -4576,11 +4542,7 @@ function FinanceDashboard({
   );
   const hasExactDailyData = Boolean(report?.sales_by_day?.length);
   const internetAvailable = Boolean(report?.internet_sales?.available);
-  const effectiveCollections = useMemo(() => {
-    const synced = report?.collections;
-    if (synced?.mode === "facto_receivables" && synced.authoritative) return synced;
-    return FACTO_MANUAL_RECEIVABLES_VERIFICATION;
-  }, [report?.collections]);
+  const effectiveCollections = useMemo(() => report?.collections ?? null, [report?.collections]);
   const filteredSuppliers = useMemo(() => {
     const query = normalizeCustomerSearch(supplierQuery);
     return (report?.top_suppliers ?? [])
@@ -4611,7 +4573,7 @@ function FinanceDashboard({
   }, [dateFrom, dateTo, report?.top_suppliers, supplierQuery]);
   const filteredCollectionCustomers = useMemo(() => {
     const query = normalizeCustomerSearch(collectionQuery);
-    const rows = (effectiveCollections.customers ?? []).filter((item) => {
+    const rows = (effectiveCollections?.customers ?? []).filter((item) => {
       if (!query) return true;
       return (
         normalizeCustomerSearch(item.name).includes(query) ||
@@ -4631,7 +4593,7 @@ function FinanceDashboard({
       }
       return Number(right.amount ?? 0) - Number(left.amount ?? 0);
     });
-  }, [collectionQuery, collectionSort, effectiveCollections.customers]);
+  }, [collectionQuery, collectionSort, effectiveCollections?.customers]);
 
   if (!report) {
     return (
@@ -4767,10 +4729,16 @@ function FinanceDashboard({
   // or from the exact dated balance printed in Facto's official PDF.
   const collectionsAuthoritative = (
     ["facto_receivables", "facto_document_pdf", "manual_facto_verification"].includes(collections?.mode ?? "")
-    && Boolean(collections?.authoritative ?? report.receivables_available)
+    && collections?.authoritative === true
+    && collections?.portfolio_complete === true
   );
   const collectionsFromPdf = collections?.mode === "facto_document_pdf";
   const collectionsFromManualVerification = collections?.mode === "manual_facto_verification";
+  const collectionsPartial = Boolean(
+    collections?.authoritative
+    && !collections?.portfolio_complete
+    && ["facto_receivables", "facto_document_pdf", "manual_facto_verification"].includes(collections.mode),
+  );
   const reviewedCollectionDocuments = Number(
     collections?.reviewed_documents ?? collections?.documents ?? 0,
   );
@@ -5275,19 +5243,27 @@ function FinanceDashboard({
       ) : (
         <section className="data-card finance-collection-card">
           <div className="notice-banner warning">
-            <strong>La API conectada aún no entrega Cobranza → Documentos impagos.</strong>
-            <span>
-              Facto entregó {reviewedCollectionDocuments} facturas emitidas, pero una factura emitida
-              no demuestra que siga pendiente. Por seguridad, el CRM no muestra $0 ni calcula deuda
-              desde condiciones de pago.
-            </span>
+            <strong>{collectionsPartial ? "La lectura disponible cubre solo una parte de la cartera." : "La API conectada aún no entrega Cobranza → Documentos impagos."}</strong>
+            {collectionsPartial ? (
+              <span>
+                Facto verificó {reviewedCollectionDocuments} saldo(s) por {formatCurrency.format(Number(collections?.observed_amount ?? 0))},
+                pero ese subtotal no reemplaza el informe completo. Los documentos no observados conservan su estado pendiente de revisión.
+              </span>
+            ) : (
+              <span>
+                Facto entregó {reviewedCollectionDocuments} facturas emitidas, pero una factura emitida
+                no demuestra que siga pendiente. Por seguridad, el CRM no muestra $0 ni calcula deuda
+                desde condiciones de pago.
+              </span>
+            )}
           </div>
           <div className="finance-customer-empty">
             <Database size={24} />
-            <strong>Cartera real pendiente de habilitación en Facto</strong>
+            <strong>{collectionsPartial ? "Falta completar el detalle del corte" : "Cartera real pendiente de habilitación en Facto"}</strong>
             <span>
-              El conector ya está preparado para recibir saldo pendiente, abonos, vencimiento, RUT y
-              razón social desde un recurso oficial de solo lectura.
+              {collectionsPartial
+                ? "Importa el reporte completo de Documentos impagos o ejecuta una lectura Facto completa para cuadrar cada folio con el total de control."
+                : "El conector ya está preparado para recibir saldo pendiente, abonos, vencimiento, RUT y razón social desde un recurso oficial de solo lectura."}
             </span>
           </div>
         </section>

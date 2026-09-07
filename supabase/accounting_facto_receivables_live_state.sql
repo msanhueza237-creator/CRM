@@ -12,11 +12,11 @@ declare
   v_updated_at timestamptz;
   v_as_of date;
   v_from date := date '2026-01-01';
-  v_examined numeric;
-  v_with_pdf numeric;
-  v_with_balance numeric;
-  v_percent numeric;
   v_detail_count integer;
+  v_document_count integer;
+  v_invalid_details integer;
+  v_duplicate_details integer;
+  v_detail_total numeric(20,4);
   v_observed numeric(20,4);
   v_result numeric(20,4);
   v_updated integer := 0;
@@ -45,24 +45,42 @@ begin
   end if;
 
   v_as_of := coalesce(nullif(v_collections->>'as_of', '')::date, v_updated_at::date);
-  v_examined := coalesce((v_collections->'pdf_coverage'->>'documents_examined')::numeric, 0);
-  v_with_pdf := coalesce((v_collections->'pdf_coverage'->>'documents_with_pdf')::numeric, 0);
-  v_with_balance := coalesce((v_collections->'pdf_coverage'->>'documents_with_balance')::numeric, 0);
-  v_percent := coalesce((v_collections->'pdf_coverage'->>'percent')::numeric, 0);
   v_detail_count := jsonb_array_length(coalesce(v_collections->'documents_detail', '[]'::jsonb));
+  v_document_count := coalesce((v_collections->>'documents')::integer, 0);
   v_observed := coalesce((v_collections->>'observed_amount')::numeric, 0);
 
-  if coalesce((v_collections->>'portfolio_complete')::boolean, false) is not true
-     and not (
-       v_collections->>'mode' = 'facto_document_pdf'
-       and v_examined > 0
-       and v_with_pdf >= v_examined
-       and v_percent >= 0.999
-       and v_with_balance = v_detail_count
-       and v_collections->>'classification_status' = 'complete'
-       and coalesce((v_collections->>'unclassified_documents')::numeric, 0) = 0
-     ) then
-    raise exception 'La cobertura Facto no permite cerrar saldos ausentes de forma segura.';
+  if coalesce((v_collections->>'portfolio_complete')::boolean, false) is not true then
+    raise exception 'La foto Facto es parcial y no permite cerrar saldos ausentes.';
+  end if;
+
+  select count(*) filter (
+           where item->>'balance_source' not in ('facto_receivables', 'facto_document_pdf', 'facto_excel', 'manual_facto_verification')
+              or coalesce(item->>'observed_amount', '') !~ '^[0-9]+([.][0-9]+)?$'
+              or coalesce(
+                   nullif(item->>'document_id', ''),
+                   nullif(concat_ws('|', item->>'document_type', item->>'document_number', coalesce(item->>'tax_id', item->>'customer_tax_id')), '')
+                 ) is null
+         )::integer,
+         coalesce(sum(
+           case when coalesce(item->>'observed_amount', '') ~ '^[0-9]+([.][0-9]+)?$'
+             then (item->>'observed_amount')::numeric else 0 end
+         ), 0)
+  into v_invalid_details, v_detail_total
+  from jsonb_array_elements(coalesce(v_collections->'documents_detail', '[]'::jsonb)) item;
+
+  select count(*) - count(distinct coalesce(
+           nullif(item->>'document_id', ''),
+           nullif(concat_ws('|', item->>'document_type', item->>'document_number', coalesce(item->>'tax_id', item->>'customer_tax_id')), '')
+         ))
+  into v_duplicate_details
+  from jsonb_array_elements(coalesce(v_collections->'documents_detail', '[]'::jsonb)) item;
+
+  if v_detail_count <> v_document_count
+     or v_invalid_details > 0
+     or v_duplicate_details > 0
+     or abs(v_detail_total - v_observed) > 0.5 then
+    raise exception 'La foto Facto no tiene un detalle completo y cuadrado: % filas, % documentos, total %, esperado %.',
+      v_detail_count, v_document_count, v_detail_total, v_observed;
   end if;
 
   with details as (
