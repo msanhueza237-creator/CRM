@@ -41,6 +41,10 @@ Deno.serve(async (request) => {
       requirePermission(profile, "view");
       return json(await bootstrap(rest, profile), 200, request);
     }
+    if (route === "summary" && request.method === "GET") {
+      requirePermission(profile, "view");
+      return json(await bootstrap(rest, profile, true), 200, request);
+    }
     if (route === "facto/sync" && request.method === "POST") {
       requirePermission(profile, "import");
       return json(await syncFacto(rest, profile, requestId, await readJson(request)), 200, request);
@@ -188,27 +192,29 @@ Deno.serve(async (request) => {
   }
 });
 
-async function bootstrap(rest: RestClient, profile: Profile) {
+async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false) {
+  const detail = (path: string) => summaryOnly ? Promise.resolve([]) : selectRows(rest, path);
   const entities = await selectRows(rest, "accounting_entities?select=*&active=eq.true&order=created_at.asc&limit=10");
   const entity = entities[0];
+  if (summaryOnly && entities.length !== 1) throw new HttpError(409, "Selecciona una empresa contable antes de consultar el resumen.");
   if (!entity) throw new HttpError(409, "Falta aplicar la migración accounting_center.sql.");
   const entityId = String(entity.id);
   const [accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, factoConnectionRows, factoIntegrationRows] = await Promise.all([
     selectRows(rest, `accounting_accounts?select=*&entity_id=eq.${entityId}&order=code.asc`),
-    selectRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
+    detail(`accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
-    selectRows(rest, `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&order=transaction_date.desc&limit=250`),
+    detail(`accounting_bank_transactions?select=*&entity_id=eq.${entityId}&order=transaction_date.desc&limit=250`),
     selectRows(rest, `accounting_bank_balance_snapshots?select=*&entity_id=eq.${entityId}&status=eq.verified&order=as_of_date.desc,created_at.desc&limit=100`),
     selectRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast&limit=1000`),
-    selectRows(rest, `accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
-    selectRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
-    selectRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
-    selectRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
-    selectRows(rest, `accounting_payment_events?select=*&entity_id=eq.${entityId}&order=event_date.desc,event_time.desc.nullslast&limit=2000`),
-    selectRows(rest, `accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
-    selectRows(rest, `accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
+    detail(`accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
+    selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=id.asc`),
+    detail(`accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
+    detail(`accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
+    detail(`accounting_payment_events?select=*&entity_id=eq.${entityId}&order=event_date.desc,event_time.desc.nullslast&limit=2000`),
+    detail(`accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
+    detail(`accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
     selectRows(rest, `accounting_facto_sync_runs?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=24`),
-    selectRows(rest, `integration_sync_runs?select=*&entity_id=eq.${entityId}&provider=eq.facto&resource=eq.receivables&order=created_at.desc&limit=12`),
+    detail(`integration_sync_runs?select=*&entity_id=eq.${entityId}&provider=eq.facto&resource=eq.receivables&order=created_at.desc&limit=12`),
     selectRows(rest, "integration_connections?select=provider,status,last_success_at&provider=eq.facto&limit=1"),
     selectRows(rest, "integration_records?select=id,payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
   ]);
@@ -252,6 +258,7 @@ async function bootstrap(rest: RestClient, profile: Profile) {
     accountingSyncedAt,
     stale: Boolean(integrationUpdatedAt && (!accountingSyncedAt || integrationUpdatedAt > accountingSyncedAt)),
   };
+  if (summaryOnly) return { entity: { id: entity.id, name: entity.name }, summary, dashboard, bankReality, factoFreshness };
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, bankReality, sources, entries,
     receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, summary, dashboard, factoFreshness,

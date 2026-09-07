@@ -268,7 +268,7 @@ export async function sendCopilotMessage(message: string, conversationId?: strin
   const token = data.session?.access_token;
   if (!token) throw new Error("Tu sesion expiro. Inicia sesion nuevamente.");
 
-  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "message"), {
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "legacy-message"), {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,

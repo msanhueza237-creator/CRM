@@ -1,3 +1,5 @@
+import { centralHandler } from "./central.ts";
+import { CopilotDataError } from "./contracts.ts";
 type JsonRecord = Record<string, unknown>;
 
 type Profile = {
@@ -292,10 +294,10 @@ Deno.serve(async (req) => {
 
   try {
     if (route === "health") {
-      return json({ ok: true, service: "crm-copilot" });
+      return json({ ok: true, service: "crm-copilot", engine: "central", contractVersion: 1 });
     }
 
-    if (!["message", "campaign-draft", "report"].includes(route) || req.method !== "POST") {
+    if (!(["message", "campaign-draft", "report", "legacy-message"].includes(route) && req.method === "POST") && !(["conversations", "history", "export"].includes(route) && req.method === "GET")) {
       return json({ error: "Ruta no encontrada" }, 404);
     }
 
@@ -308,6 +310,14 @@ Deno.serve(async (req) => {
     const profile = await getProfile(rest, auth.id);
     if (!profile?.active || !allowedRoles.has(profile.role)) {
       return json({ error: "Usuario sin permiso para usar el copiloto." }, 403);
+    }
+
+    if (["message", "conversations", "history", "export"].includes(route)) {
+      return await centralHandler(req, rest, { id: auth.id, role: profile.role, accessToken: auth.token }, traceId, corsHeaders);
+    }
+    // The legacy report path contains financial aggregates; never expose it to sales/viewer roles.
+    if ((route === "report" || route === "legacy-message") && !["administrador", "finanzas"].includes(profile.role)) {
+      return json({ error: "Utiliza el Copiloto central para consultar las fuentes autorizadas de tu perfil." }, 403);
     }
 
     const payload = await readJson(req);
@@ -348,7 +358,7 @@ Deno.serve(async (req) => {
     }
 
     const recentUserMessages = conversationIdInput
-      ? await getRecentUserMessages(rest, conversation.id)
+      ? await getRecentUserMessages(rest, String(conversation.id))
       : [];
     const effectiveMessage = resolveContextualRequestMessage(message, recentUserMessages);
 
@@ -358,7 +368,7 @@ Deno.serve(async (req) => {
       role: profile.role,
       locale: "es-CL",
       timezone: "America/Santiago",
-      conversationId: conversation.id,
+      conversationId: String(conversation.id),
       requestId,
       traceId,
       accessToken: auth.token,
@@ -407,7 +417,7 @@ Deno.serve(async (req) => {
       intentMessage: effectiveMessage,
       toolResults,
       context,
-      conversationId: conversation.id,
+      conversationId: String(conversation.id),
     });
     const assistantText = ensureIntentAlignedReply(effectiveMessage, openai.text, reportSnapshot);
     const campaignDraft = openai.campaignDraft
@@ -430,7 +440,7 @@ Deno.serve(async (req) => {
       latency_ms: openai.latencyMs,
     });
 
-    await patchRow(rest, "copilot_conversations", conversation.id, { updated_at: new Date().toISOString() });
+    await patchRow(rest, "copilot_conversations", String(conversation.id), { updated_at: new Date().toISOString() });
     await insertAudit(rest, {
       tenant_id: context.tenantId,
       user_id: context.userId,
@@ -470,7 +480,7 @@ Deno.serve(async (req) => {
     });
   } catch (error) {
     const message = error instanceof HttpError ? error.message : error instanceof Error ? error.message : "Error inesperado";
-    const status = error instanceof HttpError ? error.status : 500;
+    const status = error instanceof HttpError ? error.status : error instanceof CopilotDataError ? error.code === "FORBIDDEN" ? 403 : error.code === "INVALID_ARGUMENTS" ? 400 : 503 : 500;
     console.error("[crm-copilot] request failed", { requestId, traceId, status, message });
     return json({ error: message, traceId }, status);
   }
@@ -852,7 +862,7 @@ async function getContentCenterContext(rest: RestClient, message: string): Promi
   const matchingProducts = rankContentProducts(products, message).slice(0, 10);
   const publishedThisWeek = publications.filter((item) => item.status === "published" && Date.parse(String(item.published_at || item.created_at)) >= weekStart).length;
   const activeSchedules = schedules.filter((schedule) => schedule.active === true);
-  const metricTotals = metrics.reduce((totals, row) => ({
+  const metricTotals = metrics.reduce<Record<string, number>>((totals, row) => ({
     impressions: totals.impressions + Number(row.impressions || 0),
     reach: totals.reach + Number(row.reach || 0),
     engagements: totals.engagements + Number(row.likes || 0) + Number(row.comments || 0) + Number(row.shares || 0) + Number(row.saves || 0),
@@ -983,7 +993,7 @@ async function prepareSocialContentDraft(rest: RestClient, context: ToolContext,
 function rankContentProducts(products: JsonRecord[], message: string) {
   const text = normalize(message);
   const requestTokens = new Set(text.split(/[^a-z0-9]+/).filter((token) => token.length >= 4));
-  return products.map((product) => {
+  return products.map<JsonRecord & { _match_score: number }>((product) => {
     const name = normalize(String(product.name || ""));
     const productTokens = name.split(/[^a-z0-9]+/).filter((token) => token.length >= 4);
     const overlap = productTokens.filter((token) => requestTokens.has(token)).length;
@@ -3385,7 +3395,7 @@ function factoReceivablesRange(message: string, timezone: string) {
     day: "2-digit",
   }).format(new Date());
   const explicitDates = message.match(/\b20\d{2}-\d{2}-\d{2}\b/g) || [];
-  if (explicitDates.length >= 2) {
+  if (explicitDates[0] && explicitDates[1]) {
     return {
       fromDate: explicitDates[0] <= explicitDates[1] ? explicitDates[0] : explicitDates[1],
       toDate: explicitDates[0] <= explicitDates[1] ? explicitDates[1] : explicitDates[0],
