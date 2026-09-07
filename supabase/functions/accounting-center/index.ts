@@ -7,7 +7,10 @@ import {
   type ReconciliationDocumentInput,
 } from "./reconciliation-engine.ts";
 import { buildFactoCurrentStateAdjustment } from "./facto-current-state.ts";
-import { analyzeFactoReceivablesSnapshot } from "./facto-receivables.ts";
+import {
+  analyzeFactoReceivablesSnapshot,
+  isVerifiedFactoReceivableBalanceSource,
+} from "./facto-receivables.ts";
 import { identifyPayrollEmployee, protectedPayrollClassification } from "./payroll-employees.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -1084,7 +1087,7 @@ async function syncFactoReportedBalances(
 
   for (const detail of details) {
     const evidence = String(detail.balance_source || "");
-    if (!["facto_receivables", "facto_document_pdf"].includes(evidence)) {
+    if (!isVerifiedFactoReceivableBalanceSource(evidence)) {
       skipped += 1;
       continue;
     }

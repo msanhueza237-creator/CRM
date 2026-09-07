@@ -1,5 +1,12 @@
 type JsonRecord = Record<string, unknown>;
 
+const verifiedFactoBalanceSources = new Set([
+  "facto_receivables",
+  "facto_document_pdf",
+  "facto_excel",
+  "manual_facto_verification",
+]);
+
 export type FactoReceivablesSnapshot = {
   authoritative: boolean;
   detailsVerified: boolean;
@@ -13,12 +20,16 @@ export type FactoReceivablesSnapshot = {
   details: JsonRecord[];
 };
 
+export function isVerifiedFactoReceivableBalanceSource(value: unknown) {
+  return verifiedFactoBalanceSources.has(String(value || ""));
+}
+
 export function analyzeFactoReceivablesSnapshot(input: JsonRecord): FactoReceivablesSnapshot {
   const rawDetails = Array.isArray(input.documents_detail)
     ? input.documents_detail.filter((item): item is JsonRecord => Boolean(item) && typeof item === "object" && !Array.isArray(item))
     : [];
   const mode = String(input.mode || input.source || "");
-  const supportedMode = ["facto_receivables", "facto_document_pdf", "facto_excel", "manual_facto_verification"].includes(mode);
+  const supportedMode = isVerifiedFactoReceivableBalanceSource(mode);
   const sourceVerified = input.authoritative === true && supportedMode;
   const explicitComplete = input.portfolio_complete === true;
   const amountClp = Math.max(0, finite(input.observed_amount));
@@ -27,7 +38,7 @@ export function analyzeFactoReceivablesSnapshot(input: JsonRecord): FactoReceiva
     const evidence = String(detail.balance_source || mode);
     const rawAmount = detail.observed_amount;
     const amount = Number(rawAmount);
-    return ["facto_receivables", "facto_document_pdf", "facto_excel", "manual_facto_verification"].includes(evidence)
+    return isVerifiedFactoReceivableBalanceSource(evidence)
       && rawAmount !== null
       && rawAmount !== undefined
       && rawAmount !== ""

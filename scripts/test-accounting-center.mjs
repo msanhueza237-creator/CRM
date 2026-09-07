@@ -25,7 +25,10 @@ import {
   reconciliationDocumentCandidates,
 } from "../src/modules/accounting/reconciliationSearch.ts";
 import { buildFactoCurrentStateAdjustment } from "../supabase/functions/accounting-center/facto-current-state.ts";
-import { analyzeFactoReceivablesSnapshot } from "../supabase/functions/accounting-center/facto-receivables.ts";
+import {
+  analyzeFactoReceivablesSnapshot,
+  isVerifiedFactoReceivableBalanceSource,
+} from "../supabase/functions/accounting-center/facto-receivables.ts";
 import {
   identifyPayrollEmployee,
   protectedPayrollClassification,
@@ -178,6 +181,9 @@ const completeFactoExcelPortfolio = analyzeFactoReceivablesSnapshot({
 assert.equal(completeFactoExcelPortfolio.authoritative, true);
 assert.equal(completeFactoExcelPortfolio.documentCount, 17);
 assert.equal(completeFactoExcelPortfolio.amountClp, 11287934);
+assert.equal(isVerifiedFactoReceivableBalanceSource("facto_excel"), true);
+assert.equal(isVerifiedFactoReceivableBalanceSource("facto_document_pdf"), true);
+assert.equal(isVerifiedFactoReceivableBalanceSource("unknown_source"), false);
 assert.equal(analyzeFactoReceivablesSnapshot({
   authoritative: true,
   portfolio_complete: true,
