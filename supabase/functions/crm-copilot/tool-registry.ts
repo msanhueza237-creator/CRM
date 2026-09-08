@@ -19,6 +19,7 @@ import { CopilotSources } from "./sources.ts";
 import { findProducts, resolveProducts } from "./product-resolution.ts";
 import { clientPriceRows, factoCurrencies, productPrices } from "./product-prices.ts";
 import { productSales } from "./product-sales.ts";
+import { agentReport, agentSectionRows } from "./agent-reports.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -149,7 +150,9 @@ export class ToolRegistry {
     try {
       const args = validateArguments(definition.parameters, input);
       const result = await definition.execute(args);
-      if (JSON.stringify(result).length > 180000)
+      // Compact sales aggregates are kept complete for export; document evidence keeps the normal cap.
+      const maxSize = name === "get_top_products" && args.detail_level !== "evidence" ? 900000 : 180000;
+      if (JSON.stringify(result).length > maxSize)
         throw new CopilotDataError(
           "El resultado es demasiado amplio. Acota el periodo, producto o cliente para obtener una respuesta completa.",
           "COVERAGE_LIMIT",
@@ -778,7 +781,7 @@ export class ToolRegistry {
       "get_top_products",
       "sales",
       "Ranking desde lineas de facturas y boletas Facto, por unidades y venta neta, con periodo y documentos verificables. Marca, nombre y descripcion cruzados por SKU con Tiendanube. No utiliza snapshots de inventario ni predice demanda futura. La cobertura puede ser parcial por documentos o notas sin detalle.",
-      { ...paging, ...period, metric: choice("units", "net_sales"), result_scope: choice("page", "all_matches") },
+      { ...paging, ...period, metric: choice("units", "net_sales"), result_scope: choice("page", "all_matches"), group_by: choice("product", "month", "year"), detail_level: choice("summary", "evidence"), identity_scope: choice("all_lines", "catalog") },
       async (args) => {
         const range = dateRange({ ...args, period: args.period || "this_year" });
         const fields = "external_id,updated_at,header:payload->header,details:payload->details,totals:payload->totals,global_modifiers:payload->global_modifiers,document_number:payload->>document_number,document_status:payload->>document_status,document_type_taxbureau:payload->>document_type_taxbureau,received_issued_flag:payload->>received_issued_flag,issue_date:payload->>issue_date,currency_id:payload->>currency_id,net_amount:payload->>net_amount";
@@ -786,30 +789,38 @@ export class ToolRegistry {
         const details = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.document_details&order=id.asc`);
         const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
         const products = resolveProducts([], await this.source.records("product_details"), catalog, false);
-        const sales = productSales(documents, details, products, args.query, range, factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined));
+        const sales = productSales(documents, details, products, args.query, range, factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined), args.group_by);
         const metric = args.metric === "net_sales" ? "net_sales" : "units_sold";
-        const data = sales.records.sort((a, b) => metric === "net_sales" && a.currency !== b.currency ? String(a.currency).localeCompare(String(b.currency)) : Number(b[metric] ?? -Infinity) - Number(a[metric] ?? -Infinity));
+        const unlinked = sales.records.filter((r) => !r.sku).length;
+        const data = sales.records.filter((r) => args.identity_scope !== "catalog" || r.sku).map((r) => {
+          const { evidence, ...summary } = r;
+          return args.detail_level === "evidence" ? r : { ...summary, evidence_count: rows(evidence).length };
+        }).sort((a, b) => (args.group_by === "month" || args.group_by === "year" ? String(a.period).localeCompare(String(b.period)) : 0) || (metric === "net_sales" && a.currency !== b.currency ? String(a.currency).localeCompare(String(b.currency)) : Number(b[metric] ?? -Infinity) - Number(a[metric] ?? -Infinity)));
         const warnings = ["Ranking historico de ventas documentadas, no demanda futura ni cobros. Monedas separadas; no sumar ni comparar importes entre monedas.", "La marca proviene del catalogo Tiendanube o de coincidencias del texto de la linea; no se modifica la ficha del producto."];
         if (sales.coverage.problems.length) warnings.push(`${sales.coverage.problems.length} documentos o lineas requieren revision. Ranking provisional: no acredita todas las ventas netas del periodo.`);
         if (data.some((r) => r.net_sales === null)) warnings.push("Hay importes sin validar contra el neto del documento; no se inventan descuentos ni ventas netas.");
+        if (unlinked) warnings.push(`${unlinked} grupos documentales sin SKU confirmado pueden incluir servicios o fletes. No equivalen a productos del catalogo. Usa identity_scope=catalog para productos identificados; all_lines para supervisar pendientes.`);
         const result = tableResult(
           "get_top_products",
           "sales",
           `Ventas documentadas ${range.from} a ${range.to}`,
           data,
           columns(
+            "period:Periodo",
             "sku:SKU",
             "name:Producto",
             "units_sold:Unidades facturadas",
             "net_sales:Venta neta documentada",
             "currency:Moneda",
             "document_count:Documentos",
+            "identity:Identificacion",
           ),
           "/finanzas-contabilidad?view=sources",
           args.result_scope === "all_matches" ? { ...args, offset: 0, limit: Math.max(1, data.length) } : args,
           warnings,
         );
-        result.data = { ...object(result.data), period: range, document_coverage: sales.coverage };
+        result.data = { ...object(result.data), period: range, result_scope: args.result_scope || "page", group_by: args.group_by || "product", identity_scope: args.identity_scope || "all_lines", unlinked_groups: unlinked, document_coverage: sales.coverage };
+        if (args.identity_scope === "catalog" && unlinked) { result.status = "partial"; result.coverage.complete = false; }
         if (sales.coverage.problems.length || data.some((r) => r.net_sales === null)) { result.status = "partial"; result.coverage.complete = false; }
         return result;
       },
@@ -1186,6 +1197,33 @@ export class ToolRegistry {
             "Los resultados son historicos; su fecha no garantiza datos actuales.",
           ],
         );
+      },
+    );
+    this.add(
+      "get_agent_report",
+      "agents",
+      "Consulta de solo lectura del ultimo informe completado de un agente. Sin section devuelve indice y fechas; con section recupera filas del detalle existente, paginadas. No ejecuta agentes ni propuestas. Los informes historicos no sustituyen cifras actuales de modulos.",
+      { ...paging, agent: choice("commercial", "marketing", "finance", "collections", "logistics", "foreign_trade", "executive"), section: { ...string, description: "null para consultar indice. Luego copia EXACTAMENTE un valor de section del indice (por ejemplo top_rotation), sin traducirlo ni inventarlo." } },
+      async (args) => {
+        if (!args.agent) throw new CopilotDataError("Indica el agente que deseas consultar.", "INVALID_ARGUMENTS");
+        const tasks = await this.source.select(`business_agent_tasks?select=id,agent_type,status,result,completed_at,updated_at&agent_type=eq.${args.agent}&status=eq.completed&order=completed_at.desc.nullslast,id.desc&limit=1`);
+        const path = `/agentes/${args.agent}/dashboard`;
+        if (!tasks.length) return tableResult("get_agent_report", "agents", "Sin informe completado", [], [], path, args, ["La ausencia de informe no significa ausencia de actividad del negocio."]);
+        const { metadata, sections } = agentReport(tasks[0]);
+        if (args.section && !Object.hasOwn(sections, String(args.section))) {
+          const available = Object.keys(sections).map((section) => ({ section }));
+          const retry = tableResult("get_agent_report", "agents", "Indice de secciones disponibles", available, [{ key: "section", label: "Seccion" }], path, { limit: available.length });
+          retry.status = "needs_clarification";
+          retry.warnings.push("La seccion solicitada no existe. Consulta nuevamente usando exactamente una de estas secciones; no es necesario pedir al usuario un nombre tecnico.");
+          retry.data = { ...object(retry.data), report: metadata };
+          return retry;
+        }
+        const data = args.section ? agentSectionRows(sections[String(args.section)]).filter((r) => matches(args.query, ...Object.values(r))) : Object.entries(sections).map(([section, value]) => ({ section, records: Array.isArray(value) ? value.length : value && typeof value === "object" ? Object.keys(value).length : 1 }));
+        const fields = [...new Set(data.flatMap((r) => Object.keys(r)))];
+        const result = tableResult("get_agent_report", "agents", `Informe historico: ${args.agent}${args.section ? " / " + args.section : ""}`, data, fields.map((key) => ({ key, label: key })), path, args, ["Fecha de ejecucion no equivale a fecha de los datos. No sumar estas cifras a las de Facto o modulos: pueden representar las mismas operaciones.", "El detalle anidado extenso se identifica como abreviado; el informe original conserva la evidencia. Las propuestas requieren revision y no estan ejecutadas."]);
+        result.data = { ...object(result.data), report: metadata };
+        result.freshness.sourceObservedAt = String(metadata.source_updated_at || tasks[0].completed_at || "") || null;
+        return result;
       },
     );
     this.add(

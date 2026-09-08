@@ -54,6 +54,53 @@ import { centralHandler } from "../supabase/functions/crm-copilot/central.ts";
 import { catalogUrl, findProducts, locationStock, resolveProducts } from "../supabase/functions/crm-copilot/product-resolution.ts";
 import { clientPriceRows, factoCurrencies, productPrices } from "../supabase/functions/crm-copilot/product-prices.ts";
 import { productSales } from "../supabase/functions/crm-copilot/product-sales.ts";
+import { agentReport, agentSectionRows } from "../supabase/functions/crm-copilot/agent-reports.ts";
+
+test("Ventas de toda la gama separan productos, meses, anos y monedas sin sumar snapshots", () => {
+  const products = Array.from({ length: 36 }, (_, i) => ({ sku: `SKU${i}`, name: `Producto ${i}`, brands: [i % 2 ? "Marca A" : "Marca B"] }));
+  const docs = ["2026-01-15", "2026-02-15", "2025-02-15"].map((date, i) => ({ external_id: String(i), issue_date: date, received_issued_flag: 1, document_type_taxbureau: 33, document_status: 1, currency_id: 39, net_amount: 3600 }));
+  const details = docs.map((d) => ({ ...d, details: products.map((p) => ({ line_description: p.name, quantity: 1, unit_price: 100 })) }));
+  const range = { from: "2026-01-01", to: "2026-12-31" };
+  const annual = productSales(docs, details, products, null, range, { 39: "CLP" });
+  assert.equal(annual.records.length, 36);
+  assert.ok(annual.records.every((r) => r.units_sold === 2 && r.net_sales === 200));
+  const monthly = productSales(docs, details, products, null, range, { 39: "CLP" }, "month");
+  assert.equal(monthly.records.length, 72);
+  assert.deepEqual([...new Set(monthly.records.map((r) => r.period))], ["2026-01", "2026-02"]);
+  assert.equal(monthly.records.reduce((sum, r) => sum + r.net_sales, 0), annual.records.reduce((sum, r) => sum + r.net_sales, 0));
+  const yearly = productSales(docs, details, products, null, { from: "2025-01-01", to: "2026-12-31" }, { 39: "CLP" }, "year");
+  assert.equal(yearly.records.length, 72);
+});
+
+test("Informes de siete agentes conservan fecha, advertencias y detalle sin ejecutar propuestas", () => {
+  for (const [agent, key] of Object.entries({ commercial: "commercial_report", marketing: "marketing_report", finance: "financial_report", collections: "collections_report", logistics: "logistics_report", foreign_trade: "foreign_trade_report", executive: "executive_brief" })) {
+    const report = agentReport({ id: "task", agent_type: agent, completed_at: "2026-09-08", result: { summary: "Historico", warnings: ["Datos antiguos"], proposals: [{ action: "send" }], metrics: { observed: 5 }, evidence: [{ [key]: { period_start: "2025-01-01", period_end: "2025-12-31", products: [{ sku: "A", units: 5 }] } }] } });
+    assert.equal(report.metadata.period_start, "2025-01-01");
+    assert.equal(report.sections.products.length, 1);
+    assert.equal(report.sections.proposals, undefined);
+    assert.deepEqual(report.metadata.warnings, ["Datos antiguos"]);
+  }
+  const sanitized = agentSectionRows([{ sku: "A", api_key: "hidden", nested: { password: "hidden", units: 5 } }]);
+  assert.doesNotMatch(JSON.stringify(sanitized), /hidden/);
+  assert.match(JSON.stringify(sanitized), /units/);
+});
+
+test("Consulta de agente pagina detalle, valida seccion y bloquea acceso no autorizado", async () => {
+  const { source, registry } = fixture();
+  source.select = async () => [{ id: "task", agent_type: "commercial", completed_at: stamp, result: { evidence: [{ commercial_report: { customers: Array.from({ length: 36 }, (_, i) => ({ name: `Cliente ${i}`, amount: i })) } }] } }];
+  const index = await registry.execute("get_agent_report", { agent: "commercial" });
+  assert.ok(index.table.rows.some((r) => r.section === "customers" && r.records === 36));
+  const page = await registry.execute("get_agent_report", { agent: "commercial", section: "customers", limit: 25 });
+  assert.equal(page.coverage.totalMatched, 36);
+  assert.equal(page.coverage.nextOffset, 25);
+  const next = await registry.execute("get_agent_report", { agent: "commercial", section: "customers", offset: 25 });
+  assert.equal(next.table.rows.length, 11);
+  const bad = await registry.execute("get_agent_report", { agent: "commercial", section: "credentials" });
+  assert.notEqual(bad.status, "ok");
+  assert.ok(bad.table.rows.some((r) => r.section === "customers"));
+  const denied = await fixture("vendedor").registry.execute("get_agent_report", { agent: "finance" });
+  assert.equal(denied.status, "forbidden");
+});
 
 const stamp = new Date().toISOString(),
   operation = "11111111-1111-4111-8111-111111111111";
@@ -587,6 +634,33 @@ test("Catalogo completo explica descarga total sin ofrecer otra parte por pagina
   assert.match(result.message, /3 productos/);
   assert.match(result.message, /No necesitas solicitar una segunda parte/);
   assert.doesNotMatch(result.message, /Quieres/);
+});
+
+test("Reporte mensual completo conserva mas de 100 filas en exportacion y auditoria, no solo vista del modelo", async () => {
+  const { source, registry } = fixture();
+  const products = Array.from({ length: 220 }, (_, i) => ({ id: String(i), sku: `P${i}`, name: `Producto mensual ${i}` }));
+  const docs = ["2026-01-10", "2026-02-10"].map((date, i) => ({ external_id: String(i), issue_date: date, document_status: 1, document_type_taxbureau: 33, received_issued_flag: 1, currency_id: 39, net_amount: 22000 }));
+  source.records = async () => [];
+  source.all = async (path) => path.startsWith("content_products") ? products : path.includes("resource=eq.document_details") ? docs.map((d) => ({ ...d, details: products.map((p) => ({ line_description: p.name, quantity: 1, unit_price: 100 })) })) : docs;
+  const args = { period: "custom", from: "2026-01-01", to: "2026-12-31", group_by: "month", identity_scope: "catalog", result_scope: "all_matches" };
+  const full = await registry.execute("get_top_products", args);
+  assert.equal(full.status, "ok", full.summary);
+  assert.equal(full.table.rows.length, 440);
+  assert.equal(full.data.records[0].evidence, undefined);
+  let round = 0; const requests = [], traces = [];
+  const result = await runOrchestrator({ registry, model: "fixture", apiKey: "x", message: "reporte mensual todos productos", history: [], signal: new AbortController().signal, onTrace: async (trace) => traces.push(trace), fetcher: async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ output: round++ === 0 ? [{ type: "function_call", name: "get_top_products", call_id: "sales", arguments: JSON.stringify(args) }] : [{ type: "message", content: [{ type: "output_text", text: "Reporte adjunto" }] }] }));
+  } });
+  const sent = JSON.parse(requests[1].input.find((i) => i.type === "function_call_output").output);
+  assert.equal(sent.data.model_preview, true);
+  assert.equal(sent.data.attached_rows, 440);
+  assert.equal(sent.data.records.length, 20);
+  assert.equal(result.results[0].table.rows.length, 440);
+  assert.equal(traces[0].result.table.rows.length, 440);
+  assert.match(result.message, /220 SKU identificados/);
+  assert.match(result.message, /440 filas/);
+  assert.match(result.message, /Excel/);
 });
 
 test("Ventas documentales cruzan marca y descripcion sin duplicar facturas ni usar stock", () => {

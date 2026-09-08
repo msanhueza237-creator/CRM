@@ -13,7 +13,7 @@ const fixed = (value: unknown): bigint | null => {
 const amount = (value: bigint) => Number(value) / 1000000;
 
 // Invoice lines are evidence of sales, not stock changes or cash receipts.
-export function productSales(documents: Row[], details: Row[], products: Row[], query: unknown, range: { from: string; to: string }, currencies: Record<string, string>) {
+export function productSales(documents: Row[], details: Row[], products: Row[], query: unknown, range: { from: string; to: string }, currencies: Record<string, string>, grouping: unknown = "product") {
   const catalogMatches = new Set(findProducts(products, query).map((p) => p.sku));
   const groups = new Map<string, { row: Row; units: bigint; net: bigint; documents: Set<string>; revenueKnown: boolean }>();
   const problems: Row[] = [];
@@ -60,8 +60,9 @@ export function productSales(documents: Row[], details: Row[], products: Row[], 
       const product = linked.length === 1 ? linked[0] : null;
       if (query && !(product && catalogMatches.has(product.sku)) && !findProducts([{ name: description + " " + String(line.long_description || "") }], query).length) continue;
       if (!description || units[i] === null || units[i]! <= 0n) { problems.push({ ...ref, line: i + 1, problem: "Cantidad o descripcion no verificable" }); continue; }
-      const groupKey = `${product?.sku || "description:" + text}|${currency || "unknown"}`;
-      if (!groups.has(groupKey)) groups.set(groupKey, { row: { sku: product?.sku || null, name: product?.name || description, currency, identity: product ? "SKU por nombre exacto" : "Descripcion documental, SKU no confirmado", evidence: [], updated_at: detail.updated_at }, units: 0n, net: 0n, documents: new Set(), revenueKnown: true });
+      const period = grouping === "month" ? String(h.issue_date).slice(0, 7) : grouping === "year" ? String(h.issue_date).slice(0, 4) : `${range.from} / ${range.to}`;
+      const groupKey = `${product?.sku || "description:" + text}|${currency || "unknown"}|${period}`;
+      if (!groups.has(groupKey)) groups.set(groupKey, { row: { period, sku: product?.sku || null, name: product?.name || description, currency, identity: product ? "SKU por nombre exacto" : "Descripcion documental, SKU no confirmado", evidence: [], updated_at: detail.updated_at }, units: 0n, net: 0n, documents: new Set(), revenueKnown: true });
       const group = groups.get(groupKey)!;
       group.units += units[i]!;
       group.documents.add(id);
