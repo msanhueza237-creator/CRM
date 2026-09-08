@@ -17,6 +17,7 @@ import { dateRange, inRange, todayChile } from "./dates.ts";
 import { canReadDomain } from "./permissions.ts";
 import { CopilotSources } from "./sources.ts";
 import { findProducts, resolveProducts } from "./product-resolution.ts";
+import { clientPriceRows, factoCurrencies, productPrices } from "./product-prices.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -475,9 +476,12 @@ export class ToolRegistry {
     this.add(
       "get_price_list",
       "products",
-      "Precios netos/brutos existentes de Facto. Segmentos distributor, installer, consumer requieren lista autorizada; si falta mapeo no inventar descuentos. Exportable desde la tabla.",
+      "Lista comercial: SKU, nombre, precio neto de venta Facto, moneda y stock verificado. Busca con los mismos nombres, plurales y enlaces de search_products. Usar SIEMPRE para preguntas de precio o listas Excel para clientes, incluso una pregunta corta continuando una consulta de precios. segment=source para precio de venta habitual, no inventar segmento ni descuentos. client_price_list contiene el respaldo completo exportable de productos disponibles, no solo la pagina. Para varios tipos de producto hacer una consulta por tipo, nunca unir sus nombres como un unico producto.",
       {
         ...paging,
+        query: { ...paging.query, maxLength: 1000 },
+        stock_filter: choice("all", "available"),
+        scope: choice("search", "catalog"),
         segment: choice("source", "distributor", "installer", "consumer"),
         list_id: string,
       },
@@ -497,29 +501,19 @@ export class ToolRegistry {
             ],
             { status: "needs_clarification" },
           );
-        const data: Row[] = [];
-        for (const record of await this.source.records("product_details")) {
-          const product = object(record.payload);
-          if (!matches(args.query, product.name, product.sku)) continue;
-          for (const price of rows(product.price)) {
-            if (
-              args.list_id &&
-              String(price.product_price_list_id) !== args.list_id
-            )
-              continue;
-            data.push({
-              sku: product.sku,
-              name: product.name,
-              list_id: price.product_price_list_id,
-              currency_id: price.currency_id,
-              net: numeric(price.unit_net),
-              tax: numeric(price.unit_tax),
-              total: numeric(price.unit_total),
-              updated_at: record.updated_at,
-            });
-          }
-        }
-        return tableResult(
+        const details = await this.source.records("product_details");
+        const snapshots = await this.source.records("inventory_snapshots");
+        const catalog = await this.source.all("content_products?select=id,sku,name,product_url,last_synced_at&order=id.asc");
+        const currencies = factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined);
+        const resolved = productPrices(snapshots, details, catalog, args, currencies);
+        if (!args.list_id && resolved.availableLists.length > 1) return readResult(
+          "get_price_list", "products", "Hay varias listas de precios Facto. Selecciona una lista antes de preparar precios para clientes.",
+          { available_list_ids: resolved.availableLists }, [], { status: "needs_clarification" },
+        );
+        const data = args.scope === "catalog" || args.stock_filter === "available" ? resolved.records.filter((p) => typeof p.stock === "number" && p.stock > 0) : resolved.records;
+        const clientRows = clientPriceRows(data, args.scope === "catalog");
+        if (clientRows.length > 1000) throw new CopilotDataError("Acota los productos para preparar una lista completa de hasta 1000 filas.", "COVERAGE_LIMIT");
+        const result = tableResult(
           "get_price_list",
           "products",
           "Precios de origen Facto",
@@ -527,18 +521,21 @@ export class ToolRegistry {
           columns(
             "sku:SKU",
             "name:Producto",
+            "net:Precio neto",
+            "stock:Stock registrado",
+            "currency:Moneda",
             "list_id:Lista Facto",
-            "currency_id:ID moneda Facto",
-            "net:Neto",
-            "tax:Impuesto",
-            "total:Total",
           ),
           "/contenido?view=library",
           args,
           [
-            "Los identificadores de moneda se conservan como Facto los entrega; no se convierten ni se asume CLP.",
+            "Precios netos de venta de la lista Facto, sin IVA ni descuentos inventados. El stock y precio conservan sus fechas; no son una consulta en vivo.",
+            ...(data.length !== clientRows.length ? [`${data.length - clientRows.length} filas no aptas para envio: stock o precio no positivo, moneda/fecha pendiente o coincidencia aproximada. No se incluyen en el Excel comercial.`] : []),
           ],
         );
+        result.data = { ...object(result.data), identity_matches: resolved.products.length, client_price_list: { complete: true, total: clientRows.length, excluded: data.length - clientRows.length, records: clientRows } };
+        if (!data.length) result.summary = resolved.products.length ? "Se encontraron productos, pero ninguno cumple el filtro de disponibilidad solicitado. No se inventan cantidades ni precios." : "No se encontro el producto por ese nombre, SKU o enlace. Una busqueda vacia no acredita ausencia de precios; confirma el SKU.";
+        return result;
       },
     );
     this.add(

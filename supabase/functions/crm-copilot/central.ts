@@ -145,7 +145,7 @@ export async function centralHandler(
   req.signal.addEventListener("abort", abort, { once: true });
   const timeout = setTimeout(abort, 150000);
   async function run(emit: (event: Row) => void) {
-    emit({ type: "conversation", conversationId: id });
+    emit({ type: "conversation", conversationId: id, userMessageId: userMessage.id });
     const start = Date.now();
     try {
       const output = await runOrchestrator({
@@ -202,6 +202,7 @@ export async function centralHandler(
       });
       const metadata = {
         engine: "central",
+        inReplyTo: userMessage.id,
         traceId,
         role: actor.role,
         results: output.results,
@@ -292,6 +293,7 @@ export async function centralHandler(
           if (open)
             stream.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
         };
+        const heartbeat = setInterval(() => emit({ type: "heartbeat" }), 10000);
         run(emit)
           .catch((error) => {
             console.error("[copilot-central] turn failed", {
@@ -309,6 +311,7 @@ export async function centralHandler(
             });
           })
           .finally(() => {
+            clearInterval(heartbeat);
             if (open) {
               open = false;
               stream.close();

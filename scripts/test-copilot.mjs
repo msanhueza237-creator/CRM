@@ -52,6 +52,7 @@ import {
 } from "../supabase/functions/crm-copilot/contracts.ts";
 import { centralHandler } from "../supabase/functions/crm-copilot/central.ts";
 import { catalogUrl, findProducts, locationStock, resolveProducts } from "../supabase/functions/crm-copilot/product-resolution.ts";
+import { clientPriceRows, factoCurrencies, productPrices } from "../supabase/functions/crm-copilot/product-prices.ts";
 
 const stamp = new Date().toISOString(),
   operation = "11111111-1111-4111-8111-111111111111";
@@ -469,6 +470,7 @@ test("Precios de segmentos no se inventan; lista de origen conserva moneda ID", 
   );
   const source = await registry.execute("get_price_list", {
     segment: "source",
+    query: "rejilla",
   });
   assert.equal(source.table.rows[0].currency_id, 39);
   assert.equal(source.table.rows[0].total, 5950);
@@ -481,6 +483,83 @@ test("Actividad de agentes consulta resumen proyectado, no resultados masivos", 
   const path = accesses.find(path => path.startsWith("business_agent_tasks?"));
   assert.ok(path.includes("result_summary:result->>summary"));
   assert.ok(!path.includes(",result,"));
+});
+
+function priceFixture() {
+  const { source, registry } = fixture("vendedor");
+  const details = [
+    ["42", "ACB-C01", "Soporte Muro Pequena", "6490.000000", "468.000000"],
+    ["43", "ACB-C03", "Soporte de muro Grande", "7950.000000", "66.000000"],
+    ["47", "BRA-2002", "Soporte Muro con nivel", "8250.000000", "0.000000"],
+    ["259", "LX1030BOX", "Manometro con manguera de carga", "35500.000000", "8.000000"],
+  ].map(([id, sku, name, net, stock]) => ({ external_id: id, updated_at: stamp, payload: {
+    product_id: id, sku, name, cost: { value: 123456789 },
+    inventories: { details: [{ product_location_id: "1", available_quantity: stock }], total_available: 0 },
+    price: [{ product_price_list_id: "1", currency_id: "39", unit_net: net }],
+  } }));
+  source.records = async (resource) => resource === "product_details" ? details : [];
+  source.all = async () => [];
+  return { source, registry, details };
+}
+
+test("Precios y stock usan la misma busqueda: plural, acento, preposiciones y SKU", async () => {
+  const { registry } = priceFixture();
+  const supports = await registry.execute("get_price_list", { query: "soportes muro", stock_filter: "available", limit: 1 });
+  assert.equal(supports.status, "ok"); assert.equal(supports.coverage.totalMatched, 2);
+  assert.equal(supports.table.rows.length, 1);
+  const client = supports.data.client_price_list;
+  assert.equal(client.complete, true); assert.equal(client.records.length, 2);
+  assert.equal(client.records.find((r) => r.sku === "ACB-C01").net, 6490);
+  assert.equal(client.records.find((r) => r.sku === "ACB-C01").stock, 468);
+  assert.equal(client.records[0].currency, "CLP");
+  assert.ok(!JSON.stringify(supports).includes("123456789"));
+  const gauge = await registry.execute("get_price_list", { query: "manómetros", stock_filter: "available" });
+  assert.equal(gauge.table.rows[0].sku, "LX1030BOX"); assert.equal(gauge.table.rows[0].net, 35500);
+});
+
+test("Catalogo completo ignora filtros anteriores y conserva precios pendientes sin limitarse a la pagina", async () => {
+  const { registry, details } = priceFixture();
+  details[3].payload.price = [];
+  const result = await registry.execute("get_price_list", { scope: "catalog", query: "soporte muro", stock_filter: "available", limit: 1 });
+  assert.equal(result.status, "ok");
+  assert.equal(result.table.rows.length, 1);
+  assert.equal(result.data.client_price_list.total, 3);
+  assert.equal(result.data.client_price_list.records.find((r) => r.sku === "LX1030BOX").net, null);
+  assert.ok(result.data.client_price_list.records.every((r) => r.stock > 0));
+});
+
+test("Excel comercial excluye stock cero/desconocido, precio faltante, moneda desconocida y coincidencia aproximada", () => {
+  const { details } = priceFixture();
+  const result = productPrices([], details, [], {}, factoCurrencies());
+  assert.equal(clientPriceRows(result.records).length, 3);
+  for (const invalid of [{ stock: null }, { stock: 0 }, { net: null }, { net: 0 }, { net: -1 }, { currency: null }, { stock_updated_at: null }, { match_type: "approximate_name" }]) {
+    assert.equal(clientPriceRows([{ ...result.records[0], ...invalid }]).length, 0);
+  }
+  assert.equal(factoCurrencies('{"39":"USD"}')["39"], "USD");
+  assert.throws(() => factoCurrencies('{"39":"pesos"}'));
+});
+
+test("Listas distintas o precios duplicados no se eligen arbitrariamente", async () => {
+  const { details, registry } = priceFixture();
+  details[0].payload.price.push({ ...details[0].payload.price[0], product_price_list_id: "2", unit_net: "6000" });
+  assert.equal((await registry.execute("get_price_list", { query: "ACB-C01" })).status, "needs_clarification");
+  const chosen = await registry.execute("get_price_list", { query: "ACB-C01", list_id: "2" });
+  assert.equal(chosen.data.client_price_list.records[0].net, 6000);
+  details[0].payload.price.push({ ...details[0].payload.price[0] });
+  const duplicate = await registry.execute("get_price_list", { query: "ACB-C01", list_id: "1" });
+  assert.equal(duplicate.data.client_price_list.records.length, 0);
+});
+
+test("Respaldo completo de precios no se envia al modelo pero queda en respuesta y auditoria", async () => {
+  let round = 0; const requests = [], traces = [];
+  const result = await runOrchestrator({ registry: priceFixture().registry, model: "fixture", apiKey: "x", message: "lista precios soportes muro", history: [], signal: new AbortController().signal, onTrace: async (trace) => traces.push(trace), fetcher: async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ output: round++ === 0 ? [{ type: "function_call", name: "get_price_list", call_id: "prices", arguments: JSON.stringify({ query: "soporte muro", stock_filter: "available", limit: 1 }) }] : [{ type: "message", content: [{ type: "output_text", text: "Lista lista" }] }] }));
+  } });
+  const sent = JSON.parse(requests[1].input.find((i) => i.type === "function_call_output").output);
+  assert.equal(sent.data.client_price_list.records, undefined); assert.equal(sent.data.client_price_list.total, 2);
+  assert.equal(result.results[0].data.client_price_list.records.length, 2);
+  assert.equal(traces[0].result.data.client_price_list.records.length, 2);
 });
 test("Cartera fixture: 17 documentos CLP 11287934, no suma saldos informados y conciliados", async () => {
   const result = await fixture().registry.execute("get_accounts_receivable", {

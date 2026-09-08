@@ -8,7 +8,7 @@ import {
 import { todayChile } from "./dates.ts";
 import { ToolRegistry } from "./tool-registry.ts";
 
-export const centralPromptVersion = "central-read-tools-stock-2026-09-07";
+export const centralPromptVersion = "central-price-stock-2026-09-08";
 export interface ToolTrace {
   callId: string;
   toolName: string;
@@ -76,6 +76,8 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     "Utiliza varias herramientas cuando haga falta. Si obtienes un ID de importacion, consulta su detalle para saber productos/unidades. Para informe completo o estado del negocio usa generate_business_report.",
     "Conserva los filtros solicitados en los argumentos: nombres, SKU, RUT, fechas y estado. Productos de rejilla requiere query=rejilla; stock conocido requiere stock_filter=known. No sustituyas una busqueda sin resultados por un listado general ni etiquetes productos ajenos como coincidencias. Si falta un filtro necesario, vuelve a consultar correctamente antes de responder.",
     "Stock desconocido, moneda desconocida y metricas no disponibles son null, no cero. No inventes descuentos, categorias, costos o reglas de precios por segmento.",
+    "Si pide TODOS los productos con stock o catalogo completo, usa get_price_list con scope=catalog, query=null, stock_filter=available, segment=source. Esta peticion reemplaza cualquier filtro de producto de mensajes anteriores. No limites la lista a ejemplos previos ni a la pagina visible. Los precios faltantes quedan Por confirmar en Excel; no son cero. Para busquedas especificas usa scope=search.",
+    "Para precios de venta, listas para clientes o Excel usa get_price_list, que combina precio neto y stock por SKU. Usa segment=source salvo peticion explicita de una tarifa especial. No deduzcas que no hay precio desde search_products: su precio puede estar sin verificar aunque exista precio en get_price_list. Ante una pregunta corta con un producto nuevo conserva la intencion (precio/lista) anterior, pero reemplaza el nombre anterior por el producto NUEVO solicitado. Para una lista de varios productos consulta cada nombre por separado. Para lista con stock disponible usa stock_filter=available. El boton Lista de precios (Excel) exporta el respaldo comercial completo, excluyendo los datos internos.",
     "Para cuanto stock tenemos de un producto usa search_products con stock_filter=all, no known: hay que encontrarlo aunque falte la cantidad. Si el usuario entrega un enlace, conserva la URL completa en query para identificar el SKU. Nombre generico con varios modelos requiere mostrar sus SKU y cantidades por separado, sin sumarlos como si fueran un producto unico. Una coincidencia aproximada requiere confirmar el modelo.",
     "Busqueda vacia no significa agotado ni no tenemos. Solo afirma stock cero cuando una fila identificada tenga stock_known=true y stock=0. Si hay identity_matches pero unknown_stock_matches, el producto existe y falta cantidad verificada. Para stock indica stock_source y stock_updated_at de cada fila; no uses una fecha de sincronizacion mas reciente de otra fuente. No afirmes disponibilidad actual en vivo con datos historicos.",
     "Factura, pago, banco, asiento y conciliacion son diferentes. No sumes saldos informados con saldos conciliados. No presentes utilidad como caja ni resultado provisional como certificado.",
@@ -220,7 +222,11 @@ export async function runOrchestrator(options: OrchestratorOptions) {
       return {
         type: "function_call_output",
         call_id: callId,
-        output: JSON.stringify(result),
+        // Full customer exports stay in the audited response, not in the model context.
+        output: JSON.stringify(object(result.data).client_price_list ? {
+          ...result,
+          data: { ...object(result.data), client_price_list: { ...object(object(result.data).client_price_list), records: undefined } },
+        } : result),
       };
     }
     for (let offset = 0; offset < requested.length; offset += 3) {

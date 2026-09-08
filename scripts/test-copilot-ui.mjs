@@ -79,6 +79,17 @@ const financial = {
   },
 };
 reply.metadata.results.push(financial);
+const priceRows = [
+  { sku: "ACB-C01", name: "Soporte Muro Pequena", net: 6490, stock: 468, currency: "CLP", list_id: "1", stock_updated_at: stamp, price_updated_at: stamp },
+  { sku: "ACB-C03", name: "Soporte Muro Grande", net: 7950, stock: 66, currency: "CLP", list_id: "1", stock_updated_at: stamp, price_updated_at: stamp },
+  { sku: "QA-FORMULA", name: "=SUM(A1:A2)", net: 1234.56, stock: 2, currency: "CLP", list_id: "1", stock_updated_at: stamp, price_updated_at: stamp },
+];
+const priceResult = { ...result, toolName: "get_price_list", domain: "products", summary: "Lista de precios de origen Facto", data: { client_price_list: { complete: true, total: priceRows.length, records: priceRows } },
+  coverage: { complete: true, totalMatched: 3, returned: 1, nextOffset: 1 },
+  table: { title: "Precios netos y stock", columns: [{ key: "sku", label: "SKU" }, { key: "name", label: "Nombre" }, { key: "net", label: "Precio neto" }, { key: "stock", label: "Stock" }], rows: priceRows.slice(0, 1) },
+};
+const priceResults = process.env.COPILOT_REAL_PRICE_FIXTURE ? JSON.parse(await readFile(new URL("../test-results/copilot/client-prices-real.json", import.meta.url), "utf8")) : [priceResult];
+const priceReply = { ...reply, content: "## Lista de precios\n\nPrecios netos y existencias registradas, sujetos a confirmacion.", metadata: { traceId: "price-fixture", results: [...priceResults, financial] } };
 const output = new URL("../test-results/copilot/", import.meta.url);
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true, channel: "chrome" });
@@ -121,7 +132,7 @@ await context.addInitScript(
     payload,
   },
 );
-let delayMessage = false,
+let delayMessage = false, priceMode = false, failHealth = false, postRequests = 0,
   exportRequests = 0;
 await context.route("**/*", async (route) => {
   const url = new URL(route.request().url());
@@ -138,7 +149,10 @@ await context.route("**/*", async (route) => {
   if (route.request().method() === "OPTIONS")
     return route.fulfill({ status: 204, headers });
   let body = [];
-  if (url.pathname.endsWith("/health")) body = { ok: true, engine: "central", contractVersion: 1 };
+  if (url.pathname.endsWith("/health")) {
+    if (failHealth) return route.abort("failed");
+    body = { ok: true, engine: "central", contractVersion: 1 };
+  }
   if (url.pathname.includes("/auth/v1/user")) body = user;
   if (url.pathname.includes("/profiles"))
     body = {
@@ -167,9 +181,11 @@ await context.route("**/*", async (route) => {
     };
   if (url.pathname.endsWith("/export")) {
     exportRequests++;
-    body = { message: reply };
+    body = { message: priceMode ? priceReply : reply };
   }
   if (url.pathname.endsWith("/message")) {
+    postRequests++;
+    const activeReply = priceMode ? priceReply : reply;
     if (delayMessage) await new Promise((resolve) => setTimeout(resolve, 2500));
     const events = [
       { type: "conversation", conversationId },
@@ -184,9 +200,9 @@ await context.route("**/*", async (route) => {
         type: "complete",
         conversationId,
         messageId,
-        message: reply.content,
+        message: activeReply.content,
         traceId: "fixture-trace",
-        results: reply.metadata.results,
+        results: activeReply.metadata.results,
       },
     ];
     return route.fulfill({
@@ -267,6 +283,46 @@ try {
   await page
     .getByRole("button", { name: "Nueva conversacion", exact: true })
     .click();
+  failHealth = true;
+  const postsBeforeFailure = postRequests;
+  await page.getByRole("textbox", { name: "Consulta al Copiloto" }).fill("soporte muro");
+  await page.getByRole("button", { name: "Enviar consulta", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "No se envio la consulta" }).waitFor();
+  assert.equal(await page.getByRole("textbox", { name: "Consulta al Copiloto" }).inputValue(), "soporte muro");
+  assert.equal(await page.locator(".cc-user").count(), 0);
+  assert.equal(postRequests, postsBeforeFailure);
+  failHealth = false; priceMode = true;
+  await page.getByRole("button", { name: "Enviar consulta", exact: true }).click();
+  await page.getByRole("heading", { name: "Lista de precios", exact: true }).waitFor();
+  const [priceDownload] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Descargar lista de precios para clientes", exact: true }).click()]);
+  const priceFile = new URL(process.env.COPILOT_REAL_PRICE_FIXTURE ? "CLIMACTIVA-lista-precios-real.xlsx" : "client-prices.xlsx", output);
+  await priceDownload.saveAs(fileURLToPath(priceFile));
+  const priceBook = new ExcelJS.Workbook(); await priceBook.xlsx.readFile(fileURLToPath(priceFile));
+  const expectedPrices = priceResults.flatMap((r) => r.data.client_price_list.records);
+  assert.equal(priceBook.worksheets.length, new Set(expectedPrices.map((r) => r.currency || "Por confirmar")).size);
+  const priceSheet = priceBook.getWorksheet("Precios CLP");
+  assert.deepEqual(priceSheet.getRow(4).values.slice(1), ["SKU", "Nombre", "Precio neto CLP", "Stock registrado"]);
+  assert.equal(priceSheet.columnCount, 4);
+  assert.equal(priceBook.worksheets.reduce((sum, sheet) => sum + sheet.rowCount - 4, 0), expectedPrices.length);
+  let containsFormulaGuard = false;
+  for (const sheet of priceBook.worksheets) for (let index = 5; index <= sheet.rowCount; index++) {
+    const values = sheet.getRow(index).values.slice(1);
+    const expected = expectedPrices.find((r) => r.sku === values[0]);
+    assert.ok(expected);
+    assert.equal(values[2], expected.net ?? "Por confirmar");
+    assert.equal(values[3], expected.stock);
+    assert.ok(values[3] > 0);
+    if (values[1] === "'=SUM(A1:A2)") containsFormulaGuard = true;
+  }
+  if (!process.env.COPILOT_REAL_PRICE_FIXTURE) assert.ok(containsFormulaGuard);
+  assert.ok(!JSON.stringify(priceBook.model).includes("bank_clp"));
+  assert.ok(!JSON.stringify(priceBook.model).includes("11287934"));
+  for (const width of [1440, 390, 360]) {
+    await page.setViewportSize({ width, height: width > 800 ? 1000 : 844 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+    await page.screenshot({ path: fileURLToPath(new URL(`prices-${width}.png`, output)), fullPage: true });
+  }
+  await page.getByRole("button", { name: "Nueva conversacion", exact: true }).click();
   delayMessage = true;
   await page
     .getByRole("textbox", { name: "Consulta al Copiloto" })

@@ -33,7 +33,7 @@ export interface CentralMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  metadata?: { results?: CopilotReadResult[]; traceId?: string };
+  metadata?: { results?: CopilotReadResult[]; traceId?: string; inReplyTo?: string };
   created_at?: string;
 }
 export interface CentralConversation {
@@ -48,10 +48,19 @@ export interface CentralEvent {
   status?: string;
   conversationId?: string;
   messageId?: string;
+  userMessageId?: string;
   message?: string;
   results?: CopilotReadResult[];
   error?: string;
   traceId?: string;
+}
+export class CopilotConnectionError extends Error {
+  constructor(public requestStarted: boolean) {
+    super(requestStarted
+      ? "Se interrumpio la conexion con el Copiloto. La consulta puede haber quedado guardada; revisa el historial antes de reenviarla."
+      : "No se pudo conectar con el Copiloto. No se envio la consulta; el texto sigue disponible para reintentar.");
+    this.name = "CopilotConnectionError";
+  }
 }
 
 async function headers() {
@@ -103,16 +112,20 @@ export async function streamCentralMessage(
   signal: AbortSignal,
   onEvent: (event: CentralEvent) => void,
 ) {
+  let requestStarted = false;
+  try {
   const capability = await fetch(getSupabaseFunctionUrl("crm-copilot", "health"), { signal, cache: "no-store" });
   const version = await capability.json().catch(() => ({}));
   if (!capability.ok || version.engine !== "central" || version.contractVersion !== 1) {
     throw new Error("El servidor aun no tiene activo el Copiloto central. Falta desplegar la nueva funcion; no se envio tu consulta al motor anterior.");
   }
+  const authorization = await headers();
+  requestStarted = true;
   const response = await fetch(
     getSupabaseFunctionUrl("crm-copilot", "message"),
     {
       method: "POST",
-      headers: { ...(await headers()), Accept: "application/x-ndjson" },
+      headers: { ...authorization, Accept: "application/x-ndjson" },
       body: JSON.stringify({ message, conversationId }),
       signal,
     },
@@ -144,16 +157,22 @@ export async function streamCentralMessage(
           );
         if (event.type === "complete") completed = true;
         onEvent(event);
+        if (completed) return;
       }
       if (done) break;
     }
   } finally {
+    if (completed) await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
   if (!completed)
     throw new Error(
       "La conexion termino antes de completar la respuesta. Puedes recuperar la conversacion desde el historial.",
     );
+  } catch (error) {
+    if (!signal.aborted && error instanceof TypeError) throw new CopilotConnectionError(requestStarted);
+    throw error;
+  }
 }
 export function flattenResults(
   results: CopilotReadResult[],

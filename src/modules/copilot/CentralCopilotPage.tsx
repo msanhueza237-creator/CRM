@@ -28,11 +28,12 @@ import {
   flattenResults,
   safeSourcePath,
   streamCentralMessage,
+  CopilotConnectionError,
   type CentralConversation,
   type CentralMessage,
   type CopilotReadResult,
 } from "../../lib/copilotCentralApi";
-import { exportCentralMessage } from "../../lib/copilotCentralExport";
+import { exportCentralMessage, exportCustomerPriceList } from "../../lib/copilotCentralExport";
 import { useAuth } from "../auth/AuthContext";
 import { CopilotPage as LegacyCopilotPage } from "./CopilotPage";
 import "./central-copilot.css";
@@ -173,10 +174,12 @@ function CentralConversationPage() {
     const text = (prompt || draft).trim();
     if (!text || busy || historyBusy) return;
     const controller = new AbortController();
+    const localId = crypto.randomUUID();
+    let acceptedConversation: string | undefined, acceptedMessage: string | undefined;
     abortRef.current = controller;
     setMessages((current) => [
       ...current,
-      { id: crypto.randomUUID(), role: "user", content: text },
+      { id: localId, role: "user", content: text },
     ]);
     setDraft("");
     setBusy(true);
@@ -189,6 +192,8 @@ function CentralConversationPage() {
         controller.signal,
         (event) => {
           if (event.type === "conversation") {
+            acceptedConversation = event.conversationId;
+            acceptedMessage = event.userMessageId;
             setConversationId(event.conversationId);
             selected.current = event.conversationId;
           }
@@ -215,8 +220,23 @@ function CentralConversationPage() {
             ]);
         },
       );
-      await loadList();
+      await loadList().catch(() => setError("La respuesta esta guardada, pero no se pudo actualizar la lista de conversaciones."));
     } catch (e) {
+      if (e instanceof CopilotConnectionError && !e.requestStarted) {
+        setMessages((current) => current.filter((m) => m.id !== localId));
+        setDraft(text);
+      }
+      if (!controller.signal.aborted && acceptedConversation && acceptedMessage) {
+        try {
+          const history = await centralHistory(acceptedConversation);
+          const recovered = history.messages?.find((m) => m.role === "assistant" && m.metadata?.inReplyTo === acceptedMessage);
+          if (recovered) {
+            setMessages((current) => current.some((m) => m.id === recovered.id) ? current : [...current, recovered]);
+            setError("");
+            return;
+          }
+        } catch { /* Keep the original connection error; never repeat a POST automatically. */ }
+      }
       setError(
         controller.signal.aborted
           ? "Consulta detenida. No se modificaron datos del negocio."
@@ -231,6 +251,7 @@ function CentralConversationPage() {
   }
   const finance = user?.role === "administrador" || user?.role === "finanzas";
   const starters = [
+    "Genera la lista de precios Excel de TODO el catalogo con stock disponible, sin filtros de productos anteriores. Incluye SKU, nombre, precio neto y stock.",
     "Que productos tienen menos de 10 unidades?",
     "Que clientes llevan mas de 60 dias sin comprar?",
     ...(finance
@@ -484,15 +505,15 @@ function ConversationMessage({
 }) {
   const [exporting, setExporting] = useState<string>();
   const results = flattenResults(message.metadata?.results || []);
-  async function download(format: "excel" | "pdf" | "csv") {
+  const hasPriceList = results.some((r) => r.toolName === "get_price_list" && Number((r.data as { client_price_list?: { total?: number } } | null)?.client_price_list?.total) > 0);
+  async function download(format: "excel" | "pdf" | "csv" | "client-excel") {
     setExporting(format);
     try {
       if (!conversationId)
         throw new Error("La respuesta aun no esta respaldada.");
-      await exportCentralMessage(
-        await authorizedExportMessage(conversationId, message.id),
-        format,
-      );
+      const authorized = await authorizedExportMessage(conversationId, message.id);
+      if (format === "client-excel") await exportCustomerPriceList(authorized);
+      else await exportCentralMessage(authorized, format);
     } catch (error) {
       onError(
         error instanceof Error
@@ -552,6 +573,7 @@ function ConversationMessage({
             {message.metadata?.traceId && (
               <footer className="cc-message-footer">
                 <div className="cc-export">
+                  {hasPriceList && <button disabled={!!exporting} title="Descargar lista de precios para clientes" aria-label="Descargar lista de precios para clientes" onClick={() => download("client-excel")}><FileSpreadsheet size={16} /> Lista de precios (Excel)</button>}
                   <button
                     disabled={!!exporting}
                     title="Descargar Excel"

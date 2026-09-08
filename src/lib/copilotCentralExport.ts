@@ -19,6 +19,57 @@ function download(blob: Blob, name: string) {
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
+export function customerPriceRows(message: CentralMessage) {
+  const records = new Map<string, Record<string, unknown>>();
+  for (const result of flattenResults(message.metadata?.results || [])) {
+    if (result.toolName !== "get_price_list") continue;
+    const list = (result.data as { client_price_list?: { complete?: boolean; records?: Record<string, unknown>[] } } | null)?.client_price_list;
+    if (!list?.complete || !Array.isArray(list.records)) continue;
+    for (const row of list.records) {
+      if ((row.net !== null && (typeof row.net !== "number" || row.net <= 0 || !/^[A-Z]{3}$/.test(String(row.currency)) || !row.price_updated_at)) || typeof row.stock !== "number" || row.stock <= 0 || !row.sku || !row.name || !row.stock_updated_at) throw new Error("La lista contiene un precio, moneda o stock sin verificar. Vuelve a consultar.");
+      const safe = Object.fromEntries(["sku", "name", "net", "stock", "currency", "list_id", "stock_updated_at", "price_updated_at"].map((key) => [key, row[key]]));
+      const key = `${row.sku}|${row.currency}`;
+      const previous = records.get(key);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(safe)) throw new Error("Hay versiones o listas distintas para el mismo SKU. Genera una nueva lista con una sola tarifa.");
+      records.set(key, safe);
+    }
+  }
+  return [...records.values()].sort((a, b) => String(a.name).localeCompare(String(b.name), "es"));
+}
+
+export async function exportCustomerPriceList(message: CentralMessage) {
+  const records = customerPriceRows(message);
+  if (!records.length) throw new Error("No hay productos con precio y stock verificados para enviar a clientes.");
+  const { Workbook } = await import("exceljs");
+  const book = new Workbook();
+  book.creator = "CLIMACTIVA";
+  for (const currency of [...new Set(records.map((r) => String(r.currency || "Por confirmar")))]) {
+    const selected = records.filter((r) => (r.currency || "Por confirmar") === currency);
+    const sheet = book.addWorksheet(`Precios ${currency}`, { views: [{ state: "frozen", ySplit: 4 }], pageSetup: { paperSize: 9, orientation: "landscape", fitToPage: true, fitToWidth: 1, fitToHeight: 0 } });
+    sheet.columns = [{ width: 25 }, { width: 78 }, { width: 23 }, { width: 19 }];
+    sheet.mergeCells("A1:D1"); sheet.getCell("A1").value = "CLIMACTIVA | Lista de precios";
+    sheet.getCell("A1").font = { size: 18, bold: true, color: { argb: "FF087B89" } }; sheet.getRow(1).height = 32;
+    sheet.mergeCells("A2:D2"); sheet.getCell("A2").value = `Precios netos en ${currency}, sin IVA. Stock registrado sujeto a confirmacion. Lista Facto ${[...new Set(selected.map((r) => r.list_id))].join(", ")}.`;
+    const dates = selected.flatMap((r) => [r.stock_updated_at, r.price_updated_at].filter(Boolean).map(String)).sort();
+    sheet.mergeCells("A3:D3"); sheet.getCell("A3").value = `Fuente: Facto. Datos observados entre ${dates[0].slice(0, 10)} y ${dates[dates.length - 1].slice(0, 10)}. ${selected.length} productos.`;
+    sheet.getRow(4).values = ["SKU", "Nombre", `Precio neto ${currency}`, "Stock registrado"];
+    sheet.getRow(4).font = { bold: true, color: { argb: "FFFFFFFF" } };
+    sheet.getRow(4).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF087B89" } }; sheet.getRow(4).height = 25;
+    for (const record of selected) {
+      const row = sheet.addRow([spreadsheetText(record.sku), spreadsheetText(record.name), record.net ?? "Por confirmar", record.stock]);
+      row.alignment = { wrapText: true, vertical: "middle" }; row.height = Math.max(32, Math.ceil(String(record.name).length / 70) * 16 + 8);
+      const priceDecimals = Math.max(2, String(record.net).split(".")[1]?.length || 0);
+      const stockDecimals = String(record.stock).split(".")[1]?.length || 0;
+      row.getCell(3).numFmt = `#,##0.${"0".repeat(priceDecimals)}`;
+      row.getCell(4).numFmt = `#,##0${stockDecimals ? "." + "0".repeat(stockDecimals) : ""}`;
+      row.getCell(1).note = `Precio observado: ${record.price_updated_at}\nStock observado: ${record.stock_updated_at}`;
+      if (row.number % 2) row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F7F8" } };
+    }
+    sheet.autoFilter = "A4:D4";
+    sheet.pageSetup.printTitlesRow = "1:4";
+  }
+  download(new Blob([await book.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `CLIMACTIVA-lista-precios-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
 export async function exportCentralMessage(
   message: CentralMessage,
   format: "excel" | "pdf" | "csv",
