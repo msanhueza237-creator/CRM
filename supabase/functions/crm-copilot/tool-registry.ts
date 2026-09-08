@@ -19,6 +19,7 @@ import { CopilotSources } from "./sources.ts";
 import { findProducts, resolveProducts } from "./product-resolution.ts";
 import { clientPriceRows, factoCurrencies, productPrices } from "./product-prices.ts";
 import { productSales } from "./product-sales.ts";
+import { productProfitability } from "./product-profitability.ts";
 import { agentReport, agentSectionRows } from "./agent-reports.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
@@ -81,6 +82,7 @@ export function validateArguments(schema: Row, args: unknown): Row {
         "INVALID_ARGUMENTS",
       );
     const types = rule.type as string[];
+    if (types.includes("number") && (typeof value !== "number" || !Number.isFinite(value) || value < Number(rule.minimum) || value > Number(rule.maximum))) throw new CopilotDataError(`Numero invalido: ${key}.`, "INVALID_ARGUMENTS");
     if (
       types.includes("string") &&
       (typeof value !== "string" ||
@@ -545,6 +547,23 @@ export class ToolRegistry {
         );
         result.data = { ...object(result.data), identity_matches: resolved.products.length, client_price_list: { scope: args.scope || "search", complete: true, total: clientRows.length, excluded: data.length - clientRows.length, records: clientRows } };
         if (!data.length) result.summary = resolved.products.length ? "Se encontraron productos, pero ninguno cumple el filtro de disponibilidad solicitado. No se inventan cantidades ni precios." : "No se encontro el producto por ese nombre, SKU o enlace. Una busqueda vacia no acredita ausencia de precios; confirma el SKU.";
+        return result;
+      },
+    );
+    this.add(
+      "get_product_profitability",
+      "finance",
+      "Precio, costo unitario, margen bruto sobre venta, recargo sobre costo y simulacion de descuentos para cualquier SKU o producto. Lee costo directamente de Facto, no de snapshots antiguos. No autoriza descuentos. Moneda faltante se marca condicional; limites no incluyen gastos no registrados. minimum_margin_percent es un objetivo solicitado, nunca una politica inventada.",
+      { ...paging, list_id: string, discount_percent: { type: ["number", "null"], minimum: 0, maximum: 100 }, minimum_margin_percent: { type: ["number", "null"], minimum: 0, maximum: 99.999999 } },
+      async (args) => {
+        const details = await this.source.records("product_details");
+        const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
+        const entity = await this.source.entity();
+        const settings = await this.source.select(`accounting_entities?select=confirmations:settings->copilot_cost_currency_confirmations&id=eq.${entity}`);
+        const computed = productProfitability(details, catalog, args, factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined), object(settings[0]?.confirmations));
+        if (!args.list_id && computed.availableLists.length > 1) return readResult("get_product_profitability", "finance", "Hay varias listas de precios. Indica la lista para calcular un margen comparable.", { available_lists: computed.availableLists }, [], { status: "needs_clarification" });
+        const result = tableResult("get_product_profitability", "finance", "Precio, costo y margen unitario", computed.records, columns("sku:SKU", "name:Producto", "net_price:Precio neto", "recorded_unit_cost:Costo registrado", "currency:Moneda precio", "cost_currency:Moneda costo", "unit_gross_profit:Diferencia bruta", "gross_margin_percent:Margen sobre venta %", "recorded_cost_floor:Piso por costo registrado", "net_price_for_requested_margin:Precio para margen solicitado", "calculation_status:Validacion"), "/agentes/logistics/dashboard", args, ["Calculo unitario sobre precio neto y costo registrado. No garantiza utilidad final: no incluye comisiones, flete, gastos operativos u otros costos no registrados.", "El piso por costo registrado no es un precio comercial autorizado. No existe un tope de descuento autorizado en esta consulta. Los escenarios son simulaciones, no recomendaciones ni cambios de precios.", "Si falta moneda del costo, los numeros son condicionales a que coincida con la del precio. Monedas distintas no se convierten sin tipo de cambio verificado. Costo cero o ausente no acredita un producto gratuito."]);
+        if (computed.records.some((r) => r.calculation_status === "conditional_currency" || r.calculation_status === "unavailable")) { result.status = "partial"; result.coverage.complete = false; }
         return result;
       },
     );

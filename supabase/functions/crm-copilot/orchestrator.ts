@@ -78,6 +78,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     "Utiliza varias herramientas cuando haga falta. Si obtienes un ID de importacion, consulta su detalle para saber productos/unidades. Para informe completo o estado del negocio usa generate_business_report.",
     "Conserva los filtros solicitados en los argumentos: nombres, SKU, RUT, fechas y estado. Productos de rejilla requiere query=rejilla; stock conocido requiere stock_filter=known. No sustituyas una busqueda sin resultados por un listado general ni etiquetes productos ajenos como coincidencias. Si falta un filtro necesario, vuelve a consultar correctamente antes de responder.",
     "Stock desconocido, moneda desconocida y metricas no disponibles son null, no cero. No inventes descuentos, categorias, costos o reglas de precios por segmento.",
+    "Para precio junto con costo, margen, rentabilidad unitaria, piso o descuento de negociacion usa get_product_profitability, no solo get_price_list. Sirve para cualquier producto por SKU, nombre o marca. Conserva un porcentaje de descuento o margen minimo solo si el usuario lo indico. gross_margin_percent es sobre precio de venta; markup_percent es sobre costo, no son iguales. Los costos y margenes son privados del dominio finanzas: no se revelan a perfiles sin permiso. Si calculation_status=conditional_currency, presenta los calculos explicitamente como simulacion condicionada, nunca como margen verificado. El piso por costo registrado y el descuento teorico NO son topes autorizados ni utilidad neta; faltan gastos y una politica comercial aprobada. No inventes un margen minimo. Usa fechas propias de costo y precio; no los presentes como datos en vivo.",
     "Para a quien vendimos, quienes compraron un producto, en que factura, o un seguimiento como esas 300 unidades, usa get_product_sales_documents. Conserva producto/SKU y periodo de la consulta anterior; reference_units es una referencia para contrastar el total, NO una cantidad exacta por factura. Si no hay producto identificable pide aclaracion. NUNCA busques al comprador solamente en cobranza: una factura pagada tambien registra la venta. Presenta cliente, RUT, folio, fecha y unidades por documento, manteniendo tipo DTE. No afirmes un cliente unico cuando varias facturas explican la cantidad. Si reference_quantity.matches=false indica la diferencia y el periodo sin inventar asociaciones. Un receptor no identificado no significa ausencia de venta. Usa result_scope=all_matches si pide todos los compradores.",
     "Para mas vendidos, estadisticas de venta o mayor venta de una marca usa get_top_products con la marca en query. Nunca deduzcas ausencia de ventas desde search_products o snapshots. Distingue mayor cantidad facturada de mayor importe neto y de demanda futura. Si no indican periodo usa el ano en curso y dilo. Si el resultado es parcial presenta lo documentado con esa limitacion, no lo conviertas en sin ventas ni en un ranking definitivo.",
     "Si pide TODOS los productos con stock o catalogo completo, usa get_price_list con scope=catalog, query=null, stock_filter=available, segment=source. Esta peticion reemplaza cualquier filtro de producto de mensajes anteriores. No limites la lista a ejemplos previos ni a la pagina visible. Los precios faltantes quedan Por confirmar en Excel; no son cero. Para busquedas especificas usa scope=search.",
@@ -183,6 +184,29 @@ export async function runOrchestrator(options: OrchestratorOptions) {
         ].join("\n\n");
       }).join("\n\n") : null;
       const salesReports = results.filter((r) => r.toolName === "get_top_products" && ["ok", "partial"].includes(r.status) && object(r.data).result_scope === "all_matches");
+      const profitability = results.find((r) => r.toolName === "get_product_profitability" && ["ok", "partial"].includes(r.status) && r.coverage.totalMatched === 1 && rows(object(r.data).records).length === 1);
+      let profitabilityMessage: string | null = null;
+      if (profitability) {
+        const p = rows(object(profitability.data).records)[0];
+        const value = (v: unknown, decimals = 6) => v == null ? "No disponible" : Number(v).toLocaleString("es-CL", { maximumFractionDigits: decimals });
+        const clean = (v: unknown) => String(v || "").replace(/[\r\n<>\[\]*`]/g, " ");
+        const conditional = p.calculation_status === "conditional_currency";
+        profitabilityMessage = [
+          `**${clean(p.name)} - SKU ${clean(p.sku)}**`,
+          `Precio neto registrado: **${value(p.net_price)} ${clean(p.currency)}**, sin IVA. Costo unitario registrado: **${value(p.recorded_unit_cost)} ${clean(p.cost_currency || "(moneda no informada)")}**.`,
+          ...(conditional ? [`**Simulacion condicional:** los calculos siguientes solo son validos si el costo esta expresado en ${clean(p.assumed_cost_currency)}. Su moneda aun no esta confirmada.`] : []),
+          ...(p.calculation_status === "user_confirmed_currency" ? ["Moneda del costo confirmada por el usuario para este SKU y valor."] : []),
+          ...(p.unit_gross_profit != null ? [
+            `Diferencia bruta unitaria: **${value(p.unit_gross_profit)} ${clean(p.currency)}**. Margen bruto sobre venta: **${value(p.gross_margin_percent, 2)}%**. No equivale a utilidad neta.`,
+            `Piso matematico por costo registrado: **${value(p.recorded_cost_floor)} ${clean(p.currency)} netos**. No cubre otros gastos ni constituye un precio autorizado.`,
+            ...(p.net_price_for_requested_margin != null ? [`Para el margen solicitado de ${value(p.requested_minimum_margin_percent, 2)}%: precio neto minimo calculado **${value(p.net_price_for_requested_margin)} ${clean(p.currency)}**, redondeado hacia arriba. ${p.max_discount_for_requested_margin_percent == null ? "El precio actual no permite ese margen mediante un descuento." : "Descuento matematico hasta " + value(p.max_discount_for_requested_margin_percent) + "% respecto del precio registrado."}`] : []),
+            "**Escenarios ilustrativos, no autorizaciones:**",
+            ...rows(p.scenarios).map((s) => `- Descuento ${value(s.discount_percent)}%: precio neto ${value(s.net_price)} ${clean(p.currency)}; margen bruto ${value(s.gross_margin_percent, 2)}%.${s.below_recorded_cost ? " Por debajo del costo registrado." : ""}`),
+          ] : ["No puedo calcular un margen fiable: falta precio o costo valido, identidad o moneda compatible. No se considera costo cero por ausencia de datos."]),
+          "No hay un tope comercial autorizado en esta consulta. Comisiones, transporte y otros gastos no incluidos en el costo registrado reducen el margen disponible.",
+          `Fuentes guardadas de Facto. Precio observado: ${clean(p.price_updated_at)}. Costo observado: ${clean(p.cost_updated_at)}. No es una consulta en vivo.`,
+        ].join("\n\n");
+      }
       const salesMessage = salesReports.length && salesReports.length === results.length ? salesReports.map((report) => {
         const data = object(report.data), range = object(data.period), records = rows(data.records);
         const skus = new Set(records.filter((r) => r.sku).map((r) => String(r.sku)));
@@ -191,7 +215,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
       }).join("\n\n") : null;
       return {
         message:
-          directSalesMessage || salesMessage || catalogMessage || safeStockMessage || (verified && text
+          profitabilityMessage || directSalesMessage || salesMessage || catalogMessage || safeStockMessage || (verified && text
             ? text
             : "No encontre informacion suficiente en el CRM para responder con seguridad. Revisa los estados de las fuentes consultadas."),
         results,

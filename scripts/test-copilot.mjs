@@ -54,6 +54,51 @@ import { centralHandler } from "../supabase/functions/crm-copilot/central.ts";
 import { catalogUrl, findProducts, locationStock, resolveProducts } from "../supabase/functions/crm-copilot/product-resolution.ts";
 import { clientPriceRows, factoCurrencies, productPrices } from "../supabase/functions/crm-copilot/product-prices.ts";
 import { productSales } from "../supabase/functions/crm-copilot/product-sales.ts";
+import { productProfitability } from "../supabase/functions/crm-copilot/product-profitability.ts";
+
+test("Costo directo, margen y descuentos respetan moneda, confirmacion y objetivo solicitado", () => {
+  const details = [{ external_id: "85", updated_at: stamp, payload: { sku: "FLARE 3/8", name: "Tuerca flare 3/8", product_id: 85, cost: { value: "360", currency_id: null }, price: [{ product_price_list_id: "1", currency_id: "39", unit_net: "691.900000" }] } }];
+  const confirmations = { "FLARE 3/8": { source_product_id: "85", recorded_unit_cost: 360, currency: "CLP", confirmed_at: stamp } };
+  const calculate = (args = {}, confirmed = confirmations) => productProfitability(details, [], { query: "FLARE 3/8", ...args }, factoCurrencies(), confirmed).records[0];
+  const p = calculate({ minimum_margin_percent: 30, discount_percent: 10 });
+  assert.equal(p.calculation_status, "user_confirmed_currency");
+  assert.equal(p.unit_gross_profit, 331.9);
+  assert.ok(Math.abs(p.gross_margin_percent - 47.969359) < 0.000001);
+  assert.ok(p.markup_percent > 92 && p.markup_percent < 93);
+  assert.equal(p.recorded_cost_floor, 360);
+  assert.equal(p.net_price_for_requested_margin, 515);
+  assert.equal(p.authorized_discount_limit, null);
+  assert.equal(p.scenarios[0].net_price, 622.71);
+  assert.equal(p.scenarios[0].meets_requested_margin, true);
+  assert.equal(calculate({}, {}).calculation_status, "conditional_currency");
+  details[0].payload.cost.value = "361";
+  assert.equal(calculate().calculation_status, "conditional_currency", "Confirmacion expira si cambia el costo");
+  details[0].payload.cost.currency_id = "5";
+  assert.equal(calculate().gross_margin_percent, null, "No convierte USD a CLP sin respaldo");
+  details[0].payload.cost.currency_id = "39";
+  details[0].payload.cost.value = "0";
+  assert.equal(calculate().recorded_unit_cost, null);
+  details[0].payload.cost.value = "800";
+  assert.equal(calculate().theoretical_discount_to_cost_percent, null);
+  assert.ok(calculate().gross_margin_percent < 0);
+  assert.throws(() => calculate({ minimum_margin_percent: 100 }));
+  assert.throws(() => calculate({ discount_percent: 0.0000001 }));
+  details.push({ ...details[0], external_id: "another" });
+  assert.equal(calculate().recorded_unit_cost, null, "No elige un costo si SKU duplicado");
+});
+
+test("Costos son privados y porcentajes invalidos no consultan fuentes", async () => {
+  for (const role of ["vendedor", "visualizador"]) {
+    const { registry, accesses } = fixture(role);
+    const result = await registry.execute("get_product_profitability", { query: "FLARE 3/8" });
+    assert.equal(result.status, "forbidden");
+    assert.equal(accesses.length, 0);
+  }
+  for (const value of [-1, 101, "10", Infinity]) {
+    const result = await fixture().registry.execute("get_product_profitability", { discount_percent: value });
+    assert.equal(result.status, "needs_clarification");
+  }
+});
 import { agentReport, agentSectionRows } from "../supabase/functions/crm-copilot/agent-reports.ts";
 
 test("Ventas de toda la gama separan productos, meses, anos y monedas sin sumar snapshots", () => {
