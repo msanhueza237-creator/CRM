@@ -813,7 +813,7 @@ export class ToolRegistry {
           args.result_scope === "all_matches" ? { ...args, offset: 0, limit: Math.max(1, data.length) } : args,
           warnings,
         );
-        result.data = { ...object(result.data), period: range, result_scope: args.result_scope || "page", group_by: args.group_by || "product", identity_scope: args.identity_scope || "all_lines", unlinked_groups: unlinked, document_coverage: sales.coverage };
+        result.data = { ...object(result.data), query: args.query || null, period: range, result_scope: args.result_scope || "page", group_by: args.group_by || "product", identity_scope: args.identity_scope || "all_lines", unlinked_groups: unlinked, document_coverage: sales.coverage };
         if (args.identity_scope === "catalog" && unlinked) { result.status = "partial"; result.coverage.complete = false; }
         if (sales.coverage.problems.length || data.some((r) => r.net_sales === null)) { result.status = "partial"; result.coverage.complete = false; }
         return result;

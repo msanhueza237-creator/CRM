@@ -69,6 +69,14 @@ export function findProducts(products: Row[], query: unknown): Row[] {
     (/\d/.test(text) && compact(p.sku) === compact(text))
   );
   if (exact.length) return exact;
+  const fractions = text.match(/\d+\s*\/\s*\d+/g)?.map((part) => part.replace(/\s/g, "")) || [];
+  if (fractions.length) {
+    products = products.filter((p) => {
+      const identity = [p.name, p.sku, ...(Array.isArray(p.aliases) ? p.aliases : [])].join(" ");
+      const sizes = identity.match(/\d+\s*\/\s*\d+/g)?.map((part) => part.replace(/\s/g, "")) || [];
+      return fractions.every((size) => sizes.includes(size));
+    });
+  }
   if (!words(text).length) return [];
   const tokens = words(text).filter((word) => !stopWords.has(word));
   if (!tokens.length) return products;
@@ -89,6 +97,10 @@ export function findProducts(products: Row[], query: unknown): Row[] {
     );
   };
   const precise = products.filter((p) => match(p, false));
+  if (fractions.length) {
+    const identityMatches = precise.filter((p) => match({ ...p, brands: [], search_descriptions: [] }, false));
+    if (identityMatches.length) return identityMatches;
+  }
   return precise.length
     ? precise
     : products.filter((p) => match(p, true)).map((p) => ({

@@ -663,6 +663,34 @@ test("Reporte mensual completo conserva mas de 100 filas en exportacion y audito
   assert.match(result.message, /Excel/);
 });
 
+test("Medidas fraccionarias no se mezclan por descripciones de otros productos", () => {
+  const catalog = [
+    { sku: "FLARE 3/8", name: "Tuerca Flare Bronce 3/8" },
+    { sku: "FLARE 5/8", name: "Tuerca flare 5/8", search_descriptions: ["Tambien ofrecemos tuerca flare 3/8"] },
+    { sku: "UNION 3/8", name: "Union flare 3/8", search_descriptions: ["Utiliza tuerca flare 3/8"] },
+  ];
+  assert.deepEqual(findProducts(catalog, "tuerca flare 3/8").map((p) => p.sku), ["FLARE 3/8"]);
+  assert.deepEqual(findProducts(catalog, "tuerca flare 3 / 8").map((p) => p.sku), ["FLARE 3/8"]);
+  assert.equal(findProducts(catalog, "tuerca flare 7/8").length, 0);
+});
+
+test("Pregunta de monto responde venta neta y unidades directamente, no solo instrucciones de Excel", async () => {
+  const { source, registry } = fixture();
+  const doc = { external_id: "sale", document_number: 10, document_status: 1, document_type_taxbureau: 33, received_issued_flag: 1, issue_date: "2026-08-01", currency_id: 39, net_amount: 200 };
+  source.records = async () => [];
+  source.all = async (path) => path.startsWith("content_products") ? [{ id: "p", sku: "FLARE 3/8", name: "Tuerca flare 3/8" }] : path.includes("resource=eq.document_details") ? [{ ...doc, details: [{ line_description: "Tuerca flare 3/8", quantity: 2, unit_price: 100 }] }] : [doc];
+  for (const invalid of [false, true]) {
+    if (invalid) doc.net_amount = 999;
+    let round = 0;
+    const response = await runOrchestrator({ registry, model: "fixture", apiKey: "x", message: "total en pesos vendidos de tuerca flare 3/8", history: [], signal: new AbortController().signal, onTrace: async () => {}, fetcher: async () => new Response(JSON.stringify({ output: round++ === 0 ? [{ type: "function_call", name: "get_top_products", call_id: "sales", arguments: JSON.stringify({ query: "tuerca flare 3/8", period: "custom", from: "2026-01-01", to: "2026-09-08", result_scope: "all_matches" }) }] : [{ type: "message", content: [{ type: "output_text", text: "Usa Excel sin monto" }] }] })) });
+    assert.match(response.message, /2 unidades facturadas/);
+    if (invalid) {
+      assert.match(response.message, /no hay un total neto verificado/);
+      assert.doesNotMatch(response.message, /200 CLP/);
+    } else assert.match(response.message, /200 CLP netos, sin IVA/);
+  }
+});
+
 test("Compradores por producto incluyen facturas pagadas, varias lineas y contraste de 300 unidades", async () => {
   const { source, registry } = fixture();
   const docs = [100, 200].map((quantity, i) => ({ external_id: String(i), document_number: 1546 + i, issue_date: "2026-08-18", document_status: 1, document_type_taxbureau: 33, received_issued_flag: 1, currency_id: 39, net_amount: quantity * 10, receiver_legal_name: `Cliente ${i}`, receiver_tax_id_code: `1111111${i}-K`, paid_amount: quantity * 10 }));

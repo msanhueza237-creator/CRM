@@ -169,6 +169,19 @@ export async function runOrchestrator(options: OrchestratorOptions) {
       const catalogMessage = listing.complete === true && results.every((r) => r.toolName === "get_price_list")
         ? `La lista completa incluye **${listing.total} productos con stock registrado positivo**: SKU, nombre, precio neto y stock.\n\nEl boton **Lista de precios (Excel)** descarga todos los productos, aunque la tabla muestre solo una pagina. No necesitas solicitar una segunda parte.\n\n${pendingPrices ? `${pendingPrices} productos tienen precio **Por confirmar** y permanecen incluidos. ` : ""}Los precios y existencias provienen de las fuentes guardadas del CRM; no son una consulta en vivo. Las fechas de origen quedan indicadas en el Excel.`
         : null;
+      const directSales = results.filter((r) => r.toolName === "get_top_products" && ["ok", "partial"].includes(r.status) && object(r.data).query && object(r.data).group_by === "product" && r.coverage.nextOffset === undefined && rows(object(r.data).records).length > 0 && rows(object(r.data).records).length <= 10);
+      const directSalesMessage = directSales.length === results.length && directSales.length ? directSales.map((report) => {
+        const data = object(report.data), range = object(data.period), records = rows(data.records);
+        const number = (value: unknown) => Number(value).toLocaleString("es-CL", { maximumFractionDigits: 6 });
+        const clean = (value: unknown) => String(value || "").replace(/[\r\n<>\[\]*`]/g, " ");
+        return [
+          ...records.map((p) => `**${clean(p.name)} (SKU ${clean(p.sku || "no confirmado")})**: ${p.net_sales == null || !p.currency ? "no hay un total neto verificado" : `**${number(p.net_sales)} ${clean(p.currency)} netos, sin IVA**`}, por **${number(p.units_sold)} unidades facturadas**, en ${number(p.document_count)} documento(s).`),
+          `Periodo: **${range.from} al ${range.to}**. Fuente: lineas de documentos Facto guardados en el CRM; no corresponde a dinero cobrado.`,
+          ...(records.length > 1 ? ["Son variantes o monedas distintas; los importes se muestran separados, sin sumarlos como un solo producto."] : []),
+          ...(report.status === "partial" ? ["Cobertura provisional: revisa las observaciones de la fuente. Los importes no disponibles no se consideran cero."] : []),
+          "El detalle esta en la tabla adjunta y se puede descargar con Excel.",
+        ].join("\n\n");
+      }).join("\n\n") : null;
       const salesReports = results.filter((r) => r.toolName === "get_top_products" && ["ok", "partial"].includes(r.status) && object(r.data).result_scope === "all_matches");
       const salesMessage = salesReports.length && salesReports.length === results.length ? salesReports.map((report) => {
         const data = object(report.data), range = object(data.period), records = rows(data.records);
@@ -178,7 +191,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
       }).join("\n\n") : null;
       return {
         message:
-          salesMessage || catalogMessage || safeStockMessage || (verified && text
+          directSalesMessage || salesMessage || catalogMessage || safeStockMessage || (verified && text
             ? text
             : "No encontre informacion suficiente en el CRM para responder con seguridad. Revisa los estados de las fuentes consultadas."),
         results,
