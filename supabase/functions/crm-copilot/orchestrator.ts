@@ -8,7 +8,7 @@ import {
 import { todayChile } from "./dates.ts";
 import { ToolRegistry } from "./tool-registry.ts";
 
-export const centralPromptVersion = "central-read-tools-2026-09-07";
+export const centralPromptVersion = "central-read-tools-stock-2026-09-07";
 export interface ToolTrace {
   callId: string;
   toolName: string;
@@ -76,6 +76,8 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     "Utiliza varias herramientas cuando haga falta. Si obtienes un ID de importacion, consulta su detalle para saber productos/unidades. Para informe completo o estado del negocio usa generate_business_report.",
     "Conserva los filtros solicitados en los argumentos: nombres, SKU, RUT, fechas y estado. Productos de rejilla requiere query=rejilla; stock conocido requiere stock_filter=known. No sustituyas una busqueda sin resultados por un listado general ni etiquetes productos ajenos como coincidencias. Si falta un filtro necesario, vuelve a consultar correctamente antes de responder.",
     "Stock desconocido, moneda desconocida y metricas no disponibles son null, no cero. No inventes descuentos, categorias, costos o reglas de precios por segmento.",
+    "Para cuanto stock tenemos de un producto usa search_products con stock_filter=all, no known: hay que encontrarlo aunque falte la cantidad. Si el usuario entrega un enlace, conserva la URL completa en query para identificar el SKU. Nombre generico con varios modelos requiere mostrar sus SKU y cantidades por separado, sin sumarlos como si fueran un producto unico. Una coincidencia aproximada requiere confirmar el modelo.",
+    "Busqueda vacia no significa agotado ni no tenemos. Solo afirma stock cero cuando una fila identificada tenga stock_known=true y stock=0. Si hay identity_matches pero unknown_stock_matches, el producto existe y falta cantidad verificada. Para stock indica stock_source y stock_updated_at de cada fila; no uses una fecha de sincronizacion mas reciente de otra fuente. No afirmes disponibilidad actual en vivo con datos historicos.",
     "Factura, pago, banco, asiento y conciliacion son diferentes. No sumes saldos informados con saldos conciliados. No presentes utilidad como caja ni resultado provisional como certificado.",
     "Respeta coverage, nextOffset, freshness y warnings. Nunca llames 'todos' a una pagina; para totales usa los agregados de la herramienta. Indica fuente y fecha de observacion, no solo hora de consulta.",
     "Para comparar meses usa get_accounting_report dos veces. Para ranking de un mes no presentes demanda de otro intervalo como mensual. Pregunta o explica la falta de cobertura.",
@@ -135,11 +137,30 @@ export async function runOrchestrator(options: OrchestratorOptions) {
           result.status,
         ),
       );
+      // An empty/unknown product search must never become a stock-zero claim in prose.
+      const stockOnly = results.length > 0 && results.every((result) => result.toolName === "search_products");
+      const knownStock = results.some((result) => rows(object(result.data).records).some((p) => p.stock_known === true && p.stock !== null));
+      let safeStockMessage = stockOnly && !knownStock
+        ? `${results.at(-1)!.summary} No puedo confirmar existencias ni afirmar que no hay stock. Revisa la fuente o confirma el SKU del producto.`
+        : null;
+      if (stockOnly && knownStock && /stock|sctoc|existencias|unidades|disponibil/i.test(options.message)) {
+        const productRows = results.flatMap((result) => rows(object(result.data).records));
+        const products = [...new Map(productRows.map((p) => [String(p.sku), p])).values()];
+        const clean = (value: unknown) => String(value ?? "").replace(/[\r\n<>\[\]*`]/g, " ");
+        safeStockMessage = [
+          "Stock registrado en las fuentes del CRM; no es una comprobacion en vivo:",
+          ...products.map((p) => `- **${clean(p.sku)}**: ${p.stock === null ? "cantidad no verificada" : `${p.stock} unidades registradas`}. ${clean(p.name)}. Fuente: ${p.stock_source === "facto_product_details" ? "detalle de bodegas Facto" : p.stock_source === "facto_inventory_snapshot" ? "resumen de inventario Facto" : "sin cantidad verificada"}. Observado: ${clean(p.stock_updated_at || "sin fecha disponible")}.`),
+          ...(products.length > 1 ? ["Son modelos distintos; confirma el SKU que necesitas."] : []),
+          ...(products.some((p) => p.match_type === "approximate_name") ? ["La coincidencia de nombre es aproximada; confirma el modelo antes de comprometer stock."] : []),
+          ...(results.some((result) => !result.coverage.complete || result.coverage.nextOffset !== undefined) ? ["La lista tiene cobertura parcial; revisa las fuentes y paginas restantes."] : []),
+          "Las cantidades pueden haber cambiado desde esas fechas. Revisa las observaciones de las fuentes antes de confirmar disponibilidad.",
+        ].join("\n\n");
+      }
       return {
         message:
-          verified && text
+          safeStockMessage || (verified && text
             ? text
-            : "No encontre informacion suficiente en el CRM para responder con seguridad. Revisa los estados de las fuentes consultadas.",
+            : "No encontre informacion suficiente en el CRM para responder con seguridad. Revisa los estados de las fuentes consultadas."),
         results,
         traces,
         tokensInput,

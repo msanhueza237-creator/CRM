@@ -51,6 +51,7 @@ import {
   numeric,
 } from "../supabase/functions/crm-copilot/contracts.ts";
 import { centralHandler } from "../supabase/functions/crm-copilot/central.ts";
+import { catalogUrl, findProducts, locationStock, resolveProducts } from "../supabase/functions/crm-copilot/product-resolution.ts";
 
 const stamp = new Date().toISOString(),
   operation = "11111111-1111-4111-8111-111111111111";
@@ -314,6 +315,121 @@ test("Busqueda normaliza RUT y acentos, no convierte puntuacion en coincidencia 
   assert.equal(matches("12.345.678-5", "12345678-5"), true);
   assert.equal(matches("---", "cualquiera"), false);
 });
+const detectorUrl = "https://www.climactiva.cl/productos/detector-de-fuga-gas-refrigerantes/";
+const detectorObserved = "2026-08-31T16:47:20.837Z";
+function detectorSources() {
+  const product = (id, sku, name, quantities) => ({ external_id: id, updated_at: detectorObserved, payload: {
+    product_id: id, sku, name, inventories: { total_available: 0, details: quantities.map((n, i) => ({ product_location_id: String(i + 1), available_quantity: n, reserved_quantity: "2" })) },
+  } });
+  const details = [product("262", "RLD-382P", "Detector de Fuga gas refrigerantes, Formigas RLD-382P", ["11.000000"]),
+    product("211", "UVD-3", "detector fugas UV lampara climatizacion 17 + 2.5ml", ["8.000000", "0.000000"]),
+    product("301", "MINIUV", "Kit detector de fugas UV", ["10.000000"])];
+  const snapshots = details.map((d) => ({ external_id: d.payload.sku, updated_at: stamp, payload: {
+    sku: d.payload.sku, name: d.payload.name, source_product_id: "450", stock_known: false, available_units: 0,
+    price_known: true, unit_price: 999, cost_known: true, unit_cost_source: 888,
+  } }));
+  const catalog = [{ id: "catalog1", sku: "RLD-382P", name: "Detector de Fuga gas refrigerantes", product_url: detectorUrl, stock: 99, last_synced_at: "2026-08-21T01:05:59Z" }];
+  return { details, snapshots, catalog };
+}
+
+test("Stock RLD-382P usa 11 unidades por bodega, no total agregado cero ni catalogo", () => {
+  const { snapshots, details, catalog } = detectorSources();
+  const resolved = resolveProducts(snapshots, details, catalog, true);
+  const p = resolved.find((p) => p.sku === "RLD-382P");
+  assert.equal(p.stock, 11);
+  assert.equal(p.stock_source, "facto_product_details");
+  assert.equal(p.stock_updated_at, detectorObserved);
+  assert.equal(p.updated_at, detectorObserved);
+  assert.deepEqual(p.warehouse_stock, [{ location_id: "1", available: 11 }]);
+  assert.equal(p.price, null); assert.equal(p.unit_cost, null);
+  assert.match(p.stock_warnings.join(" "), /ID Facto/);
+  assert.match(p.stock_warnings.join(" "), /total agregado/);
+  assert.equal(resolved.find((p) => p.sku === "UVD-3").stock, 8);
+});
+
+test("Busqueda de productos tolera plurales, acentos, orden, SKU y enlaces sin mezclar modelos", () => {
+  const d = detectorSources(), products = resolveProducts(d.snapshots, d.details, d.catalog, false);
+  for (const query of ["detector de fugas", "fugas detector", "dime cuanto sctoc tenemos del detector de fugas", "detéctor de fugas", "detetor de fugas"]) {
+    assert.equal(findProducts(products, query).length, 3, query);
+  }
+  for (const query of [detectorUrl, detectorUrl + "?utm_source=test", "https://climactiva.cl/productos/detector-de-fuga-gas-refrigerantes", "RLD-382P", "rld382p", "Detector de Fuga gas refrigerantes"]) {
+    const found = findProducts(products, query);
+    assert.equal(found.length, 1, query); assert.equal(found[0].stock, 11);
+  }
+  assert.equal(findProducts(products, "RLD-383P").length, 0);
+  assert.equal(findProducts(products, "UVD-4").length, 0);
+  assert.equal(findProducts(products, "??").length, 0);
+  assert.equal(findProducts(products, "https://untrusted.invalid/productos/detector-de-fuga-gas-refrigerantes").length, 0);
+  assert.equal(catalogUrl("https://climactiva.cl@untrusted.invalid/productos/a"), null);
+  assert.equal(catalogUrl("https://climactiva.cl:8443/productos/a"), null);
+});
+
+test("Inventario desconocido, invalido y bodegas duplicadas nunca se convierten en cero", () => {
+  for (const inventories of [undefined, {}, { total_available: 0, details: [] }]) {
+    assert.equal(locationStock({ inventories }).stock, null);
+  }
+  for (const quantity of [null, "", "no disponible", "1,000", false]) {
+    assert.equal(locationStock({ inventories: { details: [{ product_location_id: "1", available_quantity: quantity }] } }).stock, null);
+  }
+  const row = { product_location_id: "1", available_quantity: "5.000000" };
+  assert.equal(locationStock({ inventories: { details: [row, row] } }).stock, null);
+  assert.equal(locationStock({ inventories: { details: [{ ...row, available_quantity: "0.000000" }] } }).stock, 0);
+  assert.equal(locationStock({ inventories: { details: [{ ...row, available_quantity: "0.1" }, { product_location_id: "2", available_quantity: "0.2" }] } }).stock, 0.3);
+});
+
+test("SKU duplicado o detalle con ID incorrecto exige revision, nunca suma existencias", () => {
+  const { snapshots, details, catalog } = detectorSources();
+  const duplicated = [...details, { ...details[0], external_id: "999", payload: { ...details[0].payload, product_id: "999" } }];
+  assert.equal(resolveProducts(snapshots, duplicated, catalog, true)[0].stock, null);
+  const broken = [{ ...details[0], external_id: "999" }];
+  assert.equal(resolveProducts(snapshots, broken, catalog, true)[0].stock, null);
+  const unknown = resolveProducts([], [], catalog, false)[0];
+  assert.equal(unknown.stock, null); assert.equal(unknown.stock_source, null);
+  assert.ok(!JSON.stringify(resolveProducts(snapshots, details, catalog, false)).includes("unit_cost"));
+});
+
+test("Busqueda distingue identidad encontrada sin stock de producto no encontrado", async () => {
+  const { registry } = fixture();
+  const filtered = await registry.execute("search_products", { query: "desconocido", stock_filter: "known" });
+  assert.equal(filtered.data.identity_matches, 1);
+  assert.equal(filtered.data.unknown_stock_matches, 1);
+  assert.match(filtered.summary, /no significa/);
+  const unknown = await registry.execute("search_products", { query: "desconocido", stock_filter: "all" });
+  assert.equal(unknown.table.rows[0].stock, null);
+  assert.match(unknown.summary, /no cero/);
+  const absent = await registry.execute("search_products", { query: "sku-inexistente" });
+  assert.equal(absent.data.identity_matches, 0); assert.match(absent.summary, /No es evidencia de stock cero/);
+});
+
+test("Registro cruza fuentes de solo lectura, resuelve URL y declara fuente parcial", async () => {
+  const { source, registry } = fixture("vendedor");
+  const d = detectorSources();
+  source.records = async (resource) => resource === "product_details" ? d.details : d.snapshots;
+  source.all = async (path) => { assert.match(path, /^content_products\?select=id,sku,name,product_url,last_synced_at&order=id.asc$/); return d.catalog; };
+  const found = await registry.execute("search_products", { query: detectorUrl, stock_filter: "all" });
+  assert.equal(found.status, "ok"); assert.equal(found.table.rows.length, 1);
+  assert.equal(found.table.rows[0].stock, 11);
+  assert.equal(found.freshness.sourceObservedAt, detectorObserved);
+  assert.ok(!JSON.stringify(found).includes("unit_cost"));
+  source.all = async () => { throw new Error("offline"); };
+  const partial = await registry.execute("search_products", { query: "RLD-382P" });
+  assert.equal(partial.status, "partial"); assert.equal(partial.coverage.complete, false);
+  assert.equal(partial.table.rows[0].stock, 11);
+  const missing = await registry.execute("search_products", { query: detectorUrl });
+  assert.equal(missing.status, "unavailable");
+});
+
+for (const query of ["desconocido", "sku-inexistente"]) test(`Modelo no puede afirmar no tenemos tras busqueda sin cantidad: ${query}`, async () => {
+  let round = 0;
+  const result = await runOrchestrator({ registry: fixture().registry, model: "fixture-model", apiKey: "test", message: `Cuanto stock de ${query}`, history: [], signal: new AbortController().signal, onTrace: async () => {},
+    fetcher: async () => new Response(JSON.stringify({ output: round++ === 0
+      ? [{ type: "function_call", name: "search_products", call_id: "stock", arguments: JSON.stringify({ query, stock_filter: "all" }) }]
+      : [{ type: "message", content: [{ type: "output_text", text: "No tenemos ese producto. Stock 0 unidades." }] }] })),
+  });
+  assert.ok(!result.message.includes("Stock 0 unidades"));
+  assert.match(result.message, /No puedo confirmar/);
+});
+
 test("Stock cero no incluye stock desconocido, pagina y total independientes", async () => {
   const { registry } = fixture();
   const zero = await registry.execute("search_products", {
@@ -592,7 +708,11 @@ for (const [question, plan] of scenarios)
     });
     assert.equal(result.results.length, plan.length);
     assert.equal(traces.length, plan.length);
-    assert.equal(result.message, "Respuesta con evidencia verificada.");
+    if (plan.every(([name]) => name === "search_products") && /stock/i.test(question)) {
+      assert.match(result.message, /Stock registrado/);
+      assert.match(result.message, /no es una comprobacion en vivo/);
+      assert.ok(!result.message.includes("Actualmente"));
+    } else assert.equal(result.message, "Respuesta con evidencia verificada.");
     assert.equal(requests[0].tool_choice, "required");
     assert.equal(requests[0].store, false);
     assert.equal(requests[0].input[0].content, "Contexto anterior");

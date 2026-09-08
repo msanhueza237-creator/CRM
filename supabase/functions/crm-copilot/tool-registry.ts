@@ -16,6 +16,7 @@ import {
 import { dateRange, inRange, todayChile } from "./dates.ts";
 import { canReadDomain } from "./permissions.ts";
 import { CopilotSources } from "./sources.ts";
+import { findProducts, resolveProducts } from "./product-resolution.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -399,61 +400,42 @@ export class ToolRegistry {
     this.add(
       "search_products",
       "products",
-      "Busca por nombre o SKU usando query. Ejemplo: productos de rejilla requiere query=rejilla. Stock de Facto, precio publicado y demanda observada. stock_filter: all, known, zero, low, unknown. known exige cantidad disponible verificada, incluso cero. No interpretar stock desconocido como cero.",
+      "Busca productos por nombre, plural, modelo, SKU o enlace de climactiva.cl. Cruza catalogo y detalle de bodegas Facto. Para cuanto stock tenemos usa stock_filter=all: no ocultes productos con cantidad desconocida. known/zero/low/unknown solo si el usuario pide ese filtro. Varios modelos no son un solo producto. Cantidades con fuente y fecha, no inventario en vivo.",
       {
         ...paging,
+        query: { ...paging.query, maxLength: 1000, description: "Nombre, modelo, SKU o URL completa del producto solicitado. Conserva el enlace cuando el usuario lo entrega." },
         stock_filter: choice("all", "known", "zero", "low", "unknown"),
         threshold: integer(0, 1000000),
       },
       async (args) => {
-        const raw = await this.source.records("inventory_snapshots");
-        if (!raw.length) throw new CopilotDataError("No hay un inventario Facto sincronizado. No es posible afirmar existencias o agotados.");
-        const data = raw
-          .map((record) => {
-            const p = object(record.payload);
-            return {
-              id: record.external_id,
-              sku: p.sku,
-              name: p.name,
-              stock: p.stock_known === true ? numeric(p.available_units) : null,
-              stock_known: p.stock_known === true,
-              price: p.price_known === true ? numeric(p.unit_price) : null,
-              currency: p.price_currency_code || null,
-              price_is_net: p.unit_price_is_net ?? null,
-              units_sold:
-                p.sales_history_available === true
-                  ? numeric(p.units_sold_observed)
-                  : null,
-              sales_from: p.sales_history_start || null,
-              sales_to: p.sales_history_end || null,
-              last_sale_at: p.last_sale_at || null,
-              updated_at: record.updated_at,
-              ...(canReadDomain(this.source.actor.role, "finance")
-                ? {
-                    unit_cost:
-                      p.cost_known === true
-                        ? numeric(p.unit_cost_source)
-                        : null,
-                    cost_currency: p.cost_currency_code || null,
-                    margin_percent: numeric(p.margin_percent),
-                  }
-                : {}),
-            };
-          })
-          .filter((p) => matches(args.query, p.name, p.sku))
+        const warnings: string[] = [];
+        const load = async (label: string, read: () => Promise<Row[]>) => {
+          try { return await read(); }
+          catch (error) {
+            if (this.source.signal?.aborted) throw error;
+            warnings.push(`${label} no disponible; la cobertura de la busqueda es incompleta.`);
+            return [];
+          }
+        };
+        const snapshots = await load("Resumen de inventario Facto", () => this.source.records("inventory_snapshots"));
+        const details = await load("Detalle de productos Facto", () => this.source.records("product_details"));
+        const catalog = await load("Catalogo Tiendanube", () => this.source.all("content_products?select=id,sku,name,product_url,last_synced_at&order=id.asc"));
+        if (!snapshots.length && !details.length && !catalog.length) throw new CopilotDataError("No hay un inventario consultable. No es posible afirmar existencias o agotados.");
+        const matched = findProducts(resolveProducts(snapshots, details, catalog, canReadDomain(this.source.actor.role, "finance")), args.query);
+        const data = matched
           .filter((p) =>
             args.stock_filter === "zero"
               ? p.stock === 0
               : args.stock_filter === "low"
-                ? p.stock !== null && p.stock < Number(args.threshold ?? 10)
+                ? typeof p.stock === "number" && p.stock < Number(args.threshold ?? 10)
                 : args.stock_filter === "unknown"
                   ? !p.stock_known
                   : args.stock_filter === "known"
-                    ? p.stock !== null
+                    ? typeof p.stock === "number"
                     : true,
           )
           .sort((a, b) => String(a.name).localeCompare(String(b.name), "es"));
-        return tableResult(
+        const result = tableResult(
           "search_products",
           "products",
           "Productos y stock Facto",
@@ -462,6 +444,8 @@ export class ToolRegistry {
             "sku:SKU",
             "name:Producto",
             "stock:Unidades disponibles",
+            "stock_source:Fuente de stock",
+            "stock_updated_at:Stock observado",
             "price:Precio",
             "currency:Moneda",
             "updated_at:Actualizado",
@@ -469,9 +453,23 @@ export class ToolRegistry {
           "/agentes/logistics/dashboard",
           args,
           [
+            ...warnings,
+            ...new Set(data.slice(Number(args.offset || 0), Number(args.offset || 0) + Number(args.limit || 25)).flatMap((p) => (p.stock_warnings as string[]).map((warning) => `${p.sku}: ${warning}`))),
+            ...(data.some((p) => p.match_type === "approximate_name") ? ["Coincidencias aproximadas por nombre: confirmar modelo o SKU antes de comprometer existencias."] : []),
+            "El catalogo se usa para identificar nombre y enlace; no se suma su stock al inventario Facto. Cada producto conserva la fecha real de su cantidad.",
             "La demanda corresponde al intervalo observado de cada producto; no a un mes solicitado distinto.",
           ],
         );
+        result.data = { ...object(result.data), identity_matches: matched.length, unknown_stock_matches: matched.filter((p) => p.stock === null).length, stock_filter: args.stock_filter || "all" };
+        if (!data.length) result.summary = matched.length
+          ? `Se encontraron ${matched.length} productos, pero ninguno cumple el filtro de stock. Esto no significa que esten agotados; ${matched.filter((p) => p.stock === null).length} tienen cantidad desconocida.`
+          : "No se encontro una coincidencia para ese nombre, SKU o enlace en las fuentes consultadas. No es evidencia de stock cero; confirma el modelo o SKU.";
+        if (data.length && data.every((p) => p.stock === null)) result.summary = `Se encontraron ${data.length} productos, pero su cantidad no esta verificada. Stock desconocido, no cero.`;
+        if (warnings.length) {
+          result.coverage.complete = false;
+          result.status = data.length ? "partial" : "unavailable";
+        }
+        return result;
       },
     );
     this.add(
