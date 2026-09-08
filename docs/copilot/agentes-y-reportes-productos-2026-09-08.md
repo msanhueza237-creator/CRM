@@ -27,3 +27,11 @@ El modelo recibe una vista reducida de hasta diez lideres por periodo y moneda c
 - Lectura sin escrituras de los siete informes de produccion: 102 secciones verificadas (muestra de cinco filas por seccion).
 - Lectura de documentos 2026: 159 documentos procesados, 219 productos identificados y 425 filas producto/mes. Estos conteos describen la fuente disponible, no certifican cobertura comercial completa.
 - No requiere migraciones SQL ni alteracion de historicos.
+
+## Compradores y facturas por producto
+
+`get_product_sales_documents` reutiliza el mismo motor de ventas y permite consultar receptor, RUT, tipo DTE, folio, fecha, SKU y cantidad por linea. No depende del saldo de cobranza ni excluye documentos pagados. Conserva el periodo de la pregunta anterior; una cantidad como "esas 300 unidades" se contrasta con el total, sin filtrar artificialmente las facturas por cantidad exacta.
+
+El documento y su detalle deben coincidir en identidad, direccion, folio y RUT cuando ambos informan esos campos. Los SKU exactos no incorporan otros modelos por semejanza de descripcion. Los netos no verificados permanecen nulos, sin impedir identificar al receptor y las cantidades documentadas.
+
+Caso observado en el respaldo: agosto 2026, SKU FLARE 5/8, 300 unidades en folio 1553 del 27 de agosto. Existe otra venta de 300 en febrero; por eso una cantidad sola no identifica la factura.

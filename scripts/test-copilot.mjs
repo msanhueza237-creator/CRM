@@ -663,6 +663,37 @@ test("Reporte mensual completo conserva mas de 100 filas en exportacion y audito
   assert.match(result.message, /Excel/);
 });
 
+test("Compradores por producto incluyen facturas pagadas, varias lineas y contraste de 300 unidades", async () => {
+  const { source, registry } = fixture();
+  const docs = [100, 200].map((quantity, i) => ({ external_id: String(i), document_number: 1546 + i, issue_date: "2026-08-18", document_status: 1, document_type_taxbureau: 33, received_issued_flag: 1, currency_id: 39, net_amount: quantity * 10, receiver_legal_name: `Cliente ${i}`, receiver_tax_id_code: `1111111${i}-K`, paid_amount: quantity * 10 }));
+  source.records = async () => [];
+  source.all = async (path) => {
+    assert.doesNotMatch(path, /receivable|payable/);
+    if (path.startsWith("content_products")) return [{ id: "p", sku: "FLARE 5/8", name: "Tuerca flare 5/8" }];
+    return path.includes("resource=eq.document_details") ? docs.map((d, i) => ({ ...d, details: [{ line_description: "Tuerca flare 5/8", quantity: i ? 200 : 100, unit_price: 10 }] })) : [...docs, docs[0]];
+  };
+  const args = { query: "FLARE 5/8", period: "custom", from: "2026-08-01", to: "2026-08-31", reference_units: 300, result_scope: "all_matches" };
+  const result = await registry.execute("get_product_sales_documents", args);
+  assert.equal(result.status, "ok", result.summary);
+  assert.equal(result.table.rows.length, 2);
+  assert.deepEqual(result.table.rows.map((r) => [r.customer, r.folio, r.quantity]), [["Cliente 0", 1546, 100], ["Cliente 1", 1547, 200]]);
+  assert.equal(result.data.totals_by_product[0].units, 300);
+  assert.equal(result.data.reference_quantity.matches, true);
+  const mismatch = await registry.execute("get_product_sales_documents", { ...args, reference_units: 400 });
+  assert.equal(mismatch.data.reference_quantity.matches, false);
+  const missing = await registry.execute("get_product_sales_documents", { reference_units: 300 });
+  assert.equal(missing.status, "needs_clarification");
+  const denied = await fixture("vendedor").registry.execute("get_product_sales_documents", args);
+  assert.equal(denied.status, "forbidden");
+  const contradictory = productSales(docs, [{ ...docs[0], receiver_tax_id_code: "99999999-9", details: [{ line_description: "Tuerca flare 5/8", quantity: 100, unit_price: 10 }] }], [], null, { from: "2026-08-01", to: "2026-08-31" }, { 39: "CLP" });
+  assert.equal(contradictory.records.length, 0);
+  assert.ok(contradictory.coverage.problems.some((r) => /receptor/.test(r.problem)));
+  const different = { ...docs[0], external_id: "other", net_amount: 250 };
+  const catalog = [{ sku: "FLARE 5/8", name: "Tuerca flare 5/8" }, { sku: "UNION FLARE 90 5/8", name: "Union flare 90 5/8" }];
+  const isolated = productSales([different], [{ ...different, details: [{ line_description: "Union flare 90 5/8", quantity: 25, unit_price: 10 }] }], catalog, "FLARE 5/8", { from: "2026-08-01", to: "2026-08-31" }, { 39: "CLP" });
+  assert.equal(isolated.records.length, 0);
+});
+
 test("Ventas documentales cruzan marca y descripcion sin duplicar facturas ni usar stock", () => {
   const doc = { external_id: "1", document_number: 10, document_status: 1, document_type_taxbureau: "33", received_issued_flag: 1, issue_date: "2026-08-01", currency_id: 39, net_amount: "200" };
   const detail = { ...doc, details: [{ line_description: "Herramienta", quantity: "2", unit_price: "100" }] };

@@ -15,6 +15,7 @@ const amount = (value: bigint) => Number(value) / 1000000;
 // Invoice lines are evidence of sales, not stock changes or cash receipts.
 export function productSales(documents: Row[], details: Row[], products: Row[], query: unknown, range: { from: string; to: string }, currencies: Record<string, string>, grouping: unknown = "product") {
   const catalogMatches = new Set(findProducts(products, query).map((p) => p.sku));
+  const exactIdentity = !!query && (/https?:\/\//i.test(String(query)) || products.some((p) => key(p.sku) === key(query) || (/\d/.test(String(query)) && key(p.sku).replace(/ /g, "") === key(query).replace(/ /g, ""))));
   const groups = new Map<string, { row: Row; units: bigint; net: bigint; documents: Set<string>; revenueKnown: boolean }>();
   const problems: Row[] = [];
   const eligible = documents.filter((r) => {
@@ -39,6 +40,11 @@ export function productSales(documents: Row[], details: Row[], products: Row[], 
     if ((dh.document_id != null && String(dh.document_id) !== id) || (dh.received_issued_flag != null && String(dh.received_issued_flag) !== "1") || (dh.document_type_taxbureau != null && String(dh.document_type_taxbureau) !== String(h.document_type_taxbureau))) {
       problems.push({ ...ref, problem: "Detalle con identidad o direccion inconsistente" }); continue;
     }
+    const rutKey = (value: unknown) => normalized(value).replace(/[^a-z0-9]/g, "");
+    if ((dh.document_number != null && h.document_number != null && String(dh.document_number) !== String(h.document_number)) || (dh.receiver_tax_id_code && h.receiver_tax_id_code && rutKey(dh.receiver_tax_id_code) !== rutKey(h.receiver_tax_id_code))) {
+      problems.push({ ...ref, problem: "Folio o receptor inconsistente entre documento y detalle" }); continue;
+    }
+    const buyer = { customer: h.receiver_legal_name || dh.receiver_legal_name || null, tax_id: h.receiver_tax_id_code || dh.receiver_tax_id_code || null };
     // Credit/debit notes can correct text, amounts or annul a document. Never assume a quantity reversal.
     if (["56", "61"].includes(String(h.document_type_taxbureau))) {
       problems.push({ ...ref, problem: "Nota de credito/debito pendiente de asignacion por producto" }); continue;
@@ -58,7 +64,7 @@ export function productSales(documents: Row[], details: Row[], products: Row[], 
       const text = key(description);
       const linked = products.filter((p) => key(p.name) === text || (Array.isArray(p.aliases) && p.aliases.some((a) => key(a) === text)));
       const product = linked.length === 1 ? linked[0] : null;
-      if (query && !(product && catalogMatches.has(product.sku)) && !findProducts([{ name: description + " " + String(line.long_description || "") }], query).length) continue;
+      if (query && (product ? !catalogMatches.has(product.sku) : exactIdentity || !findProducts([{ name: description + " " + String(line.long_description || "") }], query).length)) continue;
       if (!description || units[i] === null || units[i]! <= 0n) { problems.push({ ...ref, line: i + 1, problem: "Cantidad o descripcion no verificable" }); continue; }
       const period = grouping === "month" ? String(h.issue_date).slice(0, 7) : grouping === "year" ? String(h.issue_date).slice(0, 4) : `${range.from} / ${range.to}`;
       const groupKey = `${product?.sku || "description:" + text}|${currency || "unknown"}|${period}`;
@@ -68,7 +74,7 @@ export function productSales(documents: Row[], details: Row[], products: Row[], 
       group.documents.add(id);
       group.revenueKnown &&= revenueKnown && lineNets[i] !== null;
       group.net += lineNets[i] || 0n;
-      (group.row.evidence as Row[]).push({ ...ref, line: i + 1, quantity: amount(units[i]!), net: revenueKnown && lineNets[i] !== null ? amount(lineNets[i]!) : null, net_validation: revenueKnown ? "Validado contra neto documental" : !currency ? "Moneda desconocida" : modifiers ? "Ajuste o descuento requiere asignacion" : "Neto de lineas no cuadra con documento" });
+      (group.row.evidence as Row[]).push({ ...ref, ...buyer, line: i + 1, quantity: amount(units[i]!), net: revenueKnown && lineNets[i] !== null ? amount(lineNets[i]!) : null, net_validation: revenueKnown ? "Validado contra neto documental" : !currency ? "Moneda desconocida" : modifiers ? "Ajuste o descuento requiere asignacion" : "Neto de lineas no cuadra con documento" });
     }
   }
   return {

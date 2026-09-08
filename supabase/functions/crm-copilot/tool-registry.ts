@@ -783,13 +783,7 @@ export class ToolRegistry {
       "Ranking desde lineas de facturas y boletas Facto, por unidades y venta neta, con periodo y documentos verificables. Marca, nombre y descripcion cruzados por SKU con Tiendanube. No utiliza snapshots de inventario ni predice demanda futura. La cobertura puede ser parcial por documentos o notas sin detalle.",
       { ...paging, ...period, metric: choice("units", "net_sales"), result_scope: choice("page", "all_matches"), group_by: choice("product", "month", "year"), detail_level: choice("summary", "evidence"), identity_scope: choice("all_lines", "catalog") },
       async (args) => {
-        const range = dateRange({ ...args, period: args.period || "this_year" });
-        const fields = "external_id,updated_at,header:payload->header,details:payload->details,totals:payload->totals,global_modifiers:payload->global_modifiers,document_number:payload->>document_number,document_status:payload->>document_status,document_type_taxbureau:payload->>document_type_taxbureau,received_issued_flag:payload->>received_issued_flag,issue_date:payload->>issue_date,currency_id:payload->>currency_id,net_amount:payload->>net_amount";
-        const documents = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.documents&order=id.asc`);
-        const details = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.document_details&order=id.asc`);
-        const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
-        const products = resolveProducts([], await this.source.records("product_details"), catalog, false);
-        const sales = productSales(documents, details, products, args.query, range, factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined), args.group_by);
+        const { range, sales } = await this.documentedProductSales(args);
         const metric = args.metric === "net_sales" ? "net_sales" : "units_sold";
         const unlinked = sales.records.filter((r) => !r.sku).length;
         const data = sales.records.filter((r) => args.identity_scope !== "catalog" || r.sku).map((r) => {
@@ -822,6 +816,27 @@ export class ToolRegistry {
         result.data = { ...object(result.data), period: range, result_scope: args.result_scope || "page", group_by: args.group_by || "product", identity_scope: args.identity_scope || "all_lines", unlinked_groups: unlinked, document_coverage: sales.coverage };
         if (args.identity_scope === "catalog" && unlinked) { result.status = "partial"; result.coverage.complete = false; }
         if (sales.coverage.problems.length || data.some((r) => r.net_sales === null)) { result.status = "partial"; result.coverage.complete = false; }
+        return result;
+      },
+    );
+    this.add(
+      "get_product_sales_documents",
+      "sales",
+      "A quien vendimos un producto: clientes y RUT desde el receptor de facturas/boletas emitidas, con folio, fecha y cantidad por linea. Incluye documentos pagados, no depende de cuentas por cobrar. Reutiliza el mismo motor que get_top_products. reference_units contrasta una cantidad previa pero NO filtra facturas por cantidad exacta.",
+      { ...paging, ...period, result_scope: choice("page", "all_matches"), reference_units: integer(1, 1000000000) },
+      async (args) => {
+        if (!String(args.query || "").trim()) throw new CopilotDataError("Indica el producto o SKU; una cantidad sola no identifica una venta.", "INVALID_ARGUMENTS");
+        const { range, sales } = await this.documentedProductSales({ ...args, group_by: "product" });
+        const data = sales.records.flatMap((product) => rows(product.evidence).map<Row>((line) => ({ ...line, sku: product.sku, product: product.name, currency: product.currency, updated_at: product.updated_at }))).sort((a, b) => String(a.date).localeCompare(String(b.date)) || String(a.folio).localeCompare(String(b.folio), "es", { numeric: true }) || Number(a.line) - Number(b.line));
+        const warnings = ["El comprador es el receptor del documento emitido, no necesariamente quien transfirio el pago. No se consultan ni suman cuentas por cobrar.", "Las cantidades corresponden a lineas documentadas: pueden repartirse entre varios clientes y facturas. Notas pendientes o documentos inconsistentes hacen provisional la cobertura."];
+        if (data.some((r) => !r.customer || !r.tax_id)) warnings.push("Algunos documentos no identifican completamente al receptor; no se inventan clientes ni RUT.");
+        if (sales.coverage.problems.length) warnings.push(`${sales.coverage.problems.length} documentos o lineas requieren revision.`);
+        if (data.some((r) => r.net === null)) warnings.push("Hay importes pendientes de validar. Neto desconocido no significa cero ni factura impaga.");
+        const totals = sales.records.map((p) => ({ sku: p.sku, product: p.name, currency: p.currency, units: p.units_sold, documents: p.document_count }));
+        const reference = args.reference_units == null ? null : { units: args.reference_units, matches: totals.length === 1 ? Number(totals[0].units) === args.reference_units : null };
+        const result = tableResult("get_product_sales_documents", "sales", `Clientes y documentos de venta ${range.from} a ${range.to}`, data, columns("date:Fecha", "folio:Folio", "type:Tipo DTE", "customer:Cliente", "tax_id:RUT", "sku:SKU", "product:Producto", "quantity:Unidades", "net:Neto de linea", "currency:Moneda"), "/finanzas-contabilidad?view=facto", args.result_scope === "all_matches" ? { ...args, offset: 0, limit: Math.max(1, data.length) } : args, warnings);
+        result.data = { ...object(result.data), period: range, totals_by_product: totals, reference_quantity: reference, document_coverage: sales.coverage };
+        if (sales.coverage.problems.length || data.some((r) => !r.customer || r.net === null)) { result.status = "partial"; result.coverage.complete = false; }
         return result;
       },
     );
@@ -1250,6 +1265,15 @@ export class ToolRegistry {
         );
       },
     );
+  }
+  private async documentedProductSales(args: Row) {
+    const range = dateRange({ ...args, period: args.period || "this_year" });
+    const fields = "external_id,updated_at,header:payload->header,details:payload->details,totals:payload->totals,global_modifiers:payload->global_modifiers,document_number:payload->>document_number,document_status:payload->>document_status,document_type_taxbureau:payload->>document_type_taxbureau,received_issued_flag:payload->>received_issued_flag,issue_date:payload->>issue_date,currency_id:payload->>currency_id,net_amount:payload->>net_amount,receiver_legal_name:payload->>receiver_legal_name,receiver_tax_id_code:payload->>receiver_tax_id_code";
+    const documents = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.documents&order=id.asc`);
+    const details = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.document_details&order=id.asc`);
+    const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
+    const products = resolveProducts([], await this.source.records("product_details"), catalog, false);
+    return { range, sales: productSales(documents, details, products, args.query, range, factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined), args.group_by) };
   }
   private async publications(channel: unknown): Promise<Row[]> {
     const channels = await this.source.select(
