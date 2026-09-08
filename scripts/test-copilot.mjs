@@ -561,6 +561,14 @@ test("Respaldo completo de precios no se envia al modelo pero queda en respuesta
   assert.equal(result.results[0].data.client_price_list.records.length, 2);
   assert.equal(traces[0].result.data.client_price_list.records.length, 2);
 });
+test("Catalogo completo explica descarga total sin ofrecer otra parte por paginacion", async () => {
+  let round = 0;
+  const result = await runOrchestrator({ registry: priceFixture().registry, model: "fixture", apiKey: "x", message: "Todo el catalogo con stock", history: [], signal: new AbortController().signal, onTrace: async () => {}, fetcher: async () => new Response(JSON.stringify({ output: round++ === 0 ? [{ type: "function_call", name: "get_price_list", call_id: "catalog", arguments: JSON.stringify({ scope: "catalog", query: null, stock_filter: "available", limit: 1 }) }] : [{ type: "message", content: [{ type: "output_text", text: "Quieres que genere la segunda parte?" }] }] })) });
+  assert.match(result.message, /3 productos/);
+  assert.match(result.message, /No necesitas solicitar una segunda parte/);
+  assert.doesNotMatch(result.message, /Quieres/);
+});
+
 test("Cartera fixture: 17 documentos CLP 11287934, no suma saldos informados y conciliados", async () => {
   const result = await fixture().registry.execute("get_accounts_receivable", {
     state: "pending",

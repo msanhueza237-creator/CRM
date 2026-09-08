@@ -158,9 +158,15 @@ export async function runOrchestrator(options: OrchestratorOptions) {
           "Las cantidades pueden haber cambiado desde esas fechas. Revisa las observaciones de las fuentes antes de confirmar disponibilidad.",
         ].join("\n\n");
       }
+      const catalog = results.find((r) => r.toolName === "get_price_list" && r.status === "ok" && object(object(r.data).client_price_list).scope === "catalog");
+      const listing = object(object(catalog?.data).client_price_list);
+      const pendingPrices = rows(listing.records).filter((p) => p.net === null).length;
+      const catalogMessage = listing.complete === true && results.every((r) => r.toolName === "get_price_list")
+        ? `La lista completa incluye **${listing.total} productos con stock registrado positivo**: SKU, nombre, precio neto y stock.\n\nEl boton **Lista de precios (Excel)** descarga todos los productos, aunque la tabla muestre solo una pagina. No necesitas solicitar una segunda parte.\n\n${pendingPrices ? `${pendingPrices} productos tienen precio **Por confirmar** y permanecen incluidos. ` : ""}Los precios y existencias provienen de las fuentes guardadas del CRM; no son una consulta en vivo. Las fechas de origen quedan indicadas en el Excel.`
+        : null;
       return {
         message:
-          safeStockMessage || (verified && text
+          catalogMessage || safeStockMessage || (verified && text
             ? text
             : "No encontre informacion suficiente en el CRM para responder con seguridad. Revisa los estados de las fuentes consultadas."),
         results,

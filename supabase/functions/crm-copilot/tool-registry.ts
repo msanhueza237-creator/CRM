@@ -533,7 +533,7 @@ export class ToolRegistry {
             ...(data.length !== clientRows.length ? [`${data.length - clientRows.length} filas no aptas para envio: stock o precio no positivo, moneda/fecha pendiente o coincidencia aproximada. No se incluyen en el Excel comercial.`] : []),
           ],
         );
-        result.data = { ...object(result.data), identity_matches: resolved.products.length, client_price_list: { complete: true, total: clientRows.length, excluded: data.length - clientRows.length, records: clientRows } };
+        result.data = { ...object(result.data), identity_matches: resolved.products.length, client_price_list: { scope: args.scope || "search", complete: true, total: clientRows.length, excluded: data.length - clientRows.length, records: clientRows } };
         if (!data.length) result.summary = resolved.products.length ? "Se encontraron productos, pero ninguno cumple el filtro de disponibilidad solicitado. No se inventan cantidades ni precios." : "No se encontro el producto por ese nombre, SKU o enlace. Una busqueda vacia no acredita ausencia de precios; confirma el SKU.";
         return result;
       },
