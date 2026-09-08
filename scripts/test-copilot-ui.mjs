@@ -317,6 +317,14 @@ try {
   if (!process.env.COPILOT_REAL_PRICE_FIXTURE) assert.ok(containsFormulaGuard);
   assert.ok(!JSON.stringify(priceBook.model).includes("bank_clp"));
   assert.ok(!JSON.stringify(priceBook.model).includes("11287934"));
+  // After opening the page, a deployment can remove old lazy chunks. Excel must already be loaded.
+  await context.route("**/assets/*exceljs*", (route) => route.abort());
+  const [generalPriceDownload] = await Promise.all([page.waitForEvent("download"), page.getByRole("button", { name: "Descargar Excel", exact: true }).click()]);
+  const generalPriceFile = new URL("client-prices-general-button.xlsx", output);
+  await generalPriceDownload.saveAs(fileURLToPath(generalPriceFile));
+  const generalPriceBook = new ExcelJS.Workbook(); await generalPriceBook.xlsx.readFile(fileURLToPath(generalPriceFile));
+  assert.equal(generalPriceBook.worksheets.reduce((sum, sheet) => sum + sheet.rowCount - 4, 0), expectedPrices.length);
+  assert.ok(!JSON.stringify(generalPriceBook.model).includes("bank_clp"));
   for (const width of [1440, 390, 360]) {
     await page.setViewportSize({ width, height: width > 800 ? 1000 : 844 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);

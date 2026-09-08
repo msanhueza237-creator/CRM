@@ -1,4 +1,5 @@
 import { flattenResults, type CentralMessage } from "./copilotCentralApi";
+import { Workbook } from "exceljs";
 
 const textValue = (value: unknown) =>
   value == null
@@ -40,7 +41,6 @@ export function customerPriceRows(message: CentralMessage) {
 export async function exportCustomerPriceList(message: CentralMessage) {
   const records = customerPriceRows(message);
   if (!records.length) throw new Error("No hay productos con precio y stock verificados para enviar a clientes.");
-  const { Workbook } = await import("exceljs");
   const book = new Workbook();
   book.creator = "CLIMACTIVA";
   for (const currency of [...new Set(records.map((r) => String(r.currency || "Por confirmar")))]) {
@@ -124,7 +124,6 @@ export async function exportCentralMessage(
     return;
   }
   if (format === "excel") {
-    const { Workbook } = await import("exceljs");
     const workbook = new Workbook();
     workbook.creator = "Latin Chile CRM";
     const summary = workbook.addWorksheet("Resumen");

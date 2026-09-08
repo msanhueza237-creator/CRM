@@ -512,7 +512,8 @@ function ConversationMessage({
       if (!conversationId)
         throw new Error("La respuesta aun no esta respaldada.");
       const authorized = await authorizedExportMessage(conversationId, message.id);
-      if (format === "client-excel") await exportCustomerPriceList(authorized);
+      const priceExport = flattenResults(authorized.metadata?.results || []).some((r) => r.toolName === "get_price_list" && Number((r.data as { client_price_list?: { total?: number } } | null)?.client_price_list?.total) > 0);
+      if (format === "client-excel" || (format === "excel" && priceExport)) await exportCustomerPriceList(authorized);
       else await exportCentralMessage(authorized, format);
     } catch (error) {
       onError(
