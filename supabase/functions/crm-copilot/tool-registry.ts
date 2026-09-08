@@ -18,6 +18,7 @@ import { canReadDomain } from "./permissions.ts";
 import { CopilotSources } from "./sources.ts";
 import { findProducts, resolveProducts } from "./product-resolution.ts";
 import { clientPriceRows, factoCurrencies, productPrices } from "./product-prices.ts";
+import { productSales } from "./product-sales.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -407,6 +408,7 @@ export class ToolRegistry {
         query: { ...paging.query, maxLength: 1000, description: "Nombre, modelo, SKU o URL completa del producto solicitado. Conserva el enlace cuando el usuario lo entrega." },
         stock_filter: choice("all", "known", "zero", "low", "unknown"),
         threshold: integer(0, 1000000),
+        result_scope: choice("page", "all_matches"),
       },
       async (args) => {
         const warnings: string[] = [];
@@ -420,9 +422,13 @@ export class ToolRegistry {
         };
         const snapshots = await load("Resumen de inventario Facto", () => this.source.records("inventory_snapshots"));
         const details = await load("Detalle de productos Facto", () => this.source.records("product_details"));
-        const catalog = await load("Catalogo Tiendanube", () => this.source.all("content_products?select=id,sku,name,product_url,last_synced_at&order=id.asc"));
+        const catalog = await load("Catalogo Tiendanube", () => this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc"));
         if (!snapshots.length && !details.length && !catalog.length) throw new CopilotDataError("No hay un inventario consultable. No es posible afirmar existencias o agotados.");
-        const matched = findProducts(resolveProducts(snapshots, details, catalog, canReadDomain(this.source.actor.role, "finance")), args.query);
+        const matched = findProducts(resolveProducts(snapshots, details, catalog, canReadDomain(this.source.actor.role, "finance")), args.query).map((product) => {
+          const safe = { ...product };
+          delete safe.search_descriptions;
+          return safe;
+        });
         const data = matched
           .filter((p) =>
             args.stock_filter === "zero"
@@ -452,7 +458,7 @@ export class ToolRegistry {
             "updated_at:Actualizado",
           ),
           "/agentes/logistics/dashboard",
-          args,
+          args.result_scope === "all_matches" ? { ...args, offset: 0, limit: Math.max(1, data.length) } : args,
           [
             ...warnings,
             ...new Set(data.slice(Number(args.offset || 0), Number(args.offset || 0) + Number(args.limit || 25)).flatMap((p) => (p.stock_warnings as string[]).map((warning) => `${p.sku}: ${warning}`))),
@@ -482,6 +488,7 @@ export class ToolRegistry {
         query: { ...paging.query, maxLength: 1000 },
         stock_filter: choice("all", "available"),
         scope: choice("search", "catalog"),
+        result_scope: choice("page", "all_matches"),
         segment: choice("source", "distributor", "installer", "consumer"),
         list_id: string,
       },
@@ -503,7 +510,7 @@ export class ToolRegistry {
           );
         const details = await this.source.records("product_details");
         const snapshots = await this.source.records("inventory_snapshots");
-        const catalog = await this.source.all("content_products?select=id,sku,name,product_url,last_synced_at&order=id.asc");
+        const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
         const currencies = factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined);
         const resolved = productPrices(snapshots, details, catalog, args, currencies);
         if (!args.list_id && resolved.availableLists.length > 1) return readResult(
@@ -527,7 +534,7 @@ export class ToolRegistry {
             "list_id:Lista Facto",
           ),
           "/contenido?view=library",
-          args,
+          args.result_scope === "all_matches" ? { ...args, offset: 0, limit: Math.max(1, data.length) } : args,
           [
             "Precios netos de venta de la lista Facto, sin IVA ni descuentos inventados. El stock y precio conservan sus fechas; no son una consulta en vivo.",
             ...(data.length !== clientRows.length ? [`${data.length - clientRows.length} filas no aptas para envio: stock o precio no positivo, moneda/fecha pendiente o coincidencia aproximada. No se incluyen en el Excel comercial.`] : []),
@@ -770,49 +777,41 @@ export class ToolRegistry {
     this.add(
       "get_top_products",
       "sales",
-      "Ranking de unidades vendidas en el intervalo observado por la integracion Facto. Devuelve cobertura por producto; NO inventar ranking mensual si no coincide el intervalo.",
-      { ...paging },
+      "Ranking desde lineas de facturas y boletas Facto, por unidades y venta neta, con periodo y documentos verificables. Marca, nombre y descripcion cruzados por SKU con Tiendanube. No utiliza snapshots de inventario ni predice demanda futura. La cobertura puede ser parcial por documentos o notas sin detalle.",
+      { ...paging, ...period, metric: choice("units", "net_sales"), result_scope: choice("page", "all_matches") },
       async (args) => {
-        const data = (await this.source.records("inventory_snapshots"))
-          .map<Row>((r) => ({
-            ...pick(object(r.payload), [
-              "sku",
-              "name",
-              "units_sold_observed",
-              "sales_history_start",
-              "sales_history_end",
-              "sales_history_available",
-            ]),
-            updated_at: r.updated_at,
-          }))
-          .filter(
-            (r) =>
-              r.sales_history_available === true &&
-              numeric(r.units_sold_observed) !== null &&
-              matches(args.query, r.name, r.sku),
-          )
-          .sort(
-            (a, b) =>
-              Number(b.units_sold_observed) - Number(a.units_sold_observed),
-          );
-        return tableResult(
+        const range = dateRange({ ...args, period: args.period || "this_year" });
+        const fields = "external_id,updated_at,header:payload->header,details:payload->details,totals:payload->totals,global_modifiers:payload->global_modifiers,document_number:payload->>document_number,document_status:payload->>document_status,document_type_taxbureau:payload->>document_type_taxbureau,received_issued_flag:payload->>received_issued_flag,issue_date:payload->>issue_date,currency_id:payload->>currency_id,net_amount:payload->>net_amount";
+        const documents = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.documents&order=id.asc`);
+        const details = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.document_details&order=id.asc`);
+        const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
+        const products = resolveProducts([], await this.source.records("product_details"), catalog, false);
+        const sales = productSales(documents, details, products, args.query, range, factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined));
+        const metric = args.metric === "net_sales" ? "net_sales" : "units_sold";
+        const data = sales.records.sort((a, b) => metric === "net_sales" && a.currency !== b.currency ? String(a.currency).localeCompare(String(b.currency)) : Number(b[metric] ?? -Infinity) - Number(a[metric] ?? -Infinity));
+        const warnings = ["Ranking historico de ventas documentadas, no demanda futura ni cobros. Monedas separadas; no sumar ni comparar importes entre monedas.", "La marca proviene del catalogo Tiendanube o de coincidencias del texto de la linea; no se modifica la ficha del producto."];
+        if (sales.coverage.problems.length) warnings.push(`${sales.coverage.problems.length} documentos o lineas requieren revision. Ranking provisional: no acredita todas las ventas netas del periodo.`);
+        if (data.some((r) => r.net_sales === null)) warnings.push("Hay importes sin validar contra el neto del documento; no se inventan descuentos ni ventas netas.");
+        const result = tableResult(
           "get_top_products",
           "sales",
-          "Productos vendidos en periodo observado",
+          `Ventas documentadas ${range.from} a ${range.to}`,
           data,
           columns(
             "sku:SKU",
             "name:Producto",
-            "units_sold_observed:Unidades",
-            "sales_history_start:Desde",
-            "sales_history_end:Hasta",
+            "units_sold:Unidades facturadas",
+            "net_sales:Venta neta documentada",
+            "currency:Moneda",
+            "document_count:Documentos",
           ),
-          "/agentes/logistics/dashboard",
-          args,
-          [
-            "El periodo observado puede ser distinto del mes solicitado. No extrapolar.",
-          ],
+          "/finanzas-contabilidad?view=sources",
+          args.result_scope === "all_matches" ? { ...args, offset: 0, limit: Math.max(1, data.length) } : args,
+          warnings,
         );
+        result.data = { ...object(result.data), period: range, document_coverage: sales.coverage };
+        if (sales.coverage.problems.length || data.some((r) => r.net_sales === null)) { result.status = "partial"; result.coverage.complete = false; }
+        return result;
       },
     );
     this.add(

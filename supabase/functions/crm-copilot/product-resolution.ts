@@ -75,6 +75,8 @@ export function findProducts(products: Row[], query: unknown): Row[] {
   const match = (p: Row, fuzzy: boolean) => {
     const names = [
       p.name,
+      ...(Array.isArray(p.brands) ? p.brands : []),
+      ...(Array.isArray(p.search_descriptions) ? p.search_descriptions : []),
       ...(Array.isArray(p.aliases) ? p.aliases : []),
       p.sku,
     ];
@@ -229,6 +231,8 @@ export function resolveProducts(
       sku,
       name: p.name || rawSnapshot.name || group.catalog[0]?.name,
       aliases: group.catalog.map((c) => c.name),
+      brands: [...new Set(group.catalog.map((c) => c.brand).filter((brand) => typeof brand === "string" && brand.trim()))],
+      search_descriptions: group.catalog.map((c) => c.description_text).filter((description) => typeof description === "string" && description.trim()),
       catalog_links: group.catalog.filter((c) => catalogUrl(c.product_url)).map(
         (c) => ({ url: c.product_url, observed_at: c.last_synced_at }),
       ),

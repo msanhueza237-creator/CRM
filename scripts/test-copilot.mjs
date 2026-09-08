@@ -53,6 +53,7 @@ import {
 import { centralHandler } from "../supabase/functions/crm-copilot/central.ts";
 import { catalogUrl, findProducts, locationStock, resolveProducts } from "../supabase/functions/crm-copilot/product-resolution.ts";
 import { clientPriceRows, factoCurrencies, productPrices } from "../supabase/functions/crm-copilot/product-prices.ts";
+import { productSales } from "../supabase/functions/crm-copilot/product-sales.ts";
 
 const stamp = new Date().toISOString(),
   operation = "11111111-1111-4111-8111-111111111111";
@@ -406,7 +407,7 @@ test("Registro cruza fuentes de solo lectura, resuelve URL y declara fuente parc
   const { source, registry } = fixture("vendedor");
   const d = detectorSources();
   source.records = async (resource) => resource === "product_details" ? d.details : d.snapshots;
-  source.all = async (path) => { assert.match(path, /^content_products\?select=id,sku,name,product_url,last_synced_at&order=id.asc$/); return d.catalog; };
+  source.all = async (path) => { assert.match(path, /^content_products\?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc$/); return d.catalog; };
   const found = await registry.execute("search_products", { query: detectorUrl, stock_filter: "all" });
   assert.equal(found.status, "ok"); assert.equal(found.table.rows.length, 1);
   assert.equal(found.table.rows[0].stock, 11);
@@ -528,6 +529,25 @@ test("Catalogo completo ignora filtros anteriores y conserva precios pendientes 
   assert.ok(result.data.client_price_list.records.every((r) => r.stock > 0));
 });
 
+test("Todos por marca o descripcion supera 25 sin perder filtro ni incluir otras marcas", async () => {
+  const { source, registry, details } = priceFixture();
+  const many = Array.from({ length: 36 }, (_, i) => ({ ...details[0], external_id: String(i + 1), payload: { ...details[0].payload, product_id: String(i + 1), sku: `QA-${i}`, name: `Herramienta modelo ${i}` } }));
+  source.records = async (resource) => resource === "product_details" ? many : [];
+  source.all = async () => many.map((p, i) => ({ id: p.external_id, sku: p.payload.sku, name: p.payload.name, brand: i < 18 ? "Super Stars" : "", description_text: i >= 18 && i < 35 ? "Herramienta profesional Super Star con accesorios" : "Otra descripcion" }));
+  for (const name of ["search_products", "get_price_list"]) {
+    const paged = await registry.execute(name, { query: "Super Star", limit: 20 });
+    assert.equal(paged.coverage.totalMatched, 35);
+    assert.equal(paged.coverage.returned, 20);
+    const all = await registry.execute(name, { query: "Super Stars", limit: 20, offset: 20, result_scope: "all_matches" });
+    assert.equal(all.status, "ok");
+    assert.equal(all.coverage.returned, 35);
+    assert.equal(all.coverage.nextOffset, undefined);
+    assert.equal(all.table.rows.length, 35);
+    assert.ok(!all.table.rows.some((r) => r.sku === "QA-35"));
+    assert.ok(!JSON.stringify(all).includes("search_descriptions"));
+  }
+});
+
 test("Excel comercial excluye stock cero/desconocido, precio faltante, moneda desconocida y coincidencia aproximada", () => {
   const { details } = priceFixture();
   const result = productPrices([], details, [], {}, factoCurrencies());
@@ -567,6 +587,33 @@ test("Catalogo completo explica descarga total sin ofrecer otra parte por pagina
   assert.match(result.message, /3 productos/);
   assert.match(result.message, /No necesitas solicitar una segunda parte/);
   assert.doesNotMatch(result.message, /Quieres/);
+});
+
+test("Ventas documentales cruzan marca y descripcion sin duplicar facturas ni usar stock", () => {
+  const doc = { external_id: "1", document_number: 10, document_status: 1, document_type_taxbureau: "33", received_issued_flag: 1, issue_date: "2026-08-01", currency_id: 39, net_amount: "200" };
+  const detail = { ...doc, details: [{ line_description: "Herramienta", quantity: "2", unit_price: "100" }] };
+  const products = [{ sku: "SKU1", name: "Herramienta", brands: ["Super Stars"], stock: 9999 }];
+  const range = { from: "2026-01-01", to: "2026-09-08" };
+  const result = productSales([doc, doc], [detail], products, "Super Star", range, factoCurrencies());
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].units_sold, 2);
+  assert.equal(result.records[0].net_sales, 200);
+  assert.equal(result.records[0].document_count, 1);
+  assert.equal(result.records[0].evidence[0].folio, 10);
+  const description = productSales([doc], [{ ...detail, details: [{ line_description: "Otro modelo Super Stars", quantity: "2", unit_price: "100" }] }], products, "Super Star", range, factoCurrencies());
+  assert.equal(description.records[0].sku, null);
+  assert.equal(description.records[0].units_sold, 2);
+  const partial = productSales([doc, { ...doc, external_id: "2" }, { ...doc, external_id: "3", document_type_taxbureau: "61" }], [detail, { ...detail, external_id: "3", document_type_taxbureau: "61" }], products, "Super Star", range, factoCurrencies());
+  assert.equal(partial.records[0].units_sold, 2);
+  assert.equal(partial.coverage.problems.length, 2);
+  for (const change of [{ currency_id: 999 }, { net_amount: "999" }]) {
+    const pending = productSales([{ ...doc, ...change }], [detail], products, "Super Stars", range, factoCurrencies());
+    assert.equal(pending.records[0].net_sales, null);
+    assert.equal(pending.records[0].units_sold, 2);
+  }
+  assert.equal(productSales([{ ...doc, received_issued_flag: 0 }], [detail], products, null, range, factoCurrencies()).records.length, 0);
+  assert.equal(productSales([{ ...doc, issue_date: "2025-01-01" }], [detail], products, null, range, factoCurrencies()).records.length, 0);
+  assert.equal(productSales([doc], [{ ...detail, document_id: "another" }], products, null, range, factoCurrencies()).records.length, 0);
 });
 
 test("Cartera fixture: 17 documentos CLP 11287934, no suma saldos informados y conciliados", async () => {
