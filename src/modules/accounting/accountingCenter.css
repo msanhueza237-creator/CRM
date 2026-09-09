@@ -184,6 +184,23 @@
   font-size: 0.84rem;
 }
 
+.accounting-center-page .accounting-import-card > label.accounting-report-confirmation {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 12px 0;
+  font-size: 0.84rem;
+  text-transform: none;
+}
+
+.accounting-report-confirmation input[type="checkbox"] {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 2px 0 0;
+}
+
 .accounting-filter-grid {
   display: grid;
   grid-template-columns: minmax(230px, 1.6fr) repeat(4, minmax(135px, 0.8fr));

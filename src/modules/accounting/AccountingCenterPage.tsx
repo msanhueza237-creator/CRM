@@ -184,7 +184,7 @@ export function AccountingCenterPage() {
           {activeView === "facto" ? <FactoView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "banks" ? <BankImportView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "reconcile" ? <ReconciliationErrorBoundary><ReconciliationView data={data} busy={busy} runAction={runAction} /></ReconciliationErrorBoundary> : null}
-          {activeView === "receivables" ? <ReceivablesView data={data} /> : null}
+          {activeView === "receivables" ? <ReceivablesView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "payables" ? <PayablesView rows={data.payables} /> : null}
           {activeView === "checks" ? <ChecksView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "periods" ? <PeriodsView data={data} isAdmin={user?.role === "administrador"} busy={busy} runAction={runAction} /> : null}
@@ -541,7 +541,7 @@ const factoExcelProfiles: Array<{ id: AccountingFactoExcelProfile; label: string
   { id: "facto_cash", label: "Movimiento de caja general Facto", help: "Consolida todos los métodos y evita duplicar eventos ya presentes en archivos específicos." },
 ];
 
-function FactoView({ data, busy, runAction }: ActionViewProps) {
+function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps & { excelOnly?: boolean }) {
   const sources = data.sources.filter((row) => row.source_type === "FACTO" || row.source_type === "COMERCIO_EXTERIOR");
   const [fromDate, setFromDate] = useState("2026-01-01");
   const [toDate, setToDate] = useState(today());
@@ -558,6 +558,8 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<AccountingFactoExcelPreview | null>(null);
   const [localError, setLocalError] = useState("");
+  const [preparingExcel, setPreparingExcel] = useState(false);
+  const [completeReport, setCompleteReport] = useState(false);
   const selectedProfile = factoExcelProfiles.find((item) => item.id === profile)!;
   const supportBatches = data.batches.filter((batch) => ["COLLECTIONS", "CHECKS", "PAYMENTS"].includes(batch.source_type));
   const normalizedQuery = normalize(query);
@@ -617,8 +619,17 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
   }
 
   async function prepareFactoExcel() {
-    if (!file) return;
+    if (!file || preparingExcel) return;
     setLocalError("");
+    if (profile === "facto_unpaid_documents" && (!completeReport || !fromDate || !toDate || fromDate > toDate || toDate > today())) {
+      setLocalError("Confirma el reporte completo y revisa las fechas del período.");
+      return;
+    }
+    if (!/\.(xls|xlsx)$/i.test(file.name) || file.size > 25 * 1024 * 1024 || file.size === 0) {
+      setLocalError("Selecciona un Excel XLS o XLSX válido de hasta 25 MB.");
+      return;
+    }
+    setPreparingExcel(true);
     try {
       const storagePath = await uploadAccountingEvidence(data.entity.id, file);
       setPreview(await previewAccountingFactoExcel({
@@ -631,10 +642,13 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
       }));
     } catch (caught) {
       setLocalError(caught instanceof Error ? caught.message : "No se pudo analizar el respaldo Facto.");
+    } finally {
+      setPreparingExcel(false);
     }
   }
 
   return <div className="accounting-view-stack">
+    {!excelOnly ? <>
     <section className="panel accounting-facto-browser-sync">
       <div className="accounting-panel-heading"><div><p>API primero · navegador complementario</p><h2>Previsualizar cobranza Facto</h2><span>Consulta documentos por API y usa navegación de solo lectura únicamente para saldos, vencimientos y pagos parciales que la API no entrega.</span></div><ShieldCheck size={24} /></div>
       <div className="accounting-facto-range"><label>Desde<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>Hasta<input type="date" max={today()} value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary-button" disabled={Boolean(busy) || !fromDate || !toDate || fromDate > toDate} type="button" onClick={() => void requestReceivablesPreview()}><ScanSearch className={busy === "facto-receivables-preview" ? "spin" : ""} size={17} /> {busy === "facto-receivables-preview" ? "Solicitando…" : "Preparar previsualización"}</button></div>
@@ -650,15 +664,19 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
       <div className="accounting-facto-history"><h3>Historial de sincronización API</h3>{data.factoSyncRuns.length ? data.factoSyncRuns.map((run) => <article key={run.id}><div><strong>{date(run.from_date)} al {date(run.to_date)}</strong><span>{dateTime(run.created_at)}</span></div><Status value={run.status === "completed" ? "Completada" : run.status === "partial" ? "Con observaciones" : run.status === "failed" ? "Fallida" : "En curso"} tone={run.status === "completed" ? "success" : run.status === "failed" ? "danger" : "review"} /><p>{run.in_range_records} documentos · {run.inserted_records} nuevos · {run.updated_records} actualizados · {run.inconsistent_records} observaciones</p>{run.error_message ? <small>{run.error_message}</small> : null}</article>) : <Empty icon={RefreshCw} text="Todavía no hay cargas históricas registradas." />}</div>
     </section>
 
+    </> : null}
     <div className="accounting-facto-support-grid">
       <section className="panel accounting-import-card">
         <div className="accounting-panel-heading"><div><p>Información complementaria</p><h2>Cargar Excel de Facto</h2><span>Se conserva el archivo original, se previsualiza y solo después de confirmar se integra.</span></div><FileSpreadsheet size={24} /></div>
-        <label>Contenido del archivo<select value={profile} onChange={(event) => setProfile(event.target.value as AccountingFactoExcelProfile)}>{factoExcelProfiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        <label>Contenido del archivo<select disabled={preparingExcel} value={profile} onChange={(event) => { setProfile(event.target.value as AccountingFactoExcelProfile); setCompleteReport(false); setLocalError(""); }}>{factoExcelProfiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
         <p className="accounting-profile-help">{selectedProfile.help}</p>
-        {profile === "facto_unpaid_documents" ? <p className="accounting-profile-help"><strong>Corte completo:</strong> {date(fromDate)} al {date(toDate)}</p> : null}
-        <label className="accounting-file-drop"><Upload size={30} /><strong>{file?.name || "Selecciona un archivo Excel"}</strong><span>XLS o XLSX · máximo 25 MB · original privado</span><input accept=".xls,.xlsx" type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} /></label>
+        {profile === "facto_unpaid_documents" ? <>
+          <div className="accounting-form-grid"><label>Emisión desde<input disabled={preparingExcel} type="date" value={fromDate} onChange={(event) => { setFromDate(event.target.value); setCompleteReport(false); }} /></label><label>Emisión hasta<input disabled={preparingExcel} type="date" max={today()} value={toDate} onChange={(event) => { setToDate(event.target.value); setCompleteReport(false); }} /></label></div>
+          <label className="accounting-report-confirmation"><input type="checkbox" disabled={preparingExcel} checked={completeReport} onChange={(event) => setCompleteReport(event.target.checked)} /><span>El reporte incluye todos los documentos impagos del período, sin filtros de cliente.</span></label>
+        </> : null}
+        <label className="accounting-file-drop"><Upload size={30} /><strong>{file?.name || "Selecciona un archivo Excel"}</strong><span>XLS o XLSX · máximo 25 MB · original privado</span><input disabled={preparingExcel} accept=".xls,.xlsx" type="file" onChange={(event) => { setFile(event.target.files?.[0] || null); setCompleteReport(false); setLocalError(""); }} /></label>
         {localError ? <div className="accounting-local-error"><AlertTriangle size={16} />{localError}</div> : null}
-        <button className="primary-button" disabled={!file || Boolean(busy)} type="button" onClick={() => void prepareFactoExcel()}><Search size={17} /> Previsualizar y validar</button>
+        <button className="primary-button" disabled={!file || Boolean(busy) || preparingExcel || (profile === "facto_unpaid_documents" && (!completeReport || !fromDate || !toDate || fromDate > toDate || toDate > today()))} type="button" onClick={() => void prepareFactoExcel()}><Search size={17} /> {preparingExcel ? "Validando Excel…" : "Previsualizar y validar"}</button>
       </section>
       <section className="panel accounting-import-history">
         <div className="accounting-panel-heading"><div><p>Respaldo y trazabilidad</p><h2>Archivos complementarios</h2><span>No reemplazan cartolas bancarias ni crean ingresos duplicados.</span></div></div>
@@ -666,12 +684,13 @@ function FactoView({ data, busy, runAction }: ActionViewProps) {
       </section>
     </div>
 
-    <section className="panel">
+    {!excelOnly ? <section className="panel">
       <div className="accounting-panel-heading"><div><p>Evidencia normalizada</p><h2>Documentos financieros</h2><span>Busca por cliente, proveedor, RUT o folio y combina filtros de fecha, fuente y estado.</span></div><strong>{filteredSources.length} de {sources.length}</strong></div>
       <div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Nombre, RUT, folio o documento" /><label>Desde<input type="date" value={documentFrom} onChange={(event) => setDocumentFrom(event.target.value)} /></label><label>Hasta<input type="date" value={documentTo} onChange={(event) => setDocumentTo(event.target.value)} /></label><label>Fuente<select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}><option value="all">Todas</option><option value="FACTO">Facto</option><option value="COMERCIO_EXTERIOR">Comercio Exterior</option></select></label><label>Estado<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos</option><option value="validated">Validado</option><option value="extracted">Extraído</option><option value="inconsistent">Inconsistente</option><option value="pending">Pendiente</option><option value="posted">Contabilizado</option></select></label></div>
       <div className="accounting-inline-stats"><span><strong>{sources.filter((row) => row.source_type === "FACTO").length}</strong> Facto</span><span><strong>{sources.filter((row) => row.source_type === "COMERCIO_EXTERIOR").length}</strong> Comercio Exterior</span><span><strong>{sources.filter((row) => row.status === "inconsistent").length}</strong> requieren revisión</span><span><strong>{data.paymentEvents.filter((row) => row.matching_status !== "reconciled").length}</strong> eventos de pago por conciliar</span></div>
       {filteredSources.length ? <Table headers={["Fuente", "Fecha", "Documento", "Contraparte", "Total", "Calidad", "Estado"]}>{filteredSources.map((row) => <tr key={row.id}><td data-label="Fuente"><Status value={row.source_type === "FACTO" ? "Facto" : "Comercio Exterior"} tone="neutral" /></td><td data-label="Fecha">{date(row.issued_on)}</td><td data-label="Documento"><strong>{humanize(row.document_type)} {row.folio || ""}</strong></td><td data-label="Contraparte">{row.counterpart_name || "Sin identificar"}<small>{row.counterpart_tax_id || ""}</small></td><td data-label="Total">{clp(row.total_clp)}<small>{row.currency !== "CLP" ? `${money(row.total_amount)} ${row.currency}` : ""}</small></td><td data-label="Calidad"><Status value={humanize(row.data_quality)} tone={row.data_quality === "validated" ? "success" : "review"} /></td><td data-label="Estado">{humanize(row.status)}</td></tr>)}</Table> : <Empty icon={Search} text="No hay documentos que coincidan con estos filtros." />}
     </section>
+    : null}
     {preview ? <FactoExcelPreviewDialog preview={preview} busy={busy} close={() => setPreview(null)} runAction={runAction} /> : null}
     {receivablesPreview ? <FactoReceivablesPreviewDialog detail={receivablesPreview} busy={busy} close={() => setReceivablesPreview(null)} runAction={runAction} /> : null}
   </div>;
@@ -723,7 +742,7 @@ function FactoExcelPreviewDialog({ preview, busy, close, runAction }: { preview:
     const completed = await runAction("confirm-facto-excel", () => confirmAccountingFactoExcel(preview.batch.id), "Archivo Facto respaldado e integrado sin duplicar documentos ni pagos.");
     if (completed) close();
   }
-  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide"><div className="accounting-modal-heading"><div><p>Revisión humana obligatoria</p><h2>{factoProfileLabel(preview.profile)}</h2><span>{preview.batch.file_name}</span></div><button className="icon-button" aria-label="Cerrar" type="button" onClick={close}><X /></button></div><div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Filas</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevas</span><span><strong>{preview.summary.duplicates}</strong>Duplicadas</span><span className="warning"><strong>{preview.summary.errors}</strong>Con errores</span></div>{preview.warnings.map((warning) => <div className="accounting-review-note" key={warning}><AlertTriangle size={16} />{warning}</div>)}<Table headers={["Fila", ...columns.headers, "Validación"]}>{preview.rows.slice(0, 200).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.row_number}</td>{columns.values(row.data).map((cell, index) => <td data-label={columns.headers[index]} key={`${row.fingerprint}-${columns.headers[index]}`}>{cell}</td>)}<td data-label="Validación"><Status value={row.errors.length ? row.errors.join(" ") : "Correcto"} tone={row.errors.length ? "danger" : "success"} /></td></tr>)}</Table>{preview.rows.length > 200 ? <p className="accounting-table-note">Se muestran 200 de {preview.rows.length} filas; al confirmar se procesará el archivo completo.</p> : null}<div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy === "confirm-facto-excel" || Number(preview.summary.new) === 0} type="button" onClick={() => void confirm()}>{busy === "confirm-facto-excel" ? "Integrando…" : `Confirmar ${preview.summary.new} registros`}</button></div></section></div>;
+  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide"><div className="accounting-modal-heading"><div><p>Revisión humana obligatoria</p><h2>{factoProfileLabel(preview.profile)}</h2><span>{preview.batch.file_name}</span></div><button className="icon-button" aria-label="Cerrar" type="button" onClick={close}><X /></button></div><div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Filas</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevas</span><span><strong>{preview.summary.duplicates}</strong>Duplicadas</span><span className="warning"><strong>{preview.summary.errors}</strong>Con errores</span></div>{preview.warnings.map((warning) => <div className="accounting-review-note" key={warning}><AlertTriangle size={16} />{warning}</div>)}{preview.profile === "facto_unpaid_documents" ? <div className="accounting-preview-kpis"><span><strong>{clp(number(preview.summary.receivables_total_clp))}</strong>Saldo por cobrar CLP</span><span><strong>{clp(number(preview.summary.payables_total_clp))}</strong>Saldo por pagar CLP</span></div> : null}<Table headers={["Fila", ...columns.headers, "Validación"]}>{preview.rows.slice(0, 200).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.row_number}</td>{columns.values(row.data).map((cell, index) => <td data-label={columns.headers[index]} key={`${row.fingerprint}-${columns.headers[index]}`}>{cell}</td>)}<td data-label="Validación"><Status value={row.errors.length ? row.errors.join(" ") : "Correcto"} tone={row.errors.length ? "danger" : "success"} /></td></tr>)}</Table>{preview.rows.length > 200 ? <p className="accounting-table-note">Se muestran 200 de {preview.rows.length} filas; al confirmar se procesará el archivo completo.</p> : null}<div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy === "confirm-facto-excel" || Number(preview.summary.new) === 0 || (preview.profile === "facto_unpaid_documents" && Number(preview.summary.errors) > 0)} type="button" onClick={() => void confirm()}>{busy === "confirm-facto-excel" ? "Integrando…" : `Confirmar ${preview.summary.new} registros`}</button></div></section></div>;
 }
 
 function BankImportView({ data, busy, runAction }: ActionViewProps) {
@@ -1069,7 +1088,8 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   </div>;
 }
 
-function ReceivablesView({ data }: { data: AccountingBootstrap }) {
+function ReceivablesView({ data, busy, runAction }: ActionViewProps) {
+  const [showExcel, setShowExcel] = useState(false);
   const factoReceivables = data.factoReceivables;
   const receivablesSuppressed = data.summary.receivables_suppressed === true;
   const [bucket, setBucket] = useState("all");
@@ -1088,7 +1108,10 @@ function ReceivablesView({ data }: { data: AccountingBootstrap }) {
     return matchesQuery && matchesDates && matchesStatus && (bucket === "all" || agingBucket(row.due_on) === bucket);
   });
   const total = filtered.reduce((sum, row) => sum + operationalReceivableBalance(row), 0);
-  return <section className="panel">
+  return <div className="accounting-view-stack">
+    <div className="accounting-source-actions"><button className="primary-button" type="button" aria-expanded={showExcel} aria-controls="receivables-excel" onClick={() => setShowExcel(!showExcel)}><Upload size={17} /> {showExcel ? "Cerrar carga de Excel" : "Actualizar cartera desde Excel Facto"}</button></div>
+    <div id="receivables-excel" hidden={!showExcel}>{showExcel ? <FactoView data={data} busy={busy} runAction={runAction} excelOnly /> : null}</div>
+    <section className="panel">
     <div className="accounting-panel-heading">
       <div><p>Cobranza Facto</p><h2>Cuentas por cobrar</h2><span>La cartera operacional de Facto y la conciliación bancaria se mantienen separadas y trazables.</span></div>
       <div className="accounting-receivables-total"><strong>{receivablesSuppressed ? "En revisión" : clp(total)}</strong><small>{receivablesSuppressed ? `Subtotal no utilizable · ${data.summary.receivables_snapshot_rows || 0} filas afectadas por una lectura parcial` : `${filtered.length} documento(s) · corte ${shortDate(factoReceivables?.asOf || data.summary.as_of)}`}</small></div>
@@ -1107,7 +1130,7 @@ function ReceivablesView({ data }: { data: AccountingBootstrap }) {
       const statusLabel = !reported ? humanize(row.status) : operational <= 0.5 ? "Pagada en Facto" : number(row.reported_paid_amount_clp) > 0 ? "Pago parcial Facto" : "Pendiente en Facto";
       return <tr key={row.id}><td data-label="Cliente"><strong>{row.customer_name}</strong><small>{row.customer_tax_id || ""}</small></td><td data-label="Documento">{row.document_number}</td><td data-label="Emisión">{date(row.issued_on)}</td><td data-label="Vencimiento">{date(row.due_on)}<small>{agingLabel(row.due_on)}</small></td><td data-label="Original">{clp(row.original_amount_clp)}</td><td data-label="Abonos Facto">{clp(reported ? row.reported_paid_amount_clp : row.paid_amount_clp)}<small>Banco conciliado: {clp(row.paid_amount_clp)}</small></td><td data-label="Saldo Facto"><strong>{clp(operational)}</strong><small>Banco pendiente: {clp(row.balance_clp)}</small></td><td data-label="Estado"><Status value={statusLabel} tone={reported && operational <= 0.5 ? "success" : agingBucket(row.due_on) === "current" ? "neutral" : "review"} /></td></tr>;
     })}</Table> : <Empty icon={Search} text="No hay cuentas por cobrar que coincidan con los filtros." />}
-  </section>;
+  </section></div>;
 }
 
 function operationalReceivableBalance(row: AccountingReceivable) {
