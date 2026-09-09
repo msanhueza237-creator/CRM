@@ -13,6 +13,7 @@ import {
 } from "./facto-receivables.ts";
 import { identifyPayrollEmployee, protectedPayrollClassification } from "./payroll-employees.ts";
 import { buildAccountingAgentReport, hasAccountingTaskLease } from "./agent-report.ts";
+import { accountingToday, dashboardSalesEvidence } from "./dashboard-sales.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -243,7 +244,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     selectRows(rest, "integration_connections?select=provider,status,last_success_at&provider=eq.facto&limit=1"),
     selectRows(rest, "integration_records?select=id,payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
   ]);
-  const asOf = new Date().toISOString().slice(0, 10);
+  const asOf = accountingToday();
   const [rawSummary, dashboard] = await Promise.all([
     rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: asOf }),
     buildDashboardAnalytics(rest, entityId, asOf, sources, accounts),
@@ -497,17 +498,6 @@ function addLedgerLineToDashboard(total: DashboardResultTotals, accountType: str
   else if (accountType === "result") total.otherResults += credit - debit;
 }
 
-function documentaryNetSalesClp(document: JsonRecord) {
-  const exchangeRate = String(document.currency || "CLP") === "CLP" ? 1 : numeric(document.exchange_rate) || 1;
-  const netAmount = numeric(document.net_amount);
-  const taxAmount = numeric(document.tax_amount);
-  const totalClp = numeric(document.total_clp);
-  const netClp = netAmount
-    ? netAmount * exchangeRate
-    : Math.max(0, totalClp - taxAmount * exchangeRate);
-  return String(document.document_type || "").includes("credit_note") ? -netClp : netClp;
-}
-
 function dashboardVariance(current: number, previous: number) {
   return previous ? ((current - previous) / Math.abs(previous)) * 100 : null;
 }
@@ -568,7 +558,7 @@ async function buildDashboardAnalytics(
 
   try {
     ledgerLines = await selectAllRows(rest,
-      `accounting_journal_lines?select=account_id,debit_clp,credit_clp,accounting_journal_entries!inner(entry_date,idempotency_key,source_document_id,status)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=gte.${priorYear}-01-01&accounting_journal_entries.entry_date=lte.${asOf}&order=id.asc`,
+      `accounting_journal_lines?select=account_id,debit_clp,credit_clp,accounting_journal_entries!inner(entry_date,idempotency_key,source_document_id,status)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${asOf}&order=id.asc`,
     );
   } catch (error) {
     ledgerReadFailed = true;
@@ -589,7 +579,7 @@ async function buildDashboardAnalytics(
     const debit = numeric(line.debit_clp);
     const credit = numeric(line.credit_clp);
     if (!debit && !credit) continue;
-    relevantLedgerLines += 1;
+    if (entryDate >= `${priorYear}-01-01`) relevantLedgerLines += 1;
     if (String(entry.idempotency_key || "").startsWith("facto-cost:")) {
       const sourceDocumentId = String(entry.source_document_id || "");
       if (sourceDocumentId) exactCostSourceIds.add(sourceDocumentId);
@@ -612,7 +602,7 @@ async function buildDashboardAnalytics(
   let financialDocuments = sources;
   try {
     financialDocuments = await selectAllRows(rest,
-      `accounting_source_documents?select=id,issued_on,document_type,currency,exchange_rate,net_amount,tax_amount,total_clp,data_quality,status&entity_id=eq.${entityId}&issued_on=gte.${priorYear}-01-01&issued_on=lte.${asOf}&order=issued_on.asc`,
+      `accounting_source_documents?select=id,folio,external_id,issued_on,document_type,currency,exchange_rate,net_amount,exempt_amount,tax_amount,total_clp,data_quality,status&entity_id=eq.${entityId}&issued_on=gte.${priorYear}-01-01&issued_on=lte.${asOf}&order=issued_on.asc,id.asc`,
     );
   } catch (error) {
     warnings.push("La cobertura documental se calculó con el último conjunto cargado en pantalla.");
@@ -622,40 +612,30 @@ async function buildDashboardAnalytics(
     });
   }
 
-  const validSalesDocuments = financialDocuments.filter((source) => {
-    const documentType = String(source.document_type || "");
-    const quality = String(source.data_quality || "validated");
-    return documentType.startsWith("sales_") && quality !== "inconsistent";
-  });
-  const currentSalesDocuments = validSalesDocuments.filter((source) => {
-    const issuedOn = String(source.issued_on || "");
-    return issuedOn >= yearStart && issuedOn <= asOf;
-  });
-
-  const ledgerCurrentSales = [...monthTotals.values()].reduce((sum, total) => sum + total.sales, 0);
-  let usedDocumentarySales = false;
-  if (Math.abs(ledgerCurrentSales) < 0.005 && currentSalesDocuments.length) {
-    for (const document of currentSalesDocuments) {
-      const total = monthTotals.get(String(document.issued_on || "").slice(0, 7));
-      if (total) total.sales += documentaryNetSalesClp(document);
-    }
-    usedDocumentarySales = true;
-    warnings.push("Ventas recuperadas desde documentos Facto validados; el margen seguirá provisional hasta completar sus asientos.");
+  const salesEvidence = dashboardSalesEvidence(financialDocuments, ledgerLines,
+    new Set(accounts.filter(account => account.account_type === "income").map(account => String(account.id))), asOf);
+  const currentSalesDocuments = salesEvidence.filter(source => source.issuedOn >= yearStart);
+  const pendingSales = currentSalesDocuments.filter(source => !source.posted);
+  const salesLedger = new Map([...monthTotals].map(([period, total]) => [period, total.sales]));
+  // Supplement by document identity, not by a zero annual/monthly balance.
+  for (const document of pendingSales) {
+    const total = monthTotals.get(document.issuedOn.slice(0, 7));
+    if (total) total.sales += document.netClp;
   }
-
-  if (Math.abs(previousYear.sales) < 0.005) {
-    const previousSalesDocuments = validSalesDocuments.filter((source) => {
-      const issuedOn = String(source.issued_on || "");
-      return issuedOn >= `${priorYear}-01-01` && issuedOn <= priorAsOf;
-    });
-    if (previousSalesDocuments.length) {
-      previousYear.sales = previousSalesDocuments.reduce((sum, document) => sum + documentaryNetSalesClp(document), 0);
-    }
+  const usedDocumentarySales = pendingSales.length > 0;
+  if (usedDocumentarySales) {
+    warnings.push("Ventas recuperadas desde documentos Facto validados sin asiento de ingreso al corte. No se duplican las contabilizadas; el resultado es provisional y puede diferir del estado de resultados contable.");
+  }
+  for (const document of salesEvidence) {
+    if (!document.posted && document.issuedOn >= `${priorYear}-01-01` && document.issuedOn <= priorAsOf) previousYear.sales += document.netClp;
   }
 
   const monthly = monthRanges.map((month) => ({
     ...month,
     ...finalizeDashboardTotals(monthTotals.get(month.period) || emptyDashboardTotals()),
+    salesLedger: salesLedger.get(month.period) || 0,
+    salesPending: pendingSales.filter(document => document.issuedOn.slice(0, 7) === month.period).reduce((sum, document) => sum + document.netClp, 0),
+    salesPendingDocuments: pendingSales.filter(document => document.issuedOn.slice(0, 7) === month.period).length,
   }));
   const current = finalizeDashboardTotals(monthly.reduce((accumulator, month) => ({
     sales: accumulator.sales + month.sales,
@@ -690,7 +670,12 @@ async function buildDashboardAnalytics(
     from: yearStart,
     to: asOf,
     monthly,
-    current,
+    current: { ...current,
+      salesLedger: monthly.reduce((sum, month) => sum + month.salesLedger, 0),
+      salesPending: pendingSales.reduce((sum, document) => sum + document.netClp, 0),
+      salesPendingDocuments: pendingSales.length,
+    },
+    latestSales: [...currentSalesDocuments].sort((a, b) => b.issuedOn.localeCompare(a.issuedOn) || b.folio.localeCompare(a.folio, "es", { numeric: true })).slice(0, 5),
     previousYear,
     expenseBreakdown,
     comparison: {

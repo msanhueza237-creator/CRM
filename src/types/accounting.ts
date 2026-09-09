@@ -420,6 +420,9 @@ export interface AccountingSummary {
 
 export interface AccountingDashboardTotals {
   sales: number;
+  salesLedger?: number;
+  salesPending?: number;
+  salesPendingDocuments?: number;
   costs: number;
   expenses: number;
   otherResults: number;
@@ -445,6 +448,7 @@ export interface AccountingDashboardAnalytics {
   from: string;
   to: string;
   monthly: AccountingDashboardMonth[];
+  latestSales?: Array<{ id: string; folio: string; issuedOn: string; netClp: number; posted: boolean }>;
   current: AccountingDashboardTotals;
   previousYear: AccountingDashboardTotals;
   expenseBreakdown: {

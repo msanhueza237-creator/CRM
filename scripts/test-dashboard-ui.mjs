@@ -12,6 +12,8 @@ await mkdir("outputs/dashboard", { recursive: true });
 const totals = { sales: 136494301, costs: 79339554, expenses: 17000000, operatingProfit: 40154747, grossMargin: 41.87 };
 const summary = { bank_clp: 8209372, bank_usd_clp: 792, checks_portfolio: 1169981, payables: 12925234, receivables: 11287934, unmatched_bank: 183, as_of: "2026-09-08", bank_balance_basis: "verified_control", receivables_data_quality: "verified_full_snapshot" };
 const monthly = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago"].map((label, i) => ({ ...totals, label, period: `2026-${String(i + 1).padStart(2, "0")}`, from: "2026-01-01", to: "2026-09-08", sales: 10000000 + i * 3000000, costs: 6000000 + i * 1000000, expenses: 1000000, operatingProfit: 3000000 + i * 2000000 }));
+monthly.push({ label: "Sep", period: "2026-09", from: "2026-09-01", to: "2026-09-09", sales: 149421,
+  salesLedger: 0, salesPending: 149421, salesPendingDocuments: 1, costs: 0, expenses: 350000, operatingProfit: -200579, grossMargin: 100 });
 try {
   for (const role of ["administrador", "vendedor", "finanzas"]) {
     const context = await browser.newContext();
@@ -30,7 +32,7 @@ try {
       if (u.pathname.endsWith("/summary")) {
         financeRequests++;
         if (failed) return route.fulfill({ status: 503, headers, body: '{"error":"Unavailable"}' });
-        body = { summary: { ...summary, receivables_suppressed: suppressed }, dashboard: { available: true, year: 2026, from: "2026-01-01", to: "2026-09-08", basis: "ledger", warnings: [], current: totals, monthly, costCoverage: { salesWithExactCost: 112, totalSalesDocuments: 162 } }, factoFreshness: { stale: false } };
+        body = { summary: { ...summary, receivables_suppressed: suppressed }, dashboard: { available: true, year: 2026, from: "2026-01-01", to: "2026-09-09", basis: "mixed", warnings: [], current: { ...totals, salesLedger: totals.sales - 149421, salesPending: 149421, salesPendingDocuments: 1 }, monthly, latestSales: [{ id: "1557", folio: "1557", issuedOn: "2026-09-08", netClp: 149421, posted: false }], costCoverage: { salesWithExactCost: 112, totalSalesDocuments: 163 } }, factoFreshness: { stale: false } };
       }
       if (u.pathname.includes("foreign_trade_dashboard_summary")) { tradeRequests++; body = { active_shipments: 2, operations_in_preparation: 4, open_alerts: 3, suppliers: 5 }; }
       if (u.pathname.includes("integration_connections")) body = [{ provider: "facto", status: "connected", last_success_at: "2026-09-08" }];
@@ -61,6 +63,15 @@ try {
         await page.locator(".overview-bars button").first().click();
         assert.equal(await page.locator(".overview-results h3").innerText(), "Ene 2026");
         await page.getByRole("combobox", { name: "Período financiero" }).selectOption("year");
+        await page.getByRole("combobox", { name: "Período financiero" }).selectOption("2026-09");
+        assert.match(await page.locator(".overview-results").innerText(), /149\.421/);
+        assert.match(await page.locator(".overview-sales-breakdown").innerText(), /Sin asiento/);
+        assert.match(await page.locator(".overview-result-total").innerText(), /base mixta/);
+        assert.match(await page.locator(".overview-results").innerText(), /Por validar/);
+        assert.match(await page.locator(".overview-recent-sales").innerText(), /Documento 1557/);
+        assert.equal(await page.locator(".overview-recent-sales a").getAttribute("href"), "/finanzas-contabilidad?view=facto");
+        assert.equal(await page.locator(".overview-bars .sales").last().evaluate(el => el.getBoundingClientRect().height >= 2), true);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false);
       }
       await page.screenshot({ path: `outputs/dashboard/${role}-${width}.png`, fullPage: true });
     }

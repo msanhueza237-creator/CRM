@@ -53,6 +53,14 @@
 .overview-results h3 { margin-bottom: 18px; }
 .overview-result-row { display: flex; justify-content: space-between; gap: 14px; padding: 13px 0; border-bottom: 1px solid #e1e9e9; font-size: 13px; }
 .overview-result-row strong { text-align: right; }
+.overview-sales-breakdown { border-left: 3px solid #b07820; padding: 0 10px 10px; background: #fff8ec; }
+.overview-sales-breakdown .overview-result-row { font-size: 12px; padding: 9px 0; }
+.overview-sales-breakdown p { font-size: 11px; line-height: 1.5; color: #775217; margin-top: 8px; }
+.overview-recent-sales { margin-top: 20px; }
+.overview-recent-sales h3 { font-size: 14px; margin-bottom: 8px; }
+.overview-recent-sales > a { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; border-bottom: 1px solid #e1e9e9; padding: 12px 0; font-size: 12px; }
+.overview-recent-sales > a > span { flex: 1 1 160px; }
+.overview-recent-sales small { display: block; color: #61767a; margin-top: 5px; line-height: 1.5; }
 .overview-result-total { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 12px; background: #e0efeb; margin-top: 16px; font-size: 13px; }
 .overview-result-total strong { font-size: 21px; overflow-wrap: anywhere; }.overview-result-total small { display: inline-block; margin-top: 5px; font-size: 10px; color: #4d6f64; }
 .overview-quality,.overview-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 12px; color: #627679; font-size: 12px; margin-top: 16px; }
