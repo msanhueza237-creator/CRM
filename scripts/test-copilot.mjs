@@ -624,7 +624,7 @@ test("Catalogo completo ignora filtros anteriores y conserva precios pendientes 
 
 test("Catalogo mixto exporta 252 disponibles, no solo 52 de Facto ni una pagina", async () => {
   const { registry, source, details } = priceFixture();
-  const many = Array.from({ length: 303 }, (_, i) => ({ ...details[0], external_id: String(i + 1), payload: { ...details[0].payload, product_id: String(i + 1), sku: `QA-${i}`, name: `Producto ${i}`, ...(i >= 52 ? { inventories: undefined } : {}) } }));
+  const many = Array.from({ length: 303 }, (_, i) => ({ ...details[0], external_id: String(i + 1), payload: { ...details[0].payload, product_id: String(i + 1), sku: `QA-${i}`, name: `Producto ${i} de climatizacion profesional con accesorios y conexiones de cobre`, ...(i >= 52 ? { inventories: undefined } : {}) } }));
   const catalog = many.slice(52, 253).map((p, i) => ({ id: p.external_id, sku: p.payload.sku, name: p.payload.name, stock: i === 200 ? 0 : 12, has_stock: i !== 200, variants: [{ sku: p.payload.sku, stock_management: true, stock: i === 200 ? 0 : 12 }], last_synced_at: '2026-08-21T00:00:00Z' }));
   source.records = async (resource) => resource === 'product_details' ? many : [];
   source.all = async () => catalog;
@@ -637,8 +637,28 @@ test("Catalogo mixto exporta 252 disponibles, no solo 52 de Facto ni una pagina"
   assert.equal(result.data.client_price_list.records.find((p) => p.sku === 'QA-52').stock_source, 'tiendanube_catalog');
   assert.equal(result.data.client_price_list.records.find((p) => p.sku === 'QA-52').stock_updated_at, '2026-08-21T00:00:00Z');
   assert.ok(!JSON.stringify(result).includes('123456789'), 'Never expose cost in a customer list');
-  let round = 0;
-  const reply = await runOrchestrator({ registry, model: 'fixture', apiKey: 'x', message: 'Lista completa', history: [], signal: new AbortController().signal, onTrace: async () => {}, fetcher: async () => new Response(JSON.stringify({ output: round++ === 0 ? [{ type: 'function_call', name: 'get_price_list', call_id: 'catalog', arguments: JSON.stringify({ scope: 'catalog', limit: 20 }) }] : [{ type: 'message', content: [{ type: 'output_text', text: 'Todos tienen stock' }] }] })) });
+  const allArgs = { scope: 'catalog', result_scope: 'all_matches', limit: 20 };
+  const all = await registry.execute('get_price_list', allArgs);
+  assert.equal(all.status, 'ok', all.summary);
+  assert.ok(JSON.stringify(all).length > 180000, 'Regression must exceed the old response size cap');
+  assert.equal(all.table.rows.length, 252);
+  assert.equal(all.data.client_price_list.records.length, 252);
+  let round = 0; const requests = [], traces = [];
+  const reply = await runOrchestrator({ registry, model: 'fixture', apiKey: 'x', message: 'Lista completa', history: [], signal: new AbortController().signal, onTrace: async (trace) => traces.push(trace), fetcher: async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ output: round++ === 0 ? [{ type: 'function_call', name: 'get_price_list', call_id: 'catalog', arguments: JSON.stringify(allArgs) }] : [{ type: 'message', content: [{ type: 'output_text', text: 'Todos tienen stock' }] }] }));
+  } });
+  const sent = JSON.parse(requests[1].input.find((i) => i.type === 'function_call_output').output);
+  assert.equal(sent.data.model_preview, true);
+  assert.equal(sent.data.attached_rows, 252);
+  assert.equal(sent.data.records.length, 25);
+  assert.equal(sent.table.rows.length, 25);
+  assert.equal(sent.data.client_price_list.records, undefined);
+  assert.equal(sent.data.client_price_list.total, 252);
+  assert.ok(JSON.stringify(sent).length < 100000);
+  assert.equal(reply.results[0].table.rows.length, 252);
+  assert.equal(reply.results[0].data.client_price_list.records.length, 252);
+  assert.equal(traces[0].result.data.client_price_list.records.length, 252);
   assert.match(reply.message, /252 productos/);
   assert.match(reply.message, /cantidad pendiente de verificar: \*\*50\*\*/);
   assert.match(reply.message, /cobertura de inventario es parcial/);

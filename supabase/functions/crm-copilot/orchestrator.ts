@@ -290,20 +290,33 @@ export async function runOrchestrator(options: OrchestratorOptions) {
         counts.set(bucket, count + 1);
         return count < 10;
       });
-      const modelResult = salesRows.length > 100 ? {
+      let modelResult = salesRows.length > 100 ? {
         ...result,
         data: { ...object(result.data), records: salesPreview, model_preview: true, attached_rows: salesRows.length },
         table: { ...result.table, rows: salesPreview },
         warnings: [...result.warnings, "El modelo recibe solo los primeros 10 por periodo y moneda. La tabla adjunta y la exportacion conservan todas las filas retornadas. Para detalles de otro producto consultar su SKU."],
       } : result;
+      if (object(result.data).client_price_list) {
+        const priceRows = result.table?.rows || [];
+        const preview = priceRows.slice(0, 25);
+        modelResult = {
+          ...result,
+          data: {
+            ...object(result.data),
+            records: preview,
+            client_price_list: { ...object(object(result.data).client_price_list), records: undefined },
+            model_preview: priceRows.length > preview.length,
+            attached_rows: priceRows.length,
+          },
+          table: result.table ? { ...result.table, rows: preview } : undefined,
+          warnings: priceRows.length > preview.length ? [...result.warnings, "El modelo recibe una muestra de 25 filas. La tabla adjunta y el Excel conservan todas las filas; la muestra no limita la disponibilidad ni el total de productos."] : result.warnings,
+        };
+      }
       return {
         type: "function_call_output",
         call_id: callId,
         // Full customer exports stay in the audited response, not in the model context.
-        output: JSON.stringify(object(result.data).client_price_list ? {
-          ...result,
-          data: { ...object(result.data), client_price_list: { ...object(object(result.data).client_price_list), records: undefined } },
-        } : modelResult),
+        output: JSON.stringify(modelResult),
       };
     }
     for (let offset = 0; offset < requested.length; offset += 3) {

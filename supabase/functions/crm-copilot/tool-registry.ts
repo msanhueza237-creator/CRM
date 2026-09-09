@@ -152,8 +152,9 @@ export class ToolRegistry {
     try {
       const args = validateArguments(definition.parameters, input);
       const result = await definition.execute(args);
-      // Compact sales aggregates are kept complete for export; document evidence keeps the normal cap.
-      const maxSize = name === "get_top_products" && args.detail_level !== "evidence" ? 900000 : 180000;
+      // Complete commercial exports are bounded separately from model previews and document evidence.
+      const fullExport = name === "get_price_list" || (name === "get_top_products" && args.detail_level !== "evidence");
+      const maxSize = fullExport ? 900000 : 180000;
       if (JSON.stringify(result).length > maxSize)
         throw new CopilotDataError(
           "El resultado es demasiado amplio. Acota el periodo, producto o cliente para obtener una respuesta completa.",
