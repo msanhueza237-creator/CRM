@@ -404,6 +404,14 @@ async function generateContent(
 }
 
 async function proxyCreativeSource(rest: RestClient, url: URL, req: Request) {
+  if (!url.searchParams.has("publicationId")) {
+    const productId = requiredUuid(url.searchParams.get("productId"), "producto");
+    const products = await selectRows(rest, `content_products?select=images,primary_image_url&id=eq.${productId}&limit=1`);
+    if (!products[0]) throw new HttpError(404, "Producto no encontrado.");
+    const sourceUrl = productImageUrls(products[0])[0];
+    if (!sourceUrl) throw new HttpError(422, "El producto no tiene imagen principal.");
+    return creativeImageResponse(sourceUrl, req);
+  }
   const publicationId = requiredUuid(url.searchParams.get("publicationId"), "publicacion");
   const sourceUrl = requiredText(url.searchParams.get("sourceUrl"), "imagen original", 4000);
   if (!/^https:\/\//i.test(sourceUrl)) throw new HttpError(400, "La imagen original no usa una URL segura.");
@@ -425,6 +433,11 @@ async function proxyCreativeSource(rest: RestClient, url: URL, req: Request) {
   }
   if (!allowedUrls.includes(sourceUrl)) throw new HttpError(403, "La imagen no pertenece al producto de este borrador.");
 
+  return creativeImageResponse(sourceUrl, req);
+}
+
+async function creativeImageResponse(sourceUrl: string, req: Request) {
+  if (!/^https:\/\//i.test(sourceUrl)) throw new HttpError(400, "La imagen original no usa una URL segura.");
   const upstream = await fetch(sourceUrl, {
     headers: { Accept: "image/*", "User-Agent": "Climactiva-ContentCenter/1.0" },
     redirect: "follow",
@@ -1201,7 +1214,7 @@ function publicationImageUrls(publication: JsonRecord, product?: JsonRecord) {
 
 function normalizeCreativeLayout(value: unknown, product?: JsonRecord) {
   const layout = asObject(value);
-  const style = oneOf(layout.style, ["original", "editorial", "technical", "promotion"] as const, "original");
+  const style = oneOf(layout.style, ["original", "editorial", "technical", "industrial", "laboratory", "promotion"] as const, "original");
   return {
     style,
     headline: optionalText(layout.headline, 120) || optionalText(product?.name, 120),

@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, BadgePercent, CalendarClock, CheckCircle2, ClipboardCheck, Facebook, FileText, Hash, ImageIcon, Instagram, LayoutTemplate, RefreshCw, Send, ShieldCheck, Sparkles, Wrench, XCircle } from "lucide-react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CalendarClock, CheckCircle2, ClipboardCheck, Facebook, FileText, Hash, Instagram, LayoutTemplate, RefreshCw, RotateCcw, Send, ShieldCheck, Sparkles, XCircle } from "lucide-react";
 import {
   approveContentPublication,
   attachContentCreatives,
@@ -14,7 +14,8 @@ import {
 import type { ContentChannelCode, ContentCreativeLayout, ContentProduct, ContentPublication, ContentVisualStyle } from "../../types/content";
 import { useAuth } from "../auth/AuthContext";
 import { ContentMediaGallery } from "./ContentMediaGallery";
-import { defaultCreativeLayout, renderContentCreative } from "./contentCreative";
+import { creativeStyles, defaultCreativeLayout, renderContentCreative } from "./contentCreative";
+import { CreativePreview, CreativeStylePicker, useCreativeStudio } from "./ContentCreativeStudio";
 import { getDesignedMediaCount, getOriginalPublicationMediaUrls, getProductMediaUrls, getPublicationMediaUrls } from "./contentMedia";
 import type { ContentCenterData } from "./useContentCenter";
 
@@ -36,7 +37,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const [variants, setVariants] = useState(1);
   const [useHashtags, setUseHashtags] = useState(true);
   const [operationMode, setOperationMode] = useState<"manual" | "approval">("approval");
-  const [visualStyle, setVisualStyle] = useState<ContentVisualStyle>("editorial");
+  const [visualStyle, setVisualStyle] = useState<ContentVisualStyle>("technical");
   const [visualHeadline, setVisualHeadline] = useState("");
   const [visualSupportingText, setVisualSupportingText] = useState("");
   const [visualBadge, setVisualBadge] = useState("");
@@ -45,6 +46,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [scheduleDates, setScheduleDates] = useState<Record<string, string>>({});
+  const defaultedProductId = useRef<string>();
 
   const availableProducts = useMemo(() => data.products.filter((item) => item.source_status === "active" && item.sync_status === "synced" && !item.paused), [data.products]);
   const selectedProduct = data.products.find((item) => item.id === selectedProductId);
@@ -52,6 +54,9 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const hasCommittedGenerated = generated.some((item) => !["draft", "pending_approval", "cancelled"].includes(item.status));
   const canTryAnotherProduct = availableProducts.length > 1 && reviewableGenerated.length > 0 && !hasCommittedGenerated;
   const alternativeActionPublicationId = reviewableGenerated[0]?.id;
+  const selectedLayout = useMemo<ContentCreativeLayout>(() => ({ style: visualStyle, headline: visualHeadline, supporting_text: visualSupportingText, badge: visualBadge, website: "climactiva.cl" }), [visualStyle, visualHeadline, visualSupportingText, visualBadge]);
+  const studio = useCreativeStudio(selectedProduct, selectedLayout);
+  const designableDrafts = reviewableGenerated.filter((publication) => publication.product_id === selectedProduct?.id);
 
   useEffect(() => {
     if (!selectedProductId && availableProducts[0]) onProductChange(availableProducts[0].id);
@@ -61,11 +66,32 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
     if (!brandId && data.bootstrap?.brands[0]) setBrandId(data.bootstrap.brands[0].id);
   }, [brandId, data.bootstrap, templateId]);
   useEffect(() => {
+    if (defaultedProductId.current === selectedProduct?.id) return;
+    defaultedProductId.current = selectedProduct?.id;
     const defaults = defaultCreativeLayout(selectedProduct, visualStyle);
     setVisualHeadline(defaults.headline);
     setVisualSupportingText(defaults.supporting_text);
     setVisualBadge(defaults.badge);
   }, [selectedProduct, visualStyle]);
+
+  function changeVisualStyle(style: ContentVisualStyle) {
+    if (visualBadge === defaultCreativeLayout(selectedProduct, visualStyle).badge) setVisualBadge(defaultCreativeLayout(selectedProduct, style).badge);
+    setVisualStyle(style);
+  }
+
+  function resetVisualText() {
+    const defaults = defaultCreativeLayout(selectedProduct, visualStyle);
+    setVisualHeadline(defaults.headline); setVisualSupportingText(defaults.supporting_text); setVisualBadge(defaults.badge);
+  }
+
+  async function applyDesignToDrafts() {
+    if (!selectedProduct || !designableDrafts.length || visualStyle === "original") return;
+    await act("design-save", async () => {
+      const updated = await applyCreativeLayout(designableDrafts, selectedProduct, visualLayoutFor(selectedProduct));
+      setGenerated((current) => current.map((publication) => updated.find((item) => item.id === publication.id) || publication));
+      setNotice("Diseño aplicado a los borradores. Los textos y el estado de aprobación se mantienen.");
+    });
+  }
 
   function toggleChannel(channel: ContentChannelCode) {
     setChannels((current) => current.includes(channel) ? current.filter((item) => item !== channel) : [...current, channel]);
@@ -243,7 +269,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
 
         <section className="content-generator-section">
           <div className="content-generator-section-heading"><strong>Producto y canales</strong><span>{availableProducts.length} productos disponibles</span></div>
-          <label className="content-generator-field content-product-selector"><span>Producto</span><select required value={selectedProductId} onChange={(event) => onProductChange(event.target.value)}><option value="">Selecciona un producto</option>{availableProducts.map((product) => <option value={product.id} key={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ""}</option>)}</select></label>
+          <label className="content-generator-field content-product-selector"><span>Producto</span><select aria-label="Producto" required value={selectedProductId} onChange={(event) => onProductChange(event.target.value)}><option value="">Selecciona un producto</option>{availableProducts.map((product) => <option value={product.id} key={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ""}</option>)}</select></label>
           <fieldset className="content-channel-picker"><legend>Redes sociales</legend><button className={channels.includes("instagram") ? "active" : ""} type="button" aria-pressed={channels.includes("instagram")} onClick={() => toggleChannel("instagram")}><Instagram size={19} /> Instagram</button><button className={channels.includes("facebook") ? "active" : ""} type="button" aria-pressed={channels.includes("facebook")} onClick={() => toggleChannel("facebook")}><Facebook size={19} /> Facebook</button></fieldset>
         </section>
 
@@ -255,15 +281,9 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
             <label className="content-generator-field"><span>Personalidad</span><select value={brandId} onChange={(event) => setBrandId(event.target.value)}>{data.bootstrap?.brands.map((brand) => <option value={brand.id} key={brand.id}>{brand.name}</option>)}</select></label>
             <label className="content-generator-field content-variants-field"><span>Variantes por red</span><input type="number" min={1} max={3} value={variants} onChange={(event) => setVariants(Number(event.target.value))} /></label>
           </div>
-          <fieldset className="content-visual-picker">
-            <legend>Diagramación de imágenes</legend>
-            <button className={visualStyle === "original" ? "active" : ""} type="button" aria-pressed={visualStyle === "original"} onClick={() => setVisualStyle("original")}><ImageIcon size={18} /><span><strong>Original</strong><small>Fotografías sin intervención</small></span></button>
-            <button className={visualStyle === "editorial" ? "active" : ""} type="button" aria-pressed={visualStyle === "editorial"} onClick={() => setVisualStyle("editorial")}><LayoutTemplate size={18} /><span><strong>Editorial</strong><small>Título, beneficio y marca</small></span></button>
-            <button className={visualStyle === "technical" ? "active" : ""} type="button" aria-pressed={visualStyle === "technical"} onClick={() => setVisualStyle("technical")}><Wrench size={18} /><span><strong>Técnica</strong><small>Presentación profesional</small></span></button>
-            <button className={visualStyle === "promotion" ? "active" : ""} type="button" aria-pressed={visualStyle === "promotion"} onClick={() => setVisualStyle("promotion")}><BadgePercent size={18} /><span><strong>Promoción</strong><small>Precio o dato destacado</small></span></button>
-          </fieldset>
+          <CreativeStylePicker studio={studio} style={visualStyle} onChange={changeVisualStyle} disabled={Boolean(busy)} />
           {visualStyle !== "original" ? <div className="content-visual-editor">
-            <div className="content-visual-editor-heading"><div><strong>Contenido dentro de la pieza</strong><span>Se aplicará únicamente a la imagen principal del producto.</span></div><span className={`content-visual-swatch ${visualStyle}`} aria-hidden="true" /></div>
+            <div className="content-visual-editor-heading"><div><strong>Contenido dentro de la pieza</strong><span>Imagen principal · CLIMACTIVA</span></div><button type="button" className="icon-button" title="Restablecer textos del producto" aria-label="Restablecer textos del producto" onClick={resetVisualText}><RotateCcw size={17} /></button></div>
             <label className="content-generator-field"><span>Titular visual</span><input maxLength={120} value={visualHeadline} onChange={(event) => setVisualHeadline(event.target.value)} /></label>
             <div className="content-generator-field-grid">
               <label className="content-generator-field"><span>Dato destacado</span><input maxLength={80} value={visualBadge} onChange={(event) => setVisualBadge(event.target.value)} placeholder="SKU, medida o precio verificado" /></label>
@@ -289,10 +309,14 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
         {selectedProduct ? <ProductFacts product={selectedProduct} /> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={18} /> {error}</div> : null}
         {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}
-        <div className="content-generator-submit"><span>{channels.length ? `${channels.length} ${channels.length === 1 ? "canal seleccionado" : "canales seleccionados"}` : "Selecciona al menos un canal"}</span><button className="primary-button" type="submit" disabled={Boolean(busy) || !selectedProductId || !channels.length}><Sparkles size={18} /> {busy === "generate" ? "Generando y verificando..." : busy.startsWith("design-") ? `Diagramando ${busy.split("-")[1]} de ${busy.split("-")[2]}...` : "Generar borradores"}</button></div>
+        <div className="content-generator-submit"><span>{channels.length ? `${channels.length} ${channels.length === 1 ? "canal seleccionado" : "canales seleccionados"}` : "Selecciona al menos un canal"}</span><button className="primary-button" type="submit" disabled={Boolean(busy) || !selectedProductId || !channels.length}><Sparkles size={18} /> {busy === "generate" ? "Generando y verificando..." : busy === "design-save" ? "Aplicando diseño..." : busy.startsWith("design-") ? `Diagramando ${busy.split("-")[1]} de ${busy.split("-")[2]}...` : "Generar borradores"}</button></div>
       </form>
 
       <section className="content-generated-column">
+        <CreativePreview studio={studio} product={selectedProduct} style={visualStyle} disabled={Boolean(busy)}
+          onAlternate={() => changeVisualStyle(creativeStyles[(creativeStyles.findIndex((item) => item.id === visualStyle) + 1) % creativeStyles.length].id)}>
+          {designableDrafts.length && visualStyle !== "original" ? <button className="primary-button content-apply-design" type="button" disabled={Boolean(busy) || !studio.preview} onClick={() => void applyDesignToDrafts()}><LayoutTemplate size={17} />Aplicar diseño a {designableDrafts.length} borrador(es)</button> : null}
+        </CreativePreview>
         <div className="content-generated-heading"><div><h2>Resultado</h2><span>Versiones específicas por canal</span></div></div>
         {generated.map((publication) => {
           const channel = data.bootstrap?.channels.find((item) => item.id === publication.channel_id);
@@ -312,7 +336,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
             </article>
           );
         })}
-        {!generated.length ? <div className="panel empty-state"><Sparkles size={30} /><strong>Los borradores aparecerán aquí</strong><span>Instagram y Facebook recibirán textos diferentes basados en la misma ficha oficial.</span></div> : null}
+        {!generated.length ? <div className="content-drafts-empty"><Sparkles size={26} /><strong>Sin borradores</strong></div> : null}
       </section>
     </div>
   );

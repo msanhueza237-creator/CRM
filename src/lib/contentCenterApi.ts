@@ -74,13 +74,21 @@ export function generateSocialContent(input: {
 }
 
 export async function fetchContentCreativeSource(publicationId: string, sourceUrl: string) {
+  return fetchCreativeBlob(new URLSearchParams({ publicationId, sourceUrl }));
+}
+
+export async function fetchContentCreativePreview(productId: string, signal?: AbortSignal) {
+  return fetchCreativeBlob(new URLSearchParams({ productId }), signal);
+}
+
+async function fetchCreativeBlob(params: URLSearchParams, signal?: AbortSignal) {
   if (!isSupabaseConfigured || !supabase) throw new Error("Conecta Supabase para crear la pieza visual.");
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (!token) throw new Error("Tu sesion expiro. Vuelve a iniciar sesion.");
-  const params = new URLSearchParams({ publicationId, sourceUrl });
   const response = await fetch(getSupabaseFunctionUrl("content-center", `creative-source?${params}`), {
     headers: { Authorization: `Bearer ${token}` },
+    signal,
   });
   if (!response.ok) {
     const result = await response.json().catch(() => ({}));

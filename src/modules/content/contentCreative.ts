@@ -1,369 +1,248 @@
-import type {
-  ContentCreativeLayout,
-  ContentProduct,
-  ContentPublication,
-  ContentVisualStyle,
-} from "../../types/content";
+import type { ContentCreativeLayout, ContentProduct, ContentPublication, ContentVisualStyle } from "../../types/content";
 
-const CANVAS_SIZE = 1080;
+export const creativeStyles = [
+  { id: "technical", label: "Ficha técnica", accent: "#087e87" },
+  { id: "editorial", label: "Protagonista", accent: "#164c43" },
+  { id: "industrial", label: "Industrial", accent: "#c64531" },
+  { id: "laboratory", label: "Laboratorio", accent: "#ddc272" },
+  { id: "promotion", label: "Oferta", accent: "#c64531" },
+] as const;
+const SIZE = 1080, INK = "#182b30", TEAL = "#087e87", MUTED = "#50676c", PAPER = "#ffffff";
+const DISPLAY = '"Arial Black", "Arial", sans-serif', BODY = '"Arial", sans-serif', MONO = '"Consolas", "Courier New", monospace';
+type Context = CanvasRenderingContext2D;
+type Box = { x: number; y: number; w: number; h: number };
+type Drawing = { ctx: Context; image: HTMLImageElement; imageBounds: Box; layout: ContentCreativeLayout; product: ContentProduct };
 
-const palettes: Record<Exclude<ContentVisualStyle, "original">, {
-  accent: string;
-  accentSoft: string;
-  background: string;
-  footer: string;
-  ink: string;
-}> = {
-  editorial: {
-    accent: "#078491",
-    accentSoft: "#dff3f2",
-    background: "#f4f7f6",
-    footer: "#073f48",
-    ink: "#172d33",
-  },
-  technical: {
-    accent: "#277867",
-    accentSoft: "#dceee7",
-    background: "#eef3f1",
-    footer: "#193d3d",
-    ink: "#173236",
-  },
-  promotion: {
-    accent: "#d44f40",
-    accentSoft: "#ffe7df",
-    background: "#f6f8f7",
-    footer: "#075f6b",
-    ink: "#172d33",
-  },
-};
-
-export function defaultCreativeLayout(
-  product?: ContentProduct,
-  style: ContentVisualStyle = "editorial",
-): ContentCreativeLayout {
+export function cleanCreativeText(value: unknown) {
+  let text = String(value || "");
+  if (typeof document !== "undefined") {
+    const decoder = document.createElement("textarea");
+    for (let i = 0; i < 2; i++) { decoder.innerHTML = text; text = decoder.value; }
+  }
+  return text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+}
+export function defaultCreativeLayout(product?: ContentProduct, style: ContentVisualStyle = "technical"): ContentCreativeLayout {
+  const price = product?.promotional_price ?? product?.price;
+  const sourceLines = (product?.description_text || "").split(/\r?\n/).map(cleanCreativeText).filter(Boolean);
+  const sourceHeading = sourceLines[0] || "";
+  const headline = sourceHeading.length >= 15 && sourceHeading.length <= 100 && !/[.!?:]$/.test(sourceHeading)
+    ? sourceHeading : cleanCreativeText(product?.name || "Producto CLIMACTIVA");
+  const description = sourceLines.slice(headline === sourceHeading ? 1 : 0)
+    .filter((line) => !/^(?:modelo(?:\s*\/\s*sku)?|sku|marca)\s*:/i.test(line)
+      && !/^(?:descripci[oó]n general|caracter[ií]sticas destacadas|especificaciones t[eé]cnicas)\s*:?$/i.test(line)).join(" ");
+  const sentences = description.split(/(?<=[.!?])\s+/).map((line) => line.replace(/^Características destacadas\s*[:·]?\s*/i, "")).filter((line) => line.length > 25);
+  const usable = sentences.filter((line) => line.length <= 200 && !/^(?:[¡¿]?\s*(?:descubre|conoce|compra|no dejes|por qu[eé])|SKU\s*:)/i.test(line));
+  const short = usable.find((line) => /permite|fabricad|compatible|operaci[oó]n|caudal|capacidad|conexi[oó]n/i.test(line))
+    || usable[0] || sentences.find((line) => line.length <= 200) || description.slice(0, 200).replace(/\s+\S*$/, "");
   return {
     style,
-    headline: product?.name?.trim() || "Producto Climactiva",
-    supporting_text: firstUsefulSentence(product?.description_text),
-    badge: defaultBadge(product, style),
+    headline: headline.slice(0, 120),
+    supporting_text: short,
+    badge: style === "promotion" && typeof price === "number" && price > 0
+      ? new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(price)
+      : cleanCreativeText(product?.sku || "").slice(0, 80),
     website: "climactiva.cl",
   };
 }
-
 export async function renderContentCreative(input: {
-  imageBlob: Blob;
-  layout: ContentCreativeLayout;
-  product: ContentProduct;
-  publication: ContentPublication;
-  slideIndex: number;
-  slideCount: number;
+  imageBlob: Blob; layout: ContentCreativeLayout; product: ContentProduct;
+  publication?: ContentPublication; slideIndex?: number; slideCount?: number;
 }) {
   if (input.layout.style === "original") throw new Error("El estilo original no requiere composición gráfica.");
   const image = await loadImage(input.imageBlob);
   const canvas = document.createElement("canvas");
-  canvas.width = CANVAS_SIZE;
-  canvas.height = CANVAS_SIZE;
-  const context = canvas.getContext("2d");
-  if (!context) throw new Error("Este navegador no permite crear la pieza visual.");
-
-  const palette = palettes[input.layout.style];
-  drawBackground(context, image, palette.background);
-  drawBrand(context, palette);
-  drawProductImage(context, image, palette);
-  drawMessage(context, input.layout, input.product, input.slideIndex, input.slideCount, palette);
-  drawFooter(context, input.layout, input.publication, palette);
-
-  return canvasBlob(canvas);
+  canvas.width = SIZE; canvas.height = SIZE;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Este navegador no permite crear la pieza visual.");
+  ctx.textBaseline = "top";
+  const drawing = { ctx, image, imageBounds: productPhotoBounds(image), layout: input.layout, product: input.product };
+  const renderers = { technical, editorial, industrial, laboratory, promotion };
+  const renderer = renderers[input.layout.style];
+  if (!renderer) throw new Error("El diseño seleccionado no está disponible.");
+  renderer(drawing);
+  return new Promise<Blob>((resolve, reject) => canvas.toBlob(
+    (blob) => blob ? resolve(blob) : reject(new Error("No se pudo exportar la pieza visual.")), "image/jpeg", 0.95,
+  ));
 }
-
-function drawBackground(context: CanvasRenderingContext2D, image: HTMLImageElement, background: string) {
-  context.fillStyle = background;
-  context.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-  context.save();
-  context.globalAlpha = 0.09;
-  context.filter = "blur(18px)";
-  drawImageCover(context, image, -40, -40, CANVAS_SIZE + 80, 900);
-  context.restore();
-  const wash = context.createLinearGradient(0, 0, 730, 0);
-  wash.addColorStop(0, "rgba(255,255,255,0.98)");
-  wash.addColorStop(0.48, "rgba(255,255,255,0.92)");
-  wash.addColorStop(0.72, "rgba(255,255,255,0.30)");
-  wash.addColorStop(1, "rgba(255,255,255,0.05)");
-  context.fillStyle = wash;
-  context.fillRect(0, 0, CANVAS_SIZE, 900);
+function fill(ctx: Context, color: string, x = 0, y = 0, w = SIZE, h = SIZE) {
+  ctx.fillStyle = color; ctx.fillRect(x, y, w, h);
 }
-
-function drawBrand(
-  context: CanvasRenderingContext2D,
-  palette: (typeof palettes)["editorial"],
-) {
-  context.fillStyle = palette.accent;
-  roundedRect(context, 58, 54, 52, 52, 12);
-  context.fill();
-  context.strokeStyle = "#ffffff";
-  context.lineWidth = 5;
-  context.beginPath();
-  context.moveTo(74, 80);
-  context.lineTo(94, 80);
-  context.moveTo(84, 70);
-  context.lineTo(84, 90);
-  context.stroke();
-
-  context.fillStyle = palette.ink;
-  context.font = "800 28px Arial, sans-serif";
-  context.fillText("CLIMACTIVA", 126, 76);
-  context.fillStyle = palette.accent;
-  context.font = "700 15px Arial, sans-serif";
-  context.fillText("CLIMATIZACIÓN PROFESIONAL", 126, 101);
-}
-
-function drawProductImage(
-  context: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  palette: (typeof palettes)["editorial"],
-) {
-  context.save();
-  context.shadowColor = "rgba(12,47,54,0.20)";
-  context.shadowBlur = 34;
-  context.shadowOffsetY = 18;
-  context.fillStyle = "rgba(255,255,255,0.96)";
-  roundedRect(context, 465, 145, 565, 668, 10);
-  context.fill();
-  context.restore();
-
-  context.save();
-  roundedRect(context, 485, 165, 525, 628, 6);
-  context.clip();
-  context.fillStyle = "#ffffff";
-  context.fillRect(485, 165, 525, 628);
-  drawImageContain(context, image, 497, 177, 501, 604);
-  context.restore();
-
-  context.fillStyle = palette.accent;
-  context.fillRect(465, 813, 565, 8);
-}
-
-function drawMessage(
-  context: CanvasRenderingContext2D,
-  layout: ContentCreativeLayout,
-  product: ContentProduct,
-  slideIndex: number,
-  slideCount: number,
-  palette: (typeof palettes)["editorial"],
-) {
-  const eyebrow = slideCount > 1 && slideIndex > 0
-    ? `DETALLE ${slideIndex + 1} DE ${slideCount}`
-    : layout.style === "technical"
-      ? "SOLUCIÓN TÉCNICA"
-      : layout.style === "promotion"
-        ? "PRODUCTO DESTACADO"
-        : "EQUIPAMIENTO CLIMACTIVA";
-  context.fillStyle = palette.accent;
-  context.font = "800 18px Arial, sans-serif";
-  context.fillText(eyebrow, 62, 190);
-  context.fillRect(62, 207, 94, 5);
-
-  const headline = cleanText(layout.headline || product.name).toUpperCase();
-  const headlineBlock = fitWrappedText(context, headline, 345, 4, 57, 38, 1.02);
-  context.fillStyle = palette.ink;
-  context.font = `900 ${headlineBlock.fontSize}px Arial, sans-serif`;
-  headlineBlock.lines.forEach((line, index) => {
-    context.fillText(line, 62, 275 + index * headlineBlock.lineHeight);
-  });
-
-  let nextY = 275 + headlineBlock.lines.length * headlineBlock.lineHeight + 22;
-  const badge = cleanText(layout.badge);
-  if (badge) {
-    context.font = "800 24px Arial, sans-serif";
-    const badgeWidth = Math.min(348, context.measureText(badge).width + 34);
-    context.fillStyle = palette.accent;
-    roundedRect(context, 62, nextY, badgeWidth, 48, 7);
-    context.fill();
-    context.fillStyle = "#ffffff";
-    context.fillText(badge, 79, nextY + 33);
-    nextY += 76;
+function text(ctx: Context, value: string, box: Box, size = 30, color = INK, weight = 500, family = BODY) {
+  const clean = cleanCreativeText(value);
+  if (!clean) return;
+  let fontSize = size;
+  let lines: string[] = [];
+  // Fit the entire text region instead of cutting product names off with an ellipsis.
+  while (fontSize >= 12) {
+    ctx.font = `${weight} ${fontSize}px ${family}`;
+    if (fontSize > 12 && clean.split(/\s+/).some((word) => ctx.measureText(word).width > box.w)) { fontSize -= 1; continue; }
+    lines = wrap(ctx, clean, box.w);
+    if (lines.length * fontSize * 1.16 <= box.h) break;
+    fontSize -= 1;
   }
-
-  const supportingText = cleanText(layout.supporting_text || firstUsefulSentence(product.description_text));
-  if (supportingText) {
-    context.fillStyle = "#3e555a";
-    context.font = "500 24px Arial, sans-serif";
-    const lines = wrapText(context, supportingText, 345).slice(0, 5);
-    lines.forEach((line, index) => context.fillText(line, 62, nextY + index * 34));
-  }
+  ctx.save();
+  ctx.beginPath(); ctx.rect(box.x, box.y, box.w, box.h); ctx.clip();
+  ctx.fillStyle = color;
+  lines.forEach((line, i) => ctx.fillText(line, box.x, box.y + i * fontSize * 1.16));
+  ctx.restore();
 }
-
-function drawFooter(
-  context: CanvasRenderingContext2D,
-  layout: ContentCreativeLayout,
-  publication: ContentPublication,
-  palette: (typeof palettes)["editorial"],
-) {
-  context.fillStyle = palette.footer;
-  context.fillRect(0, 900, CANVAS_SIZE, 180);
-  context.fillStyle = palette.accent;
-  context.fillRect(0, 900, 410, 10);
-  context.fillStyle = "#ffffff";
-  context.font = "800 19px Arial, sans-serif";
-  context.fillText("ASESORÍA Y EQUIPAMIENTO", 62, 960);
-  context.font = "500 17px Arial, sans-serif";
-  context.fillStyle = "#cde5e6";
-  context.fillText("Soluciones para climatización profesional", 62, 994);
-
-  context.strokeStyle = "rgba(255,255,255,0.32)";
-  context.lineWidth = 2;
-  context.beginPath();
-  context.moveTo(622, 934);
-  context.lineTo(622, 1044);
-  context.stroke();
-  context.fillStyle = "#ffffff";
-  context.font = "800 18px Arial, sans-serif";
-  context.fillText("CONOCE MÁS EN", 666, 960);
-  context.font = "800 30px Arial, sans-serif";
-  context.fillText(cleanWebsite(layout.website), 666, 1003);
-  context.font = "500 15px Arial, sans-serif";
-  context.fillStyle = "#cde5e6";
-  context.fillText(publication.hashtags.includes("Climactiva") ? "#Climactiva" : "Producto verificado", 666, 1032);
-}
-
-function drawImageContain(
-  context: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-) {
-  const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
-  context.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
-}
-
-function drawImageCover(
-  context: CanvasRenderingContext2D,
-  image: HTMLImageElement,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-) {
-  const scale = Math.max(width / image.naturalWidth, height / image.naturalHeight);
-  const drawWidth = image.naturalWidth * scale;
-  const drawHeight = image.naturalHeight * scale;
-  context.drawImage(image, x + (width - drawWidth) / 2, y + (height - drawHeight) / 2, drawWidth, drawHeight);
-}
-
-function fitWrappedText(
-  context: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-  maxLines: number,
-  startSize: number,
-  minSize: number,
-  lineHeightRatio: number,
-) {
-  for (let fontSize = startSize; fontSize >= minSize; fontSize -= 2) {
-    context.font = `900 ${fontSize}px Arial, sans-serif`;
-    const lines = wrapText(context, text, maxWidth);
-    if (lines.length <= maxLines) return { lines, fontSize, lineHeight: fontSize * lineHeightRatio };
-  }
-  context.font = `900 ${minSize}px Arial, sans-serif`;
-  const lines = wrapText(context, text, maxWidth).slice(0, maxLines);
-  if (lines.length) lines[lines.length - 1] = truncateToWidth(context, lines[lines.length - 1], maxWidth);
-  return { lines, fontSize: minSize, lineHeight: minSize * lineHeightRatio };
-}
-
-function wrapText(context: CanvasRenderingContext2D, text: string, maxWidth: number) {
-  const words = text.split(/\s+/).filter(Boolean);
-  const lines: string[] = [];
-  let line = "";
-  for (const word of words) {
-    const candidate = line ? `${line} ${word}` : word;
-    if (context.measureText(candidate).width <= maxWidth) {
-      line = candidate;
-      continue;
-    }
+function wrap(ctx: Context, value: string, width: number) {
+  const lines: string[] = []; let line = "";
+  for (const word of value.split(/\s+/)) {
+    if (ctx.measureText(line ? `${line} ${word}` : word).width <= width) { line = line ? `${line} ${word}` : word; continue; }
     if (line) lines.push(line);
-    line = context.measureText(word).width <= maxWidth ? word : truncateToWidth(context, word, maxWidth);
+    line = "";
+    for (const letter of word) {
+      if (ctx.measureText(line + letter).width > width && line) { lines.push(line); line = ""; }
+      line += letter;
+    }
   }
   if (line) lines.push(line);
   return lines;
 }
-
-function truncateToWidth(context: CanvasRenderingContext2D, value: string, maxWidth: number) {
-  let text = value;
-  while (text.length > 1 && context.measureText(`${text}…`).width > maxWidth) text = text.slice(0, -1);
-  return `${text}…`;
+function rule(ctx: Context, x: number, y: number, w: number, color = TEAL, h = 3) { fill(ctx, color, x, y, w, h); }
+function label(ctx: Context, value: string, x: number, y: number, w = 700, color = TEAL) {
+  text(ctx, value.toUpperCase(), { x, y, w, h: 32 }, 23, color, 700, MONO);
 }
-
-function roundedRect(
-  context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-) {
-  const safeRadius = Math.min(radius, width / 2, height / 2);
-  context.beginPath();
-  context.moveTo(x + safeRadius, y);
-  context.arcTo(x + width, y, x + width, y + height, safeRadius);
-  context.arcTo(x + width, y + height, x, y + height, safeRadius);
-  context.arcTo(x, y + height, x, y, safeRadius);
-  context.arcTo(x, y, x + width, y, safeRadius);
-  context.closePath();
+function brand(ctx: Context, x = 56, y = 42, color = INK, accent = TEAL) {
+  rule(ctx, x, y + 2, 8, accent, 51);
+  text(ctx, "CLIMACTIVA", { x: x + 22, y, w: 335, h: 39 }, 34, color, 900, DISPLAY);
+  text(ctx, "CLIMATIZACIÓN PROFESIONAL", { x: x + 23, y: y + 39, w: 350, h: 24 }, 16, color, 700);
 }
-
+function photo({ ctx, image, imageBounds }: Drawing, box: Box) {
+  fill(ctx, PAPER, box.x, box.y, box.w, box.h);
+  const scale = Math.min(box.w / imageBounds.w, box.h / imageBounds.h);
+  const w = imageBounds.w * scale, h = imageBounds.h * scale;
+  ctx.drawImage(image, imageBounds.x, imageBounds.y, imageBounds.w, imageBounds.h, box.x + (box.w - w) / 2, box.y + (box.h - h) / 2, w, h);
+}
+function productPhotoBounds(image: HTMLImageElement): Box {
+  const full = { x: 0, y: 0, w: image.naturalWidth, h: image.naturalHeight };
+  const scale = Math.min(1, 320 / Math.max(full.w, full.h));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(full.w * scale)); canvas.height = Math.max(1, Math.round(full.h * scale));
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return full;
+  fill(ctx, PAPER, 0, 0, canvas.width, canvas.height); ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const marked = (x: number, y: number) => { const index = (y * canvas.width + x) * 4; return Math.min(data[index], data[index + 1], data[index + 2]) < 248; };
+  // Fit only the empty white/transparent surround; keep contextual photographs intact.
+  for (let x = 0; x < canvas.width; x++) if (marked(x, 0) || marked(x, canvas.height - 1)) return full;
+  for (let y = 0; y < canvas.height; y++) if (marked(0, y) || marked(canvas.width - 1, y)) return full;
+  let left = canvas.width, top = canvas.height, right = -1, bottom = -1;
+  for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) if (marked(x, y)) {
+    left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y);
+  }
+  if (right < left || bottom < top) return full;
+  const padding = Math.max(5, Math.max(right - left, bottom - top) * .08);
+  const x = Math.max(0, left - padding), y = Math.max(0, top - padding);
+  return { x: x * full.w / canvas.width, y: y * full.h / canvas.height,
+    w: (Math.min(canvas.width, right + padding + 1) - x) * full.w / canvas.width,
+    h: (Math.min(canvas.height, bottom + padding + 1) - y) * full.h / canvas.height };
+}
+function title(d: Drawing, box: Box, size = 68, color = INK) {
+  text(d.ctx, d.layout.headline || d.product.name, box, size, color, 900, DISPLAY);
+}
+function footer(ctx: Context, y = 1005, color = INK, lineColor = "#ccd8d9") {
+  rule(ctx, 56, y - 20, 968, lineColor, 2);
+  text(ctx, "ASESORÍA Y EQUIPAMIENTO", { x: 56, y, w: 550, h: 37 }, 23, color, 700);
+  text(ctx, "climactiva.cl", { x: 750, y: y - 4, w: 274, h: 44 }, 32, color, 800);
+}
+export function getCreativeFacts(product: ContentProduct) {
+  const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const lines = (product.description_text || "").split(/\r?\n/).map(cleanCreativeText).filter(Boolean);
+  const table = lines.findIndex((line, i) => normalize(line) === "parametro" && normalize(lines[i + 1] || "") === "detalle tecnico");
+  const specs: Array<{ name: string; value: string }> = [];
+  // Only paired cells from the explicit catalog specification table, never inferred measurements.
+  if (table >= 0) for (let i = table + 2; i + 1 < lines.length; i += 2) {
+    const name = lines[i], value = lines[i + 1];
+    if (!/modelo|alternativ|referencia/.test(normalize(name)) && name.length <= 65 && value.length <= 140) specs.push({ name, value });
+  }
+  const fallback = [["MARCA", product.brand], ["CATEGORÍA", product.category]]
+    .filter((pair) => cleanCreativeText(pair[1])).map(([name, value]) => ({ name: name!, value: cleanCreativeText(value) }));
+  return [...(product.sku ? [{ name: "MODELO / SKU", value: cleanCreativeText(product.sku) }] : []), ...specs, ...fallback].slice(0, 3);
+}
+function factColumn(d: Drawing, x: number, y: number, w: number, color = INK, accent = TEAL, gap = 143) {
+  getCreativeFacts(d.product).forEach((fact, i) => {
+    label(d.ctx, fact.name, x, y + i * gap, w, accent);
+    text(d.ctx, fact.value, { x, y: y + 36 + i * gap, w, h: gap - 51 }, 33, color, 700);
+  });
+}
+function factStrip(d: Drawing, y: number, color = INK, accent = TEAL) {
+  const items = getCreativeFacts(d.product); const width = 968 / Math.max(1, items.length);
+  items.forEach((fact, i) => {
+    const x = 56 + i * width;
+    label(d.ctx, fact.name, x, y, width - 28, accent);
+    text(d.ctx, fact.value, { x, y: y + 37, w: width - 28, h: 82 }, 30, color, 700);
+  });
+}
+function technical(d: Drawing) {
+  const { ctx, layout } = d;
+  fill(ctx, PAPER); brand(ctx); label(ctx, layout.badge || "FICHA TÉCNICA", 684, 62, 340);
+  rule(ctx, 56, 127, 968);
+  title(d, { x: 56, y: 154, w: 968, h: 191 }, 65);
+  photo(d, { x: 56, y: 365, w: 605, h: 473 });
+  fill(ctx, "#eff4f3", 688, 365, 336, 473);
+  factColumn(d, 712, 391, 282, INK, TEAL, 145);
+  rule(ctx, 56, 862, 72, TEAL, 6);
+  text(ctx, layout.supporting_text, { x: 56, y: 888, w: 968, h: 89 }, 31, MUTED);
+  footer(ctx);
+}
+function editorial(d: Drawing) {
+  const { ctx, layout } = d;
+  fill(ctx, PAPER); brand(ctx, 56, 42, INK, "#164c43");
+  label(ctx, cleanCreativeText(d.product.brand) || "EQUIPAMIENTO", 668, 60, 356, "#164c43");
+  photo(d, { x: 104, y: 138, w: 872, h: 527 });
+  fill(ctx, "#164c43", 0, 690, 1080, 390);
+  label(ctx, layout.badge || d.product.sku || "CLIMACTIVA", 56, 724, 968, "#cfe4d5");
+  title(d, { x: 56, y: 772, w: 968, h: 172 }, 65, PAPER);
+  text(ctx, layout.supporting_text, { x: 56, y: 960, w: 656, h: 82 }, 27, "#dfebe4");
+  text(ctx, "climactiva.cl", { x: 754, y: 998, w: 270, h: 46 }, 31, PAPER, 800);
+}
+function industrial(d: Drawing) {
+  const { ctx, layout } = d;
+  fill(ctx, PAPER); fill(ctx, "#c64531", 734, 0, 346, 1080);
+  brand(ctx, 56, 42); label(ctx, "EQUIPO PROFESIONAL", 56, 148, 624);
+  title(d, { x: 56, y: 204, w: 616, h: 220 }, 60);
+  photo(d, { x: 35, y: 437, w: 672, h: 528 });
+  label(ctx, "REFERENCIA", 771, 60, 274, PAPER);
+  text(ctx, layout.badge || d.product.sku || "CLIMACTIVA", { x: 771, y: 110, w: 257, h: 192 }, 65, PAPER, 900, DISPLAY);
+  rule(ctx, 771, 330, 253, "#e69a8e", 3);
+  text(ctx, layout.supporting_text, { x: 771, y: 368, w: 253, h: 353 }, 33, PAPER);
+  if (d.product.brand) { label(ctx, "MARCA", 771, 766, 253, "#fff0e9"); text(ctx, d.product.brand, { x: 771, y: 806, w: 253, h: 116 }, 38, PAPER, 800); }
+  text(ctx, "climactiva.cl", { x: 56, y: 1005, w: 616, h: 46 }, 34, INK, 800);
+  rule(ctx, 771, 1012, 253, PAPER, 5);
+}
+function laboratory(d: Drawing) {
+  const { ctx, layout } = d;
+  const gold = "#ddc272";
+  fill(ctx, "#202927");
+  ctx.strokeStyle = "#35413b"; ctx.lineWidth = 1;
+  for (let i = 24; i < SIZE; i += 48) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, SIZE); ctx.moveTo(0, i); ctx.lineTo(SIZE, i); ctx.stroke(); }
+  brand(ctx, 56, 42, PAPER, gold); label(ctx, layout.badge || "CATÁLOGO TÉCNICO", 658, 62, 366, gold);
+  title(d, { x: 56, y: 166, w: 450, h: 496 }, 63, PAPER);
+  photo(d, { x: 540, y: 178, w: 484, h: 484 });
+  rule(ctx, 540, 164, 484, gold, 4); rule(ctx, 540, 673, 484, gold, 4);
+  fill(ctx, "#29342f", 40, 711, 1000, 150); factStrip(d, 727, PAPER, gold);
+  text(ctx, layout.supporting_text, { x: 56, y: 885, w: 968, h: 91 }, 30, "#e0e5da");
+  footer(ctx, 1014, PAPER, "#687260");
+}
+function promotion(d: Drawing) {
+  const { ctx, layout } = d;
+  fill(ctx, PAPER); brand(ctx); rule(ctx, 56, 128, 968, "#c64531", 6);
+  title(d, { x: 56, y: 162, w: 585, h: 237 }, 59);
+  fill(ctx, "#c64531", 681, 159, 343, 241);
+  label(ctx, /^\$/.test(layout.badge.trim()) ? "PRECIO PUBLICADO" : "DATO DESTACADO", 705, 183, 294, PAPER);
+  text(ctx, layout.badge || d.product.sku || "CLIMACTIVA", { x: 705, y: 236, w: 294, h: 128 }, 65, PAPER, 900, DISPLAY);
+  photo(d, { x: 118, y: 417, w: 844, h: 340 });
+  text(ctx, layout.supporting_text, { x: 56, y: 773, w: 968, h: 53 }, 27, MUTED);
+  fill(ctx, "#eff4f3", 0, 838, 1080, 147); factStrip(d, 858);
+  footer(ctx, 1013);
+}
 function loadImage(blob: Blob) {
   return new Promise<HTMLImageElement>((resolve, reject) => {
-    const objectUrl = URL.createObjectURL(blob);
-    const image = new Image();
-    image.onload = () => {
-      URL.revokeObjectURL(objectUrl);
-      resolve(image);
-    };
-    image.onerror = () => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error("Una imagen del producto no se pudo procesar."));
-    };
-    image.src = objectUrl;
+    const url = URL.createObjectURL(blob); const image = new Image();
+    image.onload = () => { URL.revokeObjectURL(url); resolve(image); };
+    image.onerror = () => { URL.revokeObjectURL(url); reject(new Error("La imagen principal no se pudo procesar.")); };
+    image.src = url;
   });
-}
-
-function canvasBlob(canvas: HTMLCanvasElement) {
-  return new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("No se pudo exportar la pieza visual.")), "image/jpeg", 0.92);
-  });
-}
-
-function firstUsefulSentence(value?: string | null) {
-  const text = cleanText(value || "");
-  if (!text) return "Conoce sus características y encuentra la solución adecuada para tu proyecto.";
-  const sentence = text.split(/(?<=[.!?])\s+/)[0] || text;
-  return sentence.length > 155 ? `${sentence.slice(0, 152).trim()}…` : sentence;
-}
-
-function defaultBadge(product: ContentProduct | undefined, style: ContentVisualStyle) {
-  if (!product) return "";
-  if (style === "promotion" && product.promotional_price !== null) {
-    return new Intl.NumberFormat("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 }).format(product.promotional_price);
-  }
-  return cleanText(product.sku || product.category || "").slice(0, 28);
-}
-
-function cleanText(value: unknown) {
-  const source = String(value || "");
-  const decoded = typeof document === "undefined"
-    ? source
-    : (() => {
-      const textarea = document.createElement("textarea");
-      textarea.innerHTML = source;
-      return textarea.value;
-    })();
-  return decoded.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function cleanWebsite(value: string) {
-  return cleanText(value).replace(/^https?:\/\//i, "").replace(/\/+$/, "") || "climactiva.cl";
 }

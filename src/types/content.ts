@@ -1,6 +1,6 @@
 export type ContentChannelCode = "instagram" | "facebook";
 export type ContentOperationMode = "manual" | "approval" | "autopilot";
-export type ContentVisualStyle = "original" | "editorial" | "technical" | "promotion";
+export type ContentVisualStyle = "original" | "editorial" | "technical" | "industrial" | "laboratory" | "promotion";
 
 export interface ContentCreativeLayout {
   style: ContentVisualStyle;
