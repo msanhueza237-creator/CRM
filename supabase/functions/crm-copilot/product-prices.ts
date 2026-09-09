@@ -50,7 +50,7 @@ export function productPrices(snapshots: Row[], details: Row[], catalog: Row[], 
 
 export function clientPriceRows(records: Row[], includePending = false): Row[] {
   if (includePending) return records.filter((p) => typeof p.stock === "number" && p.stock > 0 && p.stock_updated_at && p.match_type !== "approximate_name")
-    .map((p) => ({ sku: p.sku, name: p.name, net: typeof p.net === "number" && p.net > 0 && p.currency && p.list_id && p.price_updated_at ? p.net : null, stock: p.stock, currency: p.currency || null, list_id: p.list_id, stock_updated_at: p.stock_updated_at, price_updated_at: p.price_updated_at }));
+    .map((p) => ({ sku: p.sku, name: p.name, net: typeof p.net === "number" && p.net > 0 && p.currency && p.list_id && p.price_updated_at ? p.net : null, stock: p.stock, currency: p.currency || null, list_id: p.list_id, stock_source: p.stock_source, stock_updated_at: p.stock_updated_at, price_updated_at: p.price_updated_at }));
   return records.filter((p) => typeof p.stock === "number" && p.stock > 0 && typeof p.net === "number" && p.net > 0 && p.currency && p.list_id && p.stock_updated_at && p.price_updated_at && p.match_type !== "approximate_name")
-    .map((p) => ({ sku: p.sku, name: p.name, net: p.net, stock: p.stock, currency: p.currency, list_id: p.list_id, stock_updated_at: p.stock_updated_at, price_updated_at: p.price_updated_at }));
+    .map((p) => ({ sku: p.sku, name: p.name, net: p.net, stock: p.stock, currency: p.currency, list_id: p.list_id, stock_source: p.stock_source, stock_updated_at: p.stock_updated_at, price_updated_at: p.price_updated_at }));
 }

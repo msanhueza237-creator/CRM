@@ -19,7 +19,7 @@ const labels: Record<string, string> = {
   warnings: "Observaciones", document_number: "Folio", folio: "Folio", customer: "Cliente", counterpart_name: "Contraparte", counterpart_tax_id: "RUT",
   tax_id: "RUT", observed_amount: "Saldo informado", issued_on: "Emision", net_amount: "Neto", total_amount: "Total", source_updated_at: "Fecha de origen",
   companies: "Empresas", followups_overdue: "Seguimientos pendientes", interactions: "Interacciones", products: "SKU identificados", stock_unknown: "SKU sin stock verificado",
-  stockouts: "SKU sin disponibilidad", campaigns: "Campanas", publications: "Publicaciones", pending_approval: "Por aprobar", failed_publications: "Publicaciones con error",
+  stock_available: "SKU con stock registrado", stockouts: "SKU sin disponibilidad", campaigns: "Campanas", publications: "Publicaciones", pending_approval: "Por aprobar", failed_publications: "Publicaciones con error",
   active_operations: "Operaciones abiertas", shipments_in_transit: "Embarques en transito", trade_documents_to_review: "Documentos por revisar", scenarios_incomplete: "Escenarios incompletos",
   net_sales: "Ventas netas CLP", cost_of_sales: "Costo de ventas CLP", operating_expenses: "Gastos operativos CLP", gross_profit: "Resultado bruto CLP",
   operating_profit: "Resultado operativo CLP", bank_clp: "Banco CLP", payables: "Cuentas por pagar CLP", receivables: "Cuentas por cobrar CLP",

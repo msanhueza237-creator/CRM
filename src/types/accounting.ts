@@ -243,6 +243,7 @@ export interface AccountingImportBatch {
   duplicate_count: number;
   error_count: number;
   created_at: string;
+  summary: Record<string, unknown>;
 }
 
 export interface AccountingFactoSyncRun {

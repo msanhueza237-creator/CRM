@@ -61,6 +61,18 @@ test('An ambiguous SKU is unknown, never zero or added together', async () => {
   const result = await buildBusinessModuleReport(task('logistics'), profile, api, '2026-09-09T14:00:00Z');
   assert.equal(result.metrics.stock_unknown, 1); assert.equal(result.metrics.stockouts, 0);
 });
+
+test('Agents share catalog stock with the Copilot, with available and unknown counts separated', async () => {
+  const { api, data } = reader();
+  data.content_products.push({ id: 'second', sku: 'P2', name: 'Con respaldo', stock: 8, has_stock: true, last_synced_at: '2026-08-21', variants: [{ sku: 'P2', stock_management: true, stock: 8 }] });
+  data.content_products.push({ id: 'unknown', sku: 'P3', name: 'Sin dato' });
+  const result = await buildBusinessModuleReport(task('logistics'), profile, api, '2026-09-09T14:00:00Z');
+  assert.equal(result.metrics.stock_available, 2);
+  assert.equal(result.metrics.stock_unknown, 1);
+  const record = result.evidence[0].module_report.sections.find((s) => s.key === 'products').rows.find((p) => p.sku === 'P2');
+  assert.equal(record.stock_source, 'tiendanube_catalog');
+  assert.equal(record.source_at, '2026-08-21');
+});
 test('Paging handles server caps, rejects missing rows and changing totals', async () => {
   const all = Array.from({ length: 1101 }, (_, i) => ({ id: i }));
   const found = await collectModuleRows(async (offset) => ({ rows: all.slice(offset, offset + 100), total: 1101 }));

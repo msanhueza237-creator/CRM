@@ -32,6 +32,53 @@
   flex-wrap: wrap;
 }
 
+.accounting-source-actions > button,
+.accounting-center-table .small-command {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.accounting-source-actions > button > svg,
+.accounting-center-table .small-command > svg { flex-shrink: 0; }
+
+.accounting-payables-view .accounting-filter-grid input,
+.accounting-payables-view .accounting-filter-grid select {
+  width: 100%;
+  min-width: 0;
+  min-height: 42px;
+  padding: 9px 11px;
+  border: 1px solid var(--accounting-line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--accounting-ink);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.accounting-payables-view .accounting-search input { border: 0; padding: 0; min-height: 24px; }
+.accounting-payables-view .accounting-center-table .small-command {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  margin-top: 5px;
+  padding: 6px 9px;
+  border: 1px solid var(--accounting-line);
+  border-radius: 6px;
+  background: var(--accounting-soft);
+  color: var(--accounting-teal);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+@media (max-width: 720px) {
+  .accounting-payables-view .accounting-center-table td > small,
+  .accounting-payables-view .accounting-center-table td > button { grid-column: 2; }
+}
+
 .accounting-receivables-total {
   display: grid !important;
   justify-items: end;

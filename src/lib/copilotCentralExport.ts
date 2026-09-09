@@ -28,7 +28,7 @@ export function customerPriceRows(message: CentralMessage) {
     if (!list?.complete || !Array.isArray(list.records)) continue;
     for (const row of list.records) {
       if ((row.net !== null && (typeof row.net !== "number" || row.net <= 0 || !/^[A-Z]{3}$/.test(String(row.currency)) || !row.price_updated_at)) || typeof row.stock !== "number" || row.stock <= 0 || !row.sku || !row.name || !row.stock_updated_at) throw new Error("La lista contiene un precio, moneda o stock sin verificar. Vuelve a consultar.");
-      const safe = Object.fromEntries(["sku", "name", "net", "stock", "currency", "list_id", "stock_updated_at", "price_updated_at"].map((key) => [key, row[key]]));
+      const safe = Object.fromEntries(["sku", "name", "net", "stock", "currency", "list_id", "stock_source", "stock_updated_at", "price_updated_at"].map((key) => [key, row[key]]));
       const key = `${row.sku}|${row.currency}`;
       const previous = records.get(key);
       if (previous && JSON.stringify(previous) !== JSON.stringify(safe)) throw new Error("Hay versiones o listas distintas para el mismo SKU. Genera una nueva lista con una sola tarifa.");
@@ -51,7 +51,9 @@ export async function exportCustomerPriceList(message: CentralMessage) {
     sheet.getCell("A1").font = { size: 18, bold: true, color: { argb: "FF087B89" } }; sheet.getRow(1).height = 32;
     sheet.mergeCells("A2:D2"); sheet.getCell("A2").value = `Precios netos en ${currency}, sin IVA. Stock registrado sujeto a confirmacion. Lista Facto ${[...new Set(selected.map((r) => r.list_id))].join(", ")}.`;
     const dates = selected.flatMap((r) => [r.stock_updated_at, r.price_updated_at].filter(Boolean).map(String)).sort();
-    sheet.mergeCells("A3:D3"); sheet.getCell("A3").value = `Fuente: Facto. Datos observados entre ${dates[0].slice(0, 10)} y ${dates[dates.length - 1].slice(0, 10)}. ${selected.length} productos.`;
+    const stockSources = [...new Set(selected.map((r) => r.stock_source === "tiendanube_catalog" ? "Tiendanube" : "Facto"))].join(" / ");
+    sheet.mergeCells("A3:D3"); sheet.getCell("A3").value = `Precio: Facto. Stock: ${stockSources}. Observado entre ${dates[0].slice(0, 10)} y ${dates[dates.length - 1].slice(0, 10)}. ${selected.length} productos.`;
+    sheet.getRow(3).alignment = { wrapText: true, vertical: "middle" }; sheet.getRow(3).height = 32;
     sheet.getRow(4).values = ["SKU", "Nombre", `Precio neto ${currency}`, "Stock registrado"];
     sheet.getRow(4).font = { bold: true, color: { argb: "FFFFFFFF" } };
     sheet.getRow(4).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF087B89" } }; sheet.getRow(4).height = 25;
@@ -62,7 +64,7 @@ export async function exportCustomerPriceList(message: CentralMessage) {
       const stockDecimals = String(record.stock).split(".")[1]?.length || 0;
       row.getCell(3).numFmt = `#,##0.${"0".repeat(priceDecimals)}`;
       row.getCell(4).numFmt = `#,##0${stockDecimals ? "." + "0".repeat(stockDecimals) : ""}`;
-      row.getCell(1).note = `Precio observado: ${record.price_updated_at}\nStock observado: ${record.stock_updated_at}`;
+      row.getCell(1).note = `Precio observado: ${record.price_updated_at || "Por confirmar"}\nStock: ${record.stock_source === "tiendanube_catalog" ? "Tiendanube" : "Facto"}\nStock observado: ${record.stock_updated_at}`;
       if (row.number % 2) row.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF1F7F8" } };
     }
     sheet.autoFilter = "A4:D4";

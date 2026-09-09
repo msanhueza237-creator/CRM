@@ -157,7 +157,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
         const clean = (value: unknown) => String(value ?? "").replace(/[\r\n<>\[\]*`]/g, " ");
         safeStockMessage = [
           "Stock registrado en las fuentes del CRM; no es una comprobacion en vivo:",
-          ...products.map((p) => `- **${clean(p.sku)}**: ${p.stock === null ? "cantidad no verificada" : `${p.stock} unidades registradas`}. ${clean(p.name)}. Fuente: ${p.stock_source === "facto_product_details" ? "detalle de bodegas Facto" : p.stock_source === "facto_inventory_snapshot" ? "resumen de inventario Facto" : "sin cantidad verificada"}. Observado: ${clean(p.stock_updated_at || "sin fecha disponible")}.`),
+          ...products.map((p) => `- **${clean(p.sku)}**: ${p.stock === null ? "cantidad no verificada" : `${p.stock} unidades registradas`}. ${clean(p.name)}. Fuente: ${p.stock_source === "facto_product_details" ? "detalle de bodegas Facto" : p.stock_source === "facto_inventory_snapshot" ? "resumen de inventario Facto" : p.stock_source === "tiendanube_catalog" ? "catalogo Tiendanube" : "sin cantidad verificada"}. Observado: ${clean(p.stock_updated_at || "sin fecha disponible")}.`),
           ...(products.length > 1 ? ["Son modelos distintos; confirma el SKU que necesitas."] : []),
           ...(products.some((p) => p.match_type === "approximate_name") ? ["La coincidencia de nombre es aproximada; confirma el modelo antes de comprometer stock."] : []),
           ...(results.some((result) => !result.coverage.complete || result.coverage.nextOffset !== undefined) ? ["La lista tiene cobertura parcial; revisa las fuentes y paginas restantes."] : []),
@@ -167,8 +167,16 @@ export async function runOrchestrator(options: OrchestratorOptions) {
       const catalog = results.find((r) => r.toolName === "get_price_list" && r.status === "ok" && object(object(r.data).client_price_list).scope === "catalog");
       const listing = object(object(catalog?.data).client_price_list);
       const pendingPrices = rows(listing.records).filter((p) => p.net === null).length;
+      const availability = object(object(catalog?.data).availability);
       const catalogMessage = listing.complete === true && results.every((r) => r.toolName === "get_price_list")
-        ? `La lista completa incluye **${listing.total} productos con stock registrado positivo**: SKU, nombre, precio neto y stock.\n\nEl boton **Lista de precios (Excel)** descarga todos los productos, aunque la tabla muestre solo una pagina. No necesitas solicitar una segunda parte.\n\n${pendingPrices ? `${pendingPrices} productos tienen precio **Por confirmar** y permanecen incluidos. ` : ""}Los precios y existencias provienen de las fuentes guardadas del CRM; no son una consulta en vivo. Las fechas de origen quedan indicadas en el Excel.`
+        ? [
+          `La lista incluye **${listing.total} productos con stock registrado positivo**: SKU, nombre, precio neto y stock.`,
+          availability.identified !== undefined ? `Catalogo consultado: **${availability.identified} SKU**. Con stock: **${availability.available}**; sin disponibilidad: **${availability.unavailable}**; cantidad pendiente de verificar: **${availability.unknown}**.` : "",
+          Number(availability.unknown) > 0 ? "La cobertura de inventario es parcial: los SKU pendientes no se consideran agotados ni se ofrecen como disponibles." : "",
+          Number(availability.catalog_fallback) > 0 ? `${availability.catalog_fallback} productos usan stock del catalogo Tiendanube porque Facto no tiene cantidad verificable. Se conserva su fecha original; las cantidades no se suman entre fuentes.` : "",
+          "El boton **Lista de precios (Excel)** descarga todos los productos incluidos, aunque la tabla muestre solo una pagina. No necesitas solicitar una segunda parte.",
+          `${pendingPrices ? `${pendingPrices} productos tienen precio **Por confirmar** y permanecen incluidos. ` : ""}Los precios y existencias provienen de las fuentes guardadas del CRM; no son una consulta en vivo. Las fechas y fuentes de stock quedan indicadas en el Excel.`,
+        ].filter(Boolean).join("\n\n")
         : null;
       const directSales = results.filter((r) => r.toolName === "get_top_products" && ["ok", "partial"].includes(r.status) && object(r.data).query && object(r.data).group_by === "product" && r.coverage.nextOffset === undefined && rows(object(r.data).records).length > 0 && rows(object(r.data).records).length <= 10);
       const directSalesMessage = directSales.length === results.length && directSales.length ? directSales.map((report) => {

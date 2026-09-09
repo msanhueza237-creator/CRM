@@ -16,7 +16,7 @@ import {
 import { dateRange, inRange, todayChile } from "./dates.ts";
 import { canReadDomain } from "./permissions.ts";
 import { CopilotSources } from "./sources.ts";
-import { findProducts, resolveProducts } from "./product-resolution.ts";
+import { findProducts, resolveProducts, inventoryCatalogFields } from "./product-resolution.ts";
 import { clientPriceRows, factoCurrencies, productPrices } from "./product-prices.ts";
 import { productSales } from "./product-sales.ts";
 import { productProfitability } from "./product-profitability.ts";
@@ -427,7 +427,7 @@ export class ToolRegistry {
         };
         const snapshots = await load("Resumen de inventario Facto", () => this.source.records("inventory_snapshots"));
         const details = await load("Detalle de productos Facto", () => this.source.records("product_details"));
-        const catalog = await load("Catalogo Tiendanube", () => this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc"));
+        const catalog = await load("Catalogo Tiendanube", () => this.source.all(`content_products?select=${inventoryCatalogFields}&order=id.asc`));
         if (!snapshots.length && !details.length && !catalog.length) throw new CopilotDataError("No hay un inventario consultable. No es posible afirmar existencias o agotados.");
         const matched = findProducts(resolveProducts(snapshots, details, catalog, canReadDomain(this.source.actor.role, "finance")), args.query).map((product) => {
           const safe = { ...product };
@@ -468,7 +468,7 @@ export class ToolRegistry {
             ...warnings,
             ...new Set(data.slice(Number(args.offset || 0), Number(args.offset || 0) + Number(args.limit || 25)).flatMap((p) => (p.stock_warnings as string[]).map((warning) => `${p.sku}: ${warning}`))),
             ...(data.some((p) => p.match_type === "approximate_name") ? ["Coincidencias aproximadas por nombre: confirmar modelo o SKU antes de comprometer existencias."] : []),
-            "El catalogo se usa para identificar nombre y enlace; no se suma su stock al inventario Facto. Cada producto conserva la fecha real de su cantidad.",
+            "Facto tiene prioridad para stock. Si no tiene cantidad, se consulta el SKU exacto en Tiendanube; nunca se suman ambas fuentes ni se reemplaza un cero verificado. Cada cantidad conserva su origen y fecha.",
             "La demanda corresponde al intervalo observado de cada producto; no a un mes solicitado distinto.",
           ],
         );
@@ -515,7 +515,7 @@ export class ToolRegistry {
           );
         const details = await this.source.records("product_details");
         const snapshots = await this.source.records("inventory_snapshots");
-        const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
+        const catalog = await this.source.all(`content_products?select=${inventoryCatalogFields}&order=id.asc`);
         const currencies = factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined);
         const resolved = productPrices(snapshots, details, catalog, args, currencies);
         if (!args.list_id && resolved.availableLists.length > 1) return readResult(
@@ -524,6 +524,13 @@ export class ToolRegistry {
         );
         const data = args.scope === "catalog" || args.stock_filter === "available" ? resolved.records.filter((p) => typeof p.stock === "number" && p.stock > 0) : resolved.records;
         const clientRows = clientPriceRows(data, args.scope === "catalog");
+        const availability = {
+          identified: resolved.products.length,
+          available: resolved.products.filter((p) => typeof p.stock === "number" && p.stock > 0).length,
+          unavailable: resolved.products.filter((p) => typeof p.stock === "number" && p.stock <= 0).length,
+          unknown: resolved.products.filter((p) => p.stock === null).length,
+          catalog_fallback: resolved.products.filter((p) => p.stock_source === "tiendanube_catalog" && Number(p.stock) > 0).length,
+        };
         if (clientRows.length > 1000) throw new CopilotDataError("Acota los productos para preparar una lista completa de hasta 1000 filas.", "COVERAGE_LIMIT");
         const result = tableResult(
           "get_price_list",
@@ -542,10 +549,12 @@ export class ToolRegistry {
           args.result_scope === "all_matches" ? { ...args, offset: 0, limit: Math.max(1, data.length) } : args,
           [
             "Precios netos de venta de la lista Facto, sin IVA ni descuentos inventados. El stock y precio conservan sus fechas; no son una consulta en vivo.",
+            ...(availability.unknown ? [`${availability.unknown} SKU tienen cantidad desconocida o identidad pendiente. No son agotados y no se incluyen como disponibles.`] : []),
+            ...(availability.catalog_fallback ? [`${availability.catalog_fallback} SKU disponibles usan el respaldo de Tiendanube porque Facto no tiene cantidad verificable. Confirmar disponibilidad segun la fecha de cada registro.`] : []),
             ...(data.length !== clientRows.length ? [`${data.length - clientRows.length} filas no aptas para envio: stock o precio no positivo, moneda/fecha pendiente o coincidencia aproximada. No se incluyen en el Excel comercial.`] : []),
           ],
         );
-        result.data = { ...object(result.data), identity_matches: resolved.products.length, client_price_list: { scope: args.scope || "search", complete: true, total: clientRows.length, excluded: data.length - clientRows.length, records: clientRows } };
+        result.data = { ...object(result.data), identity_matches: resolved.products.length, availability, client_price_list: { scope: args.scope || "search", complete: true, availability_complete: availability.unknown === 0, total: clientRows.length, excluded: data.length - clientRows.length, records: clientRows } };
         if (!data.length) result.summary = resolved.products.length ? "Se encontraron productos, pero ninguno cumple el filtro de disponibilidad solicitado. No se inventan cantidades ni precios." : "No se encontro el producto por ese nombre, SKU o enlace. Una busqueda vacia no acredita ausencia de precios; confirma el SKU.";
         return result;
       },

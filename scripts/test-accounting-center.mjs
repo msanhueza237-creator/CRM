@@ -330,7 +330,7 @@ assert.match(pageSource, /Nueva cuenta/);
 assert.match(pageSource, /Factura, pago, movimiento bancario, conciliación y asiento/);
 assert.match(pageSource, /Carga histórica con respaldo/);
 assert.match(pageSource, /2026-01-01/);
-assert.match(pageSource, /Documentos pendientes \/ impagos/);
+assert.match(pageSource, /Documentos impagos · por cobrar y por pagar/);
 assert.match(pageSource, /Cheques Facto · flujo BancoEstado/);
 assert.match(pageSource, /Importar cartola real/);
 assert.match(pageSource, /Descargar cartola original/);
@@ -899,6 +899,48 @@ assert.equal(Number(scopedBalances.rows.find((row) => row.id === scoped2026Recei
 assert.equal(scopedBalances.rows.find((row) => row.id === scoped2025ReceivableId).reported_balance_clp, null);
 await db.query(`delete from public.accounting_receivables where id in ($1,$2)`, [scoped2026ReceivableId, scoped2025ReceivableId]);
 await db.query(`delete from public.accounting_source_documents where source_key in ('test:invoice:scope-2026','test:invoice:scope-2025')`);
+// The unpaid workbook updates supplier balances too, never bank payment evidence.
+const payableScope = await db.query(`
+  with sources as (
+    insert into public.accounting_source_documents(entity_id,source_type,source_key,document_type,folio,counterpart_name,issued_on,total_amount,total_clp)
+    values ($1,'FACTO','test:ap:open','purchase_invoice','AP-1','Proveedor A','2026-08-10',238000,238000),
+      ($1,'FACTO','test:ap:closed','purchase_invoice','AP-2','Proveedor B','2026-08-11',50000,50000),
+      ($1,'FACTO','test:ap:historic','purchase_invoice','AP-3','Proveedor C','2025-12-10',70000,70000)
+    returning *
+  )
+  insert into public.accounting_payables(entity_id,source_document_id,supplier_name,document_number,issued_on,original_amount,original_amount_clp,paid_amount_clp,reported_paid_amount_clp,reported_balance_clp)
+  select $1,id,counterpart_name,folio,issued_on,total_clp,total_clp,
+    case when folio='AP-1' then 12000 else 0 end,
+    case when folio='AP-1' then 38000 else null end,
+    case when folio='AP-1' then 200000 else null end from sources returning id,document_number
+`, [entityId]);
+const openPayableId = payableScope.rows.find(row => row.document_number === 'AP-1').id;
+const closedPayableId = payableScope.rows.find(row => row.document_number === 'AP-2').id;
+const historicalPayableId = payableScope.rows.find(row => row.document_number === 'AP-3').id;
+const missingPayablesSection = await db.query(`
+  select public.accounting_apply_facto_outstanding_snapshot($1,$2,'2026-09-07',array[$3]::uuid[],'{}'::uuid[]) value
+`, [entityId, outstandingSnapshotBatch.rows[0].id, receivableId]);
+assert.equal(missingPayablesSection.rows[0].value.payables_closed, 0);
+const supplierBatch = await db.query(`
+  insert into public.accounting_import_batches(entity_id,source_type,import_profile,status,file_name,file_hash,row_count,new_count,summary,imported_by)
+  values ($1,'COLLECTIONS','facto_unpaid_documents','previewed','suppliers.xlsx','supplier-hash',1,1,
+    '{"portfolio_complete":true,"receivables_complete":false,"payables_complete":true,"payables_documents":1,"coverage_from":"2026-01-01","coverage_to":"2026-09-07"}'::jsonb,$2) returning id
+`, [entityId, adminId]);
+const appliedSupplierBatch = await db.query(`
+  select public.accounting_apply_facto_outstanding_snapshot($1,$2,'2026-09-07','{}'::uuid[],array[$3]::uuid[]) value
+`, [entityId, supplierBatch.rows[0].id, openPayableId]);
+assert.equal(appliedSupplierBatch.rows[0].value.payables_closed, 1);
+assert.equal(appliedSupplierBatch.rows[0].value.receivables_closed, 0);
+const supplierBalances = (await db.query(`select id,paid_amount_clp,balance_clp,reported_balance_clp from public.accounting_payables where id=any($1::uuid[])`, [payableScope.rows.map(row => row.id)])).rows;
+assert.equal(Number(supplierBalances.find(row => row.id === openPayableId).paid_amount_clp), 12000);
+assert.equal(Number(supplierBalances.find(row => row.id === openPayableId).balance_clp), 226000);
+assert.equal(Number(supplierBalances.find(row => row.id === closedPayableId).reported_balance_clp), 0);
+assert.equal(supplierBalances.find(row => row.id === historicalPayableId).reported_balance_clp, null);
+const payableDashboard = (await db.query(`select public.accounting_dashboard_summary($1,'2026-09-07') value`, [entityId])).rows[0].value;
+assert.equal(Number(payableDashboard.payables), 270000);
+assert.equal(Number(payableDashboard.payables_confirmed), 346000);
+await db.query(`delete from public.accounting_payables where id=any($1::uuid[])`, [payableScope.rows.map(row => row.id)]);
+await db.query(`delete from public.accounting_source_documents where source_key like 'test:ap:%'`);
 const paymentBatch = await db.query(`
   insert into public.accounting_import_batches(
     entity_id,source_type,import_profile,status,file_name,file_hash,row_count,new_count,imported_by

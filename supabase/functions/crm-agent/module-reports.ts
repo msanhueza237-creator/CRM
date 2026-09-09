@@ -1,4 +1,4 @@
-import { resolveProducts } from "../crm-copilot/product-resolution.ts";
+import { resolveProducts, inventoryCatalogFields } from "../crm-copilot/product-resolution.ts";
 import { buildExecutiveDailyBrief } from "./executive-daily.ts";
 import { isModuleAnalysisTask, accountingAgents, type AgentRow as Row } from "../_shared/agent-module-contract.ts";
 
@@ -73,7 +73,7 @@ export async function buildBusinessModuleReport(task: Row, profile: Row, read: M
   }
 
   // Reuse the same SKU identity/warehouse precedence used by the Copilot's catalog.
-  const catalog = await read.all("content_products", "id,sku,name,brand,description_text,product_url,last_synced_at,source_status");
+  const catalog = await read.all("content_products", inventoryCatalogFields);
   const snapshots = await read.all("integration_records", "id,external_id,payload,updated_at", { provider: "facto", resource: "inventory_snapshots" });
   const details = await read.all("integration_records", "id,external_id,payload,updated_at", { provider: "facto", resource: "product_details" });
   const products = resolveProducts(snapshots, details, catalog.filter((row) => row.source_status !== "deleted"), false);
@@ -85,6 +85,7 @@ export async function buildBusinessModuleReport(task: Row, profile: Row, read: M
   }))));
   metrics.products = products.length;
   metrics.stock_unknown = stockUnknown.length;
+  metrics.stock_available = products.filter((row) => row.stock_known === true && Number(row.stock) > 0).length;
   metrics.stockouts = stockouts.length;
   const unkeyed = catalog.filter((row) => !String(row.sku || "").trim());
   if (unkeyed.length) {

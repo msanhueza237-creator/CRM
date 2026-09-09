@@ -233,7 +233,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast,id.asc`),
     detail(`accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
     selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=id.asc`),
-    detail(`accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
+    summaryOnly ? Promise.resolve([]) : selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast,id.asc`),
     detail(`accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
     detail(`accounting_payment_events?select=*&entity_id=eq.${entityId}&order=event_date.desc,event_time.desc.nullslast&limit=2000`),
     detail(`accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
@@ -1477,6 +1477,7 @@ async function previewFactoExcel(rest: RestClient, profile: Profile, payload: Js
   const today = new Date().toISOString().slice(0, 10);
   let portfolioSummary: JsonRecord = {};
   if (preview.profile === "facto_unpaid_documents") {
+    if (payload.completeReport !== true) throw new HttpError(400, "Confirma que el reporte de impagos está completo y sin filtros de cliente o proveedor.");
     const coverageTo = payload.toDate ? requiredDate(payload.toDate) : today;
     const coverageFrom = payload.fromDate ? requiredDate(payload.fromDate) : `${coverageTo.slice(0, 4)}-01-01`;
     if (coverageFrom > coverageTo || coverageTo > today) {
@@ -1493,6 +1494,8 @@ async function previewFactoExcel(rest: RestClient, profile: Profile, payload: Js
     const payableRows = preview.rows.filter((row) => factoOpenBalanceKind(asObject(row.data)) === "payable");
     portfolioSummary = {
       portfolio_complete: true,
+      receivables_complete: receivableRows.length > 0,
+      payables_complete: payableRows.length > 0,
       coverage_from: coverageFrom,
       coverage_to: coverageTo,
       receivables_documents: receivableRows.length,
@@ -1501,6 +1504,8 @@ async function previewFactoExcel(rest: RestClient, profile: Profile, payload: Js
       payables_total_clp: payableRows.reduce((sum, row) => sum + numeric(asObject(row.data).reported_balance_clp), 0),
       evidence_sha256: fileHash,
     };
+    if (!receivableRows.length) preview.warnings.push("El archivo no contiene cuentas por cobrar: la cartera de clientes existente se conserva.");
+    if (!payableRows.length) preview.warnings.push("El archivo no contiene cuentas por pagar: las obligaciones existentes se conservan.");
   }
   const existingBatch = await selectRows(rest,
     `accounting_import_batches?select=id,status,created_at&entity_id=eq.${entityId}&source_type=eq.${preview.source_type}&file_hash=eq.${fileHash}&limit=1`,
@@ -1555,7 +1560,10 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
   }
 
   const entityId = String(batch.entity_id);
-  const importRows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&status=eq.new&order=row_number.asc`);
+  const collection = String(batch.source_type) === "COLLECTIONS";
+  if (collection && Number(batch.error_count || 0) > 0) throw new HttpError(409, "El Excel contiene errores. No se actualizará ninguna cuenta hasta corregirlos.");
+  // A retry needs the complete portfolio, including rows already applied before a network interruption.
+  const importRows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&status=${collection ? "in.(new,imported)" : "eq.new"}&order=row_number.asc`);
   const sourceDocuments = await selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO`);
   const receivables = await selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}`);
   const payables = await selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}`);
@@ -1574,6 +1582,18 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
   const outstandingPayableIds = new Set<string>();
 
   if (String(batch.source_type) === "COLLECTIONS") {
+    if (importRows.length !== Number(batch.row_count)) throw new HttpError(409, "El respaldo no contiene todas las filas del Excel. No se actualizarán los saldos.");
+    for (const row of importRows) {
+      const data = asObject(row.normalized_data);
+      const kind = factoOpenBalanceKind(data);
+      if (!kind) continue;
+      const source = findFactoSourceDocument(sourceDocuments, data);
+      const target = source ? (kind === "payable" ? payableBySource : receivableBySource).get(String(source.id)) : null;
+      if (target && ["voided", "written_off"].includes(String(target.status))) throw new HttpError(409, `El documento ${data.document_number} fue anulado o castigado en el CRM. Requiere revisión antes de actualizarlo.`);
+      if (target && target.reported_source_batch_id !== batchId && String(target.reported_at || "") > String(batch.created_at || "9999")) {
+        throw new HttpError(409, "Hay saldos actualizados después de esta previsualización. Carga un reporte actualizado antes de confirmar.");
+      }
+    }
     for (const row of importRows) {
       const data = asObject(row.normalized_data);
       const balanceKind = factoOpenBalanceKind(data);
@@ -1589,10 +1609,10 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
         ? direction === "sale" ? receivableBySource.get(String(source.id)) : payableBySource.get(String(source.id))
         : null;
       if (!target) {
-        const created = await ensureFactoWorkbookDocument(rest, entityId, batch, row, data);
+        const created = await ensureFactoWorkbookDocument(rest, entityId, batch, row, data, source);
         source = created.source;
         target = created.target;
-        sourceDocuments.push(source);
+        if (!sourceDocuments.some((document) => document.id === source!.id)) sourceDocuments.push(source);
         if (direction === "sale") receivableBySource.set(String(source.id), target);
         else payableBySource.set(String(source.id), target);
       }
@@ -1603,7 +1623,7 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
       const reportedPaid = Math.max(0, numeric(data.reported_paid_clp));
       const reportedBalance = Math.max(0, numeric(data.reported_balance_clp));
       const dueOn = String(target.due_on || "");
-      const status = reportedBalance <= 1
+      const status = reportedBalance <= 0.5
         ? "paid"
         : reportedPaid > 0
         ? "partial"
@@ -1696,6 +1716,13 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
     && unmatched === 0;
   let portfolioSnapshot: JsonRecord | null = null;
   if (completeOutstandingPortfolio) {
+    for (const [kind, ids] of [["receivables", outstandingReceivableIds], ["payables", outstandingPayableIds]] as const) {
+      const rows = ids.size ? await selectAllRows(rest, `accounting_${kind}?select=reported_balance_clp&id=in.(${[...ids].join(",")})`) : [];
+      const amount = rows.reduce((total, row) => total + numeric(row.reported_balance_clp), 0);
+      if (rows.length !== numeric(batchSummary[`${kind}_documents`]) || Math.abs(amount - numeric(batchSummary[`${kind}_total_clp`])) > 0.5) {
+        throw new HttpError(409, `El detalle ${kind === "payables" ? "por pagar" : "por cobrar"} no cuadra con el Excel. No se cerraron documentos ausentes.`);
+      }
+    }
     const closed = asObject(await rpc(rest, "accounting_apply_facto_outstanding_snapshot", {
       p_entity_id: entityId,
       p_batch_id: batchId,
@@ -1703,7 +1730,7 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
       p_receivable_ids: [...outstandingReceivableIds],
       p_payable_ids: [...outstandingPayableIds],
     }));
-    const published = await publishFactoExcelReceivablesSnapshot(
+    const published = batchSummary.receivables_complete === false || numeric(batchSummary.receivables_documents) === 0 ? {} : await publishFactoExcelReceivablesSnapshot(
       rest,
       entityId,
       batch,
@@ -1712,7 +1739,7 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
       [...outstandingReceivableIds],
       sourceDocuments,
     );
-    portfolioSnapshot = { ...closed, ...published };
+    portfolioSnapshot = { ...closed, ...published, payables_documents: outstandingPayableIds.size, payables_total_clp: batchSummary.payables_total_clp };
   }
   const finalSummary = {
     ...batchSummary,
@@ -1771,7 +1798,7 @@ async function publishFactoExcelReceivablesSnapshot(
   const expectedDocuments = Math.trunc(numeric(summary.receivables_documents));
   const expectedAmount = numeric(summary.receivables_total_clp);
   const amountClp = openRows.reduce((sum, row) => sum + numeric(row.reported_balance_clp ?? row.balance_clp), 0);
-  if (openRows.length !== expectedDocuments || Math.abs(amountClp - expectedAmount) > 0.5) {
+  if (rows.length !== expectedDocuments || Math.abs(amountClp - expectedAmount) > 0.5) {
     throw new HttpError(409, "El detalle de cuentas por cobrar no cuadra con el total del Excel Facto.");
   }
 
@@ -4166,7 +4193,7 @@ async function applyFactoCurrentState(rest: RestClient, profile: Profile, payloa
       ? direction === "sale" ? receivableBySource.get(String(source.id)) : payableBySource.get(String(source.id))
       : null;
     if (!target) {
-      const created = await ensureFactoWorkbookDocument(rest, entityId, batch, importRow, data);
+      const created = await ensureFactoWorkbookDocument(rest, entityId, batch, importRow, data, source);
       source = created.source;
       target = created.target;
       sourceDocuments.push(source);
@@ -4590,21 +4617,25 @@ function findFactoSourceDocument(documents: JsonRecord[], data: JsonRecord) {
   if (!folio) return null;
   const documentType = String(data.document_type || "");
   const direction = String(data.direction || "");
+  const prefix = direction === "sale" || direction === "receipt" ? "sales_" : direction === "purchase" || direction === "payment" ? "purchase_" : "";
   const taxId = normalizeTaxForMatch(data.counterpart_tax_id || data.customer_tax_id);
+  const name = normalizeText(data.counterpart_name || data.customer_name || "");
   const candidates = documents
     .filter((row) => normalizeDocumentNumber(row.folio) === folio)
-    .map((row) => {
-      let score = 1;
+    .filter((row) => {
       const rowType = String(row.document_type || "");
-      if (documentType && rowType === documentType) score += 5;
-      if (direction === "sale" && rowType.startsWith("sales_")) score += 3;
-      if (direction === "purchase" && rowType.startsWith("purchase_")) score += 3;
+      if (prefix && !rowType.startsWith(prefix)) return false;
+      const foreignInvoice = normalizeText(data.document_type_label || "").includes("extranjera")
+        && ["purchase_document", "purchase_invoice"].includes(documentType)
+        && ["purchase_document", "purchase_invoice"].includes(rowType);
+      if (documentType && rowType !== documentType && !foreignInvoice) return false;
       const rowTaxId = normalizeTaxForMatch(row.counterpart_tax_id);
-      if (taxId && rowTaxId === taxId) score += 4;
-      return { row, score };
-    })
-    .sort((a, b) => b.score - a.score);
-  return candidates[0]?.row || null;
+      if (taxId && rowTaxId) return taxId === rowTaxId;
+      if (taxId || name) return Boolean(name && normalizeText(row.counterpart_name) === name);
+      return true;
+    });
+  if (candidates.length > 1) throw new HttpError(409, `Hay más de un documento Facto compatible con el folio ${folio}. Revisa su RUT y tipo antes de importar.`);
+  return candidates[0] || null;
 }
 
 function factoOpenBalanceKind(data: JsonRecord): "receivable" | "payable" | null {
@@ -4625,6 +4656,7 @@ async function ensureFactoWorkbookDocument(
   batch: JsonRecord,
   importRow: JsonRecord,
   data: JsonRecord,
+  existingSource: JsonRecord | null = null,
 ) {
   const direction = String(data.direction || "");
   const documentType = String(data.document_type || "");
@@ -4634,10 +4666,10 @@ async function ensureFactoWorkbookDocument(
   if (!documentNumber || !issuedOn || totalClp <= 0 || !["sale", "purchase"].includes(direction)) {
     throw new Error("El documento Facto complementario no contiene los datos mínimos para crear su respaldo contable.");
   }
-  const fingerprint = String(importRow.fingerprint || importRow.id || crypto.randomUUID());
+  const fingerprint = await sha256Text([direction, documentType, normalizeDocumentNumber(documentNumber), normalizeTaxForMatch(data.counterpart_tax_id) || normalizeText(data.counterpart_name)].join("|"));
   const sourceKey = `facto-workbook:${direction}:${fingerprint}`;
   const now = new Date().toISOString();
-  const [source] = await upsertRowsSelected(rest, "accounting_source_documents", [{
+  const source = existingSource || (await upsertRowsSelected(rest, "accounting_source_documents", [{
     entity_id: entityId,
     source_type: "FACTO",
     source_id: String(importRow.id || ""),
@@ -4667,7 +4699,7 @@ async function ensureFactoWorkbookDocument(
     },
     observed_at: now,
     updated_at: now,
-  }], "entity_id,source_type,source_key", "*");
+  }], "entity_id,source_type,source_key", "*"))[0];
   if (!source) throw new Error("No se pudo conservar el documento complementario de Facto.");
 
   const common = {

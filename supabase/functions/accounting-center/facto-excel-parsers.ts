@@ -1,4 +1,5 @@
 import * as XLSX from "npm:xlsx@0.18.5";
+import { bankMoney as money, bankIsoDate as isoDate } from "./bank-normalizers.ts";
 
 export type FactoExcelProfile =
   | "facto_unpaid_documents"
@@ -27,12 +28,11 @@ export type FactoExcelPreview = {
 export async function parseFactoExcelWorkbook(bytes: Uint8Array, requestedProfile?: string): Promise<FactoExcelPreview> {
   const workbook = XLSX.read(bytes, { type: "array", cellDates: true, raw: false });
   const profile = detectProfile(workbook, requestedProfile);
-  const rows = sheetRows(workbook);
   const parsed = profile === "facto_unpaid_documents"
-    ? parseBalances(rows, profile)
+    ? parseBalanceSheets(workbook, profile)
     : profile === "facto_checks_banco_estado"
-    ? parseChecks(rows, profile)
-    : parseCash(rows, profile);
+    ? parseChecks(sheetRows(workbook), profile)
+    : parseCash(sheetRows(workbook), profile);
   parsed.rows = await Promise.all(parsed.rows.map(async (row) => ({
     ...row,
     // The same payment may appear in the general cash ledger and in a
@@ -55,7 +55,7 @@ function detectProfile(workbook: XLSX.WorkBook, requested?: string): FactoExcelP
     ]);
     if (allowed.has(requested as FactoExcelProfile)) return requested as FactoExcelProfile;
   }
-  const rows = sheetRows(workbook, 8);
+  const rows = workbook.SheetNames.flatMap((name) => sheetRows(workbook, 30, name));
   const header = rows.flat().map(normalizeText).join("|");
   if (header.includes("impago") && header.includes("emisor receptor")) return "facto_unpaid_documents";
   if (header.includes("numero cheque") || (header.includes("fecha cobro") && header.includes("rut emisor"))) return "facto_checks_banco_estado";
@@ -63,12 +63,52 @@ function detectProfile(workbook: XLSX.WorkBook, requested?: string): FactoExcelP
   throw new Error("No se reconoció esta planilla Facto. Selecciona el tipo de respaldo antes de previsualizar.");
 }
 
+function parseBalanceSheets(workbook: XLSX.WorkBook, profile: FactoExcelProfile): FactoExcelPreview {
+  const results: FactoExcelPreview[] = [];
+  let offset = 0;
+  for (const name of workbook.SheetNames) {
+    const rows = sheetRows(workbook, undefined, name, true);
+    if (findHeader(rows, ["tipo documento", "numero", "emisor receptor", "total", "pagado", "impago"]) < 0) {
+      if (rows.some((row) => row.some((cell) => documentDirection(String(cell || ""))))) {
+        throw new Error(`La hoja ${name} contiene documentos sin un encabezado válido. No se omitirá esa información.`);
+      }
+      continue;
+    }
+    const result = parseBalances(rows, profile);
+    for (const row of result.rows) {
+      row.data.source_sheet = name;
+      row.data.source_row = row.row_number;
+      row.row_number += offset;
+    }
+    offset += rows.length;
+    results.push(result);
+  }
+  if (!results.length) throw new Error("No se encontró el encabezado de documentos pendientes Facto.");
+  const rows = results.flatMap((result) => result.rows);
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const identity = [row.data.direction, row.data.document_type, row.data.document_number,
+      row.data.counterpart_tax_id || normalizeText(row.data.counterpart_name)].join("|");
+    if (seen.has(identity)) row.errors.push("Documento repetido en el archivo. Revisa las hojas antes de confirmar.");
+    seen.add(identity);
+  }
+  const summary: Record<string, unknown> = { sheets: results.length };
+  for (const result of results) {
+    for (const [key, value] of Object.entries(result.summary)) summary[key] = Number(summary[key] || 0) + Number(value || 0);
+  }
+  return { profile, source_type: "COLLECTIONS", rows, summary, warnings: results[0].warnings };
+}
+
 function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExcelPreview {
   const headerIndex = findHeader(rows, ["tipo documento", "numero", "emisor receptor", "total", "pagado", "impago"]);
   if (headerIndex < 0) throw new Error("No se encontró el encabezado de documentos pendientes Facto.");
-  const header = rows[headerIndex].map(normalizeText);
+  let header = rows[headerIndex].map(normalizeText);
   const parsed: FactoExcelRow[] = [];
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
+    if (findHeader([rows[index]], ["tipo documento", "numero", "emisor receptor", "total", "pagado", "impago"]) === 0) {
+      header = rows[index].map(normalizeText);
+      continue;
+    }
     const raw = rowObject(header, rows[index]);
     const documentTypeLabel = textAt(raw, "tipo documento");
     const documentNumber = textAt(raw, "numero");
@@ -82,6 +122,10 @@ function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExce
     const balanceKind = openBalanceKind(direction, documentType);
     const errors: string[] = [];
     if (!documentNumber) errors.push("Número de documento faltante.");
+    if (!textAt(raw, "emisor receptor")) errors.push("Contraparte faltante.");
+    if (direction === "purchase" && !normalizeText(documentTypeLabel).includes("extranjera") && !textAt(raw, "rut")) errors.push("RUT del proveedor faltante.");
+    if (["total", "pagado", "impago"].some((key) => !validAmount(raw[key]))) errors.push("Monto faltante o inválido.");
+    if (money(raw.pagado) < 0 || money(raw.impago) < 0) errors.push("Pagado e impago no pueden ser negativos.");
     if (!issuedOn) errors.push("Fecha inválida.");
     if (!direction) errors.push("No se reconoció si el documento es emitido o recibido.");
     if (total <= 0 && !normalizeText(documentTypeLabel).includes("nota de credito")) errors.push("Total inválido.");
@@ -286,10 +330,10 @@ function openBalanceKind(direction: string | null, documentType: string) {
   return "informational";
 }
 
-function sheetRows(workbook: XLSX.WorkBook, maxRows?: number): unknown[][] {
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+function sheetRows(workbook: XLSX.WorkBook, maxRows?: number, sheetName = workbook.SheetNames[0], raw = false): unknown[][] {
+  const sheet = workbook.Sheets[sheetName];
   if (!sheet) return [];
-  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false, range: maxRows ? `A1:ZZ${maxRows}` : undefined }) as unknown[][];
+  return XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw, range: maxRows ? `A1:ZZ${maxRows}` : undefined }) as unknown[][];
 }
 
 function findHeader(rows: unknown[][], required: string[]) {
@@ -324,30 +368,9 @@ function normalizeTaxId(value: string) {
   return value.toUpperCase().replace(/[^0-9K]/g, "");
 }
 
-function money(value: unknown) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
-  let text = String(value ?? "").trim().replace(/[^0-9,.-]/g, "");
-  if (!text) return 0;
-  const comma = text.lastIndexOf(",");
-  const dot = text.lastIndexOf(".");
-  if (comma > dot) text = text.replace(/\./g, "").replace(",", ".");
-  else text = text.replace(/,/g, "");
-  const result = Number(text);
-  return Number.isFinite(result) ? result : 0;
-}
-
-function isoDate(value: unknown) {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
-  const text = String(value ?? "").trim();
-  const match = text.match(/^(\d{1,4})[\/-](\d{1,2})[\/-](\d{1,4})/);
-  if (match) {
-    const firstIsYear = match[1].length === 4;
-    const year = Number(firstIsYear ? match[1] : match[3]);
-    const month = Number(match[2]);
-    const day = Number(firstIsYear ? match[3] : match[1]);
-    if (year > 1900 && month >= 1 && month <= 12 && day >= 1 && day <= 31) return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  }
-  return "";
+function validAmount(value: unknown) {
+  if (typeof value === "number") return Number.isFinite(value);
+  return /^-?(?:\d{1,3}(?:[.,]\d{3})+|\d+)(?:[.,]\d{1,2})?$/.test(String(value ?? "").replace(/CLP|\$|\s/gi, ""));
 }
 
 function normalizeTime(value: unknown) {

@@ -19,6 +19,8 @@ declare
   v_from_date date;
   v_receivables_closed integer := 0;
   v_payables_closed integer := 0;
+  v_receivables_complete boolean;
+  v_payables_complete boolean;
 begin
   if auth.role() <> 'service_role' then
     raise exception 'Esta operación requiere service_role';
@@ -38,6 +40,15 @@ begin
   if coalesce((v_batch.summary->>'portfolio_complete')::boolean, false) is not true then
     raise exception 'El respaldo Facto no fue validado como una cartera completa';
   end if;
+  if coalesce(v_batch.error_count, 0) > 0 then
+    raise exception 'El archivo tiene errores y no puede cerrar saldos';
+  end if;
+  -- Missing sections are not evidence of a zero portfolio. Old batches may not
+  -- carry the new flags, so require actual detail for either direction.
+  v_receivables_complete := coalesce((v_batch.summary->>'receivables_complete')::boolean,
+    coalesce((v_batch.summary->>'receivables_documents')::integer, cardinality(p_receivable_ids), 0) > 0);
+  v_payables_complete := coalesce((v_batch.summary->>'payables_complete')::boolean,
+    coalesce((v_batch.summary->>'payables_documents')::integer, cardinality(p_payable_ids), 0) > 0);
 
   v_from_date := coalesce(
     nullif(v_batch.summary->>'coverage_from', '')::date,
@@ -55,6 +66,8 @@ begin
       status = 'paid',
       updated_at = now()
   where r.entity_id = p_entity_id
+    and v_receivables_complete
+    and r.status <> 'written_off'
     and not (r.id = any(coalesce(p_receivable_ids, '{}'::uuid[])))
     and exists (
       select 1
@@ -62,6 +75,7 @@ begin
       where d.id = r.source_document_id
         and d.entity_id = p_entity_id
         and d.source_type = 'FACTO'
+        and d.document_type like 'sales_%'
         and d.issued_on between v_from_date and p_as_of
     );
   get diagnostics v_receivables_closed = row_count;
@@ -74,6 +88,8 @@ begin
       status = 'paid',
       updated_at = now()
   where p.entity_id = p_entity_id
+    and v_payables_complete
+    and p.status <> 'voided'
     and not (p.id = any(coalesce(p_payable_ids, '{}'::uuid[])))
     and exists (
       select 1
@@ -81,6 +97,7 @@ begin
       where d.id = p.source_document_id
         and d.entity_id = p_entity_id
         and d.source_type = 'FACTO'
+        and d.document_type like 'purchase_%'
         and d.issued_on between v_from_date and p_as_of
     );
   get diagnostics v_payables_closed = row_count;
@@ -88,6 +105,8 @@ begin
   return jsonb_build_object(
     'receivables_closed', v_receivables_closed,
     'payables_closed', v_payables_closed,
+    'receivables_updated', v_receivables_complete,
+    'payables_updated', v_payables_complete,
     'coverage_from', v_from_date,
     'as_of', p_as_of,
     'batch_id', p_batch_id

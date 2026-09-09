@@ -185,7 +185,7 @@ export function AccountingCenterPage() {
           {activeView === "banks" ? <BankImportView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "reconcile" ? <ReconciliationErrorBoundary><ReconciliationView data={data} busy={busy} runAction={runAction} /></ReconciliationErrorBoundary> : null}
           {activeView === "receivables" ? <ReceivablesView data={data} busy={busy} runAction={runAction} /> : null}
-          {activeView === "payables" ? <PayablesView rows={data.payables} /> : null}
+          {activeView === "payables" ? <PayablesView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "checks" ? <ChecksView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "periods" ? <PeriodsView data={data} isAdmin={user?.role === "administrador"} busy={busy} runAction={runAction} /> : null}
           {activeView === "reports" ? <ReportsView data={data} /> : null}
@@ -534,7 +534,7 @@ function JournalDialog({ data, busy, close, runAction }: ActionViewProps & { clo
 }
 
 const factoExcelProfiles: Array<{ id: AccountingFactoExcelProfile; label: string; help: string }> = [
-  { id: "facto_unpaid_documents", label: "Documentos pendientes / impagos", help: "Actualiza saldos informados por Facto sin inventar pagos bancarios." },
+  { id: "facto_unpaid_documents", label: "Documentos impagos · por cobrar y por pagar", help: "Facturas emitidas: por cobrar. Facturas recibidas: por pagar. Abonos informados por Facto, separados de la conciliación bancaria." },
   { id: "facto_checks_banco_estado", label: "Cheques Facto · flujo BancoEstado", help: "Conserva banco emisor y espera su cobro en la futura cartola BancoEstado." },
   { id: "facto_cash_scotiabank", label: "Movimientos Facto · Scotiabank", help: "Registra evidencia de cobros y pagos pendiente de cartola bancaria." },
   { id: "facto_cash_mercado_pago", label: "Movimientos Facto · Mercado Pago", help: "Registra eventos Facto pendientes de conciliación con Mercado Pago." },
@@ -639,6 +639,7 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
         fileName: file.name,
         fromDate,
         toDate,
+        completeReport,
       }));
     } catch (caught) {
       setLocalError(caught instanceof Error ? caught.message : "No se pudo analizar el respaldo Facto.");
@@ -672,7 +673,7 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
         <p className="accounting-profile-help">{selectedProfile.help}</p>
         {profile === "facto_unpaid_documents" ? <>
           <div className="accounting-form-grid"><label>Emisión desde<input disabled={preparingExcel} type="date" value={fromDate} onChange={(event) => { setFromDate(event.target.value); setCompleteReport(false); }} /></label><label>Emisión hasta<input disabled={preparingExcel} type="date" max={today()} value={toDate} onChange={(event) => { setToDate(event.target.value); setCompleteReport(false); }} /></label></div>
-          <label className="accounting-report-confirmation"><input type="checkbox" disabled={preparingExcel} checked={completeReport} onChange={(event) => setCompleteReport(event.target.checked)} /><span>El reporte incluye todos los documentos impagos del período, sin filtros de cliente.</span></label>
+          <label className="accounting-report-confirmation"><input type="checkbox" disabled={preparingExcel} checked={completeReport} onChange={(event) => setCompleteReport(event.target.checked)} /><span>El reporte incluye todos los documentos impagos del período, sin filtros de cliente, proveedor ni tipo de documento.</span></label>
         </> : null}
         <label className="accounting-file-drop"><Upload size={30} /><strong>{file?.name || "Selecciona un archivo Excel"}</strong><span>XLS o XLSX · máximo 25 MB · original privado</span><input disabled={preparingExcel} accept=".xls,.xlsx" type="file" onChange={(event) => { setFile(event.target.files?.[0] || null); setCompleteReport(false); setLocalError(""); }} /></label>
         {localError ? <div className="accounting-local-error"><AlertTriangle size={16} />{localError}</div> : null}
@@ -742,7 +743,18 @@ function FactoExcelPreviewDialog({ preview, busy, close, runAction }: { preview:
     const completed = await runAction("confirm-facto-excel", () => confirmAccountingFactoExcel(preview.batch.id), "Archivo Facto respaldado e integrado sin duplicar documentos ni pagos.");
     if (completed) close();
   }
-  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide"><div className="accounting-modal-heading"><div><p>Revisión humana obligatoria</p><h2>{factoProfileLabel(preview.profile)}</h2><span>{preview.batch.file_name}</span></div><button className="icon-button" aria-label="Cerrar" type="button" onClick={close}><X /></button></div><div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Filas</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevas</span><span><strong>{preview.summary.duplicates}</strong>Duplicadas</span><span className="warning"><strong>{preview.summary.errors}</strong>Con errores</span></div>{preview.warnings.map((warning) => <div className="accounting-review-note" key={warning}><AlertTriangle size={16} />{warning}</div>)}{preview.profile === "facto_unpaid_documents" ? <div className="accounting-preview-kpis"><span><strong>{clp(number(preview.summary.receivables_total_clp))}</strong>Saldo por cobrar CLP</span><span><strong>{clp(number(preview.summary.payables_total_clp))}</strong>Saldo por pagar CLP</span></div> : null}<Table headers={["Fila", ...columns.headers, "Validación"]}>{preview.rows.slice(0, 200).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.row_number}</td>{columns.values(row.data).map((cell, index) => <td data-label={columns.headers[index]} key={`${row.fingerprint}-${columns.headers[index]}`}>{cell}</td>)}<td data-label="Validación"><Status value={row.errors.length ? row.errors.join(" ") : "Correcto"} tone={row.errors.length ? "danger" : "success"} /></td></tr>)}</Table>{preview.rows.length > 200 ? <p className="accounting-table-note">Se muestran 200 de {preview.rows.length} filas; al confirmar se procesará el archivo completo.</p> : null}<div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy === "confirm-facto-excel" || Number(preview.summary.new) === 0 || (preview.profile === "facto_unpaid_documents" && Number(preview.summary.errors) > 0)} type="button" onClick={() => void confirm()}>{busy === "confirm-facto-excel" ? "Integrando…" : `Confirmar ${preview.summary.new} registros`}</button></div></section></div>;
+  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide" role="dialog" aria-modal="true" aria-label="Revisar Excel Facto">
+    <div className="accounting-modal-heading"><div><p>Revisión del respaldo</p><h2>{factoProfileLabel(preview.profile)}</h2><span>{preview.batch.file_name}</span></div><button className="icon-button" aria-label="Cerrar" type="button" onClick={close}><X /></button></div>
+    <div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Filas</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevas</span><span><strong>{preview.summary.duplicates}</strong>Duplicadas</span><span className="warning"><strong>{preview.summary.errors}</strong>Con errores</span></div>
+    {preview.warnings.map((warning) => <div className="accounting-review-note" key={warning}><AlertTriangle size={16} />{warning}</div>)}
+    {preview.profile === "facto_unpaid_documents" ? <>
+      <div className="accounting-preview-kpis"><span><strong>{preview.summary.receivables_complete === false ? "Sin cambios" : clp(preview.summary.receivables_total_clp)}</strong>Saldo por cobrar CLP<small>{number(preview.summary.receivables_documents)} documentos emitidos</small></span><span><strong>{preview.summary.payables_complete === false ? "Sin cambios" : clp(preview.summary.payables_total_clp)}</strong>Saldo por pagar CLP<small>{number(preview.summary.payables_documents)} documentos recibidos</small></span></div>
+      {number(preview.summary.adjustment_documents) > 0 ? <p className="accounting-table-note">{number(preview.summary.adjustment_documents)} notas de crédito: respaldo documental, no deuda adicional.</p> : null}
+    </> : null}
+    <Table headers={["Fila", ...columns.headers, "Validación"]}>{preview.rows.slice(0, 200).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.data.source_sheet ? `${row.data.source_sheet} · ${row.data.source_row}` : row.row_number}</td>{columns.values(row.data).map((cell, index) => <td data-label={columns.headers[index]} key={`${row.fingerprint}-${columns.headers[index]}`}>{cell}</td>)}<td data-label="Validación"><Status value={row.errors.length ? row.errors.join(" ") : "Correcto"} tone={row.errors.length ? "danger" : "success"} /></td></tr>)}</Table>
+    {preview.summary.total > 200 ? <p className="accounting-table-note">Se muestran 200 de {preview.summary.total} filas; al confirmar se procesará el archivo completo.</p> : null}
+    <div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy === "confirm-facto-excel" || Number(preview.summary.new) === 0 || (preview.profile === "facto_unpaid_documents" && Number(preview.summary.errors) > 0)} type="button" onClick={() => void confirm()}>{busy === "confirm-facto-excel" ? "Integrando…" : `Confirmar ${preview.summary.new} registros`}</button></div>
+  </section></div>;
 }
 
 function BankImportView({ data, busy, runAction }: ActionViewProps) {
@@ -1137,13 +1149,42 @@ function operationalReceivableBalance(row: AccountingReceivable) {
   return number(row.reported_balance_clp ?? row.balance_clp);
 }
 
-function PayablesView({ rows }: { rows: AccountingPayable[] }) {
+function PayablesView({ data, busy, runAction }: ActionViewProps) {
+  const [showExcel, setShowExcel] = useState(false);
   const [query, setQuery] = useState("");
   const [from, setFrom] = useState("2026-01-01");
   const [to, setTo] = useState(today());
-  const [status, setStatus] = useState("all");
-  const filtered = rows.filter((row) => (!query || normalize(`${row.supplier_name} ${row.supplier_tax_id || ""} ${row.document_number}`).includes(normalize(query))) && (!from || row.issued_on >= from) && (!to || row.issued_on <= to) && (status === "all" || row.status === status));
-  return <section className="panel"><div className="accounting-panel-heading"><div><p>Obligaciones</p><h2>Cuentas por pagar</h2><span>Incluye documentos Facto y obligaciones verificables, manteniendo separado lo informado de lo conciliado.</span></div><strong>{clp(filtered.reduce((sum, row) => sum + number(row.reported_balance_clp ?? row.balance_clp), 0))}</strong></div><div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Proveedor, RUT o documento" /><label>Emisión desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Emisión hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Todos</option><option value="pending">Pendiente</option><option value="partial">Pago parcial</option><option value="paid">Pagada</option><option value="overdue">Vencida</option></select></label></div>{filtered.length ? <Table headers={["Proveedor", "Documento", "Emisión", "Vencimiento", "Original", "Pagado", "Saldo operativo", "Estado"]}>{filtered.map((row) => { const reported = row.reported_balance_clp !== null; return <tr key={row.id}><td data-label="Proveedor"><strong>{row.supplier_name}</strong><small>{row.supplier_tax_id || ""}</small></td><td data-label="Documento">{row.document_number}</td><td data-label="Emisión">{date(row.issued_on)}</td><td data-label="Vencimiento">{date(row.due_on)}<small>{agingLabel(row.due_on)}</small></td><td data-label="Original">{clp(row.original_amount_clp)}</td><td data-label="Pagado">{clp(reported ? row.reported_paid_amount_clp : row.paid_amount_clp)}<small>{reported ? `Confirmado banco: ${clp(row.paid_amount_clp)}` : "Confirmado"}</small></td><td data-label="Saldo operativo"><strong>{clp(reported ? row.reported_balance_clp : row.balance_clp)}</strong><small>{reported ? `Facto · confirmado: ${clp(row.balance_clp)}` : "Conciliado"}</small></td><td data-label="Estado"><Status value={reported ? "Informado por Facto" : humanize(row.status)} tone={row.status === "paid" ? "success" : "review"} /></td></tr>; })}</Table> : <Empty icon={Search} text="No hay cuentas por pagar que coincidan con los filtros." />}</section>;
+  const [status, setStatus] = useState("open");
+  const batches = new Map(data.batches.map((batch) => [batch.id, batch]));
+  const latest = data.batches.filter((batch) => batch.import_profile === "facto_unpaid_documents" && batch.status === "imported" && number(batch.summary.payables_documents) > 0)
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
+  const filtered = data.payables.filter((row) => {
+    const balance = number(row.reported_balance_clp ?? row.balance_clp);
+    return row.status !== "voided"
+      && (!query || normalize(`${row.supplier_name} ${row.supplier_tax_id || ""} ${row.document_number}`).includes(normalize(query)))
+      && (!from || row.issued_on >= from) && (!to || row.issued_on <= to)
+      && (status === "all" || (status === "open" && balance > 0.5) || (status === "paid" && balance <= 0.5)
+        || (status === "partial" && balance > 0.5 && number(row.reported_paid_amount_clp ?? row.paid_amount_clp) > 0)
+        || (status === "overdue" && balance > 0.5 && row.due_on && row.due_on < today()));
+  }).sort((a, b) => b.issued_on.localeCompare(a.issued_on) || a.supplier_name.localeCompare(b.supplier_name, "es") || a.document_number.localeCompare(b.document_number, "es", { numeric: true }));
+  return <div className="accounting-view-stack accounting-payables-view">
+    <div className="accounting-source-actions"><button className="primary-button" type="button" aria-expanded={showExcel} aria-controls="payables-excel" onClick={() => setShowExcel(!showExcel)}><Upload size={17} />{showExcel ? "Cerrar carga de Excel" : "Actualizar por cobrar y por pagar desde Excel Facto"}</button></div>
+    <div id="payables-excel" hidden={!showExcel}>{showExcel ? <FactoView data={data} busy={busy} runAction={runAction} excelOnly /> : null}</div>
+    <section className="panel">
+      <div className="accounting-panel-heading"><div><p>Obligaciones</p><h2>Cuentas por pagar</h2><span>Facturas de proveedores y abonos informados por Facto.</span></div><div className="accounting-receivables-total"><strong>{clp(filtered.reduce((sum, row) => sum + number(row.reported_balance_clp ?? row.balance_clp), 0))}</strong><small>{filtered.length} documentos en la vista</small></div></div>
+      <div className="accounting-source-note"><ShieldCheck size={16} /><span>{latest ? <><strong>Último Excel: {latest.file_name}</strong><br />Corte {date(String(latest.summary.coverage_to || ""))} · cargado {dateTime(latest.created_at)}<br />{number(latest.summary.payables_documents)} facturas por pagar · {clp(latest.summary.payables_total_clp)}</> : "Sin respaldo Excel de proveedores confirmado."}<br />Los abonos Facto no modifican los pagos conciliados con bancos.</span></div>
+      <div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Proveedor, RUT o documento" /><label>Emisión desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Emisión hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="open">Pendientes de pago</option><option value="partial">Pago parcial</option><option value="paid">Pagadas</option><option value="overdue">Vencidas</option><option value="all">Todos</option></select></label></div>
+      {from && to && from > to ? <div className="accounting-local-error">La fecha desde no puede ser posterior a hasta.</div> : null}
+      {filtered.length ? <Table headers={["Proveedor", "Documento", "Emisión", "Vencimiento", "Original", "Abonos Facto", "Saldo operativo", "Estado y respaldo"]}>{filtered.map((row) => {
+        const reported = row.reported_balance_clp !== null;
+        const balance = number(row.reported_balance_clp ?? row.balance_clp);
+        const batch = row.reported_source_batch_id ? batches.get(row.reported_source_batch_id) : null;
+        const evidence = batch?.storage_path ? batch : null;
+        const state = balance <= 0.5 ? "Pagada" : number(row.reported_paid_amount_clp ?? row.paid_amount_clp) > 0 ? "Pago parcial" : "Pendiente";
+        return <tr key={row.id}><td data-label="Proveedor"><strong>{row.supplier_name}</strong><small>{row.supplier_tax_id || ""}</small></td><td data-label="Documento">{row.document_number}</td><td data-label="Emisión">{date(row.issued_on)}</td><td data-label="Vencimiento">{date(row.due_on)}<small>{agingLabel(row.due_on)}</small></td><td data-label="Original">{clp(row.original_amount_clp)}</td><td data-label="Abonos Facto">{reported ? clp(row.reported_paid_amount_clp) : "Sin dato Facto"}<small>Banco conciliado: {clp(row.paid_amount_clp)}</small></td><td data-label="Saldo operativo"><strong>{clp(balance)}</strong><small>Banco pendiente: {clp(row.balance_clp)}</small></td><td data-label="Estado y respaldo"><Status value={`${state}${reported ? " en Facto" : ""}`} tone={balance <= 0.5 ? "success" : "review"} />{reported ? <small>Actualizado {dateTime(row.reported_at)}</small> : null}{evidence ? <button className="small-command" title={`Descargar ${evidence.file_name}`} disabled={Boolean(busy)} type="button" onClick={() => void runAction(`download-${evidence.id}`, () => downloadAccountingEvidence(evidence.storage_path!, evidence.file_name), "Respaldo descargado.")}><Download size={14} /> {evidence.file_name}</button> : null}</td></tr>;
+      })}</Table> : <Empty icon={Search} text="No hay cuentas por pagar que coincidan con los filtros." />}
+    </section>
+  </div>;
 }
 
 function ChecksView({ data, busy, runAction }: ActionViewProps) {
@@ -1232,7 +1273,7 @@ function currencyMoney(value: unknown, currency: string) { return new Intl.Numbe
 function parseLocalizedNumber(value: string) { let text = value.trim().replace(/[^\d,.-]/g, ""); if (!text) return 0; const comma = text.lastIndexOf(","); const dot = text.lastIndexOf("."); if (comma > dot) text = text.replace(/\./g, "").replace(",", "."); else if (dot > comma) text = text.replace(/,/g, ""); else if (comma >= 0) text = text.replace(",", "."); const parsed = Number(text); return Number.isFinite(parsed) ? parsed : 0; }
 function date(value: string | null | undefined) { if (!value) return "—"; const parsed = new Date(`${value.slice(0, 10)}T12:00:00`); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("es-CL"); }
 function shortDate(value: string | null | undefined) { if (!value) return "—"; const parsed = new Date(`${value.slice(0, 10)}T12:00:00`); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("es-CL", { day: "2-digit", month: "short", year: "numeric" }); }
-function dateTime(value: string) { const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" }); }
+function dateTime(value: string | null) { if (!value) return "Sin fecha"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" }); }
 function today() { return new Date().toISOString().slice(0, 10); }
 function normalize(value: string) { return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 function humanize(value: string) { return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
@@ -1252,8 +1293,8 @@ function factoReceivableActionTone(value: string): "success" | "review" | "dange
 function factoProfileLabel(value: string) { return factoExcelProfiles.find((item) => item.id === value)?.label || humanize(value); }
 function factoPreviewColumns(profile: AccountingFactoExcelProfile): { headers: string[]; values: (data: Record<string, unknown>) => React.ReactNode[] } {
   if (profile === "facto_unpaid_documents") return {
-    headers: ["Documento", "Fecha", "Contraparte", "Total", "Pagado Facto", "Impago Facto"],
-    values: (data) => [String(data.document_type_label || "—"), `${data.document_number || "—"}`, String(data.counterpart_name || "—"), clp(data.total_clp), clp(data.reported_paid_clp), clp(data.reported_balance_clp)],
+    headers: ["Destino", "Documento", "Emisión", "Contraparte", "Total", "Pagado Facto", "Impago Facto"],
+    values: (data) => [data.balance_kind === "payable" ? "Por pagar" : data.balance_kind === "receivable" ? "Por cobrar" : "Ajuste documental", `${data.document_type_label || "—"} · ${data.document_number || "—"}`, date(String(data.issued_on || "")), `${data.counterpart_name || "—"} ${data.counterpart_tax_id || ""}`, clp(data.total_clp), clp(data.reported_paid_clp), clp(data.reported_balance_clp)],
   };
   if (profile === "facto_checks_banco_estado") return {
     headers: ["Cliente", "Banco emisor", "N.º cheque", "Cobro", "Monto", "Cuenta esperada"],

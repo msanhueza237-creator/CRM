@@ -477,8 +477,9 @@ test("SKU duplicado o detalle con ID incorrecto exige revision, nunca suma exist
   assert.equal(resolveProducts(snapshots, duplicated, catalog, true)[0].stock, null);
   const broken = [{ ...details[0], external_id: "999" }];
   assert.equal(resolveProducts(snapshots, broken, catalog, true)[0].stock, null);
-  const unknown = resolveProducts([], [], catalog, false)[0];
-  assert.equal(unknown.stock, null); assert.equal(unknown.stock_source, null);
+  const fallback = resolveProducts([], [], catalog, false)[0];
+  assert.equal(fallback.stock, 99); assert.equal(fallback.stock_source, 'tiendanube_catalog');
+  assert.equal(fallback.stock_updated_at, catalog[0].last_synced_at);
   assert.ok(!JSON.stringify(resolveProducts(snapshots, details, catalog, false)).includes("unit_cost"));
 });
 
@@ -499,7 +500,7 @@ test("Registro cruza fuentes de solo lectura, resuelve URL y declara fuente parc
   const { source, registry } = fixture("vendedor");
   const d = detectorSources();
   source.records = async (resource) => resource === "product_details" ? d.details : d.snapshots;
-  source.all = async (path) => { assert.match(path, /^content_products\?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc$/); return d.catalog; };
+  source.all = async (path) => { assert.match(path, /^content_products\?select=id,sku,name,brand,description_text,product_url,last_synced_at,source_status,stock,has_stock,variants&order=id.asc$/); return d.catalog; };
   const found = await registry.execute("search_products", { query: detectorUrl, stock_filter: "all" });
   assert.equal(found.status, "ok"); assert.equal(found.table.rows.length, 1);
   assert.equal(found.table.rows[0].stock, 11);
@@ -619,6 +620,46 @@ test("Catalogo completo ignora filtros anteriores y conserva precios pendientes 
   assert.equal(result.data.client_price_list.total, 3);
   assert.equal(result.data.client_price_list.records.find((r) => r.sku === "LX1030BOX").net, null);
   assert.ok(result.data.client_price_list.records.every((r) => r.stock > 0));
+});
+
+test("Catalogo mixto exporta 252 disponibles, no solo 52 de Facto ni una pagina", async () => {
+  const { registry, source, details } = priceFixture();
+  const many = Array.from({ length: 303 }, (_, i) => ({ ...details[0], external_id: String(i + 1), payload: { ...details[0].payload, product_id: String(i + 1), sku: `QA-${i}`, name: `Producto ${i}`, ...(i >= 52 ? { inventories: undefined } : {}) } }));
+  const catalog = many.slice(52, 253).map((p, i) => ({ id: p.external_id, sku: p.payload.sku, name: p.payload.name, stock: i === 200 ? 0 : 12, has_stock: i !== 200, variants: [{ sku: p.payload.sku, stock_management: true, stock: i === 200 ? 0 : 12 }], last_synced_at: '2026-08-21T00:00:00Z' }));
+  source.records = async (resource) => resource === 'product_details' ? many : [];
+  source.all = async () => catalog;
+  const result = await registry.execute('get_price_list', { scope: 'catalog', limit: 20 });
+  assert.equal(result.table.rows.length, 20);
+  assert.equal(result.data.client_price_list.total, 252);
+  assert.equal(result.data.client_price_list.records.length, 252);
+  assert.equal(result.data.client_price_list.availability_complete, false);
+  assert.deepEqual(result.data.availability, { identified: 303, available: 252, unavailable: 1, unknown: 50, catalog_fallback: 200 });
+  assert.equal(result.data.client_price_list.records.find((p) => p.sku === 'QA-52').stock_source, 'tiendanube_catalog');
+  assert.equal(result.data.client_price_list.records.find((p) => p.sku === 'QA-52').stock_updated_at, '2026-08-21T00:00:00Z');
+  assert.ok(!JSON.stringify(result).includes('123456789'), 'Never expose cost in a customer list');
+  let round = 0;
+  const reply = await runOrchestrator({ registry, model: 'fixture', apiKey: 'x', message: 'Lista completa', history: [], signal: new AbortController().signal, onTrace: async () => {}, fetcher: async () => new Response(JSON.stringify({ output: round++ === 0 ? [{ type: 'function_call', name: 'get_price_list', call_id: 'catalog', arguments: JSON.stringify({ scope: 'catalog', limit: 20 }) }] : [{ type: 'message', content: [{ type: 'output_text', text: 'Todos tienen stock' }] }] })) });
+  assert.match(reply.message, /252 productos/);
+  assert.match(reply.message, /cantidad pendiente de verificar: \*\*50\*\*/);
+  assert.match(reply.message, /cobertura de inventario es parcial/);
+  assert.doesNotMatch(reply.message, /Todos tienen stock/);
+});
+
+test('Tiendanube por variante exacta, sin sumas de fuentes ni reemplazar un cero o error Facto', () => {
+  const catalog = [{ id: 'catalog', sku: 'A', name: 'Variantes', stock: 999, last_synced_at: stamp, variants: [
+    { sku: 'A', stock_management: true, stock: 2 }, { sku: 'B', stock_management: true, stock: 7 },
+    { sku: 'C', stock_management: false, stock: 50 }, { sku: 'D', stock_management: true, stock: null },
+    { sku: '', stock_management: true, stock: 600 },
+  ] }];
+  const resolved = resolveProducts([], [], catalog, false);
+  assert.deepEqual(resolved.map((p) => [p.sku, p.stock]), [['A', 2], ['B', 7], ['C', null], ['D', null]]);
+  const detail = { external_id: '1', updated_at: stamp, payload: { product_id: '1', sku: 'A', inventories: { details: [{ product_location_id: '1', available_quantity: '0' }] } } };
+  assert.equal(resolveProducts([], [detail], catalog, false).find((p) => p.sku === 'A').stock, 0);
+  detail.payload.inventories.details[0].available_quantity = 'invalid';
+  assert.equal(resolveProducts([], [detail], catalog, false).find((p) => p.sku === 'A').stock, null);
+  assert.equal(resolveProducts([], [], [...catalog, { ...catalog[0], id: 'duplicate' }], false).find((p) => p.sku === 'A').stock, null);
+  assert.equal(resolveProducts([], [], [{ ...catalog[0], last_synced_at: null }], false)[0].stock, null);
+  assert.equal(resolveProducts([], [], [{ ...catalog[0], source_status: 'deleted' }], false).length, 0);
 });
 
 test("Todos por marca o descripcion supera 25 sin perder filtro ni incluir otras marcas", async () => {

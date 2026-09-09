@@ -1,6 +1,24 @@
 import { normalized, numeric, object, type Row, rows } from "./contracts.ts";
 
 const skuKey = (value: unknown) => String(value ?? "").trim().toUpperCase();
+export const inventoryCatalogFields = "id,sku,name,brand,description_text,product_url,last_synced_at,source_status,stock,has_stock,variants";
+
+// Variant quantities belong to their own SKU, never to the product's aggregate SKU.
+function catalogVariants(catalog: Row[]): Row[] {
+  return catalog.filter((row) => row.source_status !== "deleted").flatMap((row) => {
+    const variants = rows(row.variants);
+    if (!variants.length) return [{ ...row, catalog_stock: numeric(row.stock) }];
+    const keyed = variants.filter((variant) => skuKey(variant.sku));
+    const expanded = keyed.map((variant) => ({
+      ...row, sku: variant.sku,
+      catalog_stock: variant.stock_management === true ? numeric(variant.stock) : null,
+    }));
+    if (skuKey(row.sku) && !keyed.some((variant) => skuKey(variant.sku) === skuKey(row.sku))) {
+      expanded.push({ ...row, catalog_stock: null });
+    }
+    return expanded;
+  });
+}
 const stopWords = new Set(
   "de del la las el los un una unos unas en para con y por que cuanto cuanta cuantos cuantas tenemos hay stock sctoc disponible disponibles disponibilidad existencia existencias producto productos dime"
     .split(" "),
@@ -176,7 +194,7 @@ export function resolveProducts(
   };
   snapshots.forEach((r) => add("snapshots", r));
   details.forEach((r) => add("details", r));
-  catalog.forEach((r) => add("catalog", r));
+  catalogVariants(catalog).forEach((r) => add("catalog", r));
   return [...groups.entries()].map(([sku, group]) => {
     const warnings: string[] = [];
     const sorted = (values: Row[]) =>
@@ -214,21 +232,27 @@ export function resolveProducts(
     const snapshotStock = s.stock_known === true
       ? numeric(s.available_units)
       : null;
+    const catalogRow = group.catalog.length === 1 ? group.catalog[0] : null;
+    const catalogStock = catalogRow?.last_synced_at && Number.isFinite(Date.parse(String(catalogRow.last_synced_at)))
+      ? numeric(catalogRow.catalog_stock) : null;
+    const useCatalog = !direct.present && snapshotStock === null && catalogStock !== null;
     const stock = duplicate || badId
       ? null
       : direct.present
       ? direct.stock
-      : snapshotStock;
+      : snapshotStock ?? catalogStock;
     const stockSource = stock === null
       ? null
       : direct.present
       ? "facto_product_details"
-      : "facto_inventory_snapshot";
+      : useCatalog ? "tiendanube_catalog" : "facto_inventory_snapshot";
     const stockAt = stock === null
       ? null
       : direct.present
       ? detail?.updated_at
-      : snapshot?.updated_at;
+      : useCatalog ? catalogRow?.last_synced_at : snapshot?.updated_at;
+    if (stockSource === "tiendanube_catalog") warnings.push("Sin cantidad verificable en Facto; se informa el stock del SKU en Tiendanube con su fecha de sincronizacion, sin sumar fuentes.");
+    if (group.catalog.length > 1 && !direct.present && snapshotStock === null) warnings.push("SKU repetido en el catalogo; no se suman cantidades de productos o variantes ambiguas.");
     if (
       direct.stock !== null && snapshotStock !== null &&
       direct.stock !== snapshotStock

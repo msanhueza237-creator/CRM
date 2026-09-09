@@ -83,9 +83,10 @@ const priceRows = [
   { sku: "ACB-C01", name: "Soporte Muro Pequena", net: 6490, stock: 468, currency: "CLP", list_id: "1", stock_updated_at: stamp, price_updated_at: stamp },
   { sku: "ACB-C03", name: "Soporte Muro Grande", net: 7950, stock: 66, currency: "CLP", list_id: "1", stock_updated_at: stamp, price_updated_at: stamp },
   { sku: "QA-FORMULA", name: "=SUM(A1:A2)", net: 1234.56, stock: 2, currency: "CLP", list_id: "1", stock_updated_at: stamp, price_updated_at: stamp },
+  ...Array.from({ length: 249 }, (_, i) => ({ sku: `QA-CATALOG-${i}`, name: `Producto de catalogo ${i}`, net: i === 248 ? null : 1000 + i, stock: i + 1, currency: 'CLP', list_id: '1', stock_source: 'tiendanube_catalog', stock_updated_at: '2026-08-21T00:00:00Z', price_updated_at: stamp })),
 ];
 const priceResult = { ...result, toolName: "get_price_list", domain: "products", summary: "Lista de precios de origen Facto", data: { client_price_list: { complete: true, total: priceRows.length, records: priceRows } },
-  coverage: { complete: true, totalMatched: 3, returned: 1, nextOffset: 1 },
+  coverage: { complete: true, totalMatched: priceRows.length, returned: 1, nextOffset: 1 },
   table: { title: "Precios netos y stock", columns: [{ key: "sku", label: "SKU" }, { key: "name", label: "Nombre" }, { key: "net", label: "Precio neto" }, { key: "stock", label: "Stock" }], rows: priceRows.slice(0, 1) },
 };
 const priceResults = process.env.COPILOT_REAL_PRICE_FIXTURE ? JSON.parse(await readFile(new URL("../test-results/copilot/client-prices-real.json", import.meta.url), "utf8")) : [priceResult];
@@ -304,6 +305,10 @@ try {
   assert.deepEqual(priceSheet.getRow(4).values.slice(1), ["SKU", "Nombre", "Precio neto CLP", "Stock registrado"]);
   assert.equal(priceSheet.columnCount, 4);
   assert.equal(priceBook.worksheets.reduce((sum, sheet) => sum + sheet.rowCount - 4, 0), expectedPrices.length);
+  if (!process.env.COPILOT_REAL_PRICE_FIXTURE) {
+    assert.equal(expectedPrices.length, 252);
+    assert.match(priceSheet.getCell('A3').value, /Stock: Facto \/ Tiendanube/);
+  }
   let containsFormulaGuard = false;
   for (const sheet of priceBook.worksheets) for (let index = 5; index <= sheet.rowCount; index++) {
     const values = sheet.getRow(index).values.slice(1);
@@ -312,6 +317,7 @@ try {
     assert.equal(values[2], expected.net ?? "Por confirmar");
     assert.equal(values[3], expected.stock);
     assert.ok(values[3] > 0);
+    if (expected.stock_source === 'tiendanube_catalog') assert.match(JSON.stringify(sheet.getRow(index).getCell(1).note), /Tiendanube/);
     if (values[1] === "'=SUM(A1:A2)") containsFormulaGuard = true;
   }
   if (!process.env.COPILOT_REAL_PRICE_FIXTURE) assert.ok(containsFormulaGuard);
