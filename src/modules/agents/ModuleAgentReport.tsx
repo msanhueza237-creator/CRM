@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, ArrowRight, ExternalLink } from "lucide-react";
+import { ExecutiveDailyReport, type DailyBrief } from "./ExecutiveDailyReport";
 import "./moduleReport.css";
 
 type Row = Record<string, unknown>;
@@ -68,6 +69,11 @@ export function ModuleAgentReport({ tasks }: { tasks: Task[] }) {
     { key: "receivables", title: "Cartera verificada", href: "/finanzas-contabilidad?view=receivables", source: "Finanzas", source_from: String(accounting.source_as_of || ""), source_to: String(accounting.source_as_of || ""), rows: (accounting.verified_documents || []) as Row[], row_count: ((accounting.verified_documents || []) as Row[]).length },
     { key: "documents", title: "Documentos financieros", href: "/finanzas-contabilidad?view=facto", source: "Finanzas", source_from: null, source_to: String(accounting.as_of || ""), rows: (accounting.source_documents || []) as Row[], row_count: ((accounting.source_documents || []) as Row[]).length },
   ] : [];
+  const brief = task.result?.evidence?.find((entry) => entry.executive_brief)?.executive_brief as DailyBrief | undefined;
+  if (report.agent === "executive" && brief) return <ExecutiveDailyReport brief={brief} stale={tasks[0]?.id !== task.id}>
+    {(task.result?.warnings || []).map((warning,index) => <p className="notice-banner warning" key={index}>{warning}</p>)}
+    {[...accountingSections, ...sections].map((section) => <SectionTable key={`${task.id}:${section.key}`} section={section} />)}
+  </ExecutiveDailyReport>;
   return <section className="data-card agent-module-report">
     <span className="eyebrow">FUENTES: MODULOS DEL CRM</span><h2>Informe operativo</h2>
     <p>{task.result?.summary}</p><p>Consultado: {valueText(report.consulted_at)}</p>

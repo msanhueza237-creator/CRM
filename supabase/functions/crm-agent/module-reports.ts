@@ -1,4 +1,5 @@
 import { resolveProducts } from "../crm-copilot/product-resolution.ts";
+import { buildExecutiveDailyBrief } from "./executive-daily.ts";
 import { isModuleAnalysisTask, accountingAgents, type AgentRow as Row } from "../_shared/agent-module-contract.ts";
 
 export type ModuleReader = {
@@ -131,7 +132,7 @@ export async function buildBusinessModuleReport(task: Row, profile: Row, read: M
     if (Number(metrics.trade_documents_to_review)) recommendations.push({ title: "Documentos de importacion pendientes", detail: `${metrics.trade_documents_to_review} documentos requieren revision en Comercio Exterior.`, href: "/comercio-exterior" });
     if (Number(metrics.scenarios_incomplete)) recommendations.push({ title: "Completar costos de escenarios", detail: `${metrics.scenarios_incomplete} escenarios no tienen todos los antecedentes calculados. No usarlos como costo definitivo.`, href: "/comercio-exterior" });
   }
-  const summary = `${names[agent]}: ${sections.length} fuentes del CRM consultadas, ${products.length} SKU identificados. ${recommendations.length} asuntos para revisar en sus modulos. Los informes anteriores de agentes no se usaron como fuente de cifras.`;
+  let summary = `${names[agent]}: ${sections.length} fuentes del CRM consultadas, ${products.length} SKU identificados. ${recommendations.length} asuntos para revisar en sus modulos. Los informes anteriores de agentes no se usaron como fuente de cifras.`;
   let fingerprint: string | null = null;
   let brief: Row | null = null;
   if (agent === "executive") {
@@ -140,13 +141,9 @@ export async function buildBusinessModuleReport(task: Row, profile: Row, read: M
     const previous = await read.previousExecutive?.();
     const previousModule = obj(rows(obj(previous?.result).evidence)[0]?.module_report);
     const input = obj(task.payload);
-    const scheduled = input.mode === "morning" || input.mode === "review";
-    metrics.notification_required = scheduled && (input.mode === "morning" || previousModule.fingerprint !== fingerprint);
-    brief = {
-      generated_at: consultedAt, mode: input.mode || "manual", headline: summary,
-      sections: sections.map((item) => ({ key: item.key, title: item.title, count: item.row_count, items: [{ title: item.title, detail: `${item.row_count} registros. Origen: ${item.source_from || "sin fecha"} a ${item.source_to || "sin fecha"}. ${item.href}` }] })),
-      recommendations: recommendations.map((item) => `${item.title}: ${item.detail}`),
-    };
+    metrics.notification_required = input.mode === "daily" && obj(input.delivery).auto_send === true;
+    brief = buildExecutiveDailyBrief({ sections, metrics, accounting }, previousModule, consultedAt);
+    summary = String(brief.headline);
   }
   return {
     summary, metrics, warnings: [...new Set(warnings)], proposals: [],

@@ -69,15 +69,19 @@ test('Paging handles server caps, rejects missing rows and changing totals', asy
   await assert.rejects(collectModuleRows(async () => ({ rows: [], total: null })), /unverified/);
   await assert.rejects(collectModuleRows(async (offset) => ({ rows: [{ id: offset }], total: offset ? 3 : 2 })), /changed/);
 });
-test('Executive keeps existing notification contract and does not repeat an unchanged review', async () => {
+test('Executive only notifies the daily scheduled report, never legacy reviews or manual requests', async () => {
   const { api } = reader(); const input = task('executive'); input.payload.mode = 'review';
   const first = await buildBusinessModuleReport(input, profile, api, '2026-09-09T14:00:00Z');
-  assert.equal(first.metrics.notification_required, true); assert.ok(first.evidence[0].executive_brief);
+  assert.equal(first.metrics.notification_required, false); assert.ok(first.evidence[0].executive_brief);
   api.previousExecutive = async () => ({ result: first });
   const second = await buildBusinessModuleReport(input, profile, api, '2026-09-09T15:00:00Z');
   assert.equal(second.metrics.notification_required, false);
   const manual = await buildBusinessModuleReport(task('executive'), profile, api, '2026-09-09T15:00:00Z');
   assert.equal(manual.metrics.notification_required, false);
+  input.payload.mode = 'daily'; input.payload.delivery = { auto_send: true };
+  const daily = await buildBusinessModuleReport(input, profile, api, '2026-09-09T15:00:00Z');
+  assert.equal(daily.metrics.notification_required, true);
+  assert.equal(daily.evidence[0].executive_brief.mode, 'daily');
 });
 test('Copilot exposes module detail and preserves consultation vs source date', async () => {
   const { api } = reader(); const result = await buildBusinessModuleReport(task('commercial'), profile, api, '2026-09-09T14:00:00Z');

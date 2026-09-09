@@ -281,14 +281,12 @@ async function handleExecutiveBrief(req: Request, supabase: SupabaseClient, serv
   };
 
   const mode = String(brief.mode || "review");
-  const headline = String(brief.headline || result.summary || "Informe gerencial Clima Activa");
+  const headline = String(brief.headline || result.summary || "Informe gerencial CLIMACTIVA");
   const sections = Array.isArray(brief.sections) ? brief.sections.map(asObject) : [];
   const recommendations = Array.isArray(brief.recommendations)
     ? brief.recommendations.map((item) => String(item)).filter(Boolean)
     : [];
-  const subject = mode === "morning"
-    ? "Clima Activa · Resumen gerencial 08:30"
-    : "Clima Activa · Alerta gerencial";
+  const subject = mode === "daily" ? "CLIMACTIVA · Informe diario 12:00" : "CLIMACTIVA · Informe gerencial";
 
   const textSections = sections.map((section) => {
     const title = String(section.title || "Novedades");
@@ -297,7 +295,7 @@ async function handleExecutiveBrief(req: Request, supabase: SupabaseClient, serv
     return `${title} (${Number(section.count || items.length)})${lines.length ? `\n${lines.join("\n")}` : "\n- Sin novedades"}`;
   });
   const bodyText = [
-    "AGENTE GERENTE · CLIMA ACTIVA",
+    "AGENTE GERENTE · CLIMACTIVA",
     headline,
     `Generado: ${String(brief.generated_at || new Date().toISOString())}`,
     "",
@@ -310,7 +308,7 @@ async function handleExecutiveBrief(req: Request, supabase: SupabaseClient, serv
   const bodyHtml = `
     <div style="font-family:Arial,sans-serif;color:#123b43;line-height:1.45;max-width:720px;margin:auto">
       <div style="background:#0b6570;color:white;padding:22px;border-radius:14px 14px 0 0">
-        <div style="font-size:12px;font-weight:700;letter-spacing:.08em">AGENTE GERENTE · CLIMA ACTIVA</div>
+        <div style="font-size:12px;font-weight:700">AGENTE GERENTE · CLIMACTIVA · 12:00 CHILE</div>
         <h1 style="font-size:24px;margin:8px 0 0">${escapeExecutiveHtml(headline)}</h1>
       </div>
       <div style="border:1px solid #d9e5e7;border-top:0;padding:20px;border-radius:0 0 14px 14px">
@@ -319,7 +317,7 @@ async function handleExecutiveBrief(req: Request, supabase: SupabaseClient, serv
           return `<section style="margin:0 0 20px">
             <h2 style="font-size:17px;margin:0 0 8px">${escapeExecutiveHtml(String(section.title || "Novedades"))} (${Number(section.count || items.length)})</h2>
             ${items.length
-              ? `<ul style="margin:0;padding-left:20px">${items.slice(0, 10).map((item) => `<li style="margin:5px 0">${escapeExecutiveHtml(formatExecutiveItem(item))}</li>`).join("")}</ul>`
+              ? `<ul style="margin:0;padding-left:20px">${items.slice(0, 10).map((item) => `<li style="margin:10px 0">${escapeExecutiveHtml(formatExecutiveItem(item))}${typeof item.href === "string" && /^\/(?!\/)[a-z]/i.test(item.href) ? `<br><a style="color:#087f8d" href="https://crm.latinchile.cl${escapeExecutiveHtml(item.href)}">Revisar en CRM</a>` : ""}</li>`).join("")}</ul>`
               : `<p style="margin:0;color:#63777b">Sin novedades.</p>`}
           </section>`;
         }).join("")}

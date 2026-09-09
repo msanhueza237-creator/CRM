@@ -1530,8 +1530,8 @@ function ExecutiveDashboard({ tasks }: { tasks: AgentTask[] }) {
             <div><MessageCircle size={20} /><span>WhatsApp</span><strong>{settings?.whatsapp_enabled ? "Activo" : "Pendiente de Meta"}</strong></div>
           </div>
           <p>
-            Resumen obligatorio a las {String(settings?.morning_time ?? "08:30").slice(0, 5)}. Revisiones a las 11:30,
-            14:30 y 17:30; sólo se informa si hay novedades. Corte diario a las {String(settings?.cutoff_time ?? "20:00").slice(0, 5)}.
+            Un informe diario a las {String(settings?.morning_time ?? "12:00").slice(0, 5)}, hora de Chile.
+            Prioridades, situacion financiera y cambios relevantes. Los analisis manuales no envian correos.
           </p>
           <div className="executive-slot-list">
             {slots.slice(0, 8).map((slot) => (

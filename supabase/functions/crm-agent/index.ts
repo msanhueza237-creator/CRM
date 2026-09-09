@@ -2,6 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { runAccountingTask } from "./accounting-task-runner.ts";
 import { buildBusinessModuleReport, assertModuleRequester, type ModuleReader } from "./module-reports.ts";
 import { collectModuleRows } from "./module-pagination.ts";
+import { executiveDailySlot } from "./executive-daily.ts";
 
 type ApiKeyValidation = {
   valid: boolean;
@@ -522,36 +523,33 @@ async function handleAgentHubRoute(
   }
 
   if (operation === "executive/schedule") {
-    return withProspectingIdempotency(
-      context,
-      validation,
-      "hub/executive/schedule",
-      payload,
-      async () => {
-        const slotKey = requiredString(payload.slot_key, "slot_key", 120);
-        const slotKind = requiredString(payload.slot_kind, "slot_kind", 20);
-        const scheduledFor = requiredString(payload.scheduled_for, "scheduled_for", 60);
-        if (!["morning", "review"].includes(slotKind) || Number.isNaN(Date.parse(scheduledFor))) {
-          throw new RequestValidationError("Invalid executive schedule slot");
-        }
+        // The worker polls several legacy slots. The server owns the daily clock;
+        // a cached early response must not suppress the same poll after noon.
+        const slot = executiveDailySlot(new Date());
+        if (!slot.due) return json({ ok: true, skipped: "outside_daily_window" });
+        const slotKey = slot.key;
+        const slotKind = "morning";
+        const scheduledFor = slot.scheduledFor;
         const existingSlot = await context.supabase
           .from("executive_schedule_slots")
           .select("task_id")
           .eq("slot_key", slotKey)
           .maybeSingle();
-        if (existingSlot.error) return rpcErrorResult(existingSlot.error);
+        if (existingSlot.error) return json({ error: "daily_schedule_read_failed" }, 500);
         if (existingSlot.data?.task_id) {
-          return { body: { ok: true, task_id: existingSlot.data.task_id, existing: true } };
+          return json({ ok: true, task_id: existingSlot.data.task_id, existing: true });
         }
         const settingsResult = await context.supabase
             .from("executive_agent_settings")
             .select("email_enabled,email_to,whatsapp_enabled,whatsapp_to")
             .eq("id", "default")
             .maybeSingle();
-        if (settingsResult.error) return rpcErrorResult(settingsResult.error);
+        if (settingsResult.error || !settingsResult.data) return json({ error: "daily_settings_unavailable" }, 500);
         const settings = asObject(settingsResult.data);
         const taskPayload = {
-          mode: slotKind,
+          mode: "daily",
+          scheduled_for: scheduledFor,
+          report_date: slot.day,
           generated_at: new Date().toISOString(),
           slot_key: slotKey,
           delivery: {
@@ -571,10 +569,8 @@ async function handleAgentHubRoute(
           p_payload: taskPayload,
           p_snapshot_keys: { source_module: "crm_modules", slot_key: slotKey },
         });
-        if (error) return rpcErrorResult(error);
-        return { body: { ok: true, task_id: data, source_module: "crm_modules" } };
-      },
-    );
+        if (error) return json({ error: "daily_schedule_failed" }, 500);
+        return json({ ok: true, task_id: data, source_module: "crm_modules" });
   }
 
   if (operation === "executive/dispatch") {
@@ -749,7 +745,7 @@ async function handleAgentHubRoute(
               });
             };
             return buildBusinessModuleReport(task, profile, { all, accounting, previousExecutive: async () => {
-              const response = await context.supabase.from("business_agent_tasks").select("result").eq("agent_type", "executive").eq("status", "completed").order("completed_at", { ascending: false }).limit(1).maybeSingle();
+              const response = await context.supabase.from("business_agent_tasks").select("result").eq("agent_type", "executive").eq("status", "completed").eq("payload->>mode", "daily").order("completed_at", { ascending: false }).limit(1).maybeSingle();
               if (response.error) throw new Error("previous_module_report_failed");
               return response.data;
             } }, new Date().toISOString());
