@@ -12,6 +12,7 @@ import {
   isVerifiedFactoReceivableBalanceSource,
 } from "./facto-receivables.ts";
 import { identifyPayrollEmployee, protectedPayrollClassification } from "./payroll-employees.ts";
+import { buildAccountingAgentReport, hasAccountingTaskLease } from "./agent-report.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -32,6 +33,10 @@ Deno.serve(async (request) => {
     const rest = getRestClient();
     const route = routeFrom(request.url);
     if (route === "health") return json({ ok: true, service: "accounting-center", requestId }, 200, request);
+
+    if (route === "internal/agent-report" && request.method === "POST") {
+      return json(await accountingAgentReport(request, rest), 200, request);
+    }
 
     const user = await authenticate(request, rest);
     const profile = await getProfile(rest, user.id);
@@ -192,7 +197,27 @@ Deno.serve(async (request) => {
   }
 });
 
-async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false) {
+async function accountingAgentReport(request: Request, rest: RestClient) {
+  const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (token !== rest.serviceRoleKey) throw new HttpError(403, "Ruta interna del ejecutor de agentes.");
+  const input = await readJson(request);
+  const taskId = String(input.task_id || "");
+  if (!/^[0-9a-f-]{36}$/i.test(taskId)) throw new HttpError(400, "Tarea invalida.");
+  const task = (await selectRows(rest, `business_agent_tasks?select=*&id=eq.${taskId}&limit=1`))[0];
+  if (!task || !hasAccountingTaskLease(task, input, Date.now())) {
+    throw new HttpError(409, "La tarea no tiene un lease vigente para este analisis.");
+  }
+  // A null requester is a trusted scheduled task, never an identity supplied in the request.
+  const profile = task.requested_by
+    ? await getProfile(rest, String(task.requested_by))
+    : { id: "", role: "administrador" as AppRole, active: true, full_name: "Programacion interna" };
+  if (!profile?.active) throw new HttpError(403, "El solicitante ya no esta activo.");
+  requirePermission(profile, "view");
+  const data = await bootstrap(rest, profile, true, true);
+  return buildAccountingAgentReport(task.agent_type === "collections" ? "collections" : "finance", data, new Date().toISOString());
+}
+
+async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false, forAgent = false) {
   const detail = (path: string) => summaryOnly ? Promise.resolve([]) : selectRows(rest, path);
   const entities = await selectRows(rest, "accounting_entities?select=*&active=eq.true&order=created_at.asc&limit=10");
   const entity = entities[0];
@@ -205,7 +230,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
     detail(`accounting_bank_transactions?select=*&entity_id=eq.${entityId}&order=transaction_date.desc&limit=250`),
     selectRows(rest, `accounting_bank_balance_snapshots?select=*&entity_id=eq.${entityId}&status=eq.verified&order=as_of_date.desc,created_at.desc&limit=100`),
-    selectRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast&limit=1000`),
+    selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast,id.asc`),
     detail(`accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
     selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=id.asc`),
     detail(`accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
@@ -258,7 +283,10 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     accountingSyncedAt,
     stale: Boolean(integrationUpdatedAt && (!accountingSyncedAt || integrationUpdatedAt > accountingSyncedAt)),
   };
-  if (summaryOnly) return { entity: { id: entity.id, name: entity.name }, summary, dashboard, bankReality, factoFreshness };
+  if (summaryOnly) return {
+    entity: { id: entity.id, name: entity.name }, summary, dashboard, bankReality, factoFreshness,
+    ...(forAgent ? { receivables, sources, factoReceivables: latestFactoCollections } : {}),
+  };
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, bankReality, sources, entries,
     receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, summary, dashboard, factoFreshness,
@@ -4817,9 +4845,9 @@ async function selectAllRows(rest: RestClient, path: string, pageSize = 1000): P
   for (let offset = 0; offset < 50000; offset += pageSize) {
     const page = await selectRows(rest, `${path}${separator}limit=${pageSize}&offset=${offset}`);
     rows.push(...page);
-    if (page.length < pageSize) break;
+    if (page.length < pageSize) return rows;
   }
-  return rows;
+  throw new HttpError(409, "La lectura supera el limite verificable. No se entregaran totales parciales.");
 }
 
 async function insertRows(rest: RestClient, table: string, rows: JsonRecord[]) {

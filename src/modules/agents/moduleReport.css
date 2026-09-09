@@ -1,0 +1,23 @@
+.agent-module-report {
+  min-width: 0;
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.agent-module-report h2 { font-size: 1.25rem; }
+.agent-module-report p { line-height: 1.55; }
+.agent-module-report summary { cursor: pointer; padding-block: 1rem; }
+.agent-module-table-wrap { max-width: 100%; overflow-x: auto; }
+.agent-module-table { width: 100%; border-collapse: collapse; font-size: .875rem; }
+.agent-module-table th, .agent-module-table td { padding: .65rem .5rem; border-bottom: 1px solid #dce5e7; text-align: left; }
+.agent-module-table th { font-weight: 600; }
+.agent-module-table td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+.agent-module-table thead { background: #eef5f5; }
+.agent-module-documents { min-width: 560px; }
+.agent-module-report a:focus-visible { outline: 2px solid #087b83; outline-offset: 3px; }
+.agent-module-section { border-top: 1px solid #dce5e7; margin-top: 1rem; }
+.agent-module-section td { min-width: 110px; max-width: 260px; vertical-align: top; }
+.agent-module-pagination { display: flex; align-items: center; justify-content: flex-end; gap: .75rem; padding-block: .75rem; }
+.agent-module-pagination button { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid #dce5e7; border-radius: 6px; background: #fff; color: #176772; }
+.agent-module-pagination button:disabled { opacity: .4; cursor: default; }
+.agent-module-recommendations { padding-top: 1rem; }

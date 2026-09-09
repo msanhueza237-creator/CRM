@@ -1,4 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { runAccountingTask } from "./accounting-task-runner.ts";
+import { buildBusinessModuleReport, assertModuleRequester, type ModuleReader } from "./module-reports.ts";
+import { collectModuleRows } from "./module-pagination.ts";
 
 type ApiKeyValidation = {
   valid: boolean;
@@ -202,36 +205,30 @@ async function handleAgentHubRoute(
   const operation = routeParts.join("/");
 
   if (operation === "integrations/status") {
-    return withProspectingIdempotency(
-      context,
-      validation,
-      "hub/integrations/status",
-      payload,
-      async () => {
-        const provider = requiredString(payload.provider, "provider", 40);
-        const status = requiredString(payload.status, "status", 40);
-        const message = requiredString(payload.message, "message", 500);
-        if (!["facto", "tiendanube"].includes(provider)) {
-          throw new RequestValidationError("Unsupported Agent Hub provider");
-        }
-        if (!["pending_configuration", "checking", "connected", "degraded", "error", "disabled"].includes(status)) {
-          throw new RequestValidationError("Unsupported integration status");
-        }
-        const now = new Date().toISOString();
-        const { error } = await context.supabase.from("integration_connections").upsert({
-          provider,
-          enabled: Boolean(payload.enabled),
-          read_only: payload.read_only !== false,
-          status,
-          message,
-          last_checked_at: now,
-          last_success_at: status === "connected" ? now : undefined,
-          updated_at: now,
-        }, { onConflict: "provider" });
-        if (error) return { body: { error: error.message }, status: 400 };
-        return { body: { ok: true } };
-      },
-    );
+    // Health is a fresh observation, even when the worker reuses a stable key.
+    // Caching it can leave an old failure visible after the provider recovers.
+    const provider = requiredString(payload.provider, "provider", 40);
+    const status = requiredString(payload.status, "status", 40);
+    const message = requiredString(payload.message, "message", 500);
+    if (!["facto", "tiendanube"].includes(provider)) {
+      throw new RequestValidationError("Unsupported Agent Hub provider");
+    }
+    if (!["pending_configuration", "checking", "connected", "degraded", "error", "disabled"].includes(status)) {
+      throw new RequestValidationError("Unsupported integration status");
+    }
+    const now = new Date().toISOString();
+    const { error } = await context.supabase.from("integration_connections").upsert({
+      provider,
+      enabled: Boolean(payload.enabled),
+      read_only: payload.read_only !== false,
+      status,
+      message,
+      last_checked_at: now,
+      last_success_at: status === "connected" ? now : undefined,
+      updated_at: now,
+    }, { onConflict: "provider" });
+    if (error) return json({ error: error.message }, 400);
+    return json({ ok: true });
   }
 
   if (operation === "integrations/records/batch") {
@@ -494,73 +491,11 @@ async function handleAgentHubRoute(
           };
         }
 
-        const [commercialResult, financialResult, inventoryResult, companiesResult, proposalResult] =
-          await Promise.all([
-            context.supabase
-              .from("integration_records")
-              .select("payload,updated_at")
-              .eq("provider", "facto")
-              .eq("resource", "commercial_snapshots")
-              .order("updated_at", { ascending: false })
-              .limit(1)
-              .maybeSingle(),
-            context.supabase
-              .from("integration_records")
-              .select("payload,updated_at")
-              .eq("provider", "facto")
-              .eq("resource", "financial_snapshots")
-              .order("updated_at", { ascending: false })
-              .limit(1)
-              .maybeSingle(),
-            context.supabase
-              .from("integration_records")
-              .select("payload,updated_at")
-              .eq("provider", "facto")
-              .eq("resource", "inventory_snapshots")
-              .order("updated_at", { ascending: false })
-              .limit(5000),
-            context.supabase.from("companies").select("*").limit(5000),
-            context.supabase
-              .from("action_proposals")
-              .select("payload,created_at,status")
-              .eq("kind", "commercial_follow_up")
-              .in("status", ["pending", "approved", "executed", "rejected"])
-              .gte(
-                "created_at",
-                new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-              )
-              .order("created_at", { ascending: false })
-              .limit(500),
-          ]);
-        for (const result of [
-          commercialResult,
-          financialResult,
-          inventoryResult,
-          companiesResult,
-          proposalResult,
-        ]) {
-          if (result.error) return rpcErrorResult(result.error);
-        }
-
-        const commercialPayload = asObject(commercialResult.data?.payload);
-        const suppressedOpportunityKeys = (proposalResult.data || [])
-          .map((row) => String(asObject(row.payload).opportunity_key || ""))
-          .filter(Boolean);
         const taskPayload = {
-          automation: "customer_product_repurchase",
-          slot_key: slotKey,
-          scheduled_for: scheduledFor,
-          interval_minutes: intervalMinutes,
-          generated_at: new Date().toISOString(),
-          as_of: scheduledFor.slice(0, 10),
-          commercial_snapshot: Array.isArray(commercialPayload.customers)
-            ? commercialPayload.customers
-            : [],
-          source_counts: asObject(commercialPayload.sources),
-          financial_snapshot: asObject(financialResult.data?.payload),
-          inventory_snapshot: (inventoryResult.data || []).map((row) => asObject(row.payload)),
-          crm_companies: companiesResult.data || [],
-          suppressed_opportunity_keys: [...new Set(suppressedOpportunityKeys)],
+          source_module: "crm_modules", contract_version: 1,
+          automation: "customer_product_repurchase", slot_key: slotKey,
+          scheduled_for: scheduledFor, interval_minutes: intervalMinutes,
+          delivery: { auto_send: false },
         };
         const insertedTask = await context.supabase
           .from("business_agent_tasks")
@@ -608,14 +543,11 @@ async function handleAgentHubRoute(
         if (existingSlot.data?.task_id) {
           return { body: { ok: true, task_id: existingSlot.data.task_id, existing: true } };
         }
-        const [brief, settingsResult] = await Promise.all([
-          collectExecutiveSignals(context.supabase, slotKind),
-          context.supabase
+        const settingsResult = await context.supabase
             .from("executive_agent_settings")
             .select("email_enabled,email_to,whatsapp_enabled,whatsapp_to")
             .eq("id", "default")
-            .maybeSingle(),
-        ]);
+            .maybeSingle();
         if (settingsResult.error) return rpcErrorResult(settingsResult.error);
         const settings = asObject(settingsResult.data);
         const taskPayload = {
@@ -629,18 +561,18 @@ async function handleAgentHubRoute(
             whatsapp_enabled: settings.whatsapp_enabled === true,
             whatsapp_to: settings.whatsapp_to || null,
           },
-          context: brief.context,
-          signals: brief.signals,
+          source_module: "crm_modules",
+          contract_version: 1,
         };
         const { data, error } = await context.supabase.rpc("schedule_executive_agent_task", {
           p_slot_key: slotKey,
           p_scheduled_for: scheduledFor,
           p_slot_kind: slotKind,
           p_payload: taskPayload,
-          p_snapshot_keys: brief.snapshot_keys,
+          p_snapshot_keys: { source_module: "crm_modules", slot_key: slotKey },
         });
         if (error) return rpcErrorResult(error);
-        return { body: { ok: true, task_id: data, relevant: brief.relevant_count } };
+        return { body: { ok: true, task_id: data, source_module: "crm_modules" } };
       },
     );
   }
@@ -779,6 +711,51 @@ async function handleAgentHubRoute(
         if (error) return rpcErrorResult(error);
         const row = Array.isArray(data) ? data[0] : data;
         if (!row) return { body: { task: null } };
+        const handled = await runAccountingTask({
+          task: asObject(row.task),
+          workerId,
+          leaseToken: String(row.lease_token),
+          rpc: (name, args) => context.supabase.rpc(name, args),
+          readReport: async (lease) => {
+            const task = asObject(row.task);
+            let profile: JsonRecord = { role: "administrador", active: true };
+            if (task.requested_by) {
+              const requester = await context.supabase.from("profiles").select("id,role,active").eq("id", task.requested_by).maybeSingle();
+              if (requester.error || !requester.data) throw new Error("module_requester_unavailable");
+              profile = requester.data;
+            }
+            assertModuleRequester(task, profile);
+            const url = Deno.env.get("SUPABASE_URL") || "";
+            const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || "";
+            const accounting = async () => {
+              const response = await fetch(`${url}/functions/v1/accounting-center/internal/agent-report`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${key}`, apikey: key, "Content-Type": "application/json" },
+                body: JSON.stringify(lease),
+                signal: AbortSignal.timeout(90000),
+              });
+              if (!response.ok) throw new Error(`accounting_module_http_${response.status}`);
+              return asObject(await response.json());
+            };
+            if (["finance", "collections"].includes(String(task.agent_type))) return accounting();
+            const all: ModuleReader["all"] = async (table, select, filters = {}) => {
+              const order = table.endsWith("_permissions") ? "permission" : table === "foreign_trade_operation_statuses" ? "code" : "id";
+              return collectModuleRows(async (offset, size) => {
+                let query = context.supabase.from(table).select(select, { count: "exact" }).order(order).range(offset, offset + size - 1);
+                for (const [key, value] of Object.entries(filters)) query = query.eq(key, value);
+                const response = await query;
+                if (response.error) throw new Error(`module_read_failed:${table}`);
+                return { rows: (response.data || []).map(asObject), total: response.count };
+              });
+            };
+            return buildBusinessModuleReport(task, profile, { all, accounting, previousExecutive: async () => {
+              const response = await context.supabase.from("business_agent_tasks").select("result").eq("agent_type", "executive").eq("status", "completed").order("completed_at", { ascending: false }).limit(1).maybeSingle();
+              if (response.error) throw new Error("previous_module_report_failed");
+              return response.data;
+            } }, new Date().toISOString());
+          },
+        });
+        if (handled) return { body: { task: null, module_task_id: asObject(row.task).id } };
         return {
           body: {
             task: row.task,

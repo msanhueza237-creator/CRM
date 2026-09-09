@@ -13,16 +13,18 @@ export function agentReport(task: Row) {
   const result = object(task.result);
   const evidence = rows(result.evidence);
   const key = reportKeys[String(task.agent_type)];
-  const embedded = evidence.map((e) => object(e[key])).find((e) => Object.keys(e).length);
+  const module = evidence.map((e) => object(e.module_report || e.accounting_module_report)).find((e) => Object.keys(e).length);
+  const embedded = module || evidence.map((e) => object(e[key])).find((e) => Object.keys(e).length);
   const report = embedded || (task.agent_type === "collections" ? evidence[0] : null) || {};
   const sections: Row = { metrics: object(result.metrics), ...report };
   delete sections.proposals;
   const metadata = {
     task_id: task.id, agent: task.agent_type, completed_at: task.completed_at,
-    source_updated_at: report.generated_at ?? report.as_of ?? null,
-    period_start: report.period_start ?? null, period_end: report.period_end ?? null,
+    source_updated_at: report.source_as_of ?? report.generated_at ?? report.as_of ?? null,
+    consulted_at: report.consulted_at ?? null,
+    period_start: report.period_start ?? object(report.period).from ?? null, period_end: report.period_end ?? object(report.period).to ?? null,
     summary: String(result.summary || "Sin resumen"), warnings: result.warnings ?? [],
-    classification: "Analisis historico del agente; no acredita valores actuales",
+    classification: module ? "Lectura de modulos con fecha; consultar el modulo para cifras actuales" : "Analisis historico del agente; no acredita valores actuales",
   };
   return { metadata, sections: Object.fromEntries(Object.entries(sections).filter(([k]) => !blocked.test(k))) };
 }

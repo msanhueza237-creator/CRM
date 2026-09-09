@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import "./moduleReport.css";
+import { ModuleAgentReport } from "./ModuleAgentReport";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -2314,6 +2316,52 @@ function financialReportFromTask(task?: AgentTask): FinancialReport | null {
     if (report && typeof report === "object") return report as FinancialReport;
   }
   return null;
+}
+
+function AccountingAgentReport({ tasks }: { tasks: AgentTask[] }) {
+  const task = tasks.find((item) => item.status === "completed" && item.result?.evidence?.some((entry) => entry.accounting_module_report));
+  const report = task?.result?.evidence?.find((entry) => entry.accounting_module_report)?.accounting_module_report as Record<string, unknown> | undefined;
+  if (!report || !task) return <section className="data-card">
+    <h2>Analisis del modulo Finanzas</h2>
+    <p>Aun no hay un analisis completado con la nueva fuente.</p>
+    <Link to="/finanzas-contabilidad?view=dashboard">Abrir Finanzas</Link>
+    <p><Link to="/agentes">Solicitar analisis</Link></p>
+  </section>;
+  const metrics = (report.metrics || {}) as Record<string, unknown>;
+  const labels: Record<string, string> = {
+    net_sales: "Ventas netas", cost_of_sales: "Costo de ventas", operating_expenses: "Gastos operativos",
+    gross_profit: "Resultado bruto", operating_profit: "Resultado operativo", bank_clp: "Banco CLP",
+    receivables: "Cuentas por cobrar", overdue_amount: "Vencido", payables: "Cuentas por pagar",
+    checks_portfolio: "Cheques en cartera", bank_confirmed_receivables: "Saldo por cobrar con base bancaria",
+  };
+  const documents = Array.isArray(report.verified_documents) ? report.verified_documents as Record<string, unknown>[] : [];
+  return <section className="data-card agent-module-report">
+    <span className="eyebrow">FUENTE: MODULO FINANZAS</span>
+    <h2>Analisis financiero y cartera</h2>
+    <p>{task.result?.summary}</p>
+    <p>Corte del modulo: {String(report.as_of || "No disponible")} · Corte de cartera: {String(report.source_as_of || "No disponible")}</p>
+    <p>Consulta: {String(report.consulted_at || "No disponible")} · Base: {String(report.basis || "No disponible")}</p>
+    {tasks[0]?.id !== task.id ? <p className="notice-banner warning">Se muestra el ultimo analisis completado, no el resultado de la solicitud mas reciente.</p> : null}
+    {(task.result?.warnings || []).map((warning, index) => <p className="notice-banner warning" key={index}>{warning}</p>)}
+    <div className="agent-module-table-wrap"><table className="agent-module-table">
+      <thead><tr><th>Indicador</th><th>CLP</th></tr></thead>
+      <tbody>{Object.entries(labels).filter(([key]) => key in metrics).map(([key, label]) => <tr key={key}>
+        <th>{label}</th><td>{metrics[key] === null || metrics[key] === undefined ? "No disponible" : formatCurrency.format(Number(metrics[key]))}</td>
+      </tr>)}</tbody>
+    </table></div>
+    {documents.length ? <details>
+      <summary>Detalle de cartera verificada ({documents.length})</summary>
+      <div className="agent-module-table-wrap"><table className="agent-module-table agent-module-documents">
+        <thead><tr><th>Documento</th><th>Cliente</th><th>RUT</th><th>Saldo informado CLP</th></tr></thead>
+        <tbody>{documents.map((doc, index) => <tr key={String(doc.document_id || index)}>
+          <td>{String(doc.document_number || doc.document_id || "Sin folio")}</td>
+          <td>{String(doc.customer || "Sin nombre")}</td><td>{String(doc.tax_id || doc.customer_tax_id || "Sin RUT")}</td>
+          <td>{formatCurrency.format(Number(doc.observed_amount))}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </details> : null}
+    <p><Link to="/finanzas-contabilidad?view=receivables">Cuentas por cobrar</Link> · <Link to="/finanzas-contabilidad?view=dashboard">Resumen financiero</Link> · <Link to="/finanzas-contabilidad?view=reports">Informes contables</Link></p>
+  </section>;
 }
 
 function monthLabel(value: string) {
@@ -5918,26 +5966,31 @@ export function AgentDashboardPage() {
       {!loading && selectedTaskId && !selectedTask && !notice ? (
         <div className="notice-banner warning">La tarea indicada no existe o ya no esta disponible.</div>
       ) : null}
-      {!loading && agentType === "logistics" ? <LogisticsDashboard snapshots={snapshots} tasks={tasks} /> : null}
-      {!loading && agentType === "foreign_trade" ? <ForeignTradeDashboard onReload={load} tasks={tasks} /> : null}
+      {!loading && ["commercial", "marketing", "logistics", "foreign_trade", "executive"].includes(agentType) ? <ModuleAgentReport tasks={[...tasks].sort((a, b) => Number(b.id === selectedTaskId) - Number(a.id === selectedTaskId))} /> : null}
+      {!loading && agentType === "logistics" ? <details><summary>Herramientas y reportes anteriores</summary><LogisticsDashboard snapshots={snapshots} tasks={tasks} /></details> : null}
+      {!loading && agentType === "foreign_trade" ? <details><summary>Herramientas y reportes anteriores</summary><ForeignTradeDashboard onReload={load} tasks={tasks} /></details> : null}
       {!loading && agentType === "finance" ? (
-        <FinanceWorkspace
+        <>
+        <AccountingAgentReport tasks={tasks} />
+        <details><summary>Informes historicos del agente (fuente anterior)</summary><FinanceWorkspace
           accountingError={accountingError}
           accountingSnapshot={accountingSnapshot}
           financialSnapshot={financialSnapshot}
           tasks={tasks}
-        />
+        /></details>
+        </>
       ) : null}
       {!loading && agentType === "commercial" ? (
-        <CommercialDashboard
+        <details><summary>Herramientas y reportes anteriores</summary><CommercialDashboard
           synchronizedCustomers={commercialSnapshot.customers}
           synchronizedProducts={commercialProducts}
           tasks={tasks}
-        />
+        /></details>
       ) : null}
-      {!loading && agentType === "marketing" ? <MarketingDashboard tasks={tasks} /> : null}
-      {!loading && agentType === "executive" ? <ExecutiveDashboard tasks={tasks} /> : null}
-      {!loading && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" && agentType !== "foreign_trade" && agentType !== "marketing" && agentType !== "executive" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
+      {!loading && agentType === "marketing" ? <details><summary>Herramientas y reportes anteriores</summary><MarketingDashboard tasks={tasks} /></details> : null}
+      {!loading && agentType === "executive" ? <details><summary>Herramientas y reportes anteriores</summary><ExecutiveDashboard tasks={tasks} /></details> : null}
+      {!loading && agentType === "collections" ? <AccountingAgentReport tasks={tasks} /> : null}
+      {!loading && agentType !== "collections" && agentType !== "logistics" && agentType !== "finance" && agentType !== "commercial" && agentType !== "foreign_trade" && agentType !== "marketing" && agentType !== "executive" ? <GenericAgentDashboard agentType={agentType} tasks={tasks} /> : null}
     </section>
   );
 }
