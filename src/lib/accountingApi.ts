@@ -45,6 +45,10 @@ export function getAccountingBootstrap() {
   return accountingRequest<AccountingBootstrap>("bootstrap");
 }
 
+export function getAccountingOverview() {
+  return accountingRequest<Pick<AccountingBootstrap, "summary" | "dashboard" | "bankReality" | "factoFreshness">>("summary");
+}
+
 export function syncAccountingFacto(input: { fromDate: string; toDate: string }) {
   return accountingRequest<AccountingFactoSyncResult>("facto/sync", { method: "POST", body: input });
 }

@@ -83,8 +83,8 @@ export function AppLayout() {
           <div className="topbar-title">
             <Menu size={22} />
             <div>
-              <strong>Pipeline comercial</strong>
-              <span>Distribuidores, tiendas e instaladores grandes</span>
+              <strong>{pathname === "/dashboard" ? "Centro de gestión" : "Pipeline comercial"}</strong>
+              <span>{pathname === "/dashboard" ? "Latin Chile · Visión integral del negocio" : "Distribuidores, tiendas e instaladores grandes"}</span>
             </div>
           </div>
           <div className="topbar-user">

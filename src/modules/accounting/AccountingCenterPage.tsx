@@ -1,5 +1,6 @@
 import { Component, FormEvent, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
+import { reportPeriod } from "./reportNavigation";
 import {
   AlertTriangle,
   ArrowRight,
@@ -1163,9 +1164,11 @@ function PeriodsView({ data, isAdmin, busy, runAction }: ActionViewProps & { isA
 }
 
 function ReportsView({ data }: { data: AccountingBootstrap }) {
-  const [kind, setKind] = useState<AccountingReport["kind"]>("balance8");
-  const [from, setFrom] = useState(`${new Date().getFullYear()}-01-01`);
-  const [to, setTo] = useState(today());
+  const [reportParams] = useSearchParams();
+  const initialPeriod = reportPeriod(reportParams, `${new Date().getFullYear()}-01-01`, today());
+  const [kind, setKind] = useState<AccountingReport["kind"]>(reportParams.get("report") === "income" ? "income" : "balance8");
+  const [from, setFrom] = useState(initialPeriod.from);
+  const [to, setTo] = useState(initialPeriod.to);
   const [accountId, setAccountId] = useState(data.accounts.find((row) => row.allows_posting)?.id || "");
   const [report, setReport] = useState<AccountingReport | null>(null);
   const [busy, setBusy] = useState(false);
