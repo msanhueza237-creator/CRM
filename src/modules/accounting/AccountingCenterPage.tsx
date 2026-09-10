@@ -571,7 +571,7 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
     const matchesTo = !documentTo || !row.issued_on || row.issued_on.slice(0, 10) <= documentTo;
     const matchesSource = sourceFilter === "all" || row.source_type === sourceFilter;
     const matchesStatus = statusFilter === "all" || (statusFilter === "posted" ? Boolean(row.journal_entry_id) || row.status === "posted" : row.status === statusFilter || row.data_quality === statusFilter);
-    const matchesType = typeFilter === "all" || (typeFilter === "exempt" ? row.document_type.includes("exempt") : typeFilter === "credit" ? row.document_type.includes("credit_note") : typeFilter === "international" ? row.document_type === "inventory_receipt" || row.document_type === "purchase_document" : typeFilter === "domestic" ? row.document_type.startsWith("purchase_") && row.document_type !== "purchase_document" : typeFilter === "purchases" ? row.document_type.startsWith("purchase_") || row.document_type === "inventory_receipt" : row.document_type.startsWith(typeFilter));
+    const matchesType = typeFilter === "all" || (typeFilter === "exempt" ? row.document_type.includes("exempt") : typeFilter === "credit" ? row.document_type.includes("credit_note") : typeFilter === "international" ? row.document_type === "purchase_document" : typeFilter === "domestic" ? row.document_type.startsWith("purchase_") && row.document_type !== "purchase_document" : typeFilter === "purchases" ? row.document_type.startsWith("purchase_") : row.document_type.startsWith(typeFilter));
     return matchesQuery && matchesFrom && matchesTo && matchesSource && matchesStatus && matchesType;
   });
 

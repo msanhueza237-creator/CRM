@@ -458,6 +458,7 @@ export interface AccountingDashboardAnalytics {
   to: string;
   monthly: AccountingDashboardMonth[];
   latestSales?: Array<{ id: string; folio: string; issuedOn: string; netClp: number; posted: boolean }>;
+  salesAdjustments?: Array<{ id: string; folio: string; issuedOn: string; recognizedOn: string; netClp: number }>;
   purchaseDocuments?: Array<{
     id: string;
     folio: string;

@@ -13,13 +13,8 @@ export function dashboardPurchaseEvidence(documents: Row[], asOf: string) {
     let kind: "domestic" | "international" = "domestic";
     let netClp: number | null = null;
     let identity = id;
-    if (document.source_type === "COMERCIO_EXTERIOR" && type === "inventory_receipt"
-      && document.status === "posted" && document.data_quality === "validated") {
-      kind = "international";
-      // Landed costs may already be domestic supplier invoices. Count merchandise only.
-      netClp = number(raw.merchandise_clp);
-      identity = `receipt:${raw.operation_id || id}`;
-    } else if (type.startsWith("purchase_") && isPostableFactoDocument(document)) {
+    // A receipt is inventory valuation, not another supplier invoice.
+    if (type.startsWith("purchase_") && isPostableFactoDocument(document)) {
       const header = factoHeader(raw);
       if (type === "purchase_document") kind = "international";
       identity = `${document.source_type || "FACTO"}:${header.document_id || document.external_id || id}`;
@@ -46,6 +41,6 @@ export function dashboardDocumentTotals(purchases: ReturnType<typeof dashboardPu
   const purchasesDomestic = purchases.filter(row => row.kind === "domestic").reduce((sum, row) => sum + row.netClp, 0);
   const purchasesInternational = purchases.filter(row => row.kind === "international").reduce((sum, row) => sum + row.netClp, 0);
   return { purchasesDomestic, purchasesInternational, purchasesNet: purchasesDomestic + purchasesInternational,
-    purchaseCreditNotes: -purchases.filter(row => row.creditNote).reduce((sum, row) => sum + row.netClp, 0),
-    salesCreditNotes: -sales.filter(row => row.creditNote).reduce((sum, row) => sum + row.netClp, 0) };
+    purchaseCreditNotes: -purchases.filter(row => row.creditNote).reduce((sum, row) => sum + row.netClp, 0) || 0,
+    salesCreditNotes: -sales.filter(row => row.creditNote).reduce((sum, row) => sum + row.netClp, 0) || 0 };
 }

@@ -30,13 +30,18 @@ export function dashboardDocumentSales(document: Row): number | null {
 
 export function dashboardSalesEvidence(documents: Row[], lines: Row[], incomeAccountIds: Set<string>, asOf: string) {
   const postedIds = new Set<string>();
+  const postingDates = new Map<string, string>();
   for (const line of lines) {
     const entry = line.accounting_journal_entries as Row | null;
     if (!entry || !incomeAccountIds.has(String(line.account_id))
       || !["posted", "reversed"].includes(String(entry.status))
       || !entry.entry_date || String(entry.entry_date) > asOf) continue;
     // A cost/payment entry is not a sales posting; a reversed sale must not be re-added.
-    if (entry.source_document_id) postedIds.add(String(entry.source_document_id));
+    if (entry.source_document_id) {
+      const id = String(entry.source_document_id), date = String(entry.entry_date);
+      postedIds.add(id);
+      if (!postingDates.has(id) || date < postingDates.get(id)!) postingDates.set(id, date);
+    }
   }
   const seen = new Set<string>();
   return documents.flatMap(document => {
@@ -46,6 +51,7 @@ export function dashboardSalesEvidence(documents: Row[], lines: Row[], incomeAcc
     if (!id || seen.has(id) || !/^\d{4}-\d{2}-\d{2}$/.test(issuedOn) || issuedOn > asOf || netClp === null) return [];
     seen.add(id);
     return [{ id, folio: String(document.folio || document.external_id || "Sin folio"), issuedOn,
-      netClp, posted: postedIds.has(id), creditNote: document.document_type === "sales_credit_note" }];
+      netClp, posted: postedIds.has(id), recognizedOn: postingDates.get(id) || issuedOn,
+      creditNote: document.document_type === "sales_credit_note" }];
   });
 }

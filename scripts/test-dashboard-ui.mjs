@@ -43,8 +43,9 @@ async function assertSourceLink(link, from, to, search, source) {
   assert.equal(target.searchParams.get("view"), "facto");
   assert.equal(target.searchParams.get("from"), from);
   assert.equal(target.searchParams.get("to"), to);
-  assert.equal(target.searchParams.get("search"), search);
-  assert.equal(target.searchParams.get("source"), source ?? null);
+  assert.equal(target.searchParams.get("search"), search === "purchase" ? "" : search);
+  assert.equal(target.searchParams.get("source"), search === "purchase" ? null : source ?? null);
+  if (search === "purchase") assert.equal(target.searchParams.get("type"), source === "FACTO" ? "domestic" : source === "COMERCIO_EXTERIOR" ? "international" : "purchases");
 }
 async function assertLayout(page, label) {
   const issues = await page.evaluate(() => {
@@ -93,6 +94,7 @@ try {
         financeRequests++;
         if (failed) return route.fulfill({ status: 503, headers, body: '{"error":"Unavailable"}' });
         body = { summary: { ...summary, receivables_suppressed: suppressed }, dashboard: { available: true, year: 2026, from: "2026-01-01", to: "2026-09-09", basis: "mixed", warnings: [], current: fixtureTotals({ ...totals, salesLedger: totals.sales - 149421, salesPending: 149421, salesPendingDocuments: 1 }), monthly: monthly.map(fixtureTotals), purchaseDocuments: fixtureMode === "legacy" ? undefined : fixtureMode === "empty" ? [] : purchaseDocuments, latestSales: [{ id: "1557", folio: "1557", issuedOn: "2026-09-08", netClp: 149421, posted: false }], costCoverage: { salesWithExactCost: 112, totalSalesDocuments: 163 } }, factoFreshness: { stale: false } };
+        if (fixtureMode === "complete") body.dashboard.salesAdjustments = [{ id: "nc72", folio: "72", issuedOn: "2026-01-20", recognizedOn: "2026-09-09", netClp: -310640 }];
       }
       if (u.pathname.includes("foreign_trade_dashboard_summary")) { tradeRequests++; body = { active_shipments: 2, operations_in_preparation: 4, open_alerts: 3, suppliers: 5 }; }
       if (u.pathname.includes("integration_connections")) body = [{ provider: "facto", status: "connected", last_success_at: "2026-09-08" }];
@@ -126,7 +128,7 @@ try {
         assert.equal(await page.locator(".overview-bars .purchases-domestic").count(), 12);
         assert.equal(await page.locator(".overview-bars .purchases-international").count(), 12);
         assert.match(await page.locator(".overview-chart-legend").innerText(), /Compras nacionales[\s\S]*Compras internacionales/);
-        const details = page.locator(".overview-purchase-documents");
+        const details = page.locator(".overview-purchases .overview-purchase-documents");
         assert.equal(await details.getAttribute("open"), null);
         await details.locator("summary").focus();
         await page.keyboard.press("Enter");
@@ -182,6 +184,11 @@ try {
         assert.match(await page.locator(".overview-recent-sales").innerText(), /Documento 1557/);
         assert.equal(await page.locator(".overview-recent-sales a").getAttribute("href"), "/finanzas-contabilidad?view=facto");
         await assertValue(page, "Compras netas", 200000, ".overview-purchases");
+        const adjustments = page.locator(".overview-sales-adjustments");
+        await adjustments.locator("summary").click();
+        assert.match(await adjustments.innerText(), /Nota de crédito 72/);
+        await assertSourceLink(adjustments.locator("li a"), "2026-01-20", "2026-01-20", "72", "FACTO");
+        assert.ok((await adjustments.innerText()).includes(clp(-310640)));
         await assertValue(page, "Compras nacionales", -50000, ".overview-purchases");
         await assertValue(page, "Notas de crédito de compra", -75000, ".overview-purchases");
         assert.equal(await page.locator(".overview-result-total strong").innerText(), clp(-200579));

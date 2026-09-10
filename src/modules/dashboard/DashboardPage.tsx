@@ -53,6 +53,7 @@ export function DashboardPage() {
   const sourcesTo = (search: string, source?: string) => sourceDocumentsLink(from, to, search, source);
   const purchases = purchaseAmounts(result);
   const purchaseDocuments = analytics?.purchaseDocuments?.filter(document => from && to && document.issuedOn.slice(0, 10) >= from && document.issuedOn.slice(0, 10) <= to);
+  const salesAdjustments = analytics?.salesAdjustments?.filter(document => from && to && document.recognizedOn >= from && document.recognizedOn <= to) || [];
   const hasUnsplitPurchases = analytics?.monthly.some(month => {
     const amounts = purchaseAmounts(month);
     return amounts.net != null && !amounts.hasBreakdown;
@@ -109,7 +110,7 @@ export function DashboardPage() {
           <Link className="overview-chart-link" to={reportTo}>Estado de resultados del período <ArrowUpRight size={16} /></Link>
         </div>
         <div className="overview-results"><h3>{periodLabel}</h3><Result to={hasPendingSales ? financial("facto") : reportTo} label="Ventas netas" value={money(result?.sales)} />
-          <Result to={sourcesTo("sales_credit_note")} label="Notas de crédito de venta" value={deduction(result?.salesCreditNotes)} detail="Ya descontadas de ventas netas" />
+          <Result to={salesAdjustments.length ? reportTo : sourcesTo("sales_credit_note")} label="Notas de crédito de venta" value={deduction(result?.salesCreditNotes)} detail="Ya descontadas de ventas netas" />
           {hasPendingSales && <div className="overview-sales-breakdown"><Result to={reportTo} label="Contabilizadas" value={money(result?.salesLedger)} /><Result to={financial("facto")} label={`Sin asiento · ${number(result?.salesPendingDocuments)} documentos`} value={money(result?.salesPending)} /><p>Incluidas en ventas. El costo y el resultado aún requieren revisión contable.</p></div>}
           <Result to={reportTo} label="Costo de ventas" value={money(result?.costs)} /><Result to={reportTo} label="Gastos operacionales" value={money(result?.expenses)} /><Result to={reportTo} label="Margen bruto" value={grossMarginLabel} /><Link className="overview-result-total" to={reportTo}><span>Resultado operativo<br /><small>{hasPendingSales ? "Provisional · base mixta" : "Provisional"}</small></span><strong>{money(result?.operatingProfit)}</strong><ArrowUpRight size={18} /></Link></div>
       </div>
@@ -117,7 +118,7 @@ export function DashboardPage() {
         <div className="overview-purchases-totals"><h3>Compras · {periodLabel}</h3>
           <Result to={sourcesTo("purchase")} label="Compras netas" value={money(purchases.net)} />
           <Result to={sourcesTo("purchase", "FACTO")} label="Compras nacionales" value={money(purchases.domestic)} />
-          <Result to={sourcesTo("purchase", "COMERCIO_EXTERIOR")} label="Compras internacionales" value={money(purchases.international)} detail="Solo mercadería, sin valor de recepción" />
+          <Result to={sourcesTo("purchase", "COMERCIO_EXTERIOR")} label="Compras internacionales" value={money(purchases.international)} detail="Facturas extranjeras netas, sin duplicar recepciones" />
           <Result to={sourcesTo("purchase_credit_note")} label="Notas de crédito de compra" value={deduction(result?.purchaseCreditNotes)} detail="Ya descontadas de compras netas" />
           <p>Compras documentales, distintas del costo de ventas. No se restan nuevamente del resultado operativo.</p>
           <p>Los costos de internación facturados en Chile ya están en compras nacionales. Sin proformas ni duplicar el valor de recepción.</p>
@@ -131,6 +132,13 @@ export function DashboardPage() {
           <Link className="overview-chart-link" to={sourcesTo("purchase")}>Compras en fuentes financieras <ArrowUpRight size={16} /></Link>
         </details>
       </div>
+      {salesAdjustments.length > 0 && <details className="overview-purchase-documents overview-sales-adjustments">
+        <summary><FileCheck2 size={19} /><span><strong>Regularizaciones de notas de crédito</strong><small>{salesAdjustments.length} documentos · incluidas en ventas netas</small></span><ChevronDown size={18} /></summary>
+        <ul>{salesAdjustments.map(document => <li key={document.id}><Link to={sourceDocumentsLink(document.issuedOn, document.issuedOn, document.folio, "FACTO")}>
+          <span><strong>Nota de crédito {document.folio}</strong><small>Emisión {date(document.issuedOn)} · contabilización {date(document.recognizedOn)}</small></span>
+          <strong className="overview-purchase-amount">{money(document.netClp)}<small>netos CLP</small></strong><ArrowUpRight size={16} />
+        </Link></li>)}</ul>
+      </details>}
       {recentSales.length > 0 && <div className="overview-recent-sales"><h3>Últimas ventas registradas</h3>{recentSales.map(sale => <Link key={sale.id} to={financial("facto")}><span><strong>Documento {sale.folio}</strong><small>Emisión {date(sale.issuedOn)} · {sale.posted ? "Contabilizado" : "Sin asiento de ingreso"}</small></span><strong>{money(sale.netClp)} netos</strong><ArrowUpRight size={16} /></Link>)}</div>}
       {analytics && <div className="overview-quality"><Link to={financial("ledger")}><FileCheck2 size={17} /> Costo exacto: {number(analytics.costCoverage.salesWithExactCost)} de {number(analytics.costCoverage.totalSalesDocuments)} facturas <ArrowUpRight size={15} /></Link><span>{analytics.basis === "ledger" ? "Base contable" : "Base documental o mixta"} · No equivale a caja disponible</span></div>}
       {(analytics?.warnings || []).map(warning => <p className="overview-data-note" key={warning}>{warning}</p>)}

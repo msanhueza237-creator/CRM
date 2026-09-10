@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import ts from "typescript";
-import { factoHeader, factoIdentity, factoReferenceLabel, isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
+import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 
 const source = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
 const calculation = source.slice(source.indexOf("function normalizeFactoDocument("), source.indexOf("function findFactoSourceDocument("));
@@ -58,4 +58,21 @@ test("Verified foreign type 57 uses its actual CLP amounts and remains purchase 
   assert.equal(document.totalClp, 13525065.19);
   assert.deepEqual(document.errors, []);
   assert.ok(isPostableFactoDocument({ document_type: document.documentType, data_quality: "validated", status: "posted", raw_payload: raw }));
+});
+
+test("Closed periods require an explicit open-period adjustment for notes only, preserving issue dates", () => {
+  const document = { issued_on: "2026-01-20", document_type: "sales_credit_note" };
+  const periods = [{ starts_on: "2026-01-01", ends_on: "2026-01-31", status: "closed" }, { starts_on: "2026-09-01", ends_on: "2026-09-30", status: "open" }];
+  assert.equal(factoPostingDate(document, periods, "2026-09-10", "2026-09-10"), "2026-09-10");
+  assert.equal(document.issued_on, "2026-01-20");
+  assert.throws(() => factoPostingDate(document, periods, null, "2026-09-10"));
+  assert.throws(() => factoPostingDate(document, periods, "2026-09-11", "2026-09-10"));
+  assert.throws(() => factoPostingDate(document, periods, "2026-01-21", "2026-09-10"));
+  assert.throws(() => factoPostingDate({ ...document, document_type: "sales_invoice" }, periods, "2026-09-10", "2026-09-10"));
+  assert.equal(factoPostingDate({ ...document, issued_on: "2026-09-08" }, periods, "2026-09-10", "2026-09-10"), "2026-09-08");
+});
+
+test("Ingestion skips misdirected resource copies and does not infer foreign unpaid balances", () => {
+  assert.match(source, /purchase !== resource\.includes\("purchase"\)\) decision = "superseded"/);
+  assert.match(source, /normalized\.documentType === "purchase_document"\) continue/);
 });

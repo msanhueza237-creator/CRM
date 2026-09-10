@@ -15,7 +15,7 @@ import { identifyPayrollEmployee, protectedPayrollClassification } from "./payro
 import { buildAccountingAgentReport, hasAccountingTaskLease } from "./agent-report.ts";
 import { accountingToday, dashboardSalesEvidence } from "./dashboard-sales.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "./dashboard-purchases.ts";
-import { factoHeader, factoIdentity, factoReferenceLabel, isPostableFactoDocument } from "./facto-document-policy.ts";
+import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "./facto-document-policy.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -499,8 +499,8 @@ function finalizeDashboardTotals(values: Pick<DashboardResultTotals, "sales" | "
     ...values,
     grossProfit,
     operatingProfit,
-    grossMargin: values.sales ? (grossProfit / values.sales) * 100 : null,
-    operatingMargin: values.sales ? (operatingProfit / values.sales) * 100 : null,
+    grossMargin: values.sales > 0 ? (grossProfit / values.sales) * 100 : null,
+    operatingMargin: values.sales > 0 ? (operatingProfit / values.sales) * 100 : null,
   };
 }
 
@@ -628,7 +628,13 @@ async function buildDashboardAnalytics(
   const salesEvidence = dashboardSalesEvidence(financialDocuments, ledgerLines,
     new Set(accounts.filter(account => account.account_type === "income").map(account => String(account.id))), asOf);
   const currentSalesDocuments = salesEvidence.filter(source => source.issuedOn >= yearStart);
+  const recognizedSalesDocuments = salesEvidence.filter(source => source.recognizedOn >= yearStart);
+  const salesAdjustments = recognizedSalesDocuments.filter(source => source.creditNote && source.posted && source.recognizedOn !== source.issuedOn);
+  if (salesAdjustments.length) warnings.push(`${salesAdjustments.length} notas de crédito se contabilizaron en una fecha distinta de su emisión. Revisa el detalle de regularizaciones; las fechas originales se conservan.`);
   const purchaseDocuments = dashboardPurchaseEvidence(financialDocuments, asOf).filter(source => source.issuedOn >= yearStart);
+  const unvalidatedPurchases = financialDocuments.filter(source => String(source.document_type).startsWith("purchase_")
+    && String(source.issued_on) >= yearStart && !isPostableFactoDocument(source)).length;
+  if (unvalidatedPurchases) warnings.push(`${unvalidatedPurchases} documentos de compra tienen importes, identidad o validación pendientes y no se incluyen en el gráfico de compras.`);
   const pendingSales = currentSalesDocuments.filter(source => !source.posted);
   const salesLedger = new Map([...monthTotals].map(([period, total]) => [period, total.sales]));
   // Supplement by document identity, not by a zero annual/monthly balance.
@@ -647,7 +653,7 @@ async function buildDashboardAnalytics(
   const monthly = monthRanges.map((month) => ({
     ...month,
     ...finalizeDashboardTotals(monthTotals.get(month.period) || emptyDashboardTotals()),
-    ...dashboardDocumentTotals(purchaseDocuments.filter(row => row.issuedOn.slice(0, 7) === month.period), currentSalesDocuments.filter(row => row.issuedOn.slice(0, 7) === month.period)),
+    ...dashboardDocumentTotals(purchaseDocuments.filter(row => row.issuedOn.slice(0, 7) === month.period), recognizedSalesDocuments.filter(row => row.recognizedOn.slice(0, 7) === month.period)),
     salesLedger: salesLedger.get(month.period) || 0,
     salesPending: pendingSales.filter(document => document.issuedOn.slice(0, 7) === month.period).reduce((sum, document) => sum + document.netClp, 0),
     salesPendingDocuments: pendingSales.filter(document => document.issuedOn.slice(0, 7) === month.period).length,
@@ -664,8 +670,9 @@ async function buildDashboardAnalytics(
   expenseBreakdown.total = current.expenses;
   previousYear = finalizeDashboardTotals(previousYear);
 
-  const salesWithExactCost = currentSalesDocuments.filter((document) => exactCostSourceIds.has(String(document.id))).length;
-  const missingSalesCost = Math.max(0, currentSalesDocuments.length - salesWithExactCost);
+  const costDocuments = currentSalesDocuments.filter(document => !document.creditNote);
+  const salesWithExactCost = costDocuments.filter((document) => exactCostSourceIds.has(String(document.id))).length;
+  const missingSalesCost = Math.max(0, costDocuments.length - salesWithExactCost);
   if (current.sales > 0 && current.costs <= 0) warnings.push("Hay ventas registradas, pero todavía no existe costo de ventas contabilizado para el período.");
 
   const available = relevantLedgerLines > 0 || currentSalesDocuments.length > 0;
@@ -686,8 +693,9 @@ async function buildDashboardAnalytics(
     to: asOf,
     monthly,
     purchaseDocuments,
+    salesAdjustments,
     current: { ...current,
-      ...dashboardDocumentTotals(purchaseDocuments, currentSalesDocuments),
+      ...dashboardDocumentTotals(purchaseDocuments, recognizedSalesDocuments),
       salesLedger: monthly.reduce((sum, month) => sum + month.salesLedger, 0),
       salesPending: pendingSales.reduce((sum, document) => sum + document.netClp, 0),
       salesPendingDocuments: pendingSales.length,
@@ -701,10 +709,10 @@ async function buildDashboardAnalytics(
       operatingProfit: dashboardVariance(current.operatingProfit, previousYear.operatingProfit),
     },
     costCoverage: {
-      totalSalesDocuments: currentSalesDocuments.length,
+      totalSalesDocuments: costDocuments.length,
       salesWithExactCost,
       missingSalesCost,
-      percentage: currentSalesDocuments.length ? (salesWithExactCost / currentSalesDocuments.length) * 100 : 0,
+      percentage: costDocuments.length ? (salesWithExactCost / costDocuments.length) * 100 : 0,
     },
   };
 }
@@ -891,6 +899,7 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
           let decision = "included";
           if (!normalized.issuedOn) decision = "invalid";
           else if (normalized.issuedOn < fromDate || normalized.issuedOn > toDate) decision = "out_of_range";
+          else if (purchase !== resource.includes("purchase")) decision = "superseded";
           else if (includedCanonical.has(canonicalKey)) decision = "superseded";
           if (decision === "included") includedCanonical.add(canonicalKey);
           return { record, resource, purchase, externalId, normalized, canonicalKey, decision };
@@ -970,6 +979,9 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
           const { normalized } = item;
           // Notes change a document balance; they are not a second positive debt.
           if (normalized.documentType.endsWith("_credit_note") || normalized.errors.length) continue;
+          // The foreign invoice API supplies acquisition value, not an unpaid balance.
+          // Its payable is maintained by the verified collections workbook instead.
+          if (normalized.documentType === "purchase_document") continue;
           if (normalized.totalClp <= 0 || !normalized.counterpart) {
             controls += 1;
             continue;
@@ -3096,9 +3108,13 @@ async function centralizeFactoDocuments(rest: RestClient, profile: Profile, payl
   const periods = await selectAllRows(rest, `accounting_periods?select=id,starts_on,ends_on,status&entity_id=eq.${entityId}&status=neq.closed`);
   const accounts = await selectAllRows(rest, `accounting_accounts?select=id,classification&entity_id=eq.${entityId}&active=eq.true&allows_posting=eq.true`);
   const accountMap = new Map(accounts.map(row => [String(row.classification), String(row.id)]));
+  const adjustmentDate = payload.closedPeriodAdjustmentDate ? requiredDate(payload.closedPeriodAdjustmentDate) : null;
+  // Validate every posting date before starting the bounded batch.
+  const postingDates = documents.map(document => factoPostingDate(document, periods, adjustmentDate, accountingToday()));
   const results: JsonRecord[] = [];
-  for (const document of documents) {
-    await postFactoDocument(rest, profile, document, periods, accountMap);
+  for (const [index, document] of documents.entries()) {
+    const postingDate = postingDates[index];
+    await postFactoDocument(rest, profile, document, periods, accountMap, postingDate);
     await patchRows(rest, "accounting_source_documents", `id=eq.${document.id}&entity_id=eq.${entityId}`, { status: "posted" });
     results.push({ id: document.id, folio: document.folio });
   }
@@ -3190,6 +3206,7 @@ async function postFactoDocument(
   document: JsonRecord,
   periods: JsonRecord[],
   accounts: Map<string, string>,
+  postingDate = String(document.issued_on),
 ) {
   const type = String(document.document_type || "");
   const sale = type.startsWith("sales_");
@@ -3214,9 +3231,9 @@ async function postFactoDocument(
   }
   await postAutomatedEntry(rest, profile, {
     entityId: String(document.entity_id),
-    periodId: periodForDate(periods, String(document.issued_on)),
-    date: String(document.issued_on),
-    description: `${creditNote ? "Nota de crédito" : sale ? "Venta" : "Compra"} Facto ${String(document.folio || document.external_id || "")}${creditNote && factoReferenceLabel(asObject(document.raw_payload)) ? ` / ${factoReferenceLabel(asObject(document.raw_payload))}` : ""}`.trim(),
+    periodId: periodForDate(periods, postingDate),
+    date: postingDate,
+    description: `${creditNote ? "Nota de crédito" : sale ? "Venta" : "Compra"} Facto ${String(document.folio || document.external_id || "")}${creditNote && factoReferenceLabel(asObject(document.raw_payload)) ? ` / ${factoReferenceLabel(asObject(document.raw_payload))}` : ""}${postingDate !== document.issued_on ? ` / Regularización de documento ${document.issued_on}, período original cerrado` : ""}`.trim(),
     reference: String(document.folio || document.external_id || document.id),
     sourceType: "FACTO",
     sourceDocumentId: String(document.id),

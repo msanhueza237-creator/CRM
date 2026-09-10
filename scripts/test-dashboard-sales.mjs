@@ -4,6 +4,7 @@ import { test } from "node:test";
 import ts from "typescript";
 import { accountingToday, dashboardDocumentSales, dashboardSalesEvidence } from "../supabase/functions/accounting-center/dashboard-sales.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "../supabase/functions/accounting-center/dashboard-purchases.ts";
+import { isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 
 // Exercise the actual edge calculation with read-only REST fixtures, without starting Deno.
 const source = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
@@ -32,8 +33,8 @@ async function build(documents, lines, { failLedger = false, failDocuments = fal
     }
     throw new Error(`Unexpected query: ${path}`);
   };
-  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", `${javascript}\nreturn buildDashboardAnalytics;`)(
-    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals);
+  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", `${javascript}\nreturn buildDashboardAnalytics;`)(
+    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument);
   return run({}, "entity", asOf, documents, accounts);
 }
 
@@ -134,8 +135,9 @@ test("Cross-month cancellation uses the note date and does not double the reissu
 
 test("Domestic exempt purchases, supplier notes and received imports remain separate from profit", async () => {
   const receipt = { id: "receipt", source_type: "COMERCIO_EXTERIOR", document_type: "inventory_receipt", issued_on: "2026-06-23", status: "posted", data_quality: "validated", raw_payload: { operation_id: "op", merchandise_clp: 51097978.8, landed_inventory_clp: 55918958.51 } };
-  const result = await build([receipt, receipt, doc("ads", 0, "2026-06-03", { document_type: "purchase_exempt_invoice", exempt_amount: 3128000, tax_amount: 0 }), doc("supplier-note", 100, "2026-06-10", { document_type: "purchase_credit_note" }), { ...receipt, id: "proforma", document_type: "import_operation" }], []);
-  assert.equal(result.monthly[5].purchasesInternational, 51097978.8);
+  const foreign = doc("foreign", 11365601, "2026-06-22", { document_type: "purchase_document", raw_payload: { header: { document_id: 695, document_type_id: 57, received_issued_flag: 0 } } });
+  const result = await build([receipt, receipt, foreign, doc("ads", 0, "2026-06-03", { document_type: "purchase_exempt_invoice", exempt_amount: 3128000, tax_amount: 0 }), doc("supplier-note", 100, "2026-06-10", { document_type: "purchase_credit_note" }), { ...receipt, id: "proforma", document_type: "import_operation" }], []);
+  assert.equal(result.monthly[5].purchasesInternational, 11365601);
   assert.equal(result.monthly[5].purchasesDomestic, 3127900);
   assert.equal(result.current.purchaseCreditNotes, 100);
   assert.equal(result.current.costs, 0);
@@ -145,4 +147,31 @@ test("Domestic exempt purchases, supplier notes and received imports remain sepa
 
 test("A received supplier note must never reduce sales even when its resource was documents", () => {
   assert.equal(dashboardDocumentSales(doc("wrong", 48722, "2026-05-12", { document_type: "sales_credit_note", raw_payload: { received_issued_flag: 0 } })), null);
+});
+
+test("A closed January note regularized in September is deducted once in the posting month", async () => {
+  const note = doc("january-note", 310640, "2026-01-20", { document_type: "sales_credit_note" });
+  const result = await build([note], [line("january-note", -310640, "2026-09-10")], { asOf: "2026-09-10" });
+  assert.equal(result.monthly[0].sales, 0);
+  assert.equal(result.monthly[0].salesCreditNotes, 0);
+  assert.equal(result.monthly[8].sales, -310640);
+  assert.equal(result.monthly[8].salesCreditNotes, 310640);
+  assert.equal(result.current.sales, -310640);
+  assert.equal(result.current.grossMargin, null);
+  assert.equal(result.current.operatingMargin, null);
+  assert.equal(result.current.salesPendingDocuments, 0);
+  assert.equal(result.salesAdjustments[0].issuedOn, "2026-01-20");
+  assert.equal(result.salesAdjustments[0].recognizedOn, "2026-09-10");
+  assert.equal(result.costCoverage.totalSalesDocuments, 0, "Credit notes are not additional invoices for cost coverage");
+});
+
+test("All June foreign invoices are counted, without inventory receipt or duplicate provider evidence", async () => {
+  const invoice = (id, folio, amount, date) => doc(id, amount, date, { folio, document_type: "purchase_document", raw_payload: { header: { document_id: id, document_type_id: 57, received_issued_flag: 0 } } });
+  const third = invoice("695", "3", 11365601, "2026-06-22");
+  const result = await build([invoice("692", "1", 26365341, "2026-06-20"), invoice("694", "2", 18889846, "2026-06-22"), third,
+    { ...third, id: "duplicate-695" }, doc("domestic", 5533462, "2026-06-03", { document_type: "purchase_invoice" }),
+    { id: "receipt", issued_on: "2026-06-23", document_type: "inventory_receipt", status: "posted", data_quality: "validated", raw_payload: { merchandise_clp: 51097978.8 } }], []);
+  assert.equal(result.monthly[5].purchasesInternational, 56620788);
+  assert.equal(result.monthly[5].purchasesNet, 62154250);
+  assert.equal(result.purchaseDocuments.length, 4);
 });

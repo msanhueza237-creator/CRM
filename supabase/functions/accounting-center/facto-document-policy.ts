@@ -41,3 +41,14 @@ export function factoReferenceLabel(payload: Row) {
     return reference.reference_number ? `Factura ${reference.reference_number}${reference.reference_date ? ` (${reference.reference_date})` : ""}` : "";
   }).filter(Boolean).join(", ");
 }
+
+export function factoPostingDate(document: Row, periods: Row[], adjustmentDate: string | null, today: string) {
+  const issuedOn = String(document.issued_on || "");
+  const isOpen = (date: string) => periods.some(period => ["open", "review"].includes(String(period.status))
+    && date >= String(period.starts_on) && date <= String(period.ends_on));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(issuedOn) || issuedOn > today) throw new Error("Fecha de emisión no válida para contabilizar.");
+  if (adjustmentDate && (!/^\d{4}-\d{2}-\d{2}$/.test(adjustmentDate) || adjustmentDate > today || adjustmentDate < issuedOn)) throw new Error("Fecha de regularización no válida.");
+  if (isOpen(issuedOn)) return issuedOn;
+  if (adjustmentDate && String(document.document_type).endsWith("_credit_note") && isOpen(adjustmentDate)) return adjustmentDate;
+  throw new Error("El período original está cerrado o no existe. Una nota requiere fecha explícita de regularización en un período abierto.");
+}
