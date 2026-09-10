@@ -1,4 +1,5 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   AlertTriangle,
   Ban,
@@ -57,6 +58,7 @@ import {
 } from "./prospectingRepository";
 import { HistoricalBaseView } from "./HistoricalBaseView";
 import { DeepSeekSettings } from "./DeepSeekSettings";
+import "./prospectingAssistance.css";
 
 type ViewTab = "campaigns" | "operation" | "candidates" | "historical" | "deepseek";
 type Notice = { type: "info" | "success" | "error"; text: string } | null;
@@ -173,8 +175,11 @@ export function ProspectingPage() {
         setDataMode(result.mode);
         setModeReason(result.reason);
         setLastRefreshedAt(new Date().toISOString());
-        const campaign = result.workspace.campaigns[0];
-        const run = campaign ? result.workspace.runs.find((item) => item.campaignId === campaign.id) : undefined;
+        const params = new URLSearchParams(window.location.search);
+        const linkedRun = result.workspace.runs.find(item => item.id === params.get("run"));
+        const campaign = result.workspace.campaigns.find(item => item.id === (linkedRun?.campaignId ?? params.get("campaign"))) ?? result.workspace.campaigns[0];
+        const run = linkedRun ?? (campaign ? result.workspace.runs.find((item) => item.campaignId === campaign.id) : undefined);
+        if (linkedRun) setTab(params.get("view") === "candidates" ? "candidates" : "operation");
         const candidate = run
           ? result.workspace.candidates.find((item) => item.campaignId === campaign?.id && item.runId === run.id)
           : undefined;
@@ -649,6 +654,7 @@ export function ProspectingPage() {
           comunas={workspace.comunas}
           userId={user?.id ?? ""}
           canConfigure={canConfigure}
+          liveMode={dataMode === "supabase"}
           initialCampaign={editingCampaign}
           saving={busyAction === "create" || busyAction === `edit:${editingCampaign?.id}`}
           onSave={saveCampaign}
@@ -744,6 +750,7 @@ function CampaignForm({
   comunas,
   userId,
   canConfigure,
+  liveMode,
   initialCampaign,
   saving,
   onSave,
@@ -752,6 +759,7 @@ function CampaignForm({
   comunas: GeoComuna[];
   userId: string;
   canConfigure: boolean;
+  liveMode: boolean;
   initialCampaign?: ProspectingCampaign;
   saving: boolean;
   onSave: (campaign: ProspectingCampaign) => Promise<void>;
@@ -759,6 +767,7 @@ function CampaignForm({
   const defaultRegion = regions.find((region) => region.code === "13")?.code ?? regions[0]?.code ?? "";
   const [name, setName] = useState(initialCampaign?.name ?? "");
   const [description, setDescription] = useState(initialCampaign?.description ?? "");
+  const [deepseekEnabled, setDeepseekEnabled] = useState(initialCampaign?.deepseekEnabled ?? false);
   const [keywords, setKeywords] = useState(initialCampaign?.keywords ?? DEFAULT_PROSPECTING_KEYWORDS.slice(0, 3));
   const [keywordDraft, setKeywordDraft] = useState("");
   const [sources, setSources] = useState<ProspectingSource[]>(
@@ -900,6 +909,7 @@ function CampaignForm({
       sector: "hvac",
       status: initialCampaign?.status ?? "draft",
       keywords: normalizedKeywords,
+      deepseekEnabled: liveMode && deepseekEnabled,
       sources: sources.filter((source) => source !== "amarillas"),
       territories: selectedTerritories,
       targetTypes,
@@ -1061,9 +1071,15 @@ function CampaignForm({
         <div className="prospecting-section-heading">
           <div>
             <strong>3. Fuentes autorizadas</strong>
-            <span>Brave descubre empresas; el sitio oficial valida contacto y domicilio antes de importar.</span>
+            <span>Descubrimiento web y validación de contacto y domicilio.</span>
           </div>
         </div>
+        <label className={`prospecting-ai-option ${deepseekEnabled ? "selected" : ""}`}>
+          <input type="checkbox" checked={deepseekEnabled} disabled={!liveMode || saving}
+            onChange={event => { setDeepseekEnabled(event.target.checked); if (event.target.checked) setSources(current => [...new Set<ProspectingSource>([...current, "brave_search", "official_website"])]); }} />
+          <Sparkles size={20} />
+          <span><strong>DeepSeek Web</strong><small>{liveMode ? "Empresas y sitios nuevos · enriquecimiento desde su web oficial" : "No disponible en demo"}</small><small>Hasta 30 sitios adicionales por ejecución · 20 solicitudes al día</small></span>
+        </label>
         <div className="source-grid">
           {SOURCE_DEFINITIONS.map((source) => {
             const checked = sources.includes(source.id);
@@ -1071,7 +1087,7 @@ function CampaignForm({
               <label key={source.id} className={`source-option ${checked ? "selected" : ""} ${source.disabled ? "disabled" : ""}`}>
                 <input
                   type="checkbox"
-                  disabled={source.disabled}
+                  disabled={source.disabled || (deepseekEnabled && ["brave_search", "official_website"].includes(source.id))}
                   checked={checked}
                   onChange={() =>
                     setSources((current) =>
@@ -1179,6 +1195,12 @@ function CampaignsView({
   canExecute: boolean;
   busyAction: string;
 }) {
+  const [query, setQuery] = useState("");
+  const [status, setStatus] = useState("all");
+  const [order, setOrder] = useState("recent");
+  const visibleCampaigns = campaigns.filter(campaign =>
+    (status === "all" || campaign.status === status) && normalizeString([campaign.name, ...campaign.keywords, territorySummary(campaign.territories)].join(" ")).includes(normalizeString(query)),
+  ).sort((a, b) => order === "name" ? a.name.localeCompare(b.name, "es") : b.updatedAt.localeCompare(a.updatedAt));
   const selectedCampaign = campaigns.find((campaign) => campaign.id === selectedCampaignId);
   const selectedRuns = runs.filter((run) => run.campaignId === selectedCampaignId).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const selectedCandidates = candidates.filter((candidate) => candidate.campaignId === selectedCampaignId);
@@ -1200,9 +1222,15 @@ function CampaignsView({
           <div><h2>Campañas de búsqueda</h2><span>Separadas de las campañas de email y WhatsApp</span></div>
           <span>{campaigns.length} configuradas</span>
         </div>
-        {campaigns.length ? (
+        <div className="prospecting-campaign-filters">
+          <label><span>Buscar campaña o comuna</span><input type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder="Nombre, término o comuna" /></label>
+          <label><span>Estado</span><select aria-label="Estado" value={status} onChange={event => setStatus(event.target.value)}><option value="all">Todos</option><option value="draft">Borradores</option><option value="active">Activas</option><option value="archived">Archivadas</option></select></label>
+          <label><span>Orden</span><select aria-label="Orden" value={order} onChange={event => setOrder(event.target.value)}><option value="recent">Más recientes</option><option value="name">Nombre A-Z</option></select></label>
+          <span role="status">{visibleCampaigns.length} de {campaigns.length}</span>
+        </div>
+        {visibleCampaigns.length ? (
           <div className="prospecting-campaign-grid">
-            {campaigns.map((campaign) => {
+            {visibleCampaigns.map((campaign) => {
               const campaignRuns = runs.filter((run) => run.campaignId === campaign.id);
               const latest = campaignRuns.sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
               const candidateCount = candidates.filter((candidate) => candidate.campaignId === campaign.id).length;
@@ -1214,6 +1242,7 @@ function CampaignsView({
                   </div>
                   <div><p>HVAC · Chile</p><h3>{campaign.name}</h3><span className="campaign-description">{campaign.description || "Sin descripción operativa"}</span></div>
                   <div className="campaign-scope-summary"><MapPin size={16} /><span>{territorySummary(campaign.territories)}</span></div>
+                  <div className="campaign-scope-summary"><Sparkles size={16} /><span>{campaign.deepseekEnabled ? "DeepSeek Web activado" : "DeepSeek Web desactivado"}</span></div>
                   <div className="prospecting-chip-row compact">
                     {campaign.keywords.slice(0, 3).map((keyword) => <span key={keyword}>{keyword}</span>)}
                     {campaign.keywords.length > 3 ? <span>+{campaign.keywords.length - 3}</span> : null}
@@ -1229,7 +1258,7 @@ function CampaignsView({
             })}
           </div>
         ) : (
-          <EmptyState icon={<Search size={28} />} title="Aún no hay campañas" text="Crea un borrador para definir comunas, fuentes y palabras clave." />
+          <EmptyState icon={<Search size={28} />} title={campaigns.length ? "Sin coincidencias" : "Aún no hay campañas"} text={campaigns.length ? "No hay campañas para estos filtros." : "Crea un borrador para definir comunas, fuentes y palabras clave."} />
         )}
       </div>
 
@@ -1276,7 +1305,7 @@ function CampaignsView({
                   <tr key={run.id}>
                     <td><strong>Run #{selectedRuns.length - index}</strong><small>{run.id.slice(0, 8)}</small></td>
                     <td><span className={`status-badge prospecting-status ${run.status}`}>{runLabels[run.status]}</span></td>
-                    <td>{run.progress.completedTasks}/{run.progress.totalTasks} tareas<small>{run.progress.failedTasks} con error</small></td>
+                    <td>{run.progress.completedTasks}/{run.progress.totalTasks} tareas<small>{run.progress.failedTasks} con error · {assistanceLabel(run)}</small></td>
                     <td>{run.progress.candidatesFound}</td>
                     <td>{formatDateTime(run.startedAt || run.createdAt)}</td>
                     <td><button className="mini-toggle" type="button" onClick={() => onOpenRun(run)}>Ver actividad</button></td>
@@ -1290,6 +1319,20 @@ function CampaignsView({
       ) : null}
     </>
   );
+}
+
+function assistanceLabel(run: ProspectingRun) {
+  const status = run.searchAssistance?.status ?? (run.snapshot.deepseekEnabled ? "pending" : "disabled");
+  if (status === "applied" && run.searchAssistance?.mode !== "web_discovery_v1") return "Preparación de términos (versión anterior)";
+  return ({ applied: "DeepSeek Web · búsqueda realizada", fallback: "DeepSeek Web no disponible · otras fuentes continúan", preparing: "DeepSeek buscando empresas", pending: "DeepSeek pendiente de ejecución compatible", disabled: "DeepSeek Web desactivado" } as Record<string, string>)[status] ?? "Búsqueda sin verificar";
+}
+
+function assistanceReason(code: string) {
+  return ({ NOT_CONFIGURED: "La API no está conectada o requiere verificación.", MODEL_UNAVAILABLE: "El modelo configurado no está disponible.",
+    DAILY_LIMIT: "Se alcanzó el límite de 20 asistencias del día.", INTERRUPTED: "La solicitud se interrumpió; no se repitió el consumo.",
+    RATE_LIMIT: "DeepSeek alcanzó su límite de solicitudes.", INSUFFICIENT_BALANCE: "DeepSeek informó saldo insuficiente.",
+    WEB_SEARCH_FAILED: "La herramienta web de DeepSeek devolvió un error.", NO_WEB_SEARCH: "DeepSeek no devolvió una búsqueda web verificable.",
+    VALIDATION_SOURCE_REQUIRED: "Faltan las fuentes de descubrimiento y validación web." } as Record<string, string>)[code] ?? "La asistencia no estuvo disponible. Se conservaron las otras fuentes.";
 }
 
 function OperationView({
@@ -1412,6 +1455,15 @@ function OperationView({
             <div><dt>Palabras clave</dt><dd>{selectedRun.snapshot.keywords.join(", ")}</dd></div>
             <div><dt>Límites</dt><dd>{selectedRun.snapshot.limits.resultsPerTask}/tarea · {selectedRun.snapshot.limits.maxCandidates}/run</dd></div>
           </dl>
+          <section className="prospecting-assistance" aria-label="Asistencia de búsqueda">
+            <div className="prospecting-assistance-heading"><Sparkles size={19} /><h3>{assistanceLabel(selectedRun)}</h3></div>
+            {selectedRun.searchAssistance?.mode === "web_discovery_v1" && selectedRun.searchAssistance.status === "applied" ? <dl className="deepseek-result-totals"><div><dt>Sitios descubiertos</dt><dd>{selectedRun.searchAssistance.discoveredWebsites}</dd></div><div><dt>Consultas web</dt><dd>{selectedRun.searchAssistance.webRequests}</dd></div><div><dt>Candidatos de todas las fuentes</dt><dd>{selectedRun.progress.candidatesFound}</dd></div></dl> : null}
+            {selectedRun.searchAssistance?.reasonCode ? <p role="status">{assistanceReason(selectedRun.searchAssistance.reasonCode)}</p> : null}
+            {selectedRun.searchAssistance?.completedAt ? <small>{formatDateTime(selectedRun.searchAssistance.completedAt)}</small> : null}
+            {selectedRun.searchAssistance?.queries.length ? <details><summary>Consultas realizadas</summary><ul>{selectedRun.searchAssistance.queries.map((q, i) => <li key={i}>{q}</li>)}</ul></details> : null}
+            {selectedRun.searchAssistance?.discoveries.length ? <details><summary>Origen de los hallazgos · no acredita aprobación</summary><ul>{selectedRun.searchAssistance.discoveries.map(d => <li key={d.website}><a href={d.website} target="_blank" rel="noopener noreferrer">{d.name}</a></li>)}</ul></details> : null}
+            <Link className="ghost-button" to={`/copiloto?prospecting_run=${selectedRun.id}`}><Sparkles size={17} /> Analizar en Copiloto</Link>
+          </section>
         </div>
         <div className="panel agent-health-panel">
           <div className="panel-heading"><h2>Control operacional</h2><span><CircleDot size={14} /> Registro auditable</span></div>

@@ -8,7 +8,7 @@ const dbUrl = env.match(/^VITE_SUPABASE_URL\s*=\s*["']?([^\r\n"']+)/m)?.[1];
 assert.ok(dbUrl);
 const dbOrigin = new URL(dbUrl).origin;
 const fakeKey = "sk-fixture-ui-not-a-real-secret";
-const initial = () => ({ provider: "deepseek", ready: true, configured: false, status: "disconnected", models: [], lastCheckedAt: null, lastErrorCode: null, scope: "credentials_only" });
+const initial = () => ({ provider: "deepseek", ready: true, configured: false, status: "disconnected", models: [], lastCheckedAt: null, lastErrorCode: null, scope: "search_assistance" });
 await mkdir("outputs/deepseek-settings", { recursive: true });
 const browser = await chromium.launch({ headless: true, channel: "chrome" });
 try {
@@ -70,10 +70,10 @@ try {
       assert.equal(await field.getAttribute("type"), "text");
       await page.getByRole("button", { name: "Ocultar clave" }).click();
       await page.getByRole("button", { name: "Guardar y verificar" }).click();
-      await page.getByText("Credencial verificada. Las búsquedas automáticas siguen sin activar.", { exact: true }).waitFor();
+      await page.getByText("Credencial verificada. La asistencia depende de la configuración de cada campaña.", { exact: true }).waitFor();
       assert.equal(await field.inputValue(), "");
       assert.equal(await page.evaluate(key => JSON.stringify(localStorage).includes(key) || JSON.stringify(sessionStorage).includes(key), fakeKey), false);
-      assert.match(await page.locator(".deepseek-details").innerText(), /No activada/);
+      assert.match(await page.locator(".deepseek-details").innerText(), /Opcional por campaña/);
       await page.getByRole("button", { name: "Verificar conexión" }).click();
       await page.waitForFunction(() => !document.querySelector("#deepseek-api-key")?.disabled);
       failure = true;

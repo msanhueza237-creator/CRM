@@ -1,0 +1,43 @@
+.prospecting-form .prospecting-ai-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  margin-bottom: 12px;
+  border-block: 1px solid #ccdddf;
+  color: #28484d;
+}
+.prospecting-ai-option.selected { color: #0a727f; }
+.prospecting-form .prospecting-ai-option > input { width: 20px; height: 20px; min-height: 20px; padding: 0; flex-shrink: 0; accent-color: #0a727f; }
+.prospecting-ai-option > svg { flex-shrink: 0; }
+.prospecting-ai-option span { min-width: 0; }
+.prospecting-ai-option strong, .prospecting-ai-option small { display: block; }
+.prospecting-ai-option small { margin-top: 5px; color: #5c7176; font-size: 12px; font-weight: 400; line-height: 1.5; }
+.prospecting-campaign-filters { display: grid; grid-template-columns: minmax(180px, 2fr) minmax(120px, 1fr) minmax(130px, 1fr) auto; align-items: end; gap: 12px; margin-bottom: 20px; }
+.prospecting-campaign-filters label { min-width: 0; display: grid; gap: 6px; font-size: 12px; font-weight: 600; }
+.prospecting-campaign-filters input, .prospecting-campaign-filters select { width: 100%; min-width: 0; height: 44px; border: 1px solid #b7cdd0; border-radius: 6px; background: #fff; padding: 0 10px; color: #28484d; font: inherit; font-size: 14px; }
+.prospecting-campaign-filters > span { font-size: 12px; color: #5c7176; padding-bottom: 13px; }
+.prospecting-assistance { border-top: 1px solid #ccdddf; padding-top: 16px; margin-top: 18px; min-width: 0; }
+.prospecting-assistance-heading { display: flex; align-items: center; gap: 8px; color: #0a727f; }
+.prospecting-assistance-heading svg { flex-shrink: 0; }
+.prospecting-assistance-heading h3 { margin: 0; font-size: 15px; line-height: 1.4; }
+.prospecting-assistance p, .prospecting-assistance small { display: block; color: #5c7176; font-size: 12px; line-height: 1.6; }
+.prospecting-assistance details { margin: 14px 0; }
+.prospecting-assistance summary { cursor: pointer; font-size: 14px; }
+.prospecting-assistance dl { display: grid; gap: 10px; }
+.prospecting-assistance dt { font-size: 12px; color: #5c7176; }
+.prospecting-assistance dd { margin: 4px 0; font-size: 14px; overflow-wrap: anywhere; }
+.prospecting-assistance .ghost-button { margin-top: 12px; text-decoration: none; }
+@media (max-width: 700px) {
+  .prospecting-campaign-filters { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .prospecting-campaign-filters label:first-child { grid-column: 1 / -1; }
+  .prospecting-campaign-filters > span { grid-column: 1 / -1; padding-bottom: 0; }
+  .prospecting-form .prospecting-ai-option { gap: 8px; }
+}
+.deepseek-result-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
+.deepseek-result-totals div { min-width: 0; }
+.deepseek-result-totals dt { font-size: 12px; color: #536c75; }
+.deepseek-result-totals dd { margin: 6px 0 0; font-size: 24px; font-weight: 700; }
+.prospecting-assistance li { margin: 8px 0; overflow-wrap: anywhere; }
+.prospecting-ai-option small { display: block; margin-top: 6px; }
+@media (max-width: 600px) { .deepseek-result-totals { grid-template-columns: 1fr; gap: 12px; } }

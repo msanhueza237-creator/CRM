@@ -40,6 +40,7 @@ import "./central-copilot.css";
 
 const labels: Record<string, string> = {
   search_prospects: "Prospeccion",
+  get_prospecting_report: "Campañas y búsquedas de prospectos",
   get_bank_movements: "Bancos y conciliacion",
   get_checks: "Cheques",
   search_products: "Productos y stock",
@@ -101,7 +102,10 @@ function CentralConversationPage() {
   const [messages, setMessages] = useState<CentralMessage[]>([]);
   const [conversationId, setConversationId] = useState<string>();
   const [nextOffset, setNextOffset] = useState<number | null>(null);
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(() => {
+    const run = params.get("prospecting_run");
+    return run && /^[a-f0-9-]{36}$/i.test(run) ? `Analiza la ejecución de prospección ${run}: uso de DeepSeek, progreso, candidatos y evidencia pendiente.` : "";
+  });
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);

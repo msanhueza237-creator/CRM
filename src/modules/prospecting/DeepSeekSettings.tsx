@@ -29,7 +29,7 @@ export function DeepSeekSettings({ enabled }: { enabled: boolean }) {
       if (action !== "status") {
         setApiKey(""); setVisible(false); setConfirmDisconnect(false);
         setMessage(action === "disconnect" ? "Clave eliminada del CRM." : result.status === "verified"
-          ? "Credencial verificada. Las búsquedas automáticas siguen sin activar."
+          ? "Credencial verificada. La asistencia depende de la configuración de cada campaña."
           : "La configuración cambió durante la verificación. Revisa el estado actual.");
       }
     } catch (failure) {
@@ -103,7 +103,12 @@ export function DeepSeekSettings({ enabled }: { enabled: boolean }) {
         <aside className="deepseek-details" aria-label="Estado de la integración">
           <dl>
             <div><dt>Credencial</dt><dd>{connection ? connection.configured ? "Guardada y cifrada" : "Sin guardar" : "Sin consultar"}</dd></div>
-            <div><dt>Búsqueda automática con DeepSeek</dt><dd>No activada</dd></div>
+            <div><dt>DeepSeek Web</dt><dd>{connection?.scope === "search_assistance" ? "Opcional por campaña" : "No activada"}</dd></div>
+            {connection?.scope === "search_assistance" ? <>
+              <div><dt>Motor web</dt><dd>DeepSeek V4 Flash + web_search</dd></div>
+              <div><dt>Verificación</dt><dd>Contacto y domicilio desde sitio oficial</dd></div>
+              <div><dt>Límite de búsqueda</dt><dd>1 solicitud por ejecución · 20 al día · hasta 30 sitios adicionales</dd></div>
+            </> : null}
             <div><dt>Última verificación</dt><dd>{checkedAt && !Number.isNaN(checkedAt.getTime()) ? new Intl.DateTimeFormat("es-CL", { timeZone: "America/Santiago", dateStyle: "medium", timeStyle: "short" }).format(checkedAt) : "Sin verificar"}</dd></div>
             {connection?.status === "verified" ? <div><dt>Modelos disponibles</dt><dd>{connection.models.length}</dd></div> : null}
           </dl>

@@ -32,7 +32,7 @@ export function createProspectingIntegrationHandler(config: Config, send: typeof
     provider: "deepseek", configured: Boolean(row?.api_key_encrypted), ready,
     status: row?.status || "disconnected", models: Array.isArray(row?.models) ? row.models : [],
     lastCheckedAt: row?.last_checked_at || null, lastErrorCode: row?.last_error_code || null,
-    scope: "credentials_only",
+    scope: "search_assistance",
   });
   return async (request: Request) => {
     const headers = { "Access-Control-Allow-Origin": config.appOrigin,

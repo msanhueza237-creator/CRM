@@ -21,6 +21,7 @@ import { clientPriceRows, factoCurrencies, productPrices } from "./product-price
 import { productSales } from "./product-sales.ts";
 import { productProfitability } from "./product-profitability.ts";
 import { agentReport, agentSectionRows } from "./agent-reports.ts";
+import { prospectingReport } from "./prospecting-report.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -219,6 +220,10 @@ export class ToolRegistry {
     });
   }
   private registerTools() {
+    this.add("get_prospecting_report", "customers",
+      "Campañas, ejecuciones, uso real de DeepSeek, progreso y candidatos con evidencia activa del modulo Prospeccion. Solo lectura, no busca nuevos candidatos en la web. Consulta view=runs primero; view=candidates requiere run_id. query filtra campaña/terminos en runs y empresa/rubro en candidates.",
+      { ...paging, view: choice("runs", "candidates"), campaign_id: string, run_id: string },
+      args => prospectingReport(this.source, args));
     this.add(
       "search_prospects",
       "customers",

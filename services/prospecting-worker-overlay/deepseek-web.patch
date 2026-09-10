@@ -1,0 +1,210 @@
+diff --git a/app/crm/http.py b/app/crm/http.py
+index 1607202..c07c776 100644
+--- a/app/crm/http.py
++++ b/app/crm/http.py
+@@ -161,7 +161,8 @@ class HttpCRMPort:
+         response = await self._request(
+             "POST",
+             "prospecting-runs/claim",
+-            json={"worker_id": worker_id, "lease_seconds": lease_seconds},
++            timeout=max(self.timeout, 65),
++            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_web_v1"]},
+             headers={"Idempotency-Key": str(uuid.uuid4())},
+         )
+         if response.status_code == 204:
+diff --git a/app/prospecting/contracts.py b/app/prospecting/contracts.py
+index 971c529..7001103 100644
+--- a/app/prospecting/contracts.py
++++ b/app/prospecting/contracts.py
+@@ -144,6 +144,7 @@ class ProspectingRunSnapshot(BaseModel):
+     requested_at: datetime = Field(default_factory=utc_now)
+     requested_by: str = Field(min_length=1, max_length=200)
+     brave_policy: BravePolicy = Field(default_factory=BravePolicy)
++    deepseek_discoveries: list[dict[str, str]] = Field(default_factory=list, max_length=30)
+ 
+     @model_validator(mode="after")
+     def campaign_id_present(self) -> ProspectingRunSnapshot:
+diff --git a/app/prospecting/deepseek_discovery.py b/app/prospecting/deepseek_discovery.py
+new file mode 100644
+index 0000000..36efc9e
+--- /dev/null
++++ b/app/prospecting/deepseek_discovery.py
+@@ -0,0 +1,30 @@
++"""Unverified search seeds; official-site enrichment supplies all field evidence."""
++from urllib.parse import urlsplit
++
++from app.prospecting.contracts import ProspectCandidate, ProspectLocation
++
++
++def discovery_candidates(snapshot, task):
++    results = []
++    hosts = set()
++    for hit in snapshot.deepseek_discoveries[:30]:
++        if hit.get("task_id") != task.id:
++            continue
++        website = hit.get("website", "")
++        name = hit.get("name", "").strip()[:300]
++        try:
++            url = urlsplit(website)
++            host = (url.hostname or "").lower().removeprefix("www.")
++            if (url.scheme not in ("http", "https") or url.username or url.password
++                    or url.port or not host or "." not in host or len(website) > 1000):
++                continue
++        except ValueError:
++            continue
++        if not name or host in hosts or hit.get("source_url") != website:
++            continue
++        hosts.add(host)
++        results.append(ProspectCandidate(
++            name=name, website=website, location=ProspectLocation(),
++            market_signals={"deepseek_discovery": True},
++        ))
++    return results
+diff --git a/app/prospecting/sources.py b/app/prospecting/sources.py
+index 715ab57..982062d 100644
+--- a/app/prospecting/sources.py
++++ b/app/prospecting/sources.py
+@@ -356,9 +356,24 @@ class AuthorizedSourceExecutor:
+             candidates = list(result)
+             metrics = dict(result.metrics)
+         elif task.source == SourceName.brave_search:
+-            result = await self._brave(task, snapshot)
+-            candidates = list(result.candidates)
+-            metrics = dict(result.metrics)
++            from app.prospecting.deepseek_discovery import discovery_candidates
++
++            discoveries = [c for c in discovery_candidates(snapshot, task) if self._is_official_website_candidate(c)]
++            try:
++                result = await self._brave(task, snapshot)
++                candidates = list(result.candidates)
++                metrics = dict(result.metrics)
++            except (SourceNotConfigured, RuntimeError, httpx.HTTPError):
++                if not discoveries:
++                    raise
++                candidates, metrics = [], {"brave_unavailable": True}
++            existing = {normalize_website(c.website) for c in candidates}
++            novel = [c for c in discoveries if normalize_website(c.website) not in existing]
++            # Share the existing task limit between both discovery engines.
++            candidates = [c for index in range(max(len(candidates), len(novel)))
++                          for c in (candidates[index:index + 1] + novel[index:index + 1])]
++            metrics["deepseek_websites_researched"] = len(novel)
++            metrics["deepseek_duplicates_merged"] = len(discoveries) - len(novel)
+         else:
+             raise SourceNotConfigured(f"{task.source.value} is not a discovery source")
+ 
+@@ -809,6 +824,9 @@ class AuthorizedSourceExecutor:
+ 
+         add("website", candidate.website)
+         website_name = enrichment.get("name")
++        if website_name and candidate.market_signals.get("deepseek_discovery") and not candidate.evidence:
++            # The search title is only a hint. Use the crawled site's actual name.
++            candidate = candidate.model_copy(update={"name": str(website_name)[:300]})
+         candidate_name = normalize_name(candidate.name)[0]
+         if website_name and normalize_name(website_name)[0] == candidate_name:
+             add("name", website_name)
+@@ -1005,6 +1023,15 @@ class AuthorizedSourceExecutor:
+             "guiadeempresas.cl",
+             "chileinform.com",
+             "hotfrog.cl",
++            "cylex.cl",
++            "2x3.cl",
++            "todosnegocios.com",
++            "aiyellow.com",
++            "firmania.cl",
++            "homify.com",
++            "homify.cl",
++            "homify.tw",
++            "homify.it",
+             "mercantil.com",
+             "google.com",
+             "google.cl",
+diff --git a/tests/test_deepseek_discovery.py b/tests/test_deepseek_discovery.py
+new file mode 100644
+index 0000000..68d501c
+--- /dev/null
++++ b/tests/test_deepseek_discovery.py
+@@ -0,0 +1,84 @@
++from types import SimpleNamespace
++
++import pytest
++
++from app.prospecting.contracts import ProspectingCampaign, ProspectingRunSnapshot, SourceName, Territory
++from app.prospecting.deepseek_discovery import discovery_candidates
++from app.prospecting.sources import AuthorizedSourceExecutor, SourceNotConfigured, SourceSearchResult
++from app.prospecting.validation import validate_candidate, sanitize_unsubstantiated_external_fields
++from app.prospecting.scoring import classify_and_score
++
++
++@pytest.mark.parametrize("url", ["https://www.homify.tw/professionals/empresa", "https://www.cylex.cl/santiago/empresa", "https://www.2x3.cl/profesional/empresa", "https://cl.todosnegocios.com/empresa", "https://www.aiyellow.com/empresa", "https://firmania.cl/santiago/empresa"])
++def test_search_directories_are_not_official_business_sites(url):
++    assert AuthorizedSourceExecutor._is_blocked_discovery_domain(url)
++
++
++def scope():
++    campaign = ProspectingCampaign(crm_campaign_id="campaign", name="Climatizacion Santiago",
++        keywords=("climatizacion",), sources=(SourceName.brave_search, SourceName.official_website),
++        territories=(Territory(region_code="13", region_name="Metropolitana de Santiago",
++            comuna_code="13101", comuna_name="Santiago"),))
++    hit = {"task_id": "task", "name": "Clima Andes - Aire acondicionado", "website": "https://climaandes.cl/", "source_url": "https://climaandes.cl/"}
++    snapshot = ProspectingRunSnapshot(crm_run_id="run", campaign_version=1, campaign=campaign,
++        requested_by="admin", deepseek_discoveries=[hit, hit])
++    task = SimpleNamespace(id="task", source=SourceName.brave_search, region_code="13", region_name="Metropolitana de Santiago",
++        comuna_code="13101", comuna_name="Santiago", keyword="climatizacion", max_results=20)
++    return snapshot, task
++
++
++def test_seeds_survive_contract_but_cannot_be_imported_without_official_evidence():
++    snapshot, task = scope()
++    parsed = ProspectingRunSnapshot.model_validate(snapshot.model_dump())
++    candidates = discovery_candidates(parsed, task)
++    assert len(candidates) == 1
++    candidate = candidates[0]
++    assert candidate.evidence == [] and candidate.provider_ids == {}
++    assert candidate.location.comuna_code is None and candidate.phone is None
++    assert not candidate.import_eligible
++    assert not validate_candidate(candidate, snapshot).accepted
++    task.id = "other-task"
++    assert discovery_candidates(parsed, task) == []
++
++
++@pytest.mark.asyncio
++async def test_deepseek_survives_brave_failure_and_enriches_from_official_site(monkeypatch):
++    snapshot, task = scope()
++    executor = AuthorizedSourceExecutor()
++    async def unavailable(*args):
++        raise SourceNotConfigured("Brave unavailable")
++    monkeypatch.setattr(executor, "_brave", unavailable)
++    result = await executor.search(task, snapshot)
++    assert len(result.candidates) == 1
++    assert result.metrics["brave_unavailable"]
++    assert result.metrics["deepseek_websites_researched"] == 1
++    async def official(website):
++        assert website == "https://climaandes.cl/"
++        return {"name": "Clima Andes", "source_url": website, "description": "Instalacion y mantencion de aire acondicionado",
++            "phone": "+56961234567", "email": "ventas@climaandes.cl",
++            "locations": [{"comuna_name": "Santiago", "region_name": "Metropolitana de Santiago", "address": "Av. Matta 100", "source_url": website}]}
++    monkeypatch.setattr("app.prospecting.sources.enrich_from_website", official)
++    enriched = await executor.enrich_discovered(result.candidates[0], task, snapshot)
++    assert enriched.name == "Clima Andes"
++    assert enriched.phone == "+56961234567"
++    assert enriched.location.comuna_code == "13101"
++    assert {e.provider for e in enriched.evidence} == {SourceName.official_website}
++    assert any(e.field == "name" and e.value == "Clima Andes" for e in enriched.evidence)
++    validated = validate_candidate(sanitize_unsubstantiated_external_fields(classify_and_score(enriched, snapshot)), snapshot)
++    assert validated.accepted, validated.reasons
++
++
++@pytest.mark.asyncio
++async def test_duplicate_sites_are_not_crawled_twice_and_brave_failures_without_seeds_still_fail(monkeypatch):
++    snapshot, task = scope()
++    executor = AuthorizedSourceExecutor()
++    async def brave(*args):
++        return SourceSearchResult(tuple(discovery_candidates(snapshot, task)), {})
++    monkeypatch.setattr(executor, "_brave", brave)
++    result = await executor.search(task, snapshot)
++    assert len(result.candidates) == 1 and result.metrics["deepseek_duplicates_merged"] == 1
++    async def unavailable(*args):
++        raise SourceNotConfigured("unavailable")
++    monkeypatch.setattr(executor, "_brave", unavailable)
++    with pytest.raises(SourceNotConfigured):
++        await executor.search(task, snapshot.model_copy(update={"deepseek_discoveries": []}))

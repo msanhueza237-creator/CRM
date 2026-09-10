@@ -362,6 +362,7 @@ export class ProspectingRepository {
           description: campaign.description || null,
           sector: campaign.sector,
           keywords: campaign.keywords,
+          deepseek_enabled: campaign.deepseekEnabled === true,
           sources: campaign.sources,
           region_codes: campaign.territories.map((territory) => territory.regionCode),
           comuna_codes: campaign.territories.flatMap((territory) => territory.comunaCodes),
@@ -403,6 +404,7 @@ export class ProspectingRepository {
           description: campaign.description || null,
           sector: campaign.sector,
           keywords: campaign.keywords,
+          deepseek_enabled: campaign.deepseekEnabled === true,
           sources: campaign.sources,
           region_codes: campaign.territories.map((territory) => territory.regionCode),
           comuna_codes: campaign.territories.flatMap((territory) => territory.comunaCodes),
@@ -433,6 +435,7 @@ export class ProspectingRepository {
     if (this.mode === "supabase") ensureOfficialTerritories(campaign);
     const now = new Date().toISOString();
     const snapshot: ProspectingRunSnapshot = {
+      deepseekEnabled: campaign.deepseekEnabled === true,
       schemaVersion: 1,
       campaignVersion: campaign.version,
       campaignId: campaign.id,
@@ -712,6 +715,7 @@ function mapCampaign(row: Row, regions: GeoRegion[], comunas: GeoComuna[]): Pros
     sector: "hvac",
     status: campaignStatuses.includes(statusValue) ? statusValue : "draft",
     keywords: arrayOfStrings(row.keywords),
+    deepseekEnabled: row.deepseek_enabled === true,
     sources: arrayOfStrings(row.sources).map(asSource),
     territories,
     targetTypes: normalizeCompanyTypes(row.target_types),
@@ -748,7 +752,18 @@ function mapRun(row: Row, campaign?: ProspectingCampaign): ProspectingRun {
   const statusValue = String(row.status ?? "pending") as ProspectingRunStatus;
   const snapshot = mapSnapshot(row.snapshot, campaign, row);
   const rawProgress = asRecord(row.progress);
+  const assistance = asRecord(row.search_assistance);
   return {
+    searchAssistance: {
+      status: String(assistance.status ?? (snapshot.deepseekEnabled ? "pending" : "disabled")),
+      model: String(assistance.model ?? ""), reasonCode: String(assistance.reason_code ?? ""),
+      completedAt: String(assistance.completed_at ?? ""),
+      mode: String(assistance.mode ?? ""), discoveredWebsites: asNumber(assistance.discovered_websites), webRequests: asNumber(assistance.web_requests),
+      queries: (Array.isArray(assistance.queries) ? assistance.queries : []).map(q => typeof q === "string" ? q : String(asRecord(q).effective ?? "")),
+      discoveries: (Array.isArray(assistance.discoveries) ? assistance.discoveries : []).map(asRecord)
+        .filter(d => typeof d.website === "string" && /^https?:\/\//i.test(d.website))
+        .map(d => ({ name: String(d.name ?? ""), website: String(d.website) })),
+    },
     id: String(row.id),
     campaignId: String(row.campaign_id ?? snapshot.campaignId),
     status: runStatuses.includes(statusValue) ? statusValue : "pending",
@@ -785,6 +800,7 @@ function mapSnapshot(value: unknown, campaign: ProspectingCampaign | undefined, 
   const validSnapshotTargetTypes = filterCompanyTypes(snapshotTargetTypes);
   return {
     schemaVersion: 1,
+    deepseekEnabled: raw.deepseek_enabled === true || raw.deepseekEnabled === true,
     campaignVersion: Math.max(1, asNumber(raw.campaignVersion ?? raw.campaign_version ?? rawCampaign.version, campaign?.version ?? 1)),
     campaignId: String(
       raw.campaignId ?? raw.campaign_id ?? rawCampaign.crm_campaign_id ?? rawCampaign.id ?? row.campaign_id ?? campaign?.id ?? "",

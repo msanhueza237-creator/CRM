@@ -83,7 +83,7 @@ test("server verifies active administrators before touching storage or provider"
 test("status is redacted and cache-disabled, and does not contact DeepSeek", async () => {
   const f = fixture({ row: await connected() });
   const { body, response } = await f.request();
-  assert.equal(body.configured, true); assert.equal(body.scope, "credentials_only");
+  assert.equal(body.configured, true); assert.equal(body.scope, "search_assistance");
   assert.equal(response.headers.get("cache-control"), "no-store");
   assert.ok(!JSON.stringify(body).includes(f.state.row.api_key_encrypted));
   assert.equal(f.state.writes.length, 0);

@@ -1229,8 +1229,40 @@ async function testSafetyRegressions(sql) {
   }
 }
 
+async function testSearchAssistanceContract(sql) {
+  const db = await createDatabase(sql);
+  try {
+    await db.exec(sql.prospecting);
+    await db.exec(sql.highPrecision);
+    await configureAdmin(db);
+    const migration = await fs.readFile(new URL("../supabase/prospecting_deepseek_search.sql", import.meta.url), "utf8");
+    await db.exec(migration);
+    const cid = await insertCampaign(db, "Busqueda asistida", "brave_search", 10);
+    await db.query("update prospecting_campaigns set deepseek_enabled=true where id=$1", [cid]);
+    const claim = await enqueueAndClaim(db, cid, "worker-assistance");
+    assert.equal(claim.run.snapshot.deepseek_enabled, true);
+    assert.equal(claim.run.snapshot.campaign_version, 2);
+    const reservation = (await db.query("select reserve_prospecting_search_assistance($1,$2,$3,$4) result", [claim.run.id, API_KEY_ID, "worker-assistance", claim.lease_token])).rows[0].result;
+    assert.ok(reservation.reservation_token);
+    const plan = { status: "applied", mode: "web_discovery_v1", queries: ["empresas hvac Chile"], discoveries: [{ name: "Clima Andes", website: "https://climaandes.cl/", source_url: "https://climaandes.cl/", task_id: claim.tasks[0].id }] };
+    await db.query("select finish_prospecting_search_assistance($1,$2,$3::jsonb)", [claim.run.id, reservation.reservation_token, JSON.stringify(plan)]);
+    // Web enrichment keeps the same task contract and cannot itself create entities.
+    await db.query("select append_prospecting_events($1,$2,$3,$4,$5::jsonb)", [claim.run.id, API_KEY_ID, "worker-assistance", claim.lease_token, JSON.stringify([
+      { event_id: "assisted-query", task_id: claim.tasks[0].id, keyword: "hvac", stage: "search", message: "Consulta ejecutada", task_status: "completed", metrics: { deepseek_websites_researched: 1 } },
+    ])]);
+    const persisted = (await db.query("select snapshot,search_assistance,completed_tasks from prospecting_runs where id=$1", [claim.run.id])).rows[0];
+    assert.deepEqual(persisted.snapshot.campaign.keywords, ["hvac"]);
+    assert.equal(persisted.search_assistance.status, "applied");
+    assert.equal(persisted.search_assistance.mode, "web_discovery_v1");
+    assert.equal(persisted.snapshot.deepseek_discoveries, undefined);
+    assert.equal(persisted.completed_tasks, 1);
+    assert.equal((await db.query("select count(*)::integer n from prospect_entities")).rows[0].n, 0);
+  } finally { await db.close(); }
+}
+
 const sql = await loadSql();
 await testMigrationAndNormalization(sql);
 await testRunContract(sql);
 await testSafetyRegressions(sql);
+await testSearchAssistanceContract(sql);
 console.log("prospecting contract: ok");

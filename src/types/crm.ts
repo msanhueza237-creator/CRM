@@ -126,6 +126,7 @@ export interface ProspectingLimits {
 }
 
 export interface ProspectingCampaign {
+  deepseekEnabled?: boolean;
   id: string;
   version: number;
   name: string;
@@ -150,6 +151,7 @@ export interface ProspectingRunProgress {
 }
 
 export interface ProspectingRunSnapshot {
+  deepseekEnabled?: boolean;
   schemaVersion: 1;
   campaignVersion: number;
   campaignId: string;
@@ -165,6 +167,17 @@ export interface ProspectingRunSnapshot {
 }
 
 export interface ProspectingRun {
+  searchAssistance?: {
+    status: string;
+    model: string;
+    reasonCode: string;
+    completedAt: string;
+    mode: string;
+    discoveredWebsites: number;
+    webRequests: number;
+    queries: string[];
+    discoveries: { name: string; website: string }[];
+  };
   id: string;
   campaignId: string;
   status: ProspectingRunStatus;

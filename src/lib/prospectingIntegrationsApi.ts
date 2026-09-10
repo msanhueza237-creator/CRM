@@ -8,7 +8,7 @@ export interface DeepSeekStatus {
   models: string[];
   lastCheckedAt: string | null;
   lastErrorCode: string | null;
-  scope: "credentials_only";
+  scope: "credentials_only" | "search_assistance";
 }
 
 export async function requestDeepSeekSettings(
@@ -35,7 +35,7 @@ export async function requestDeepSeekSettings(
     if (response.status === 404) throw new Error("La integración DeepSeek todavía no está instalada en el servidor.");
     throw new Error(result?.error || "No se pudo consultar la configuración de DeepSeek.");
   }
-  if (result?.provider !== "deepseek" || result?.scope !== "credentials_only" || typeof result.ready !== "boolean") {
+  if (result?.provider !== "deepseek" || !["credentials_only", "search_assistance"].includes(result?.scope) || typeof result.ready !== "boolean") {
     throw new Error("El servidor devolvió una configuración no válida.");
   }
   return result;
