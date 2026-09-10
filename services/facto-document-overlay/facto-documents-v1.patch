@@ -1,5 +1,5 @@
 diff --git a/app/hub/worker.py b/app/hub/worker.py
-index beed0b2..554f382 100644
+index beed0b2..78d82ad 100644
 --- a/app/hub/worker.py
 +++ b/app/hub/worker.py
 @@ -31,6 +31,27 @@ _facto_document_detail_cached_at: dict[str, float] = {}
@@ -150,7 +150,7 @@ index beed0b2..554f382 100644
 -                                row for row in detailed_documents if _is_facto_purchase_document(row)
 +                                row for row in detailed_documents
 +                                if _is_facto_purchase_snapshot_document(row)
-+                            ]
+                             ]
 +                            if document_detail_failures:
 +                                await crm.report_integration(
 +                                    provider="facto",
@@ -170,7 +170,7 @@ index beed0b2..554f382 100644
 +                            issued_records = [
 +                                record for record in evidence
 +                                if _is_facto_issued_document(record["payload"])
-                             ]
++                            ]
 +                            purchase_records = [
 +                                record for record in evidence
 +                                if _is_facto_purchase_document(record["payload"])
@@ -237,7 +237,7 @@ index beed0b2..554f382 100644
              commercial_customers = extract_commercial_snapshot(
                  facto_customers,
                  facto_sales_documents,
-@@ -491,16 +568,22 @@ async def load_facto_details(
+@@ -491,16 +568,23 @@ async def load_facto_details(
      documents_payload,
      *,
      concurrency: int = 5,
@@ -245,9 +245,11 @@ index beed0b2..554f382 100644
  ) -> tuple[list[dict], list[dict]]:
      """Read full Facto records required for stock and auditable sales demand."""
  
-     semaphore = asyncio.Semaphore(max(1, concurrency))
+-    semaphore = asyncio.Semaphore(max(1, concurrency))
++    semaphore = asyncio.Semaphore(max(1, min(2, concurrency)))
      product_semaphore = asyncio.Semaphore(max(1, min(2, concurrency)))
      product_retry_until = 0.0
++    document_retry_until = 0.0
 +    detail_failures = document_detail_failures if document_detail_failures is not None else set()
  
      def record_id(row: dict, *, kind: str) -> object | None:
@@ -260,7 +262,7 @@ index beed0b2..554f382 100644
          id_keys = (
              ("document_id", "id")
              if kind == "document"
-@@ -549,10 +632,13 @@ async def load_facto_details(
+@@ -549,10 +633,13 @@ async def load_facto_details(
  
      def merge_detail(row: dict, detail: dict) -> dict:
          merged = {**row, **detail}
@@ -278,20 +280,41 @@ index beed0b2..554f382 100644
          return merged
  
      async def product_detail(row: dict) -> dict:
-@@ -588,6 +674,7 @@ async def load_facto_details(
+@@ -586,8 +673,10 @@ async def load_facto_details(
+         return row
+ 
      async def document_detail(row: dict) -> dict:
++        nonlocal document_retry_until
          document_id = record_id(row, kind="document")
          if document_id is None:
 +            detail_failures.add(normalize_product_records([row])[0]["external_id"])
              return row
          cache_key = str(document_id)
          client_settings = getattr(client, "settings", None)
-@@ -608,9 +695,16 @@ async def load_facto_details(
-                 detail = await client.document(document_id)
-             except Exception:  # noqa: BLE001
-                 logger.warning("Facto document detail unavailable id=%s", document_id)
-+                detail_failures.add(cache_key)
-                 return row
+@@ -604,13 +693,29 @@ async def load_facto_details(
+         ):
+             return merge_detail(row, _facto_document_detail_cache[cache_key])
+         async with semaphore:
+-            try:
+-                detail = await client.document(document_id)
+-            except Exception:  # noqa: BLE001
+-                logger.warning("Facto document detail unavailable id=%s", document_id)
+-                return row
++            for attempt in range(4):
++                try:
++                    remaining = document_retry_until - time.monotonic()
++                    if remaining > 0:
++                        await asyncio.sleep(remaining)
++                    detail = await client.document(document_id)
++                    break
++                except Exception as exc:  # noqa: BLE001
++                    if attempt < 3 and getattr(exc, "status_code", None) in (429, 503):
++                        delay = getattr(exc, "retry_after", None) or 60
++                        document_retry_until = max(document_retry_until, time.monotonic() + delay)
++                        continue
++                    logger.warning("Facto document detail unavailable id=%s", document_id)
++                    detail_failures.add(cache_key)
++                    return row
          detail_record = unwrap_detail(detail, kind="document")
          if not detail_record:
 +            detail_failures.add(cache_key)
@@ -303,7 +326,7 @@ index beed0b2..554f382 100644
              return row
          _facto_document_detail_cache[cache_key] = detail_record
          _facto_document_detail_cached_at[cache_key] = time.monotonic()
-@@ -620,10 +714,14 @@ async def load_facto_details(
+@@ -620,10 +725,14 @@ async def load_facto_details(
      document_rows = payload_rows(documents_payload, "data", "documents", "items")
      products = await asyncio.gather(*(product_detail(row) for row in product_rows))
      documents = await asyncio.gather(*(document_detail(row) for row in document_rows))
@@ -319,7 +342,7 @@ index beed0b2..554f382 100644
      value = (
          row.get("document_type_id")
          or row.get("type_id")
-@@ -640,15 +738,106 @@ def _facto_document_type_id(row: dict) -> int | None:
+@@ -640,15 +749,106 @@ def _facto_document_type_id(row: dict) -> int | None:
  
  
  def _is_facto_sales_document(row: dict) -> bool:
@@ -331,9 +354,9 @@ index beed0b2..554f382 100644
 +        and _facto_document_type_id(row) in FACTO_SALES_DOCUMENT_TYPE_IDS
 +        and _facto_taxbureau_code(row) not in FACTO_NOTE_TAXBUREAU_CODES
 +    )
-+
  
 -    return _facto_document_type_id(row) in FACTO_SALES_DOCUMENT_TYPE_IDS
++
 +def _facto_document_field(row: dict, key: str):
 +    if isinstance(row.get("header"), dict):
 +        value = _facto_document_field(row["header"], key)
@@ -429,18 +452,18 @@ index beed0b2..554f382 100644
  
  
  async def load_facto_financial_documents(
-@@ -657,33 +846,109 @@ async def load_facto_financial_documents(
+@@ -657,33 +857,109 @@ async def load_facto_financial_documents(
      history_start: date | None = None,
      max_pages: int = 20,
  ) -> tuple[list[dict], list[dict]]:
 -    """Load and partition Facto documents into issued sales and purchases."""
 +    """Load issued/received financial evidence, not unsigned snapshot inputs.
-+
+ 
 +    Completeness concerns the requested API date/status range only. A safety
 +    stop raises with the collected records so callers can persist evidence
 +    while withholding history-dependent snapshots.
 +    """
- 
++
 +    if max_pages < 1:
 +        raise ValueError("max_pages must be positive")
      end = date.today()
@@ -551,7 +574,7 @@ index beed0b2..554f382 100644
  async def load_facto_inbox_documents(
      client: FactoClient,
      *,
-@@ -833,7 +1098,7 @@ async def load_facto_sales_documents(
+@@ -833,7 +1109,7 @@ async def load_facto_sales_documents(
          history_start=history_start,
          max_pages=max_pages,
      )
@@ -560,7 +583,7 @@ index beed0b2..554f382 100644
  
  
  async def load_paginated_records(
-@@ -903,9 +1168,8 @@ def _is_explicit_last_page(payload, page: int) -> bool:
+@@ -903,9 +1179,8 @@ def _is_explicit_last_page(payload, page: int) -> bool:
                  return True
          except (TypeError, ValueError):
              pass
@@ -572,7 +595,7 @@ index beed0b2..554f382 100644
              return True
      return False
  
-@@ -917,7 +1181,8 @@ def normalize_product_records(payload) -> list[dict]:
+@@ -917,7 +1192,8 @@ def normalize_product_records(payload) -> list[dict]:
          if not isinstance(row, dict):
              continue
          external_id = (
@@ -584,13 +607,14 @@ index beed0b2..554f382 100644
              or row.get("order_id")
 diff --git a/tests/test_facto_document_ingestion.py b/tests/test_facto_document_ingestion.py
 new file mode 100644
-index 0000000..0e3ab25
+index 0000000..4bddb34
 --- /dev/null
 +++ b/tests/test_facto_document_ingestion.py
-@@ -0,0 +1,544 @@
+@@ -0,0 +1,563 @@
 +"""Offline regressions for document evidence, independent of sales snapshots."""
 +
 +import asyncio
++from app.integrations.facto import FactoError
 +from copy import deepcopy
 +from datetime import date
 +from types import SimpleNamespace
@@ -1132,3 +1156,21 @@ index 0000000..0e3ab25
 +        and "incomplete" in report["message"]
 +        for report in reports
 +    )
++async def test_document_rate_limit_preserves_evidence_and_retries(monkeypatch):
++    from app.hub import worker
++    worker._facto_document_detail_cache.clear()
++    worker._facto_document_detail_cached_at.clear()
++    sleeps = []
++    async def sleep(seconds): sleeps.append(seconds)
++    monkeypatch.setattr(worker.asyncio, "sleep", sleep)
++    class Client:
++        calls = 0
++        async def document(self, ident):
++            self.calls += 1
++            if self.calls == 1: raise FactoError("limited", status_code=429, retry_after=2)
++            return {"document_id": ident, "header": {"received_issued_flag": 1}, "references": [{"reference_number": 1534}]}
++    client = Client()
++    failures = set()
++    _, docs = await worker.load_facto_details(client, [], [{"document_id": 90001}], document_detail_failures=failures)
++    assert client.calls == 2 and sleeps and not failures
++    assert docs[0]["references"][0]["reference_number"] == 1534

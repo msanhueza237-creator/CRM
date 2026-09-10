@@ -28,6 +28,9 @@ Tests are in the source patch, not the runtime image.
   ingestion retains references. A failed, empty or mismatched detail read does not
   downgrade an existing enriched record to a bare summary. That document is skipped
   for evidence writes, reported incomplete, and retried on a subsequent cycle.
+- Detail requests use at most two concurrent calls and retry HTTP 429/503 up to
+  three times, honoring Retry-After (60 seconds when absent). A shared cooldown
+  prevents queued document reads from immediately repeating a rejected burst.
 - Credit/debit notes added to evidence are NOT positive sales inputs for inventory,
   commercial or financial snapshots, including exception fallbacks. Received
   credit signing remains limited to the previously supported internal type 28.
