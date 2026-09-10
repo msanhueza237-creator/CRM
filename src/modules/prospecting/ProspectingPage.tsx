@@ -13,6 +13,7 @@ import {
   Eye,
   Filter,
   Globe2,
+  KeyRound,
   Link2,
   ListChecks,
   MapPin,
@@ -55,8 +56,9 @@ import {
   type ProspectingDataMode,
 } from "./prospectingRepository";
 import { HistoricalBaseView } from "./HistoricalBaseView";
+import { DeepSeekSettings } from "./DeepSeekSettings";
 
-type ViewTab = "campaigns" | "operation" | "candidates" | "historical";
+type ViewTab = "campaigns" | "operation" | "candidates" | "historical" | "deepseek";
 type Notice = { type: "info" | "success" | "error"; text: string } | null;
 type CandidateStatusFilter = ProspectReviewStatus | "all" | "active";
 
@@ -635,6 +637,9 @@ export function ProspectingPage() {
         <TabButton active={tab === "historical"} onClick={() => setTab("historical")} icon={<Database size={17} />}>
           Base histórica
         </TabButton>
+        {canConfigure ? <TabButton active={tab === "deepseek"} onClick={() => setTab("deepseek")} icon={<KeyRound size={17} />}>
+          DeepSeek API
+        </TabButton> : null}
       </div>
 
       {formOpen && canDraft ? (
@@ -720,6 +725,7 @@ export function ProspectingPage() {
       ) : null}
 
       {tab === "historical" ? <HistoricalBaseView role={role} onNotice={setNotice} /> : null}
+      {tab === "deepseek" && canConfigure ? <DeepSeekSettings key={user?.id} enabled={dataMode === "supabase"} /> : null}
 
       <div className="prospecting-role-note">
         <ShieldCheck size={16} />
