@@ -40,6 +40,8 @@ export interface AccountingSourceDocument {
   id: string;
   source_type: string;
   source_key: string;
+  reference_label?: string;
+  journal_entry_id?: string | null;
   document_type: string;
   folio: string | null;
   counterpart_tax_id: string | null;
@@ -423,6 +425,13 @@ export interface AccountingDashboardTotals {
   salesLedger?: number;
   salesPending?: number;
   salesPendingDocuments?: number;
+  purchasesDomestic?: number;
+  // Merchandise only; landed costs invoiced domestically are already in purchasesDomestic.
+  purchasesInternational?: number;
+  purchasesNet?: number;
+  // Informational magnitudes, already deducted from sales and purchasesNet respectively.
+  salesCreditNotes?: number;
+  purchaseCreditNotes?: number;
   costs: number;
   expenses: number;
   otherResults: number;
@@ -449,6 +458,15 @@ export interface AccountingDashboardAnalytics {
   to: string;
   monthly: AccountingDashboardMonth[];
   latestSales?: Array<{ id: string; folio: string; issuedOn: string; netClp: number; posted: boolean }>;
+  purchaseDocuments?: Array<{
+    id: string;
+    folio: string;
+    issuedOn: string;
+    netClp: number;
+    kind: "domestic" | "international";
+    counterpart: string;
+    sourceType?: string;
+  }>;
   current: AccountingDashboardTotals;
   previousYear: AccountingDashboardTotals;
   expenseBreakdown: {

@@ -4,19 +4,22 @@ import ts from "typescript";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as icons from "lucide-react";
+import { reportPeriod } from "../src/modules/accounting/reportNavigation.ts";
 
 const source = await readFile("src/modules/accounting/AccountingCenterPage.tsx", "utf8");
 const tree = ts.createSourceFile("page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const names = ["FactoView", "ReceivablesView", "PayablesView", "FactoExcelPreviewDialog"];
+const names = ["FactoView", "ReceivablesView", "PayablesView", "FactoExcelPreviewDialog", "documentTypeLabel"];
 const pieces = tree.statements.filter((node) => names.includes(node.name?.text)
   || (ts.isVariableStatement(node) && node.declarationList.declarations.some((d) => d.name.getText(tree) === "factoExcelProfiles")));
 const code = ts.transpileModule(pieces.map((node) => node.getText(tree)).join("\n"), {
   compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 }).outputText;
 const label = (value) => value || "Sin fecha";
+let params = new URLSearchParams();
 const context = {
   React, ...Object.fromEntries(["Upload", "Search", "FileSpreadsheet", "Download", "AlertTriangle", "ShieldCheck", "X", "ScanSearch", "RefreshCw"].map((name) => [name, icons[name]])), useState: React.useState, useEffect: React.useEffect,
   today: () => "2026-09-09", normalize: (text) => String(text).toLowerCase(),
+  useSearchParams: () => [params], reportPeriod,
   number: (value) => Number(value || 0), clp: (value) => `$${Number(value).toLocaleString("es-CL")}`,
   date: label, shortDate: label, dateTime: label, factoProfileLabel: label, humanize: label,
   Empty: ({ text }) => React.createElement("p", null, text),
@@ -48,6 +51,17 @@ const review = renderToStaticMarkup(React.createElement(components.FactoExcelPre
 assert.match(review, /\$150.000/);
 assert.match(review, /\$30.000/);
 assert.match(review, /disabled=""[^>]*>Confirmar 1 registros/);
+params = new URLSearchParams({ from: "2026-06-01", to: "2026-06-30", search: "ADS", type: "exempt" });
+const sourcesData = { ...data, factoFreshness: {}, factoSyncRuns: [], factoReceivableSyncRuns: [], paymentEvents: [], sources: [
+  { id: "ads", source_type: "FACTO", document_type: "purchase_exempt_invoice", folio: "1702", issued_on: "2026-06-03", counterpart_name: "ADS CARGO", total_clp: 3128000, currency: "CLP", status: "validated", data_quality: "validated", journal_entry_id: "posted" },
+  { id: "other", source_type: "FACTO", document_type: "purchase_invoice", folio: "770", issued_on: "2026-06-03", counterpart_name: "ADS CARGO", total_clp: 101150, currency: "CLP", status: "validated", data_quality: "validated" },
+  { id: "old", source_type: "FACTO", document_type: "purchase_exempt_invoice", folio: "1214", issued_on: "2026-01-20", counterpart_name: "ADS CARGO", total_clp: 1860000, currency: "CLP", status: "validated", data_quality: "validated" },
+] };
+const filtered = renderToStaticMarkup(React.createElement(components.FactoView, { ...props, data: sourcesData }));
+assert.match(filtered, /Factura de compra exenta 1702/);
+assert.match(filtered, /Contabilizado/);
+assert.doesNotMatch(filtered, /Factura de compra 770|Factura de compra exenta 1214/);
+assert.match(filtered, /1 de 3/);
 await mkdir("tmp", { recursive: true });
 await writeFile("tmp/facto-excel-ui.html", `<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Prueba de carga Facto</title><link rel="stylesheet" href="/src/styles.css"><link rel="stylesheet" href="/src/modules/accounting/accountingCenter.css"><body><main class="accounting-center-page" style="padding:16px;max-width:1200px;margin:auto">${upload}</main></body></html>`);
 console.log("Excel Facto: acceso, formulario, límites de vista, totales y bloqueo de errores verificados.");

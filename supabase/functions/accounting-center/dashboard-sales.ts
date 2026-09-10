@@ -1,4 +1,5 @@
 type Row = Record<string, unknown>;
+import { isPostableFactoDocument } from "./facto-document-policy.ts";
 
 const salesTypes = new Set([
   "sales_invoice", "sales_exempt_invoice", "sales_receipt", "sales_exempt_receipt",
@@ -12,8 +13,7 @@ export function accountingToday(now = new Date()) {
 }
 
 export function dashboardDocumentSales(document: Row): number | null {
-  if (!salesTypes.has(String(document.document_type)) || document.data_quality !== "validated"
-    || !["validated", "posted"].includes(String(document.status))) return null;
+  if (!salesTypes.has(String(document.document_type)) || !isPostableFactoDocument(document)) return null;
   const amount = (value: unknown) => value === null || value === undefined || value === ""
     ? null : Number.isFinite(Number(value)) ? Number(value) : null;
   const rate = document.currency === "CLP" ? 1 : amount(document.exchange_rate);
@@ -46,6 +46,6 @@ export function dashboardSalesEvidence(documents: Row[], lines: Row[], incomeAcc
     if (!id || seen.has(id) || !/^\d{4}-\d{2}-\d{2}$/.test(issuedOn) || issuedOn > asOf || netClp === null) return [];
     seen.add(id);
     return [{ id, folio: String(document.folio || document.external_id || "Sin folio"), issuedOn,
-      netClp, posted: postedIds.has(id) }];
+      netClp, posted: postedIds.has(id), creditNote: document.document_type === "sales_credit_note" }];
   });
 }

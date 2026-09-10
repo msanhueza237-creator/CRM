@@ -549,11 +549,13 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
   const [receivablesPreview, setReceivablesPreview] = useState<AccountingFactoReceivablesSyncDetail | null>(null);
   const [receivablesPreviewLoading, setReceivablesPreviewLoading] = useState(false);
   const [receivablesError, setReceivablesError] = useState("");
-  const [query, setQuery] = useState("");
-  const [documentFrom, setDocumentFrom] = useState("2026-01-01");
-  const [documentTo, setDocumentTo] = useState(today());
-  const [sourceFilter, setSourceFilter] = useState("all");
+  const [documentParams] = useSearchParams();
+  const [query, setQuery] = useState(documentParams.get("search") || "");
+  const [documentFrom, setDocumentFrom] = useState(reportPeriod(documentParams, `${today().slice(0, 4)}-01-01`, today()).from);
+  const [documentTo, setDocumentTo] = useState(reportPeriod(documentParams, `${today().slice(0, 4)}-01-01`, today()).to);
+  const [sourceFilter, setSourceFilter] = useState(documentParams.get("source") || "all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState(documentParams.get("type") || "all");
   const [profile, setProfile] = useState<AccountingFactoExcelProfile>("facto_unpaid_documents");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<AccountingFactoExcelPreview | null>(null);
@@ -564,12 +566,13 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
   const supportBatches = data.batches.filter((batch) => ["COLLECTIONS", "CHECKS", "PAYMENTS"].includes(batch.source_type));
   const normalizedQuery = normalize(query);
   const filteredSources = sources.filter((row) => {
-    const matchesQuery = !normalizedQuery || normalize([row.folio, row.counterpart_name, row.counterpart_tax_id, row.document_type].filter(Boolean).join(" ")).includes(normalizedQuery);
+    const matchesQuery = !normalizedQuery || normalize([row.folio, row.counterpart_name, row.counterpart_tax_id, row.document_type, documentTypeLabel(row.document_type), row.reference_label].filter(Boolean).join(" ")).includes(normalizedQuery);
     const matchesFrom = !documentFrom || !row.issued_on || row.issued_on.slice(0, 10) >= documentFrom;
     const matchesTo = !documentTo || !row.issued_on || row.issued_on.slice(0, 10) <= documentTo;
     const matchesSource = sourceFilter === "all" || row.source_type === sourceFilter;
-    const matchesStatus = statusFilter === "all" || row.status === statusFilter || row.data_quality === statusFilter;
-    return matchesQuery && matchesFrom && matchesTo && matchesSource && matchesStatus;
+    const matchesStatus = statusFilter === "all" || (statusFilter === "posted" ? Boolean(row.journal_entry_id) || row.status === "posted" : row.status === statusFilter || row.data_quality === statusFilter);
+    const matchesType = typeFilter === "all" || (typeFilter === "exempt" ? row.document_type.includes("exempt") : typeFilter === "credit" ? row.document_type.includes("credit_note") : typeFilter === "international" ? row.document_type === "inventory_receipt" || row.document_type === "purchase_document" : typeFilter === "domestic" ? row.document_type.startsWith("purchase_") && row.document_type !== "purchase_document" : typeFilter === "purchases" ? row.document_type.startsWith("purchase_") || row.document_type === "inventory_receipt" : row.document_type.startsWith(typeFilter));
+    return matchesQuery && matchesFrom && matchesTo && matchesSource && matchesStatus && matchesType;
   });
 
   useEffect(() => {
@@ -689,7 +692,8 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
       <div className="accounting-panel-heading"><div><p>Evidencia normalizada</p><h2>Documentos financieros</h2><span>Busca por cliente, proveedor, RUT o folio y combina filtros de fecha, fuente y estado.</span></div><strong>{filteredSources.length} de {sources.length}</strong></div>
       <div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Nombre, RUT, folio o documento" /><label>Desde<input type="date" value={documentFrom} onChange={(event) => setDocumentFrom(event.target.value)} /></label><label>Hasta<input type="date" value={documentTo} onChange={(event) => setDocumentTo(event.target.value)} /></label><label>Fuente<select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}><option value="all">Todas</option><option value="FACTO">Facto</option><option value="COMERCIO_EXTERIOR">Comercio Exterior</option></select></label><label>Estado<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos</option><option value="validated">Validado</option><option value="extracted">Extraído</option><option value="inconsistent">Inconsistente</option><option value="pending">Pendiente</option><option value="posted">Contabilizado</option></select></label></div>
       <div className="accounting-inline-stats"><span><strong>{sources.filter((row) => row.source_type === "FACTO").length}</strong> Facto</span><span><strong>{sources.filter((row) => row.source_type === "COMERCIO_EXTERIOR").length}</strong> Comercio Exterior</span><span><strong>{sources.filter((row) => row.status === "inconsistent").length}</strong> requieren revisión</span><span><strong>{data.paymentEvents.filter((row) => row.matching_status !== "reconciled").length}</strong> eventos de pago por conciliar</span></div>
-      {filteredSources.length ? <Table headers={["Fuente", "Fecha", "Documento", "Contraparte", "Total", "Calidad", "Estado"]}>{filteredSources.map((row) => <tr key={row.id}><td data-label="Fuente"><Status value={row.source_type === "FACTO" ? "Facto" : "Comercio Exterior"} tone="neutral" /></td><td data-label="Fecha">{date(row.issued_on)}</td><td data-label="Documento"><strong>{humanize(row.document_type)} {row.folio || ""}</strong></td><td data-label="Contraparte">{row.counterpart_name || "Sin identificar"}<small>{row.counterpart_tax_id || ""}</small></td><td data-label="Total">{clp(row.total_clp)}<small>{row.currency !== "CLP" ? `${money(row.total_amount)} ${row.currency}` : ""}</small></td><td data-label="Calidad"><Status value={humanize(row.data_quality)} tone={row.data_quality === "validated" ? "success" : "review"} /></td><td data-label="Estado">{humanize(row.status)}</td></tr>)}</Table> : <Empty icon={Search} text="No hay documentos que coincidan con estos filtros." />}
+      <label>Tipo de documento<select value={typeFilter} onChange={event => setTypeFilter(event.target.value)}><option value="all">Todos los documentos</option><option value="sales_">Ventas</option><option value="purchases">Compras</option><option value="domestic">Compras nacionales</option><option value="exempt">Facturas y boletas exentas</option><option value="credit">Notas de crédito</option><option value="international">Compras internacionales recibidas</option></select></label>
+      {filteredSources.length ? <Table headers={["Fuente", "Fecha", "Documento", "Contraparte", "Total", "Calidad", "Estado"]}>{filteredSources.map((row) => <tr key={row.id}><td data-label="Fuente"><Status value={row.source_type === "FACTO" ? "Facto" : "Comercio Exterior"} tone="neutral" /></td><td data-label="Fecha">{date(row.issued_on)}</td><td data-label="Documento"><strong>{documentTypeLabel(row.document_type)} {row.folio || ""}</strong>{row.reference_label ? <small>{row.reference_label}</small> : null}</td><td data-label="Contraparte">{row.counterpart_name || "Sin identificar"}<small>{row.counterpart_tax_id || ""}</small></td><td data-label="Total">{clp(row.total_clp)}<small>{row.currency !== "CLP" ? `${money(row.total_amount)} ${row.currency}` : ""}</small></td><td data-label="Calidad"><Status value={humanize(row.data_quality)} tone={row.data_quality === "validated" ? "success" : "review"} /></td><td data-label="Estado">{row.journal_entry_id ? "Contabilizado" : humanize(row.status)}</td></tr>)}</Table> : <Empty icon={Search} text="No hay documentos que coincidan con estos filtros." />}
     </section>
     : null}
     {preview ? <FactoExcelPreviewDialog preview={preview} busy={busy} close={() => setPreview(null)} runAction={runAction} /> : null}
@@ -1276,6 +1280,10 @@ function shortDate(value: string | null | undefined) { if (!value) return "—";
 function dateTime(value: string | null) { if (!value) return "Sin fecha"; const parsed = new Date(value); return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString("es-CL", { dateStyle: "short", timeStyle: "short" }); }
 function today() { return new Date().toISOString().slice(0, 10); }
 function normalize(value: string) { return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
+function documentTypeLabel(value: string) {
+  const labels: Record<string, string> = { sales_invoice: "Factura de venta", sales_exempt_invoice: "Factura de venta exenta", sales_credit_note: "Nota de crédito de venta", sales_debit_note: "Nota de débito de venta", sales_receipt: "Boleta de venta", sales_exempt_receipt: "Boleta exenta", purchase_invoice: "Factura de compra", purchase_exempt_invoice: "Factura de compra exenta", purchase_credit_note: "Nota de crédito de proveedor", purchase_debit_note: "Nota de débito de proveedor", purchase_document: "Factura extranjera", inventory_receipt: "Importación recibida", import_operation: "Operación de importación" };
+  return labels[value] || humanize(value);
+}
 function humanize(value: string) { return value.replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase()); }
 function accountType(value: AccountingAccount["account_type"]) { return ({ asset: "Activo", liability: "Pasivo", equity: "Patrimonio", income: "Ingreso", cost: "Costo", expense: "Gasto", result: "Resultado" } as Record<string, string>)[value] || humanize(value); }
 function journalStatus(value: AccountingJournalEntry["status"]) { return ({ draft: "Borrador", suggested: "Sugerido", pending_review: "Pendiente", validated: "Validado", posted: "Contabilizado", reversed: "Reversado", voided: "Anulado" } as Record<string, string>)[value]; }

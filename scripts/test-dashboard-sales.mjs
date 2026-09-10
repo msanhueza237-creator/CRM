@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import ts from "typescript";
 import { accountingToday, dashboardDocumentSales, dashboardSalesEvidence } from "../supabase/functions/accounting-center/dashboard-sales.ts";
+import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "../supabase/functions/accounting-center/dashboard-purchases.ts";
 
 // Exercise the actual edge calculation with read-only REST fixtures, without starting Deno.
 const source = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
@@ -31,8 +32,8 @@ async function build(documents, lines, { failLedger = false, failDocuments = fal
     }
     throw new Error(`Unexpected query: ${path}`);
   };
-  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", `${javascript}\nreturn buildDashboardAnalytics;`)(
-    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence);
+  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", `${javascript}\nreturn buildDashboardAnalytics;`)(
+    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals);
   return run({}, "entity", asOf, documents, accounts);
 }
 
@@ -119,4 +120,29 @@ test("Business cutoff uses Santiago at UTC midnight and across DST", () => {
   assert.equal(accountingToday(new Date("2026-09-10T01:30:00Z")), "2026-09-09");
   assert.equal(accountingToday(new Date("2026-09-10T03:01:00Z")), "2026-09-10");
   assert.equal(accountingToday(new Date("2026-07-10T03:30:00Z")), "2026-07-09");
+});
+
+test("Cross-month cancellation uses the note date and does not double the reissued invoice", async () => {
+  const docs = [doc("1534", 9091838, "2026-07-28"), doc("80", 9091838, "2026-08-18", { document_type: "sales_credit_note" }), doc("1547", 8506330, "2026-08-18")];
+  const result = await build(docs, [line("1534", 9091838, "2026-07-28"), line("1547", 8506330, "2026-08-18"), line("1547", 6000000, "2026-08-18", "cost")]);
+  assert.equal(result.monthly[6].sales, 9091838);
+  assert.equal(result.monthly[7].sales, -585508);
+  assert.equal(result.current.sales, 8506330);
+  assert.equal(result.current.salesCreditNotes, 9091838);
+  assert.equal(result.current.costs, 6000000);
+});
+
+test("Domestic exempt purchases, supplier notes and received imports remain separate from profit", async () => {
+  const receipt = { id: "receipt", source_type: "COMERCIO_EXTERIOR", document_type: "inventory_receipt", issued_on: "2026-06-23", status: "posted", data_quality: "validated", raw_payload: { operation_id: "op", merchandise_clp: 51097978.8, landed_inventory_clp: 55918958.51 } };
+  const result = await build([receipt, receipt, doc("ads", 0, "2026-06-03", { document_type: "purchase_exempt_invoice", exempt_amount: 3128000, tax_amount: 0 }), doc("supplier-note", 100, "2026-06-10", { document_type: "purchase_credit_note" }), { ...receipt, id: "proforma", document_type: "import_operation" }], []);
+  assert.equal(result.monthly[5].purchasesInternational, 51097978.8);
+  assert.equal(result.monthly[5].purchasesDomestic, 3127900);
+  assert.equal(result.current.purchaseCreditNotes, 100);
+  assert.equal(result.current.costs, 0);
+  assert.equal(result.current.operatingProfit, 0);
+  assert.equal(result.purchaseDocuments.length, 3);
+});
+
+test("A received supplier note must never reduce sales even when its resource was documents", () => {
+  assert.equal(dashboardDocumentSales(doc("wrong", 48722, "2026-05-12", { document_type: "sales_credit_note", raw_payload: { received_issued_flag: 0 } })), null);
 });

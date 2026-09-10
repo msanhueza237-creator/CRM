@@ -1,0 +1,1134 @@
+diff --git a/app/hub/worker.py b/app/hub/worker.py
+index beed0b2..554f382 100644
+--- a/app/hub/worker.py
++++ b/app/hub/worker.py
+@@ -31,6 +31,27 @@ _facto_document_detail_cached_at: dict[str, float] = {}
+ # because they do not represent a net sale or purchase by themselves.
+ FACTO_SALES_DOCUMENT_TYPE_IDS = {2, 32, 37, 39, 41, 46}
+ FACTO_PURCHASE_DOCUMENT_TYPE_IDS = {9, 15, 28, 30, 33, 34, 38, 40, 42}
++# Koywe OpenAPI DocumentPost.header: domestic and export credit/debit notes.
++FACTO_ISSUED_NOTE_TYPE_IDS = {16, 17, 47, 48}
++# Verified GET /documents/695 (2026-06-22); absent from GET /document_types.
++# Evidence only: foreign-currency purchase snapshots need a separate contract.
++FACTO_RECEIVED_EVIDENCE_TYPE_IDS = {57}
++FACTO_FINANCIAL_TAXBUREAU_CODES = {33, 34, 39, 41, 56, 61, 110, 111, 112}
++FACTO_NOTE_TAXBUREAU_CODES = {56, 61, 111, 112}
++
++
++class FactoDocumentLoadIncomplete(RuntimeError):
++    """Retain partial evidence without presenting it as a complete history."""
++
++    def __init__(self, issued: list[dict], purchases: list[dict], *, pages: int, reason: str):
++        self.issued = issued
++        self.purchases = purchases
++        self.pages = pages
++        self.reason = reason
++        super().__init__(
++            f"Facto document history incomplete: reason={reason} pages={pages} "
++            f"issued={len(issued)} received={len(purchases)}; snapshots withheld"
++        )
+ 
+ 
+ class AgentHubWorker:
+@@ -191,6 +212,7 @@ async def integration_monitor(crm: HubCRMPort) -> None:
+         facto_commercial_ready = not settings.facto_enabled
+         tiendanube_commercial_ready = not settings.tiendanube_enabled
+         facto_financial_ready = False
++        facto_documents_complete = False
+         snapshot_documents: list[dict] = []
+         snapshot_purchase_documents: list[dict] = []
+         financial_product_snapshots: list[dict] = []
+@@ -235,7 +257,6 @@ async def integration_monitor(crm: HubCRMPort) -> None:
+                     # read only and are used only to calculate an auditable
+                     # sales-rate snapshot for the foreign-trade agent.
+                     if provider == "facto":
+-                        facto_financial_ready = True
+                         try:
+                             facto_customers = await load_paginated_records(
+                                 client.customers,
+@@ -259,16 +280,30 @@ async def integration_monitor(crm: HubCRMPort) -> None:
+                         snapshot_documents: list[dict] = []
+                         snapshot_purchase_documents: list[dict] = []
+                         try:
+-                            raw_documents, raw_purchase_documents = (
+-                                await load_facto_financial_documents(client)
+-                            )
+-                            facto_sales_documents = raw_documents
++                            try:
++                                raw_documents, raw_purchase_documents = (
++                                    await load_facto_financial_documents(client)
++                                )
++                                facto_documents_complete = True
++                            except FactoDocumentLoadIncomplete as exc:
++                                raw_documents, raw_purchase_documents = exc.issued, exc.purchases
++                                await crm.report_integration(
++                                    provider="facto",
++                                    enabled=settings.facto_enabled,
++                                    read_only=True,
++                                    status="error",
++                                    message=str(exc),
++                                )
++                            facto_financial_ready = facto_documents_complete
++                            facto_sales_documents = [
++                                row for row in raw_documents if _is_facto_sales_document(row)
++                            ]
+                             # Some Facto accounts do not expose a standalone
+                             # /customers collection. Issued documents still
+                             # carry the legal name, RUT and purchase history
+                             # required to build the commercial portfolio, so a
+                             # missing optional customer route must not block it.
+-                            facto_commercial_ready = True
++                            facto_commercial_ready = facto_documents_complete
+                             try:
+                                 inbox_documents = await load_facto_inbox_documents(client)
+                                 raw_purchase_documents = enrich_facto_purchase_documents(
+@@ -283,27 +318,11 @@ async def integration_monitor(crm: HubCRMPort) -> None:
+                                     "Facto inbox metadata is not available for supplier names",
+                                     exc_info=True,
+                                 )
+-                            snapshot_documents = raw_documents
+-                            snapshot_purchase_documents = raw_purchase_documents
+-                            await crm.upsert_integration_records(
+-                                provider="facto",
+-                                resource="documents",
+-                                records=normalize_product_records(raw_documents),
+-                            )
+-                            try:
+-                                await crm.upsert_integration_records(
+-                                    provider="facto",
+-                                    resource="purchase_documents",
+-                                    records=normalize_product_records(raw_purchase_documents),
+-                                )
+-                            except HubCRMError:
+-                                # Purchase documents enrich the audit trail, but
+-                                # an older CRM endpoint must not prevent Facto
+-                                # detail loading or the financial snapshot.
+-                                logger.warning(
+-                                    "CRM does not accept Facto purchase document records yet",
+-                                    exc_info=True,
+-                                )
++                            snapshot_documents = facto_sales_documents
++                            snapshot_purchase_documents = [
++                                row for row in raw_purchase_documents
++                                if _is_facto_purchase_snapshot_document(row)
++                            ]
+                             try:
+                                 raw_payments = await load_facto_payments(client)
+                                 try:
+@@ -340,18 +359,72 @@ async def integration_monitor(crm: HubCRMPort) -> None:
+                                         "Configured Facto receivables resource is not available",
+                                         exc_info=True,
+                                     )
+-                            snapshot_products, detailed_documents = await load_facto_details(
+-                                client,
+-                                raw_products,
+-                                [*raw_documents, *raw_purchase_documents],
+-                            )
++                            document_detail_failures: set[str] = set()
++                            try:
++                                snapshot_products, detailed_documents = await load_facto_details(
++                                    client,
++                                    raw_products,
++                                    [*raw_documents, *raw_purchase_documents],
++                                    document_detail_failures=document_detail_failures,
++                                )
++                            except Exception:  # noqa: BLE001
++                                logger.warning(
++                                    "Facto detail loading failed; retaining previous evidence",
++                                    exc_info=True,
++                                )
++                                detailed_documents = [*raw_documents, *raw_purchase_documents]
++                                document_detail_failures.update(
++                                    record["external_id"]
++                                    for record in normalize_product_records(detailed_documents)
++                                )
+                             snapshot_documents = [
+                                 row for row in detailed_documents if _is_facto_sales_document(row)
+                             ]
+                             facto_sales_documents = snapshot_documents
+                             snapshot_purchase_documents = [
+-                                row for row in detailed_documents if _is_facto_purchase_document(row)
++                                row for row in detailed_documents
++                                if _is_facto_purchase_snapshot_document(row)
++                            ]
++                            if document_detail_failures:
++                                await crm.report_integration(
++                                    provider="facto",
++                                    enabled=settings.facto_enabled,
++                                    read_only=True,
++                                    status="error",
++                                    message=(
++                                        "Facto document details incomplete: "
++                                        f"failed={len(document_detail_failures)}; "
++                                        "previous document evidence retained"
++                                    ),
++                                )
++                            evidence = [
++                                record for record in normalize_product_records(detailed_documents)
++                                if record["external_id"] not in document_detail_failures
++                            ]
++                            issued_records = [
++                                record for record in evidence
++                                if _is_facto_issued_document(record["payload"])
+                             ]
++                            purchase_records = [
++                                record for record in evidence
++                                if _is_facto_purchase_document(record["payload"])
++                            ]
++                            # Accounting reads summaries first. Never overwrite them
++                            # with bare list rows before references/totals are loaded.
++                            await crm.upsert_integration_records(
++                                provider="facto", resource="documents", records=issued_records,
++                            )
++                            try:
++                                await crm.upsert_integration_records(
++                                    provider="facto",
++                                    resource="purchase_documents",
++                                    records=purchase_records,
++                                )
++                            except HubCRMError:
++                                logger.warning(
++                                    "CRM does not accept Facto purchase document records yet",
++                                    exc_info=True,
++                                )
+                             detail_product_records = normalize_product_records(snapshot_products)
+                             await crm.upsert_integration_records(
+                                 provider="facto",
+@@ -361,13 +434,13 @@ async def integration_monitor(crm: HubCRMPort) -> None:
+                             await crm.upsert_integration_records(
+                                 provider="facto",
+                                 resource="document_details",
+-                                records=normalize_product_records(snapshot_documents),
++                                records=issued_records,
+                             )
+                             try:
+                                 await crm.upsert_integration_records(
+                                     provider="facto",
+                                     resource="purchase_document_details",
+-                                    records=normalize_product_records(snapshot_purchase_documents),
++                                    records=purchase_records,
+                                 )
+                             except HubCRMError:
+                                 logger.warning(
+@@ -384,7 +457,7 @@ async def integration_monitor(crm: HubCRMPort) -> None:
+                         # from the CRM completely.
+                         snapshots = extract_product_snapshots(
+                             snapshot_products,
+-                            snapshot_documents,
++                            snapshot_documents if facto_documents_complete else [],
+                         )
+                         await crm.upsert_integration_records(
+                             provider="facto",
+@@ -442,11 +515,15 @@ async def integration_monitor(crm: HubCRMPort) -> None:
+                 logger.exception(
+                     "Facto financial snapshot could not be synchronized"
+                 )
+-        facto_commercial_available = settings.facto_enabled and facto_commercial_ready
++        facto_commercial_available = (
++            settings.facto_enabled and facto_commercial_ready and facto_documents_complete
++        )
+         tiendanube_commercial_available = (
+             settings.tiendanube_enabled and tiendanube_commercial_ready
+         )
+-        if facto_commercial_available or tiendanube_commercial_available:
++        if (facto_commercial_available or tiendanube_commercial_available) and (
++            not settings.facto_enabled or facto_documents_complete
++        ):
+             commercial_customers = extract_commercial_snapshot(
+                 facto_customers,
+                 facto_sales_documents,
+@@ -491,16 +568,22 @@ async def load_facto_details(
+     documents_payload,
+     *,
+     concurrency: int = 5,
++    document_detail_failures: set[str] | None = None,
+ ) -> tuple[list[dict], list[dict]]:
+     """Read full Facto records required for stock and auditable sales demand."""
+ 
+     semaphore = asyncio.Semaphore(max(1, concurrency))
+     product_semaphore = asyncio.Semaphore(max(1, min(2, concurrency)))
+     product_retry_until = 0.0
++    detail_failures = document_detail_failures if document_detail_failures is not None else set()
+ 
+     def record_id(row: dict, *, kind: str) -> object | None:
+         """Read IDs from Facto list rows, including their ``header`` envelope."""
+ 
++        if kind == "document":
++            document_id = _facto_document_field(row, "document_id")
++            if document_id not in (None, ""):
++                return document_id
+         id_keys = (
+             ("document_id", "id")
+             if kind == "document"
+@@ -549,10 +632,13 @@ async def load_facto_details(
+ 
+     def merge_detail(row: dict, detail: dict) -> dict:
+         merged = {**row, **detail}
+-        row_header = row.get("header")
+-        detail_header = detail.get("header")
+-        if isinstance(row_header, dict) and isinstance(detail_header, dict):
+-            merged["header"] = {**row_header, **detail_header}
++        for key in ("header", "totals"):
++            if isinstance(row.get(key), dict) and isinstance(detail.get(key), dict):
++                merged[key] = {**row[key], **detail[key]}
++            elif detail.get(key) is None and key in row:
++                merged[key] = row[key]
++        if not detail.get("references") and row.get("references"):
++            merged["references"] = row["references"]
+         return merged
+ 
+     async def product_detail(row: dict) -> dict:
+@@ -588,6 +674,7 @@ async def load_facto_details(
+     async def document_detail(row: dict) -> dict:
+         document_id = record_id(row, kind="document")
+         if document_id is None:
++            detail_failures.add(normalize_product_records([row])[0]["external_id"])
+             return row
+         cache_key = str(document_id)
+         client_settings = getattr(client, "settings", None)
+@@ -608,9 +695,16 @@ async def load_facto_details(
+                 detail = await client.document(document_id)
+             except Exception:  # noqa: BLE001
+                 logger.warning("Facto document detail unavailable id=%s", document_id)
++                detail_failures.add(cache_key)
+                 return row
+         detail_record = unwrap_detail(detail, kind="document")
+         if not detail_record:
++            detail_failures.add(cache_key)
++            return row
++        detail_id = record_id(detail_record, kind="document")
++        if detail_id is not None and str(detail_id) != str(document_id):
++            logger.warning("Facto document identity mismatch id=%s", document_id)
++            detail_failures.add(cache_key)
+             return row
+         _facto_document_detail_cache[cache_key] = detail_record
+         _facto_document_detail_cached_at[cache_key] = time.monotonic()
+@@ -620,10 +714,14 @@ async def load_facto_details(
+     document_rows = payload_rows(documents_payload, "data", "documents", "items")
+     products = await asyncio.gather(*(product_detail(row) for row in product_rows))
+     documents = await asyncio.gather(*(document_detail(row) for row in document_rows))
+-    return list(products), list(documents)
++    return list(products), [_normalize_facto_document(row) for row in documents]
+ 
+ 
+ def _facto_document_type_id(row: dict) -> int | None:
++    if isinstance(row.get("header"), dict):
++        nested = _facto_document_type_id(row["header"])
++        if nested is not None:
++            return nested
+     value = (
+         row.get("document_type_id")
+         or row.get("type_id")
+@@ -640,15 +738,106 @@ def _facto_document_type_id(row: dict) -> int | None:
+ 
+ 
+ def _is_facto_sales_document(row: dict) -> bool:
+-    """Keep emitted invoices/receipts and exclude credits and dispatch guides."""
++    """Snapshot input only: issued invoices/receipts, never unsigned notes."""
++
++    return (
++        _facto_document_direction(row) == 1
++        and _facto_document_type_id(row) in FACTO_SALES_DOCUMENT_TYPE_IDS
++        and _facto_taxbureau_code(row) not in FACTO_NOTE_TAXBUREAU_CODES
++    )
++
+ 
+-    return _facto_document_type_id(row) in FACTO_SALES_DOCUMENT_TYPE_IDS
++def _facto_document_field(row: dict, key: str):
++    if isinstance(row.get("header"), dict):
++        value = _facto_document_field(row["header"], key)
++        if value not in (None, ""):
++            return value
++    value = row.get(key)
++    return value
++
++
++def _normalize_facto_document(row: dict) -> dict:
++    """Expose explicit nested values without parsing money/dates or losing evidence."""
++
++    normalized = dict(row)
++    for key in (
++        "document_id", "document_number", "received_issued_flag",
++        "document_type_taxbureau", "document_status", "issue_date",
++    ):
++        value = _facto_document_field(row, key)
++        if value not in (None, ""):
++            normalized[key] = value
++    type_id = _facto_document_type_id(row)
++    if type_id is not None:
++        normalized["document_type_id"] = type_id
++    totals = row.get("totals")
++    for key in ("net_amount", "taxes_amount", "tax_amount", "exempt_amount", "total_amount"):
++        value = _facto_document_field(row, key)
++        if value in (None, "") and isinstance(totals, dict):
++            value = totals.get(key)
++        if value not in (None, ""):
++            normalized[key] = value
++    if normalized.get("tax_amount") in (None, "") and "taxes_amount" in normalized:
++        normalized["tax_amount"] = normalized["taxes_amount"]
++    return normalized
++
++
++def _facto_taxbureau_code(row: dict) -> int | None:
++    try:
++        return int(str(_facto_document_field(row, "document_type_taxbureau")).strip())
++    except (TypeError, ValueError):
++        return None
++
++
++def _facto_document_direction(row: dict) -> int | None:
++    value = _facto_document_field(row, "received_issued_flag")
++    if value not in (None, ""):
++        # Do not let an invalid flag fall back to a potentially contradictory ID.
++        if not isinstance(value, bool) and value in (0, 1):
++            return int(value)
++        return {"0": 0, "1": 1}.get(str(value).strip())
++    type_id = _facto_document_type_id(row)
++    if type_id in FACTO_SALES_DOCUMENT_TYPE_IDS | FACTO_ISSUED_NOTE_TYPE_IDS:
++        return 1
++    if type_id in FACTO_PURCHASE_DOCUMENT_TYPE_IDS | FACTO_RECEIVED_EVIDENCE_TYPE_IDS:
++        return 0
++    return None
++
++
++def _is_facto_financial_document(row: dict) -> bool:
++    return (
++        _facto_document_type_id(row) in (
++            FACTO_SALES_DOCUMENT_TYPE_IDS
++            | FACTO_ISSUED_NOTE_TYPE_IDS
++            | FACTO_PURCHASE_DOCUMENT_TYPE_IDS
++            | FACTO_RECEIVED_EVIDENCE_TYPE_IDS
++        )
++        or _facto_taxbureau_code(row) in FACTO_FINANCIAL_TAXBUREAU_CODES
++    )
++
++
++def _is_facto_issued_document(row: dict) -> bool:
++    """Integration evidence includes issued notes, even with received type IDs."""
++
++    return _facto_document_direction(row) == 1 and _is_facto_financial_document(row)
+ 
+ 
+ def _is_facto_purchase_document(row: dict) -> bool:
+     """Keep received purchases, including received credit and debit notes."""
+ 
+-    return _facto_document_type_id(row) in FACTO_PURCHASE_DOCUMENT_TYPE_IDS
++    return _facto_document_direction(row) == 0 and _is_facto_financial_document(row)
++
++
++def _is_facto_purchase_snapshot_document(row: dict) -> bool:
++    # Finance signs only the historical received-credit type 28 correctly.
++    return (
++        _is_facto_purchase_document(row)
++        and _facto_document_type_id(row) in FACTO_PURCHASE_DOCUMENT_TYPE_IDS
++        and (
++            _facto_taxbureau_code(row) not in {61, 112}
++            or _facto_document_type_id(row) == 28
++        )
++    )
+ 
+ 
+ async def load_facto_financial_documents(
+@@ -657,33 +846,109 @@ async def load_facto_financial_documents(
+     history_start: date | None = None,
+     max_pages: int = 20,
+ ) -> tuple[list[dict], list[dict]]:
+-    """Load and partition Facto documents into issued sales and purchases."""
++    """Load issued/received financial evidence, not unsigned snapshot inputs.
++
++    Completeness concerns the requested API date/status range only. A safety
++    stop raises with the collected records so callers can persist evidence
++    while withholding history-dependent snapshots.
++    """
+ 
++    if max_pages < 1:
++        raise ValueError("max_pages must be positive")
+     end = date.today()
+     # The finance dashboard compares the current year with all of 2025.
+     # Keep this baseline explicit so it does not silently move every day.
+     start = history_start or date(2025, 1, 1)
+     sales: list[dict] = []
+     purchases: list[dict] = []
++    fingerprints: set[str] = set()
+     for page in range(1, max_pages + 1):
+-        payload = await client.documents(
+-            page=page,
+-            per_page=100,
+-            issue_date_from=start.isoformat(),
+-            issue_date_to=end.isoformat(),
+-            order_by="desc",
+-            document_status=1,
+-        )
+-        rows = payload_rows(payload, "documents", "items")
+-        sales.extend(row for row in rows if _is_facto_sales_document(row))
++        try:
++            payload = await client.documents(
++                page=page,
++                per_page=100,
++                issue_date_from=start.isoformat(),
++                issue_date_to=end.isoformat(),
++                order_by="desc",
++                document_status=1,
++            )
++        except Exception as exc:  # noqa: BLE001
++            raise FactoDocumentLoadIncomplete(
++                sales, purchases, pages=page, reason="page_error",
++            ) from exc
++        rows = [
++            _normalize_facto_document(row) for row in payload_rows(payload, "documents", "items")
++        ]
++        fingerprint = hashlib.sha256(
++            json.dumps(rows, sort_keys=True, default=str).encode()
++        ).hexdigest()
++        if rows and fingerprint in fingerprints:
++            raise FactoDocumentLoadIncomplete(
++                sales, purchases, pages=page, reason="repeated_page",
++            )
++        fingerprints.add(fingerprint)
++        sales.extend(row for row in rows if _is_facto_issued_document(row))
+         purchases.extend(row for row in rows if _is_facto_purchase_document(row))
+         if not rows or _is_explicit_last_page(payload, page):
+             break
+     else:
+-        logger.warning("Facto finance pagination reached safety limit pages=%s", max_pages)
++        raise FactoDocumentLoadIncomplete(
++            sales, purchases, pages=max_pages, reason="max_pages",
++        )
+     return sales, purchases
+ 
+ 
++async def sync_facto_document_evidence(
++    client: FactoClient,
++    crm: HubCRMPort,
++    *,
++    history_start: date | None = None,
++    max_pages: int = 20,
++) -> dict:
++    """One-shot evidence sync: no products, inventory, snapshots or ledger writes."""
++
++    stop_reason = None
++    try:
++        issued, received = await load_facto_financial_documents(
++            client, history_start=history_start, max_pages=max_pages,
++        )
++    except FactoDocumentLoadIncomplete as exc:
++        issued, received = exc.issued, exc.purchases
++        stop_reason = exc.reason
++    failures: set[str] = set()
++    _, documents = await load_facto_details(
++        client, [], [*issued, *received], document_detail_failures=failures,
++    )
++    records = [
++        record for record in normalize_product_records(documents)
++        if record["external_id"] not in failures
++    ]
++    issued_records = [
++        record for record in records if _is_facto_issued_document(record["payload"])
++    ]
++    received_records = [
++        record for record in records if _is_facto_purchase_document(record["payload"])
++    ]
++    for resource, batch in (
++        ("documents", issued_records),
++        ("purchase_documents", received_records),
++        ("document_details", issued_records),
++        ("purchase_document_details", received_records),
++    ):
++        await crm.upsert_integration_records(provider="facto", resource=resource, records=batch)
++    # Only report complete after all four upserts have succeeded.
++    return {
++        "complete": stop_reason is None and not failures,
++        "list_complete": stop_reason is None,
++        "stop_reason": stop_reason,
++        "issued_records": len(issued_records),
++        "received_records": len(received_records),
++        "detail_failures": sorted(failures),
++        "history_start": (history_start or date(2025, 1, 1)).isoformat(),
++        "document_status": 1,
++    }
++
++
+ async def load_facto_inbox_documents(
+     client: FactoClient,
+     *,
+@@ -833,7 +1098,7 @@ async def load_facto_sales_documents(
+         history_start=history_start,
+         max_pages=max_pages,
+     )
+-    return sales
++    return [row for row in sales if _is_facto_sales_document(row)]
+ 
+ 
+ async def load_paginated_records(
+@@ -903,9 +1168,8 @@ def _is_explicit_last_page(payload, page: int) -> bool:
+                 return True
+         except (TypeError, ValueError):
+             pass
+-        if data.get("next") is None and any(
+-            key in data for key in ("next", "next_page", "nextPage")
+-        ):
++        next_keys = [key for key in ("next", "next_page", "nextPage") if key in data]
++        if next_keys and all(data[key] is None for key in next_keys):
+             return True
+     return False
+ 
+@@ -917,7 +1181,8 @@ def normalize_product_records(payload) -> list[dict]:
+         if not isinstance(row, dict):
+             continue
+         external_id = (
+-            row.get("id")
++            _facto_document_field(row, "document_id")
++            or row.get("id")
+             or row.get("product_id")
+             or row.get("document_id")
+             or row.get("order_id")
+diff --git a/tests/test_facto_document_ingestion.py b/tests/test_facto_document_ingestion.py
+new file mode 100644
+index 0000000..0e3ab25
+--- /dev/null
++++ b/tests/test_facto_document_ingestion.py
+@@ -0,0 +1,544 @@
++"""Offline regressions for document evidence, independent of sales snapshots."""
++
++import asyncio
++from copy import deepcopy
++from datetime import date
++from types import SimpleNamespace
++
++import pytest
++
++from app.hub import worker
++
++
++@pytest.fixture(autouse=True)
++def clear_document_cache():
++    worker._facto_document_detail_cache.clear()
++    worker._facto_document_detail_cached_at.clear()
++    yield
++    worker._facto_document_detail_cache.clear()
++    worker._facto_document_detail_cached_at.clear()
++
++
++class DocumentClient:
++    def __init__(self, pages, details=None):
++        self.pages = pages
++        self.details = details or {}
++        self.calls = []
++        self.detail_calls = []
++
++    async def documents(self, **kwargs):
++        self.calls.append(kwargs)
++        payload = self.pages.get(kwargs["page"], {"documents": []})
++        if isinstance(payload, Exception):
++            raise payload
++        return deepcopy(payload)
++
++    async def document(self, document_id):
++        self.detail_calls.append(document_id)
++        detail = self.details[document_id]
++        if isinstance(detail, Exception):
++            raise detail
++        return deepcopy(detail)
++
++
++def note80():
++    # User-verified identifiers; the surrounding fixture is synthetic, not an API capture.
++    return {
++        "document_id": 762,
++        "document_number": 80,
++        "type_id": 16,
++        "document_type_taxbureau": "61",
++        "received_issued_flag": 1,
++        "document_status": 1,
++        "issue_date": "2026-08-18",
++    }
++
++
++def note80_detail():
++    return {
++        "data": {
++            "document": {
++                "header": {
++                    "document_id": 762,
++                    "document_type_id": 16,
++                    "received_issued_flag": 1,
++                    "document_number": 80,
++                    "issue_date": "2026-08-18",
++                },
++                "totals": {
++                    "net_amount": "9091838",
++                    "taxes_amount": "1727449",
++                    "total_amount": "10819287",
++                },
++                "references": [{"reference_document_id": 731, "document_number": 1534}],
++                "details": [{"sku": "TEST-1", "quantity": 1, "unit_price": "9091838"}],
++            }
++        },
++    }
++
++
++@pytest.mark.parametrize("type_id", [16, 17, 47, 48, 32])
++@pytest.mark.parametrize("flag", [1, "1", 1.0, None])
++async def test_loader_retains_issued_notes_and_exempt_invoices(type_id, flag):
++    row = {"document_id": 762, "type_id": type_id}
++    if flag is not None:
++        row["received_issued_flag"] = flag
++    client = DocumentClient({1: {"documents": [row], "page_count": 1}})
++    issued, received = await worker.load_facto_financial_documents(client)
++    assert [item["document_id"] for item in issued] == [762]
++    assert received == []
++    assert client.calls[0]["document_status"] == 1
++    assert not any("payment" in key or "balance" in key for key in client.calls[0])
++
++
++@pytest.mark.parametrize("payment_status,balance", [("paid", 0), ("unpaid", 10819287)])
++async def test_note80_is_retained_independent_of_payment_state(payment_status, balance):
++    row = {**note80(), "payment_status": payment_status, "outstanding_amount": balance}
++    client = DocumentClient({1: {"documents": [row], "page_count": 1}})
++    issued, _ = await worker.load_facto_financial_documents(client)
++    assert issued[0]["document_number"] == 80
++    assert issued[0]["payment_status"] == payment_status
++    assert not worker._is_facto_sales_document(issued[0])
++
++
++@pytest.mark.parametrize("nested", [False, True])
++@pytest.mark.parametrize("type_id", [2, 16, 28, 32, 48])
++@pytest.mark.parametrize("flag", [0, "0", 1, "1"])
++async def test_explicit_direction_wins_over_internal_type_and_resource(nested, type_id, flag):
++    fields = {"document_id": 10, "type_id": type_id, "received_issued_flag": flag}
++    row = {"header": fields} if nested else fields
++    row["resource"] = "documents" if str(flag) == "0" else "purchase_documents"
++    client = DocumentClient({1: {"documents": [row], "page_count": 1}})
++    issued, received = await worker.load_facto_financial_documents(client)
++    assert bool(issued) == (str(flag) == "1")
++    assert bool(received) == (str(flag) == "0")
++    if str(flag) == "0":
++        assert not worker._is_facto_sales_document(received[0])
++
++
++@pytest.mark.parametrize("flag", ["unknown", 2, -1, True, False, 0.5])
++def test_invalid_direction_does_not_fall_back_to_internal_id(flag):
++    row = {"type_id": 16, "received_issued_flag": flag}
++    assert not worker._is_facto_issued_document(row)
++    assert not worker._is_facto_purchase_document(row)
++
++
++@pytest.mark.parametrize("tax_code", [34, 56, 61, 111, 112])
++def test_taxbureau_fallback_requires_known_direction(tax_code):
++    row = {"type_id": 9999, "document_type_taxbureau": str(tax_code)}
++    assert not worker._is_facto_issued_document(row)
++    assert worker._is_facto_issued_document({**row, "received_issued_flag": 1})
++    assert worker._is_facto_purchase_document({**row, "received_issued_flag": 0})
++    assert not worker._is_facto_sales_document({**row, "received_issued_flag": 1})
++
++
++@pytest.mark.parametrize("type_id", [54, 56, 9999])
++def test_guides_din_and_undocumented_types_are_not_guessed(type_id):
++    row = {"type_id": type_id, "received_issued_flag": 1}
++    assert not worker._is_facto_issued_document(row)
++
++
++def test_contradictory_credit_tax_code_never_becomes_positive_snapshot_sale():
++    row = {"type_id": 2, "document_type_taxbureau": 61, "received_issued_flag": 1}
++    assert worker._is_facto_issued_document(row)
++    assert not worker._is_facto_sales_document(row)
++    received = {**row, "received_issued_flag": 0, "type_id": 9}
++    assert worker._is_facto_purchase_document(received)
++    assert not worker._is_facto_purchase_snapshot_document(received)
++    assert worker._is_facto_purchase_snapshot_document({**received, "type_id": 28})
++
++
++@pytest.mark.parametrize("amount", ["6000000.00", "6.000.000", "6.000.000,00", 0])
++def test_normalization_preserves_nested_totals_dates_and_stable_identity(amount):
++    row = {
++        "id": "response-envelope",
++        "header": {"document_id": 762, "issue_date": "2026-08-18", "received_issued_flag": 1},
++        "totals": {"net_amount": amount, "total_amount": amount, "taxes_amount": 0},
++    }
++    original = deepcopy(row)
++    normalized = worker._normalize_facto_document(row)
++    record = worker.normalize_product_records([normalized])[0]
++    assert record["external_id"] == "762"
++    assert normalized["net_amount"] == amount
++    assert normalized["tax_amount"] == 0
++    assert normalized["issue_date"] == "2026-08-18"
++    assert normalized["totals"] == row["totals"]
++    assert normalized["header"] == row["header"]
++    assert row == original
++
++
++async def test_details_merge_header_totals_references_and_nested_ids():
++    detail = note80_detail()
++    detail["data"]["document"]["totals"].pop("net_amount")
++    row = {
++        "id": "response-envelope",
++        "header": {**note80(), "payment_conditions": "30"},
++        "totals": {"net_amount": "9091838"},
++    }
++    client = DocumentClient({}, {762: detail})
++    _, documents = await worker.load_facto_details(client, [], [row])
++    result = documents[0]
++    assert client.detail_calls == [762]
++    assert result["header"]["payment_conditions"] == "30"
++    assert result["totals"]["net_amount"] == "9091838"
++    assert result["total_amount"] == "10819287"
++    assert result["references"][0]["reference_document_id"] == 731
++    assert worker.normalize_product_records(documents)[0]["external_id"] == "762"
++    _, cached = await worker.load_facto_details(client, [], [row])
++    assert cached == documents
++    assert client.detail_calls == [762]
++
++
++async def test_detail_header_direction_and_type_override_list_aliases():
++    row = {"document_id": 762, "type_id": 2, "received_issued_flag": 1}
++    client = DocumentClient(
++        {},
++        {
++            762: {
++                "header": {
++                    "document_id": 762,
++                    "document_type_id": 16,
++                    "received_issued_flag": 0,
++                }
++            }
++        },
++    )
++    _, documents = await worker.load_facto_details(client, [], [row])
++    assert documents[0]["received_issued_flag"] == 0
++    assert documents[0]["document_type_id"] == 16
++    assert worker._is_facto_purchase_document(documents[0])
++    assert not worker._is_facto_sales_document(documents[0])
++
++
++async def test_wrong_document_detail_is_not_attached_or_cached():
++    row = note80()
++    client = DocumentClient({}, {762: {"header": {"document_id": 731}, "references": []}})
++    _, documents = await worker.load_facto_details(client, [], [row])
++    assert documents[0]["document_id"] == 762
++    assert "header" not in documents[0]
++    assert "762" not in worker._facto_document_detail_cache
++
++
++async def test_empty_detail_references_do_not_erase_list_evidence():
++    row = {**note80(), "references": [{"reference_document_id": 731}]}
++    client = DocumentClient({}, {762: {"references": [], "header": None, "totals": None}})
++    _, documents = await worker.load_facto_details(client, [], [row])
++    assert documents[0]["references"] == row["references"]
++
++
++async def test_sales_loader_remains_conservative_when_evidence_loader_adds_notes():
++    client = DocumentClient(
++        {1: {"documents": [note80(), {"document_id": 731, "type_id": 2}], "page_count": 1}}
++    )
++    rows = await worker.load_facto_sales_documents(client, history_start=date(2026, 1, 1))
++    assert [row["document_id"] for row in rows] == [731]
++    assert client.calls[0]["issue_date_from"] == "2026-01-01"
++
++
++@pytest.mark.parametrize("flag", [0, "0", None])
++async def test_verified_foreign_purchase_57_survives_taxbureau_zero(flag):
++    # Whitelisted values verified from GET /documents and /documents/695.
++    # The type catalog omits 57 and GET /document_types/57 returns 404.
++    row = {
++        "document_id": 695,
++        "document_type_id": 57,
++        "document_number": 3,
++        "document_type_taxbureau": "0",
++        "issue_date": "2026-06-22",
++        "document_status": 1,
++        "net_amount": "11365601.00",
++        "taxes_amount": "2159464.19",
++        "total_amount": "13525065.19",
++    }
++    if flag is not None:
++        row["received_issued_flag"] = flag
++    detail = {
++        "header": {
++            "document_type_id": 57,
++            "document_type_taxbureau": "0",
++            "received_issued_flag": 0,
++            "document_number": 3,
++            "issue_date": "2026-06-22",
++            "currency_id": 39,
++            "issuer_legal_name": "Hangzhou lifeng import  and export co., ltd",
++        },
++        "totals": {
++            "net_amount": 11365601,
++            "taxes_amount": 2159464.19,
++            "total_amount": "13525065.19",
++        },
++    }
++    client = DocumentClient({1: {"documents": [row], "page_count": 1}}, {695: detail})
++    issued, received = await worker.load_facto_financial_documents(client)
++    assert issued == []
++    assert [row["document_id"] for row in received] == [695]
++    _, documents = await worker.load_facto_details(client, [], received)
++    record = worker.normalize_product_records(documents)[0]
++    assert record["external_id"] == "695"
++    assert record["payload"]["header"]["issuer_legal_name"] == detail["header"]["issuer_legal_name"]
++    assert record["payload"]["totals"] == detail["totals"]
++    assert record["payload"]["total_amount"] == "13525065.19"
++    assert not worker._is_facto_sales_document(documents[0])
++    assert not worker._is_facto_purchase_snapshot_document(documents[0])
++
++
++@pytest.mark.parametrize(
++    "metadata", [{}, {"next_page": 2}, {"meta": {"nextPage": 2}}, {"page_count": 2}]
++)
++async def test_page_limit_is_incomplete_even_for_a_short_page(metadata):
++    client = DocumentClient({1: {"documents": [note80()], **metadata}})
++    with pytest.raises(worker.FactoDocumentLoadIncomplete) as caught:
++        await worker.load_facto_financial_documents(client, max_pages=1)
++    assert caught.value.reason == "max_pages"
++    assert caught.value.pages == 1
++    assert caught.value.issued[0]["document_id"] == 762
++    assert "incomplete" in str(caught.value)
++
++
++@pytest.mark.parametrize(
++    "metadata", [{"next_page": None}, {"meta": {"nextPage": None}}, {"page_count": 1}]
++)
++async def test_explicit_last_page_at_limit_is_complete(metadata):
++    client = DocumentClient({1: {"documents": [note80()], **metadata}})
++    issued, _ = await worker.load_facto_financial_documents(client, max_pages=1)
++    assert len(issued) == 1
++
++
++async def test_no_metadata_requires_empty_page_not_short_page_assumption():
++    client = DocumentClient({1: {"documents": [note80()]}})
++    issued, _ = await worker.load_facto_financial_documents(client)
++    assert len(issued) == 1
++    assert len(client.calls) == 2
++
++
++async def test_repeated_page_is_incomplete_and_not_duplicated():
++    client = DocumentClient({page: {"documents": [note80()]} for page in (1, 2)})
++    with pytest.raises(worker.FactoDocumentLoadIncomplete) as caught:
++        await worker.load_facto_financial_documents(client)
++    assert caught.value.reason == "repeated_page"
++    assert len(caught.value.issued) == 1
++
++
++async def test_zero_page_budget_is_rejected():
++    with pytest.raises(ValueError, match="max_pages"):
++        await worker.load_facto_financial_documents(DocumentClient({}), max_pages=0)
++
++
++@pytest.mark.parametrize("incomplete", [False, True])
++async def test_one_shot_sync_only_upserts_enriched_documents(incomplete):
++    page = {"documents": [note80()]}
++    if not incomplete:
++        page["page_count"] = 1
++    client = DocumentClient({1: page}, {762: note80_detail()})
++    writes = []
++
++    class CRM:
++        async def upsert_integration_records(self, **kwargs):
++            writes.append(kwargs)
++
++    result = await worker.sync_facto_document_evidence(client, CRM(), max_pages=1)
++    assert result["complete"] is not incomplete
++    assert result["list_complete"] is not incomplete
++    assert result["issued_records"] == 1
++    assert result["stop_reason"] == ("max_pages" if incomplete else None)
++    assert [write["resource"] for write in writes] == [
++        "documents",
++        "purchase_documents",
++        "document_details",
++        "purchase_document_details",
++    ]
++    assert writes[0]["records"] == writes[2]["records"]
++    assert writes[0]["records"][0]["payload"]["references"][0]["reference_document_id"] == 731
++
++
++async def test_one_shot_failed_detail_does_not_downgrade_evidence():
++    client = DocumentClient(
++        {1: {"documents": [note80()], "page_count": 1}},
++        {762: RuntimeError("offline")},
++    )
++
++    class CRM:
++        async def upsert_integration_records(self, **kwargs):
++            assert kwargs["records"] == []
++
++    result = await worker.sync_facto_document_evidence(client, CRM())
++    assert result["complete"] is False
++    assert result["detail_failures"] == ["762"]
++
++
++async def test_one_shot_crm_write_error_is_not_reported_complete():
++    client = DocumentClient(
++        {1: {"documents": [note80()], "page_count": 1}},
++        {762: note80_detail()},
++    )
++
++    class CRM:
++        async def upsert_integration_records(self, **kwargs):
++            raise worker.HubCRMError("offline write failure")
++
++    with pytest.raises(worker.HubCRMError):
++        await worker.sync_facto_document_evidence(client, CRM())
++
++
++async def test_page_error_retains_partial_evidence_and_does_not_claim_complete():
++    client = DocumentClient({1: {"documents": [note80()]}, 2: RuntimeError("offline")})
++    with pytest.raises(worker.FactoDocumentLoadIncomplete) as caught:
++        await worker.load_facto_financial_documents(client)
++    assert caught.value.reason == "page_error"
++    assert caught.value.pages == 2
++    assert len(caught.value.issued) == 1
++    assert caught.value.issued[0]["document_id"] == 762
++
++
++async def run_monitor(
++    monkeypatch, *, incomplete=False, details_fail=False, note_detail_fails=False, web_enabled=False
++):
++    invoice = {"document_id": 731, "type_id": 2, "received_issued_flag": 1}
++    exempt = {"document_id": 800, "type_id": 32, "received_issued_flag": 1}
++    purchase = {"document_id": 900, "type_id": 28, "received_issued_flag": 0}
++    debit = {"document_id": 801, "type_id": 17, "received_issued_flag": 1}
++    details = {
++        762: note80_detail(),
++        **{row["document_id"]: row for row in [invoice, exempt, purchase, debit]},
++    }
++    if note_detail_fails:
++        details[762] = RuntimeError("offline document failure")
++    rows = [note80(), invoice, exempt, purchase, debit]
++    settings = SimpleNamespace(
++        facto_enabled=True,
++        tiendanube_enabled=web_enabled,
++        facto_receivables_resource="",
++        facto_sync_interval_minutes=5,
++        tiendanube_sync_interval_minutes=5,
++    )
++
++    class Client(DocumentClient):
++        async def health(self):
++            return SimpleNamespace(configured=True, connected=True, message="offline fixture")
++
++        async def products(self, **kwargs):
++            return []
++
++        async def customers(self, **kwargs):
++            return []
++
++        async def inbox_documents(self, **kwargs):
++            return []
++
++        async def payments(self, **kwargs):
++            return []
++
++        async def orders(self, **kwargs):
++            return []
++
++    client = Client({1: {"documents": rows, "page_count": 1}}, details)
++    batches, reports, snapshot_inputs = [], [], {}
++
++    class CRM:
++        async def report_integration(self, **kwargs):
++            reports.append(deepcopy(kwargs))
++
++        async def upsert_integration_records(self, **kwargs):
++            batches.append(deepcopy(kwargs))
++
++    def capture(name):
++        def snapshot(*args, **kwargs):
++            snapshot_inputs[name] = deepcopy((args, kwargs))
++            return []
++
++        return snapshot
++
++    async def stop_after_cycle(_seconds):
++        raise asyncio.CancelledError
++
++    if incomplete:
++
++        async def partial(_client):
++            raise worker.FactoDocumentLoadIncomplete(
++                rows[:-2] + [debit], [purchase], pages=20, reason="max_pages"
++            )
++
++        monkeypatch.setattr(worker, "load_facto_financial_documents", partial)
++    if details_fail:
++
++        async def unavailable(*_args, **_kwargs):
++            raise RuntimeError("offline detail failure")
++
++        monkeypatch.setattr(worker, "load_facto_details", unavailable)
++    monkeypatch.setattr(worker, "get_settings", lambda: settings)
++    monkeypatch.setattr(worker, "FactoClient", lambda _settings: client)
++    monkeypatch.setattr(worker, "TiendanubeClient", lambda _settings: client)
++    monkeypatch.setattr(worker, "extract_product_snapshots", capture("inventory"))
++    monkeypatch.setattr(worker, "extract_financial_snapshot", capture("financial"))
++    monkeypatch.setattr(worker, "extract_commercial_snapshot", capture("commercial"))
++    monkeypatch.setattr(worker.asyncio, "sleep", stop_after_cycle)
++    with pytest.raises(asyncio.CancelledError):
++        await worker.integration_monitor(CRM())
++    return batches, reports, snapshot_inputs
++
++
++async def test_monitor_summaries_first_retains_note80_references_and_excludes_refunds(monkeypatch):
++    batches, _, inputs = await run_monitor(monkeypatch)
++    resources = {
++        batch["resource"]: batch["records"] for batch in batches if batch["provider"] == "facto"
++    }
++    assert resources["documents"] == resources["document_details"]
++    documents = {row["external_id"]: row["payload"] for row in resources["documents"]}
++    assert set(documents) == {"762", "731", "800", "801"}
++    assert documents["762"]["references"][0]["reference_document_id"] == 731
++    assert documents["762"]["references"][0]["document_number"] == 1534
++    assert documents["762"]["net_amount"] == "9091838"
++    assert documents["762"]["totals"]["net_amount"] == "9091838"
++    assert documents["762"]["header"]["issue_date"] == "2026-08-18"
++    assert {row["external_id"] for row in resources["purchase_documents"]} == {"900"}
++    assert resources["purchase_documents"] == resources["purchase_document_details"]
++    assert sum(batch["resource"] == "documents" for batch in batches) == 1
++    for name, argument in [("inventory", 1), ("financial", 0), ("commercial", 1)]:
++        assert {row["document_id"] for row in inputs[name][0][argument]} == {731, 800}
++    assert inputs["financial"][1]["purchase_documents_payload"][0]["document_id"] == 900
++
++
++async def test_detail_failure_fallback_never_leaks_notes_into_snapshots(monkeypatch):
++    batches, reports, inputs = await run_monitor(monkeypatch, details_fail=True)
++    assert not any(
++        batch["records"]
++        for batch in batches
++        if batch["resource"] in ("documents", "document_details")
++    )
++    assert any("details incomplete" in report["message"] for report in reports)
++    for name, argument in [("inventory", 1), ("financial", 0), ("commercial", 1)]:
++        assert {row["document_id"] for row in inputs[name][0][argument]} == {731, 800}
++
++
++async def test_failed_note_detail_never_overwrites_existing_references(monkeypatch):
++    batches, reports, _ = await run_monitor(monkeypatch, note_detail_fails=True)
++    for resource in ("documents", "document_details"):
++        rows = [
++            row for batch in batches if batch["resource"] == resource for row in batch["records"]
++        ]
++        assert {row["external_id"] for row in rows} == {"731", "800", "801"}
++    assert any("details incomplete: failed=1" in report["message"] for report in reports)
++
++
++@pytest.mark.parametrize("web_enabled", [False, True])
++async def test_incomplete_monitor_keeps_evidence_but_withholds_history_snapshots(
++    monkeypatch, web_enabled
++):
++    batches, reports, inputs = await run_monitor(
++        monkeypatch, incomplete=True, web_enabled=web_enabled
++    )
++    assert any(
++        row["external_id"] == "762"
++        for batch in batches
++        if batch["resource"] == "documents"
++        for row in batch["records"]
++    )
++    assert "financial" not in inputs
++    assert "commercial" not in inputs
++    assert inputs["inventory"][0][1] == []
++    assert any(
++        report["provider"] == "facto"
++        and report["status"] == "error"
++        and "incomplete" in report["message"]
++        for report in reports
++    )
