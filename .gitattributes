@@ -1,0 +1,2 @@
+# Unified patches require LF and a single space on blank context lines.
+services/prospecting-worker-overlay/*.patch text eol=lf whitespace=-blank-at-eol

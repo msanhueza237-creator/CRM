@@ -872,6 +872,7 @@ function mapCandidate(
 ): ProspectCandidate {
   const safeEntity = entity ?? {};
   const snapshot = asRecord(association.candidate_snapshot);
+  const discoveryStatus = association.discovery_status as ProspectCandidate["discoveryStatus"];
   const isSnapshotBacked = Object.keys(snapshot).length > 0;
   const statusValue = String(association.review_status ?? "pending") as ProspectReviewStatus;
   const snapshotLocations = isSnapshotBacked ? mapCandidateSnapshotLocations(snapshot, association, regions, comunas) : [];
@@ -888,7 +889,7 @@ function mapCandidate(
   );
   const candidateEmail = String(isSnapshotBacked ? snapshot.email ?? "" : safeEntity.email ?? "");
   const contactOnlyIndexes = contactImportableLocationIndexes(candidateLocations, candidatePhone, candidateEmail);
-  if (!importability.importEligible && contactOnlyIndexes.length) {
+  if (!discoveryStatus && !importability.importEligible && contactOnlyIndexes.length) {
     importability = {
       importEligible: true,
       importableLocationIndexes: contactOnlyIndexes,
@@ -897,7 +898,12 @@ function mapCandidate(
         .concat(importability.reviewFlags.includes("contact_only_import") ? [] : ["contact_only_import"]),
     };
   }
+  if (discoveryStatus && discoveryStatus !== "validated") {
+    importability = { ...importability, importEligible: false, importableLocationIndexes: [] };
+  }
   return {
+    discoveryStatus,
+    discoveryUrl: String(asRecord(association.discovery_origin).website ?? ""),
     id: String(association.id),
     entityId: String(association.entity_id ?? safeEntity.id ?? ""),
     externalCandidateId: String(association.external_candidate_id ?? snapshot.candidate_id ?? ""),

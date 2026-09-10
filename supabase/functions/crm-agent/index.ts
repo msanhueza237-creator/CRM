@@ -1477,7 +1477,19 @@ async function handleProspectingEnrichmentRoute(
         p_lease_seconds: leaseSeconds,
       });
       if (error) return rpcErrorResult(error);
-      return { body: asObject(data) };
+      const result = asObject(data);
+      const job = asObject(result.job);
+      if (job.run_id && asObject(asObject(result.candidate).market_signals).deepseek_discovery === true) {
+        const { data: run, error: runError } = await context.supabase.from("prospecting_runs")
+          .select("snapshot").eq("id", job.run_id).single();
+        if (runError) return rpcErrorResult(runError);
+        const { data: policy, error: policyError } = await context.supabase.from("prospecting_provider_settings")
+          .select("monthly_limit_usd,free_credit_usd,social_search_enabled,max_social_queries_per_campaign")
+          .eq("provider", "brave_search").maybeSingle();
+        if (policyError) return rpcErrorResult(policyError);
+        result.snapshot = { ...asObject(run.snapshot), brave_policy: policy ?? {} };
+      }
+      return { body: result };
     });
   }
 
@@ -1623,6 +1635,13 @@ async function handleProspectingRoute(
         });
         snapshot = assisted.snapshot;
         tasks = assisted.tasks;
+      }
+      if (Array.isArray(payload.capabilities) && payload.capabilities.includes("deepseek_candidates_v2")) {
+        const { data: staged, error: stageError } = await context.supabase.rpc("stage_prospecting_discoveries", { p_run_id: run.id });
+        if (stageError) return rpcErrorResult(stageError);
+        run.candidates_found = asObject(staged).candidates_found ?? run.candidates_found;
+        // Discovery now has its own durable candidate-validation queue.
+        snapshot.deepseek_discoveries = [];
       }
       return {
         body: {

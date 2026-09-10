@@ -1,5 +1,5 @@
 diff --git a/app/crm/http.py b/app/crm/http.py
-index 1607202..c07c776 100644
+index 1607202..e9be961 100644
 --- a/app/crm/http.py
 +++ b/app/crm/http.py
 @@ -161,7 +161,8 @@ class HttpCRMPort:
@@ -8,12 +8,20 @@ index 1607202..c07c776 100644
              "prospecting-runs/claim",
 -            json={"worker_id": worker_id, "lease_seconds": lease_seconds},
 +            timeout=max(self.timeout, 65),
-+            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_web_v1"]},
++            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_web_v1", "deepseek_candidates_v2"]},
              headers={"Idempotency-Key": str(uuid.uuid4())},
          )
          if response.status_code == 204:
+@@ -193,6 +194,7 @@ class HttpCRMPort:
+                 "run_id": job.get("run_id"),
+                 "candidate_relation_id": job.get("candidate_relation_id"),
+                 "candidate": payload.get("candidate"),
++                "snapshot": payload.get("snapshot"),
+                 "lease_token": payload.get("lease_token"),
+                 "lease_expires_at": payload.get("lease_expires_at"),
+             }
 diff --git a/app/prospecting/contracts.py b/app/prospecting/contracts.py
-index 971c529..7001103 100644
+index 971c529..6ec963b 100644
 --- a/app/prospecting/contracts.py
 +++ b/app/prospecting/contracts.py
 @@ -144,6 +144,7 @@ class ProspectingRunSnapshot(BaseModel):
@@ -24,6 +32,14 @@ index 971c529..7001103 100644
  
      @model_validator(mode="after")
      def campaign_id_present(self) -> ProspectingRunSnapshot:
+@@ -339,6 +340,7 @@ class ClaimedRun(BaseModel):
+ 
+ 
+ class ClaimedEnrichment(BaseModel):
++    snapshot: ProspectingRunSnapshot | None = None
+     job_id: str = Field(min_length=1, max_length=200)
+     run_id: str = Field(min_length=1, max_length=200)
+     candidate_relation_id: str = Field(min_length=1, max_length=200)
 diff --git a/app/prospecting/deepseek_discovery.py b/app/prospecting/deepseek_discovery.py
 new file mode 100644
 index 0000000..36efc9e
@@ -60,8 +76,90 @@ index 0000000..36efc9e
 +            market_signals={"deepseek_discovery": True},
 +        ))
 +    return results
+diff --git a/app/prospecting/discovery_validation.py b/app/prospecting/discovery_validation.py
+new file mode 100644
+index 0000000..c851ce8
+--- /dev/null
++++ b/app/prospecting/discovery_validation.py
+@@ -0,0 +1,76 @@
++from __future__ import annotations
++
++import httpx
++
++from app.prospecting.budget import brave_provider_usage_from_headers
++from app.prospecting.contracts import ProspectCandidate, ProspectLocation, SourceName
++from app.prospecting.scoring import classify_and_score
++from app.prospecting.store import WorkerTask
++from app.prospecting.validation import sanitize_unsubstantiated_external_fields, validate_candidate
++
++
++async def validate_discovery(executor, candidate, snapshot):
++    """One budgeted Brave lookup, followed by official evidence for this campaign."""
++    if not executor.settings.brave_search_api_key:
++        raise RuntimeError("Brave no esta configurado para validar el hallazgo")
++    if not {SourceName.brave_search, SourceName.official_website}.issubset(snapshot.campaign.sources):
++        raise RuntimeError("La campana requiere Brave y sitio oficial")
++    # A discovery URL may be a directory/PDF. Never use it as official evidence.
++    name = candidate.name.replace('"', ' ').strip()[:200]
++    query = f'"{name}" Chile sitio oficial'
++    task_id = f"discovery-{candidate.candidate_id}"
++    reservation = None
++    if executor.brave_budget:
++        reservation = await executor.brave_budget.reserve(
++            run_id=snapshot.crm_run_id, task_id=task_id, query=query,
++            monthly_limit_usd=snapshot.brave_policy.monthly_limit_usd,
++        )
++        if not reservation.allowed:
++            raise RuntimeError("Limite mensual de Brave alcanzado; candidato conservado")
++    async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
++        response = await client.get("https://api.search.brave.com/res/v1/web/search",
++            headers={"Accept": "application/json", "X-Subscription-Token": executor.settings.brave_search_api_key},
++            params={"q": query, "count": 5, "country": "cl", "search_lang": "es", "safesearch": "moderate"})
++    if response.status_code != 200:
++        raise RuntimeError(f"Brave no pudo validar el candidato: HTTP {response.status_code}")
++    results = response.json().get("web", {}).get("results", [])
++    if reservation:
++        await executor.brave_budget.complete(reservation, len(results))
++        usage = brave_provider_usage_from_headers(response.headers)
++        if usage:
++            queries, limit, reset = usage
++            await executor.brave_budget.reconcile_provider_usage(provider_queries=queries,
++                provider_limit_queries=limit, provider_remaining_queries=max(0, limit-queries), reset_seconds=reset)
++    prepared = ProspectCandidate(candidate_id=candidate.candidate_id, name=candidate.name,
++        location=ProspectLocation(), market_signals={"deepseek_discovery": True})
++    for result in results[:5]:
++        url = result.get("url")
++        if not isinstance(url, str) or len(url)>2048:
++            continue
++        probe = prepared.model_copy(update={"website": url})
++        if not executor._is_official_website_candidate(probe):
++            continue
++        territory = snapshot.campaign.territories[0]
++        task = WorkerTask(id=task_id, run_id=snapshot.crm_run_id, source=SourceName.brave_search,
++            keyword=name, region_code=territory.region_code, region_name=territory.region_name or "",
++            comuna_code=territory.comuna_code, comuna_name=territory.comuna_name or "",
++            max_results=1, attempt_count=0, max_attempts=3)
++        # Full campaign scope, not the arbitrary first task's commune.
++        prepared = await executor._enrich_official_website(probe, task, snapshot)
++        break
++    prepared = sanitize_unsubstantiated_external_fields(classify_and_score(prepared, snapshot))
++    verdict = validate_candidate(prepared, snapshot)
++    reasons = list(verdict.reasons)
++    if not (prepared.phone or prepared.email):
++        reasons.append("missing_business_contact")
++    accepted = not reasons
++    prepared = prepared.model_copy(update={
++        "import_eligible": accepted,
++        "importable_location_indexes": tuple(range(len(prepared.locations))) if accepted else (),
++        "review_flags": tuple(dict.fromkeys(reasons)),
++    })
++    return prepared, {"validation_version": "deepseek-brave-v1", "brave_queries_used": 1,
++        "website_found": bool(prepared.website), "validation_accepted": accepted,
++        "validation_reasons": ", ".join(dict.fromkeys(reasons)),
++        "validation_message": "Datos contrastados con Brave y sitio oficial" if accepted else
++            "No se pudo confirmar empresa, contacto y territorio; conservado para revision"}
 diff --git a/app/prospecting/sources.py b/app/prospecting/sources.py
-index 715ab57..982062d 100644
+index 715ab57..b059af0 100644
 --- a/app/prospecting/sources.py
 +++ b/app/prospecting/sources.py
 @@ -356,9 +356,24 @@ class AuthorizedSourceExecutor:
@@ -102,7 +200,26 @@ index 715ab57..982062d 100644
          candidate_name = normalize_name(candidate.name)[0]
          if website_name and normalize_name(website_name)[0] == candidate_name:
              add("name", website_name)
-@@ -1005,6 +1023,15 @@ class AuthorizedSourceExecutor:
+@@ -971,6 +989,10 @@ class AuthorizedSourceExecutor:
+             "company_summary_created": True,
+         }
+ 
++    async def validate_discovery(self, candidate: ProspectCandidate, snapshot: ProspectingRunSnapshot):
++        from app.prospecting.discovery_validation import validate_discovery
++        return await validate_discovery(self, candidate, snapshot)
++
+     async def _find_official_website(self, candidate: ProspectCandidate) -> str | None:
+         if not self.settings.brave_search_api_key:
+             return None
+@@ -1000,11 +1022,23 @@ class AuthorizedSourceExecutor:
+         parsed = urlsplit(url if "://" in url else f"https://{url}")
+         host = (parsed.hostname or "").casefold().removeprefix("www.")
+         blocked_domains = {
++            "guianegocios.cl", "direcmin.com", "signalhire.com", "industriaminera.cl",
++            "chilepymes.com", "red-conecta.com", "laguiaonline.cl", "dequienes.cl",
++            "topline.com", "guiahoreca.cl", "glonstruct.com", "chilopina.com",
+             "amarillas.cl",
+             "chileguia.cl",
              "guiadeempresas.cl",
              "chileinform.com",
              "hotfrog.cl",
@@ -118,13 +235,47 @@ index 715ab57..982062d 100644
              "mercantil.com",
              "google.com",
              "google.cl",
+diff --git a/app/prospecting/worker.py b/app/prospecting/worker.py
+index 439a859..fce5fc5 100644
+--- a/app/prospecting/worker.py
++++ b/app/prospecting/worker.py
+@@ -89,7 +89,12 @@ class ProspectingWorker:
+             enrich = getattr(self.sources, "enrich_existing", None)
+             if enrich is None:
+                 raise RuntimeError("The configured source executor cannot enrich existing candidates")
+-            candidate, summary = await enrich(claim.candidate, claim.run_id)
++            if claim.candidate.market_signals.get("deepseek_discovery"):
++                if not claim.snapshot:
++                    raise RuntimeError("Discovery validation requires the campaign snapshot")
++                candidate, summary = await self.sources.validate_discovery(claim.candidate, claim.snapshot)
++            else:
++                candidate, summary = await enrich(claim.candidate, claim.run_id)
+             await self.crm.complete_enrichment(
+                 claim,
+                 candidate,
+@@ -137,7 +142,13 @@ class ProspectingWorker:
+                 ):
+                     await self._cancel(local_run_id, claim)
+                     return
+-
++                # Drain one durable candidate between search tasks, keeping the
++                # run heartbeat alive rather than waiting for hundreds of tasks.
++                claim_enrichment = getattr(self.crm, "claim_enrichment", None)
++                if claim_enrichment is not None:
++                    enrichment = await claim_enrichment(self.worker_id, 300)
++                    if enrichment is not None:
++                        await self._process_enrichment(enrichment)
+                 summary = await self.store.summary(local_run_id)
+                 if summary.dead_letters:
+                     await self.store.cancel_tasks(local_run_id)
 diff --git a/tests/test_deepseek_discovery.py b/tests/test_deepseek_discovery.py
 new file mode 100644
-index 0000000..68d501c
+index 0000000..f813da1
 --- /dev/null
 +++ b/tests/test_deepseek_discovery.py
-@@ -0,0 +1,84 @@
+@@ -0,0 +1,187 @@
 +from types import SimpleNamespace
++import httpx
 +
 +import pytest
 +
@@ -208,3 +359,105 @@ index 0000000..68d501c
 +    monkeypatch.setattr(executor, "_brave", unavailable)
 +    with pytest.raises(SourceNotConfigured):
 +        await executor.search(task, snapshot.model_copy(update={"deepseek_discoveries": []}))
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("contact", [True, False])
++async def test_durable_discovery_uses_brave_and_official_evidence_for_whole_campaign(monkeypatch, contact):
++    snapshot, task = scope()
++    # The first discovery task is Santiago, but this business is in another
++    # commune which the same campaign explicitly covers.
++    campaign = snapshot.campaign.model_copy(update={"territories": (*snapshot.campaign.territories,
++        Territory(region_code="13", region_name="Metropolitana de Santiago", comuna_code="13120", comuna_name="Nunoa"))})
++    snapshot = snapshot.model_copy(update={"campaign": campaign})
++    seed = discovery_candidates(snapshot, task)[0].model_copy(update={"candidate_id": "deepseek:one", "website": "https://directorio.cl/andes"})
++    executor = AuthorizedSourceExecutor()
++    executor.settings = SimpleNamespace(brave_search_api_key="fixture")
++    calls = []
++    class Budget:
++        async def reserve(self, **kwargs):
++            calls.append(kwargs)
++            return SimpleNamespace(allowed=True)
++        async def complete(self, reservation, count):
++            assert count == 1
++    executor.brave_budget = Budget()
++    def handler(request):
++        assert request.url.host == "api.search.brave.com"
++        return httpx.Response(200, json={"web": {"results": [{"url": "https://climaandes.cl/"}]}})
++    client = httpx.AsyncClient
++    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=httpx.MockTransport(handler), **kwargs))
++    async def official(url):
++        assert url == "https://climaandes.cl/"
++        return {"name": "Clima Andes", "source_url": url, "description": "Instalacion y mantencion de aire acondicionado",
++            "email": "ventas@climaandes.cl" if contact else None,
++            "locations": [{"comuna_name": "Nunoa", "region_name": "Metropolitana de Santiago", "address": "Calle 100", "source_url": url}]}
++    monkeypatch.setattr("app.prospecting.sources.enrich_from_website", official)
++    candidate, summary = await executor.validate_discovery(seed, snapshot)
++    assert len(calls) == 1 and calls[0]["monthly_limit_usd"] == snapshot.brave_policy.monthly_limit_usd
++    assert summary["brave_queries_used"] == 1
++    assert candidate.candidate_id == "deepseek:one"
++    assert candidate.location.comuna_code == "13120"
++    assert candidate.import_eligible == contact, candidate.review_flags
++    assert not any("directorio.cl" in (e.source_url or "") for e in candidate.evidence)
++
++
++@pytest.mark.asyncio
++async def test_brave_failure_or_exhausted_budget_never_approves_seed(monkeypatch):
++    snapshot, task = scope()
++    seed = discovery_candidates(snapshot, task)[0]
++    executor = AuthorizedSourceExecutor()
++    executor.settings = SimpleNamespace(brave_search_api_key="fixture")
++    class Budget:
++        async def reserve(self, **kwargs):
++            return SimpleNamespace(allowed=False)
++    executor.brave_budget = Budget()
++    with pytest.raises(RuntimeError, match="Limite mensual"):
++        await executor.validate_discovery(seed, snapshot)
++    executor.brave_budget = None
++    client = httpx.AsyncClient
++    monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client(transport=httpx.MockTransport(lambda request: httpx.Response(429)), **kwargs))
++    with pytest.raises(RuntimeError, match="HTTP 429"):
++        await executor.validate_discovery(seed, snapshot)
++    assert not seed.import_eligible and not seed.evidence
++
++
++@pytest.mark.asyncio
++async def test_worker_validates_pending_discovery_while_search_run_is_active(monkeypatch):
++    from unittest.mock import AsyncMock
++    from app.crm.fake import FakeCRMPort
++    from app.prospecting.sources import StaticSourceExecutor
++    from app.prospecting.store import MemoryWorkerStore
++    from app.prospecting.worker import ProspectingWorker
++    snapshot, task = scope()
++    crm = FakeCRMPort()
++    await crm.enqueue(snapshot)
++    seed = discovery_candidates(snapshot, task)[0]
++    job = SimpleNamespace(candidate=seed, snapshot=snapshot, run_id=snapshot.crm_run_id,
++        job_id="job", lease_token="lease")
++    pending = [job]
++    async def claim(*args):
++        return pending.pop() if pending else None
++    monkeypatch.setattr(crm, "claim_enrichment", claim)
++    monkeypatch.setattr(crm, "complete_enrichment", AsyncMock())
++    sources = StaticSourceExecutor([])
++    sources.validate_discovery = AsyncMock(return_value=(seed, {"brave_queries_used": 1}))
++    sources.enrich_existing = AsyncMock(side_effect=AssertionError("Must validate discovery with Brave"))
++    worker = ProspectingWorker(crm, MemoryWorkerStore(), sources)
++    assert await worker.poll_once()
++    sources.validate_discovery.assert_awaited_once_with(seed, snapshot)
++    crm.complete_enrichment.assert_awaited_once()
++
++
++@pytest.mark.asyncio
++async def test_enrichment_http_contract_preserves_campaign_and_budget():
++    from app.crm.http import HttpCRMPort
++    snapshot, task = scope()
++    seed = discovery_candidates(snapshot, task)[0]
++    def handler(request):
++        return httpx.Response(200, json={"job": {"id": "job", "run_id": "run", "candidate_relation_id": "relation"},
++            "candidate": seed.model_dump(mode="json"), "snapshot": snapshot.model_dump(mode="json"),
++            "lease_token": "lease", "lease_expires_at": "2030-01-01T00:00:00Z"})
++    port = HttpCRMPort(base_url="https://crm.test", api_key="fixture", transport=httpx.MockTransport(handler))
++    claimed = await port.claim_enrichment("worker")
++    assert claimed.snapshot == snapshot
++    assert claimed.candidate.market_signals["deepseek_discovery"]

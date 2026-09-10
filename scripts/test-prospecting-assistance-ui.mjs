@@ -18,10 +18,14 @@ try {
     await context.addInitScript(({ user, payload, storageKey }) => localStorage.setItem(storageKey, JSON.stringify({ access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.fixture`, refresh_token: "fixture", expires_at: Math.floor(Date.now() / 1000) + 86400, token_type: "bearer", user })), { user, payload, storageKey: `sb-${new URL(dbUrl).hostname.split(".")[0]}-auth-token` });
     let campaign = { id: cid, name: "Climatización Santiago", status: "active", description: "Servicio técnico", keywords: ["climatizacion"], sources: ["brave_search", "official_website"], region_codes: ["13"], comuna_codes: ["13101"], target_types: ["tecnico"], version: 1, candidate_limit: 20, result_limit_per_query: 5, created_by: user.id, updated_at: "2026-09-10T10:00:00Z", deepseek_enabled: false };
     const second = { ...campaign, id: "44444444-4444-4444-8444-444444444444", name: "Refrigeración Valdivia", keywords: ["refrigeracion"], status: "draft", updated_at: "2026-09-09T10:00:00Z" };
-    const run = { id: rid, campaign_id: cid, status: "completed", created_at: "2026-09-10T10:00:00Z", total_tasks: 1, completed_tasks: 1, candidates_found: 0,
+    const run = { id: rid, campaign_id: cid, status: "completed", created_at: "2026-09-10T10:00:00Z", total_tasks: 1, completed_tasks: 1, candidates_found: 19,
       snapshot: { deepseek_enabled: true, campaign: { crm_campaign_id: cid, name: campaign.name, keywords: campaign.keywords, sources: campaign.sources, target_types: ["tecnico"], territories: [{ region_code: "13", region_name: "Metropolitana", comuna_code: "13101", comuna_name: "Santiago" }] } },
       search_assistance: { status: "applied", mode: "web_discovery_v1", model: "deepseek-v4-flash", discovered_websites: 10, web_requests: 2, completed_at: "2026-09-10T10:00:03Z", queries: ["empresas climatizacion Santiago"], discoveries: [{ name: "Clima Andes", website: "https://climaandes.cl/" }] } };
     const mutations = [], external = [];
+    const candidates = Array.from({ length: 19 }, (_, i) => ({ id: `candidate-${i}`, entity_id: `entity-${i}`, campaign_id: cid, run_id: rid,
+      review_status: "pending", discovery_status: "pending", discovery_origin: { website: `https://directorio.cl/${i}` }, enrichment_status: "pending",
+      candidate_snapshot: { name: `Hallazgo ${i}`, website: `https://directorio.cl/${i}`, phone: "+56961234567", import_eligible: true,
+        locations: [{ region_code: "13", comuna_code: "13101" }], review_flags: ["discovery_pending"] } }));
     await context.route("**/*", async route => {
       const request = route.request(), url = new URL(request.url());
       if (url.origin !== dbOrigin) {
@@ -40,6 +44,7 @@ try {
         else body = [campaign, second];
       }
       if (url.pathname.includes("/prospecting_runs")) body = [run];
+      if (url.pathname.includes("/prospecting_campaign_candidates")) body = candidates;
       if (url.pathname.includes("/crm-copilot/")) body = { conversations: [] };
       if (!["GET", "HEAD"].includes(request.method())) mutations.push({ path: url.pathname, body: request.postDataJSON() });
       return route.fulfill({ status: 200, headers, body: request.method() === "HEAD" ? "" : JSON.stringify(body) });
@@ -92,13 +97,22 @@ try {
         await page.locator(".prospecting-assistance").scrollIntoViewIfNeeded();
         await page.screenshot({ path: `outputs/prospecting-assistance/operation-${width}.png` });
       }
-      await page.getByRole("link", { name: "Analizar en Copiloto" }).click();
-      await page.getByPlaceholder("Pregunta sobre tu negocio...").waitFor();
-      assert.match(await page.getByPlaceholder("Pregunta sobre tu negocio...").inputValue(), new RegExp(rid));
-      assert.equal(mutations.length, 1, "Copilot link must only prepare a draft, never execute");
+      assert.equal(await page.getByRole("link", { name: "Analizar en Copiloto" }).count(), 0);
+      await page.getByRole("button", { name: "Ver candidatos", exact: true }).click();
+      await page.getByRole("heading", { name: "Bandeja de revisión" }).waitFor();
+      assert.equal(await page.locator(".candidate-row").count(), 19);
+      await page.locator(".candidate-row").first().click();
+      assert.equal(await page.getByRole("button", { name: "Aprobar prospecto", exact: true }).isDisabled(), true);
+      assert.equal(await page.getByRole("button", { name: "Confirmé los datos en el sitio oficial" }).count(), 0);
+      for (const width of [1440, 390, 360]) {
+        await page.setViewportSize({ width, height: 900 });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false, `candidate overflow ${width}`);
+        await page.screenshot({ path: `outputs/prospecting-assistance/candidates-${width}.png`, fullPage: true });
+      }
+      assert.equal(mutations.length, 1, "Opening candidates must not approve or import");
     }
     assert.deepEqual(errors, []); assert.ok(!external.includes("https://api.deepseek.com"));
-    console.log(`PASS ${role}: filters, opt-in, run evidence, mobile layout and Copilot handoff`);
+    console.log(`PASS ${role}: filters, opt-in, run evidence, mobile layout and candidate validation inbox`);
     await context.close();
   }
 } finally { await browser.close(); }

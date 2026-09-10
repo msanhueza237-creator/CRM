@@ -1237,7 +1237,7 @@ async function testSearchAssistanceContract(sql) {
     await configureAdmin(db);
     const migration = await fs.readFile(new URL("../supabase/prospecting_deepseek_search.sql", import.meta.url), "utf8");
     await db.exec(migration);
-    const cid = await insertCampaign(db, "Busqueda asistida", "brave_search", 10);
+    const cid = await insertCampaign(db, "Busqueda asistida", "brave_search", 20);
     await db.query("update prospecting_campaigns set deepseek_enabled=true where id=$1", [cid]);
     const claim = await enqueueAndClaim(db, cid, "worker-assistance");
     assert.equal(claim.run.snapshot.deepseek_enabled, true);
@@ -1257,6 +1257,53 @@ async function testSearchAssistanceContract(sql) {
     assert.equal(persisted.snapshot.deepseek_discoveries, undefined);
     assert.equal(persisted.completed_tasks, 1);
     assert.equal((await db.query("select count(*)::integer n from prospect_entities")).rows[0].n, 0);
+    await db.exec(sql.enrichment);
+    const discoverySql = await fs.readFile(new URL("../supabase/prospecting_discovery_candidates.sql", import.meta.url), "utf8");
+    await db.exec(discoverySql);
+    await db.exec(discoverySql);
+    await db.exec(await fs.readFile(new URL("../supabase/prospecting_contact_import.sql", import.meta.url), "utf8"));
+    const hits = Array.from({ length: 19 }, (_, i) => ({ name: `Empresa ${i}`, website: `https://directorio.cl/empresa/${i}`, source_url: `https://directorio.cl/empresa/${i}` }));
+    await db.query("update prospecting_runs set search_assistance=$2::jsonb where id=$1", [claim.run.id, JSON.stringify({ ...plan, discoveries: [...hits, hits[0], { name: 'Invalid' }] })]);
+    const stage = async () => (await db.query("select stage_prospecting_discoveries($1) result", [claim.run.id])).rows[0].result;
+    assert.deepEqual(await stage(), { added: 19, candidates_found: 19 });
+    assert.deepEqual(await stage(), { added: 0, candidates_found: 19 });
+    assert.equal((await db.query("select count(*)::integer n from prospect_enrichment_jobs where status='pending'")).rows[0].n, 19);
+    const first = (await db.query("select * from prospecting_campaign_candidates order by first_seen_at limit 1")).rows[0];
+    assert.equal(first.discovery_status, "pending");
+    assert.deepEqual(first.candidate_snapshot.evidence, []);
+    assert.equal(first.candidate_snapshot.import_eligible, false);
+    assert.equal((await db.query("select count(*)::integer n from companies")).rows[0].n, 0);
+    await assert.rejects(db.query("update prospecting_campaign_candidates set review_status='approved' where id=$1", [first.id]), /validacion Brave/);
+    await db.query("update prospecting_campaign_candidates set discovery_status='validated', candidate_snapshot=candidate_snapshot||'{\"import_eligible\":true}'::jsonb where id=$1", [first.id]);
+    assert.equal((await db.query("select discovery_status from prospecting_campaign_candidates where id=$1", [first.id])).rows[0].discovery_status, 'pending');
+    const job = (await db.query("select claim_prospect_enrichment($1,'discovery-worker',300) result", [API_KEY_ID])).rows[0].result;
+    const finished = { ...job.candidate, import_eligible: false, review_flags: ['missing_business_contact'] };
+    await db.query("select complete_prospect_enrichment($1,$2,'discovery-worker',$3,$4::jsonb,$5::jsonb)", [job.job.id, API_KEY_ID, job.lease_token, JSON.stringify(finished), JSON.stringify({ hvac_relevant: false, validation_version: 'deepseek-brave-v1', brave_queries_used: 1 })]);
+    const pending = (await db.query("select review_status,discovery_status from prospecting_campaign_candidates where id=$1", [job.job.candidate_relation_id])).rows[0];
+    assert.deepEqual(pending, { review_status: 'pending', discovery_status: 'unverified' });
+    // Even the contact-only approval RPC cannot promote an unvalidated seed.
+    const legacyJob = (await db.query("select claim_prospect_enrichment($1,'discovery-worker',300) result", [API_KEY_ID])).rows[0].result;
+    const verifiedFields = candidate({ id: legacyJob.candidate.candidate_id, name: 'Clima Andes', url: 'https://climaandes.cl', phone: '+56961234567', provider: 'official_website' });
+    verifiedFields.import_eligible = true;
+    verifiedFields.importable_location_indexes = [0];
+    await db.query("select complete_prospect_enrichment($1,$2,'discovery-worker',$3,$4::jsonb,'{}')", [legacyJob.job.id, API_KEY_ID, legacyJob.lease_token, JSON.stringify(verifiedFields)]);
+    await assert.rejects(db.query("select review_contact_prospect_candidate($1,'approve',null,null)", [legacyJob.job.candidate_relation_id]), /validacion Brave/);
+    assert.equal((await db.query("select count(*)::integer n from companies")).rows[0].n, 0, 'blocked approval rolls back company creation');
+    const validJob = (await db.query("select claim_prospect_enrichment($1,'discovery-worker',300) result", [API_KEY_ID])).rows[0].result;
+    const validCandidate = { ...candidate({ id: validJob.candidate.candidate_id, name: 'Clima Sur', url: 'https://climasur.cl', phone: '+56961234568', provider: 'official_website' }), import_eligible: true, importable_location_indexes: [0] };
+    await db.query("select complete_prospect_enrichment($1,$2,'discovery-worker',$3,$4::jsonb,$5::jsonb)", [validJob.job.id, API_KEY_ID, validJob.lease_token, JSON.stringify(validCandidate), JSON.stringify({ validation_version: 'deepseek-brave-v1', brave_queries_used: 1 })]);
+    assert.equal((await db.query("select discovery_status from prospecting_campaign_candidates where id=$1", [validJob.job.candidate_relation_id])).rows[0].discovery_status, 'validated');
+    await db.query("select review_contact_prospect_candidate($1,'approve',null,null)", [validJob.job.candidate_relation_id]);
+    assert.equal((await db.query("select count(*)::integer n from companies")).rows[0].n, 1, 'only explicit approval creates the company');
+    const duplicateJob = (await db.query("select claim_prospect_enrichment($1,'discovery-worker',300) result", [API_KEY_ID])).rows[0].result;
+    await db.query("select complete_prospect_enrichment($1,$2,'discovery-worker',$3,$4::jsonb,$5::jsonb)", [duplicateJob.job.id, API_KEY_ID, duplicateJob.lease_token, JSON.stringify({ ...validCandidate, candidate_id: duplicateJob.candidate.candidate_id }), JSON.stringify({ validation_version: 'deepseek-brave-v1', brave_queries_used: 1 })]);
+    assert.deepEqual((await db.query("select discovery_status,review_status from prospecting_campaign_candidates where id=$1", [duplicateJob.job.candidate_relation_id])).rows[0], { discovery_status: 'unverified', review_status: 'possible_duplicate' });
+    await assert.rejects(db.query("select complete_prospect_enrichment($1,$2,'discovery-worker',$3,$4::jsonb,'{}')", [job.job.id, API_KEY_ID, job.lease_token, JSON.stringify(finished)]), /Invalid enrichment lease/);
+    const permissions = (await db.query("select has_function_privilege('authenticated','stage_prospecting_discoveries(uuid)','execute') allowed")).rows[0];
+    assert.equal(permissions.allowed, false);
+    // The frozen campaign cap includes unverified candidates as well.
+    await db.query("update prospecting_runs set search_assistance=$2::jsonb where id=$1", [claim.run.id, JSON.stringify({ ...plan, discoveries: [...hits, { name: 'Extra', website: 'https://extra.cl', source_url: 'https://extra.cl' }, { name: 'Over cap', website: 'https://over.cl', source_url: 'https://over.cl' }] })]);
+    assert.deepEqual(await stage(), { added: 1, candidates_found: 20 });
   } finally { await db.close(); }
 }
 

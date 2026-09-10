@@ -218,6 +218,8 @@ export interface SourceEvidence {
 }
 
 export interface ProspectCandidate {
+  discoveryStatus?: "pending" | "validated" | "unverified";
+  discoveryUrl?: string;
   id: string;
   entityId: string;
   externalCandidateId: string;

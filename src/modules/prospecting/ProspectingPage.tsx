@@ -695,6 +695,13 @@ export function ProspectingPage() {
           onControlRun={(run, action) => void controlRun(run, action)}
           onStartEnrichment={(run) => void startEnrichment(run)}
           onControlEnrichment={(run, action) => void controlEnrichment(run, action)}
+          onOpenCandidates={() => {
+            setCandidateQuery("");
+            setCandidateStatus("active");
+            setCandidateSource("all");
+            setCandidateComuna("all");
+            setTab("candidates");
+          }}
         />
       ) : null}
 
@@ -1348,6 +1355,7 @@ function OperationView({
   onControlRun,
   onStartEnrichment,
   onControlEnrichment,
+  onOpenCandidates,
 }: {
   campaign?: ProspectingCampaign;
   runs: ProspectingRun[];
@@ -1361,6 +1369,7 @@ function OperationView({
   onControlRun: (run: ProspectingRun, action: "pause" | "resume") => void;
   onStartEnrichment: (run: ProspectingRun) => void;
   onControlEnrichment: (run: ProspectingRun, action: "pause" | "resume") => void;
+  onOpenCandidates: () => void;
 }) {
   if (!campaign) return <EmptyState icon={<Globe2 size={28} />} title="Selecciona una campaña" text="Elige una campaña para consultar su operación." />;
   const campaignNeedsOfficialWebsite = requiresOfficialWebsite(campaign.sources);
@@ -1424,7 +1433,7 @@ function OperationView({
 
       <div className="panel operation-header">
         <div className="operation-title-row">
-          <div><p>Investigación posterior</p><h2>Investigación del sitio oficial</h2><span>Profundiza cada candidato sin nuevas búsquedas Brave. Valida contacto, actividad y ubicación publicada.</span></div>
+          <div><p>Validación de candidatos</p><h2>Brave y sitio oficial</h2><span>Contacto, actividad y ubicación por confirmar</span></div>
           <div className="operation-controls">
             {canExecute && selectedRun.enrichmentStatus === "not_requested" ? <button className="primary-button" type="button" disabled={busyAction === `enrich:${selectedRun.id}` || selectedRun.progress.candidatesFound === 0} onClick={() => onStartEnrichment(selectedRun)}><Sparkles size={16} /> Investigar {selectedRun.progress.candidatesFound} empresas</button> : null}
             {canExecute && enrichmentActive ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-pause:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "pause")}><PauseCircle size={16} /> Pausar investigación</button> : null}
@@ -1462,7 +1471,7 @@ function OperationView({
             {selectedRun.searchAssistance?.completedAt ? <small>{formatDateTime(selectedRun.searchAssistance.completedAt)}</small> : null}
             {selectedRun.searchAssistance?.queries.length ? <details><summary>Consultas realizadas</summary><ul>{selectedRun.searchAssistance.queries.map((q, i) => <li key={i}>{q}</li>)}</ul></details> : null}
             {selectedRun.searchAssistance?.discoveries.length ? <details><summary>Origen de los hallazgos · no acredita aprobación</summary><ul>{selectedRun.searchAssistance.discoveries.map(d => <li key={d.website}><a href={d.website} target="_blank" rel="noopener noreferrer">{d.name}</a></li>)}</ul></details> : null}
-            <Link className="ghost-button" to={`/copiloto?prospecting_run=${selectedRun.id}`}><Sparkles size={17} /> Analizar en Copiloto</Link>
+            <button className="ghost-button" type="button" onClick={onOpenCandidates}><Building2 size={17} /> Ver candidatos</button>
           </section>
         </div>
         <div className="panel agent-health-panel">
@@ -1581,7 +1590,7 @@ function CandidatesView({
               return (
                 <button key={candidate.id} type="button" className={`candidate-row ${candidate.id === selectedCandidate?.id ? "selected" : ""}`} onClick={() => onSelect(candidate.id)}>
                   <span className="candidate-score">{Math.round(candidate.marketScore || candidate.score)}<small>{candidate.marketScore ? "mercado" : "score"}</small></span>
-                  <span className="candidate-row-main"><strong>{candidate.name}</strong><small><MapPin size={12} /> {primary?.comunaName || "Sin comuna"} · {candidate.companyType}</small><em>{candidate.phone || candidate.email || candidate.website}</em></span>
+                  <span className="candidate-row-main"><strong>{candidate.name}</strong><small><MapPin size={12} /> {primary?.comunaName || "Sin comuna"} · {candidate.companyType}</small><em>{candidate.phone || candidate.email || candidate.website}</em>{candidate.discoveryStatus ? <small>DeepSeek · {discoveryLabel(candidate)}</small> : null}</span>
                   <span className={`status-badge prospecting-status ${candidate.reviewStatus}`}>{reviewLabels[candidate.reviewStatus]}</span>
                   <ChevronRight size={17} />
                 </button>
@@ -1703,6 +1712,12 @@ function CandidateDetail({
         </div>
       ) : null}
 
+      {candidate.discoveryStatus ? <div className={`candidate-import-readiness ${candidate.discoveryStatus === "validated" ? "ready" : "partial"}`} role="status">
+        <Search size={19} /><div><strong>{discoveryLabel(candidate)}</strong>
+          <p>{candidate.enrichmentError || String(candidate.enrichmentSummary.validation_message || "Hallazgo guardado. Pendiente de contraste con Brave y el sitio oficial.")}</p>
+          {safeExternalUrl(candidate.discoveryUrl || "") ? <a href={safeExternalUrl(candidate.discoveryUrl || "") || undefined} target="_blank" rel="noreferrer">Origen del hallazgo <ExternalLink size={12} /></a> : null}
+        </div></div> : null}
+
       {candidate.marketScore ? (
         <div className="candidate-import-readiness ready" role="status">
           <Sparkles size={19} />
@@ -1735,10 +1750,10 @@ function CandidateDetail({
         <div><dt>Dirección</dt><dd>{primary?.address || "No informada"}</dd></div>
         <div><dt>Teléfono</dt><dd>{candidate.phone || "No encontrado"}</dd></div>
         <div><dt>Email</dt><dd>{candidate.email || "No encontrado"}</dd></div>
-        <div><dt>Sitio web</dt><dd>{website ? <a href={website} target="_blank" rel="noreferrer">Abrir sitio <ExternalLink size={12} /></a> : "No encontrado"}</dd></div>
+        <div><dt>{candidate.discoveryStatus ? "Sitio oficial" : "Sitio web"}</dt><dd>{candidate.discoveryStatus && !candidate.evidence.some((e) => e.source === "official_website" && e.field === "website") ? "Por verificar" : website ? <a href={website} target="_blank" rel="noreferrer">Abrir sitio <ExternalLink size={12} /></a> : "No encontrado"}</dd></div>
       </dl>
 
-      {candidate.enrichmentStatus !== "not_requested" ? (
+      {!candidate.discoveryStatus && candidate.enrichmentStatus !== "not_requested" ? (
         <div className="candidate-import-readiness ready" role="status">
           <Sparkles size={19} />
           <div>
@@ -1770,7 +1785,7 @@ function CandidateDetail({
 
       {canReview && reviewable ? (
         <div className="candidate-review-box">
-          {!candidate.importEligible && website && primary ? (
+          {!candidate.discoveryStatus && !candidate.importEligible && website && primary ? (
             <div className="candidate-import-readiness partial" role="group" aria-label="Verificacion humana">
               <ShieldCheck size={19} />
               <div>
@@ -1865,6 +1880,11 @@ function humanize(value: string) {
 }
 
 function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
+  if (flag === "discovery_duplicate") return "La misma empresa ya aparece en otro candidato de esta ejecucion.";
+  if (flag === "discovery_pending") return "Pendiente de validacion con Brave y sitio oficial.";
+  if (flag === "missing_business_contact") return "No se pudo confirmar un telefono o correo comercial.";
+  if (flag === "outside_requested_territory") return "No se pudo confirmar un domicilio dentro del territorio de la campana.";
+  if (flag === "missing_required_evidence") return "Falta evidencia oficial suficiente para aprobar.";
   if (flag === "official_location_conflict") {
     return "La ubicacion publicada en el sitio oficial no coincide con la comuna seleccionada. Revisa antes de aprobar.";
   }
@@ -1899,6 +1919,13 @@ function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
     return `${locationLabel}: sólo cuenta con evidencia temporal y no se importará.`;
   }
   return humanize(flag);
+}
+
+function discoveryLabel(candidate: ProspectCandidate) {
+  if (candidate.discoveryStatus === "validated") return "Validado con Brave y sitio oficial";
+  if (candidate.discoveryStatus === "unverified" || candidate.enrichmentStatus === "failed") return "Requiere revision";
+  if (candidate.enrichmentStatus === "paused") return "Validacion pausada";
+  return candidate.enrichmentStatus === "running" ? "Validando con Brave" : "Pendiente de Brave";
 }
 
 function confidencePercent(value: number) {
