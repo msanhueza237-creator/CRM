@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import ts from "typescript";
-import { accountingToday, dashboardDocumentSales, dashboardSalesEvidence } from "../supabase/functions/accounting-center/dashboard-sales.ts";
+import { accountingToday, dashboardDocumentSales, dashboardSalesEvidence, dashboardSalesPeriodBridge } from "../supabase/functions/accounting-center/dashboard-sales.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "../supabase/functions/accounting-center/dashboard-purchases.ts";
 import { isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 
@@ -19,22 +19,17 @@ const line = (id, amount, date = "2026-09-08", account = "income", status = "pos
   debit_clp: account === "income" ? 0 : amount, credit_clp: account === "income" ? amount : 0,
   accounting_journal_entries: { source_document_id: id, entry_date: date, status, idempotency_key: `${account}:${id}` } });
 
-async function build(documents, lines, { failLedger = false, failDocuments = false, asOf = "2026-09-09" } = {}) {
+async function build(documents, lines, { failLedger = false, asOf = "2026-09-09" } = {}) {
   const selectAllRows = async (_rest, path) => {
     if (path.startsWith("accounting_journal_lines?")) {
       assert.ok(!path.includes("entry_date=gte."), "Historical postings must remain available for identity deduplication");
       if (failLedger) throw new Error("fixture ledger unavailable");
       return lines.filter(l => l.accounting_journal_entries.entry_date <= asOf && ["posted", "reversed"].includes(l.accounting_journal_entries.status));
     }
-    if (path.startsWith("accounting_source_documents?")) {
-      assert.ok(path.endsWith("order=issued_on.asc,id.asc"));
-      if (failDocuments) throw new Error("fixture documents unavailable");
-      return documents;
-    }
     throw new Error(`Unexpected query: ${path}`);
   };
-  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", `${javascript}\nreturn buildDashboardAnalytics;`)(
-    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument);
+  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", `${javascript}\nreturn buildDashboardAnalytics;`)(
+    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge);
   return run({}, "entity", asOf, documents, accounts);
 }
 
@@ -57,6 +52,43 @@ test("September includes an unposted invoice even with booked sales in previous 
   assert.equal(posted.current.sales, result.current.sales);
   assert.equal(posted.current.salesPendingDocuments, 0);
   assert.equal(posted.basis, "ledger");
+});
+
+test("September separates its single invoice from January notes and a corrective reversal", async () => {
+  const docs = [doc("1557"), ...[1211750, 415915, 310640].map((amount, i) =>
+    doc(`note-${i}`, amount, `2026-01-${10 + i}`, { document_type: "sales_credit_note" }))];
+  const lines = [line("1557", 149421), ...[1211750, 415915, 310640].map((amount, i) => line(`note-${i}`, -amount)),
+    line(null, 6418), line(null, 350000, "2026-09-04", "expense")];
+  const result = await build(docs, lines);
+  const september = result.monthly.at(-1);
+  assert.equal(september.salesIssuedDocuments, 1);
+  assert.equal(september.salesIssued, 149421);
+  assert.equal(september.salesIssuedCreditNotes, 0);
+  assert.equal(september.salesPeriodNet, 149421);
+  assert.equal(september.salesPriorCreditAdjustments, -1938305);
+  assert.equal(september.salesOtherAdjustments, 6418);
+  assert.equal(september.salesCostMissingDocuments, 1, "Zero posted cost is not confirmed zero cost");
+  assert.equal(september.sales, -1782466);
+  assert.equal(september.operatingProfit, -2132466, "The presentation must not alter booked amounts");
+  for (const total of [...result.monthly, result.current]) {
+    assert.equal(total.salesPeriodNet + total.salesPriorCreditAdjustments + total.salesOtherAdjustments, total.sales);
+  }
+  assert.equal(result.current.salesPriorCreditAdjustments, 0, "January and September belong to the same annual period");
+  const costLine = line("1557", 50000, "2026-09-08", "cost");
+  costLine.accounting_journal_entries.idempotency_key = "facto-cost:1557";
+  const withCost = await build(docs, [...lines, costLine]);
+  assert.equal(withCost.monthly.at(-1).salesCostMissingDocuments, 0);
+});
+
+test("Period bridge includes notes in their issue period and keeps zero-document periods explicit", () => {
+  const documents = dashboardSalesEvidence([doc("sale", 500), doc("note", 100, "2026-09-08", { document_type: "sales_credit_note" })], [], new Set(), "2026-09-09");
+  const period = dashboardSalesPeriodBridge(documents, "2026-09-01", "2026-09-09", 400, new Set());
+  assert.equal(period.salesIssuedDocuments, 1);
+  assert.equal(period.salesIssued, 500);
+  assert.equal(period.salesIssuedCreditNotes, 100);
+  assert.equal(period.salesPeriodNet, 400);
+  assert.equal(period.salesOtherAdjustments, 0);
+  assert.equal(dashboardSalesPeriodBridge(documents, "2026-08-01", "2026-08-31", 0, new Set()).salesIssuedDocuments, 0);
 });
 
 test("Mixed coverage in the same month, draft and cost entries never suppress a sale", async () => {
@@ -112,9 +144,8 @@ test("Read failures retain documentary evidence and clearly warn about provision
   assert.equal(result.current.sales, 149421);
   assert.equal(result.basis, "documentary");
   assert.ok(result.warnings.some(w => w.includes("libro mayor")));
-  const fallback = await build(docs, [], { failDocuments: true });
-  assert.equal(fallback.current.sales, 149421);
-  assert.ok(fallback.warnings.some(w => w.includes("cobertura documental")));
+  const reused = await build(docs, []);
+  assert.equal(reused.current.sales, 149421, "Use the complete bootstrap snapshot without another document read");
 });
 
 test("Business cutoff uses Santiago at UTC midnight and across DST", () => {

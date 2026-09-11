@@ -95,6 +95,13 @@ try {
         if (failed) return route.fulfill({ status: 503, headers, body: '{"error":"Unavailable"}' });
         body = { summary: { ...summary, receivables_suppressed: suppressed }, dashboard: { available: true, year: 2026, from: "2026-01-01", to: "2026-09-09", basis: "mixed", warnings: [], current: fixtureTotals({ ...totals, salesLedger: totals.sales - 149421, salesPending: 149421, salesPendingDocuments: 1 }), monthly: monthly.map(fixtureTotals), purchaseDocuments: fixtureMode === "legacy" ? undefined : fixtureMode === "empty" ? [] : purchaseDocuments, latestSales: [{ id: "1557", folio: "1557", issuedOn: "2026-09-08", netClp: 149421, posted: false }], costCoverage: { salesWithExactCost: 112, totalSalesDocuments: 163 } }, factoFreshness: { stale: false } };
         if (fixtureMode === "complete") body.dashboard.salesAdjustments = [{ id: "nc72", folio: "72", issuedOn: "2026-01-20", recognizedOn: "2026-09-09", netClp: -310640 }];
+        if (fixtureMode === "september-adjustments") {
+          Object.assign(body.dashboard.monthly[8], { sales: -1782466, salesLedger: -1782466, salesPending: 0, salesPendingDocuments: 0,
+            salesIssued: 149421, salesIssuedDocuments: 1, salesIssuedCreditNotes: 0, salesPeriodNet: 149421,
+            salesPriorCreditAdjustments: -1938305, salesOtherAdjustments: 6418, salesCostMissingDocuments: 1,
+            operatingProfit: -2132466, salesCreditNotes: 1938305 });
+          body.dashboard.latestSales[0].posted = true;
+        }
       }
       if (u.pathname.includes("foreign_trade_dashboard_summary")) { tradeRequests++; body = { active_shipments: 2, operations_in_preparation: 4, open_alerts: 3, suppliers: 5 }; }
       if (u.pathname.includes("integration_connections")) body = [{ provider: "facto", status: "connected", last_success_at: "2026-09-08" }];
@@ -210,6 +217,25 @@ try {
     if (role === "vendedor") { assert.equal(financeRequests, 0); assert.equal(tradeRequests, 0); assert.equal(await page.locator(".overview-kpis").count(), 0); assert.equal(await page.locator(".overview-purchases").count(), 0); }
     if (role === "finanzas") assert.equal(tradeRequests, 0);
     if (role === "administrador") {
+      fixtureMode = "september-adjustments";
+      for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({ width, height: 950 });
+        await page.getByRole("button", { name: "Actualizar panorama" }).click();
+        await page.waitForFunction(() => !document.querySelector('[aria-label="Actualizar panorama"]')?.disabled);
+        await page.getByRole("combobox", { name: "Período financiero" }).selectOption("2026-09");
+        await assertValue(page, "Ventas emitidas en el período", 149421);
+        await assertValue(page, "Notas emitidas en el período", 0);
+        await assertValue(page, "Notas de crédito de otros períodos", -1938305);
+        await assertValue(page, "Otras regularizaciones de ventas", 6418);
+        await assertValue(page, "Ventas netas en resultado", -1782466);
+        assert.match(await financialRow(page, "Ventas emitidas en el período").innerText(), /1 documento/);
+        assert.match(await financialRow(page, "Costo de ventas").innerText(), /1 documento\(s\) sin costo confirmado/);
+        assert.match(await financialRow(page, "Margen bruto").innerText(), /Por validar/);
+        assert.match(await page.locator(".overview-result-total").innerText(), /Resultado operativo contable/);
+        assert.equal(await page.locator(".overview-result-total strong").innerText(), clp(-2132466));
+        await assertLayout(page, `September adjustments ${width}`);
+        await page.screenshot({ path: `outputs/dashboard/september-adjustments-${width}.png`, fullPage: true });
+      }
       for (const mode of ["legacy", "net-only", "partial", "split-only", "empty"]) {
         fixtureMode = mode;
         await page.getByRole("button", { name: "Actualizar panorama" }).click();

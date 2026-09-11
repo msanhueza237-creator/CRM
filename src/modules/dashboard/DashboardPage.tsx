@@ -44,7 +44,9 @@ export function DashboardPage() {
   const selected = analytics?.monthly.find(month => month.period === period);
   const result = analytics ? (selected || analytics.current) : null;
   const hasPendingSales = (result?.salesPendingDocuments || 0) > 0;
-  const grossMarginLabel = hasPendingSales && result?.costs === 0 ? "Por validar"
+  const hasSalesBridge = result?.salesPeriodNet != null && result.salesIssued != null;
+  const hasSalesAdjustments = Math.abs(result?.salesPriorCreditAdjustments || 0) > 0.005 || Math.abs(result?.salesOtherAdjustments || 0) > 0.005;
+  const grossMarginLabel = (result?.salesCostMissingDocuments || 0) > 0 || (hasPendingSales && result?.costs === 0) ? "Por validar"
     : result?.grossMargin == null ? "Sin base" : `${number(result.grossMargin)}%`;
   const recentSales = analytics?.latestSales?.filter(sale => !selected || (sale.issuedOn >= selected.from && sale.issuedOn <= selected.to)) || [];
   const reportTo = incomeReportLink(selected?.from || analytics?.from, selected?.to || analytics?.to);
@@ -109,10 +111,20 @@ export function DashboardPage() {
           {analytics?.monthly.some(m => purchaseAmounts(m).net == null) && <p className="overview-data-note">Compras no disponibles en algunos meses; no equivalen a cero.</p>}
           <Link className="overview-chart-link" to={reportTo}>Estado de resultados del período <ArrowUpRight size={16} /></Link>
         </div>
-        <div className="overview-results"><h3>{periodLabel}</h3><Result to={hasPendingSales ? financial("facto") : reportTo} label="Ventas netas" value={money(result?.sales)} />
+        <div className="overview-results"><h3>{periodLabel}</h3>
+          {hasSalesBridge && <div className="overview-period-sales" aria-label="Ventas emitidas y ajustes contables">
+            <Result to={sourcesTo("sales_")} label="Ventas emitidas en el período" value={money(result?.salesIssued)} detail={`${number(result?.salesIssuedDocuments)} documento(s) de venta · sin IVA ni notas de crédito`} />
+            <Result to={sourcesTo("sales_credit_note")} label="Notas emitidas en el período" value={deduction(result?.salesIssuedCreditNotes)} />
+            {hasSalesAdjustments && <>
+              <Result to={sourcesTo("sales_")} label="Venta neta por fecha de emisión" value={money(result?.salesPeriodNet)} />
+              <Result to={reportTo} label="Notas de crédito de otros períodos" value={money(result?.salesPriorCreditAdjustments)} detail="Contabilizadas en este período" />
+              <Result to={reportTo} label="Otras regularizaciones de ventas" value={money(result?.salesOtherAdjustments)} detail="Reversas y diferencias de período" />
+            </>}
+          </div>}
+          <Result to={hasPendingSales ? financial("facto") : reportTo} label={hasSalesBridge ? "Ventas netas en resultado" : "Ventas netas"} value={money(result?.sales)} detail={hasSalesAdjustments ? "Incluye las regularizaciones indicadas" : undefined} />
           <Result to={salesAdjustments.length ? reportTo : sourcesTo("sales_credit_note")} label="Notas de crédito de venta" value={deduction(result?.salesCreditNotes)} detail="Ya descontadas de ventas netas" />
           {hasPendingSales && <div className="overview-sales-breakdown"><Result to={reportTo} label="Contabilizadas" value={money(result?.salesLedger)} /><Result to={financial("facto")} label={`Sin asiento · ${number(result?.salesPendingDocuments)} documentos`} value={money(result?.salesPending)} /><p>Incluidas en ventas. El costo y el resultado aún requieren revisión contable.</p></div>}
-          <Result to={reportTo} label="Costo de ventas" value={money(result?.costs)} /><Result to={reportTo} label="Gastos operacionales" value={money(result?.expenses)} /><Result to={reportTo} label="Margen bruto" value={grossMarginLabel} /><Link className="overview-result-total" to={reportTo}><span>Resultado operativo<br /><small>{hasPendingSales ? "Provisional · base mixta" : "Provisional"}</small></span><strong>{money(result?.operatingProfit)}</strong><ArrowUpRight size={18} /></Link></div>
+          <Result to={reportTo} label="Costo de ventas" value={money(result?.costs)} detail={(result?.salesCostMissingDocuments || 0) > 0 ? `${number(result?.salesCostMissingDocuments)} documento(s) sin costo confirmado` : undefined} /><Result to={reportTo} label="Gastos operacionales" value={money(result?.expenses)} /><Result to={reportTo} label="Margen bruto" value={grossMarginLabel} /><Link className="overview-result-total" to={reportTo}><span>Resultado operativo contable<br /><small>{hasPendingSales ? "Provisional · base mixta" : "Provisional"}{hasSalesAdjustments ? " · incluye regularizaciones" : ""}</small></span><strong>{money(result?.operatingProfit)}</strong><ArrowUpRight size={18} /></Link></div>
       </div>
       <div className="overview-purchases">
         <div className="overview-purchases-totals"><h3>Compras · {periodLabel}</h3>

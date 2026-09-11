@@ -13,9 +13,10 @@ import {
 } from "./facto-receivables.ts";
 import { identifyPayrollEmployee, protectedPayrollClassification } from "./payroll-employees.ts";
 import { buildAccountingAgentReport, hasAccountingTaskLease } from "./agent-report.ts";
-import { accountingToday, dashboardSalesEvidence } from "./dashboard-sales.ts";
+import { accountingToday, dashboardSalesEvidence, dashboardSalesPeriodBridge } from "./dashboard-sales.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "./dashboard-purchases.ts";
 import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "./facto-document-policy.ts";
+import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -237,7 +238,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
     detail(`accounting_bank_transactions?select=*&entity_id=eq.${entityId}&order=transaction_date.desc&limit=250`),
     selectRows(rest, `accounting_bank_balance_snapshots?select=*&entity_id=eq.${entityId}&status=eq.verified&order=as_of_date.desc,created_at.desc&limit=100`),
-    selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast,id.asc`),
+    readSourceDocumentSummaries(path => selectRows(rest, path), entityId),
     detail(`accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
     selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=id.asc`),
     summaryOnly ? Promise.resolve([]) : selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast,id.asc`),
@@ -612,18 +613,11 @@ async function buildDashboardAnalytics(
     }
   }
 
-  let financialDocuments = sources;
-  try {
-    financialDocuments = await selectAllRows(rest,
-      `accounting_source_documents?select=id,folio,external_id,issued_on,document_type,currency,exchange_rate,net_amount,exempt_amount,tax_amount,total_clp,data_quality,status,source_type,counterpart_name,raw_payload&entity_id=eq.${entityId}&issued_on=gte.${priorYear}-01-01&issued_on=lte.${asOf}&order=issued_on.asc,id.asc`,
-    );
-  } catch (error) {
-    warnings.push("La cobertura documental se calculó con el último conjunto cargado en pantalla.");
-    console.warn("[accounting-center] dashboard document coverage limited", {
-      entityId,
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
+  // Bootstrap already read every document. Reuse that snapshot instead of loading
+  // the electronic attachments a second time while the first payload is retained.
+  const financialDocuments = sources.filter(source => String(source.issued_on || "") >= `${priorYear}-01-01`
+    && String(source.issued_on || "") <= asOf)
+    .sort((a, b) => String(a.issued_on).localeCompare(String(b.issued_on)) || String(a.id).localeCompare(String(b.id)));
 
   const salesEvidence = dashboardSalesEvidence(financialDocuments, ledgerLines,
     new Set(accounts.filter(account => account.account_type === "income").map(account => String(account.id))), asOf);
@@ -657,6 +651,7 @@ async function buildDashboardAnalytics(
     salesLedger: salesLedger.get(month.period) || 0,
     salesPending: pendingSales.filter(document => document.issuedOn.slice(0, 7) === month.period).reduce((sum, document) => sum + document.netClp, 0),
     salesPendingDocuments: pendingSales.filter(document => document.issuedOn.slice(0, 7) === month.period).length,
+    ...dashboardSalesPeriodBridge(salesEvidence, month.from, month.to, monthTotals.get(month.period)?.sales || 0, exactCostSourceIds),
   }));
   const current = finalizeDashboardTotals(monthly.reduce((accumulator, month) => ({
     sales: accumulator.sales + month.sales,
@@ -695,6 +690,7 @@ async function buildDashboardAnalytics(
     purchaseDocuments,
     salesAdjustments,
     current: { ...current,
+      ...dashboardSalesPeriodBridge(salesEvidence, yearStart, asOf, current.sales, exactCostSourceIds),
       ...dashboardDocumentTotals(purchaseDocuments, recognizedSalesDocuments),
       salesLedger: monthly.reduce((sum, month) => sum + month.salesLedger, 0),
       salesPending: pendingSales.reduce((sum, document) => sum + document.netClp, 0),

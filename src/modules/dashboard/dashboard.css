@@ -82,6 +82,8 @@
 .overview-sales-breakdown { border-left: 3px solid #b07820; padding: 0 10px 10px; background: #fff8ec; }
 .overview-sales-breakdown .overview-result-row { font-size: 12px; padding: 9px 0; }
 .overview-sales-breakdown p { font-size: 11px; line-height: 1.5; color: #775217; margin-top: 8px; }
+.overview-period-sales { border-left: 3px solid #138c96; padding-left: 12px; margin-bottom: 8px; }
+.overview-period-sales .overview-result-row { font-size: 12px; padding: 9px 0; }
 .overview-recent-sales { margin-top: 20px; }
 .overview-recent-sales h3 { font-size: 14px; margin-bottom: 8px; }
 .overview-recent-sales > a { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; border-bottom: 1px solid #e1e9e9; padding: 12px 0; font-size: 12px; }

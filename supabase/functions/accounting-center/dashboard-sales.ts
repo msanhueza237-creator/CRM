@@ -55,3 +55,21 @@ export function dashboardSalesEvidence(documents: Row[], lines: Row[], incomeAcc
       creditNote: document.document_type === "sales_credit_note" }];
   });
 }
+
+export function dashboardSalesPeriodBridge(
+  documents: ReturnType<typeof dashboardSalesEvidence>, from: string, to: string,
+  recognizedSales: number, exactCostSourceIds: Set<string>,
+) {
+  const issued = documents.filter(document => document.issuedOn >= from && document.issuedOn <= to);
+  const sales = issued.filter(document => !document.creditNote);
+  const salesIssued = sales.reduce((sum, document) => sum + document.netClp, 0);
+  const salesIssuedCreditNotes = -issued.filter(document => document.creditNote).reduce((sum, document) => sum + document.netClp, 0) || 0;
+  const salesPeriodNet = salesIssued - salesIssuedCreditNotes;
+  const salesPriorCreditAdjustments = documents.filter(document => document.creditNote && document.posted
+    && document.recognizedOn >= from && document.recognizedOn <= to
+    && (document.issuedOn < from || document.issuedOn > to)).reduce((sum, document) => sum + document.netClp, 0);
+  return { salesIssued, salesIssuedDocuments: sales.length, salesIssuedCreditNotes, salesPeriodNet,
+    salesPriorCreditAdjustments,
+    salesOtherAdjustments: recognizedSales - salesPeriodNet - salesPriorCreditAdjustments,
+    salesCostMissingDocuments: sales.filter(document => !exactCostSourceIds.has(document.id)).length };
+}

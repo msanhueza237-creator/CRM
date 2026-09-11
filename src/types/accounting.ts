@@ -425,6 +425,13 @@ export interface AccountingDashboardTotals {
   salesLedger?: number;
   salesPending?: number;
   salesPendingDocuments?: number;
+  salesIssued?: number;
+  salesIssuedDocuments?: number;
+  salesIssuedCreditNotes?: number;
+  salesPeriodNet?: number;
+  salesPriorCreditAdjustments?: number;
+  salesOtherAdjustments?: number;
+  salesCostMissingDocuments?: number;
   purchasesDomestic?: number;
   // Merchandise only; landed costs invoiced domestically are already in purchasesDomestic.
   purchasesInternational?: number;
