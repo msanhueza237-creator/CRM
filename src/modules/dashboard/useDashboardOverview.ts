@@ -10,6 +10,7 @@ export type Overview = {
   counts: Record<string, number | null>;
   connections: Array<{ provider: string; status: string; last_success_at: string | null }>;
   publications: Array<{ id: string; scheduled_at: string }>;
+  publicationsFrom?: string;
   warnings: string[];
   readAt: string | null;
 };
@@ -36,6 +37,7 @@ export function useDashboardOverview(role: AppRole | undefined, userId: string |
       catch { next.counts[key] = null; next.warnings.push(`No disponible: ${label}.`); }
     }
     const from = new Date(Date.now() - 7 * 86400000).toISOString();
+    next.publicationsFrom = from;
     const jobs: Promise<unknown>[] = [
       count("companies", db.from("companies").select("id", { count: "exact", head: true }), "empresas"),
       ...stages.map(stage => count(stage, db.from("companies").select("id", { count: "exact", head: true }).eq("status", stage), `etapa ${stage}`)),
@@ -59,10 +61,11 @@ export function useDashboardOverview(role: AppRole | undefined, userId: string |
   }, [role, userId]);
   useEffect(() => {
     running.current = false; setData(empty()); void refresh();
-    const onVisible = () => { if (!document.hidden && Date.now() - lastRead.current > 120000) void refresh(); };
-    const timer = window.setInterval(onVisible, 300000);
+    const onVisible = () => { if (!document.hidden && Date.now() - lastRead.current > 30000) void refresh(); };
+    const timer = window.setInterval(onVisible, 60000);
     window.addEventListener("focus", onVisible);
-    return () => { generation.current++; running.current = false; clearInterval(timer); window.removeEventListener("focus", onVisible); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { generation.current++; running.current = false; clearInterval(timer); window.removeEventListener("focus", onVisible); document.removeEventListener("visibilitychange", onVisible); };
   }, [refresh]);
   return { data, loading, refresh };
 }

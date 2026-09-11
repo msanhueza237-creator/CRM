@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getContentBootstrap, getContentProducts } from "../../lib/contentCenterApi";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
+import { readAllRecords } from "../../lib/readAllRecords";
 import type {
   ContentBootstrap,
   ContentHistoryEvent,
@@ -44,7 +45,7 @@ export function useContentCenter() {
       const initial = await getContentBootstrap();
       const [library, publicationResult, historyResult, metricResult] = await Promise.all([
         getContentProducts({ limit: 500 }),
-        supabase.from("content_publications").select("*").order("created_at", { ascending: false }).limit(1000),
+        readAllRecords<ContentPublication>((from, to) => supabase!.from("content_publications").select("*", { count: "exact" }).order("created_at", { ascending: false }).order("id").range(from, to)).then(data => ({ data, error: null })),
         supabase.from("content_history").select("*").order("created_at", { ascending: false }).limit(300),
         supabase.from("content_metrics").select("*").order("observed_at", { ascending: false }).limit(1000),
       ]);

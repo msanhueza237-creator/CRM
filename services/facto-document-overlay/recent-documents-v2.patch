@@ -1,0 +1,88 @@
+diff --git a/app/hub/worker.py b/app/hub/worker.py
+index 78d82ad..de59fd6 100644
+--- a/app/hub/worker.py
++++ b/app/hub/worker.py
+@@ -14,6 +14,7 @@ from app.hub.commercial import extract_commercial_snapshot
+ from app.hub.crm import HubCRMError, HubCRMPort
+ from app.hub.finance import extract_financial_snapshot
+ from app.hub.inventory import extract_product_snapshots, payload_rows
++from app.hub.recent_documents import recent_documents_monitor
+ from app.integrations.facto import FactoClient
+ from app.integrations.tiendanube import TiendanubeClient
+ 
+@@ -124,16 +125,19 @@ async def run_hub_services(crm: HubCRMPort) -> None:
+         ",".join(AgentRegistry().names()),
+     )
+     integration_task = asyncio.create_task(integration_monitor(crm))
++    recent_documents_task = asyncio.create_task(recent_documents_monitor(crm))
+     executive_task = asyncio.create_task(executive_monitor(crm))
+     commercial_task = asyncio.create_task(commercial_monitor(crm))
+     try:
+         await AgentHubWorker(crm, AgentRegistry()).run_forever()
+     finally:
+         integration_task.cancel()
++        recent_documents_task.cancel()
+         executive_task.cancel()
+         commercial_task.cancel()
+         await asyncio.gather(
+             integration_task,
++            recent_documents_task,
+             executive_task,
+             commercial_task,
+             return_exceptions=True,
+diff --git a/app/integrations/facto.py b/app/integrations/facto.py
+index affa39e..717d0c8 100644
+--- a/app/integrations/facto.py
++++ b/app/integrations/facto.py
+@@ -7,6 +7,7 @@ from typing import Any
+ import httpx
+ 
+ from app.config import Settings
++from app.integrations.request_gate import FactoRequestGate, facto_request_gate
+ 
+ 
+ class FactoError(RuntimeError):
+@@ -42,6 +43,7 @@ class FactoClient:
+         self.transport = transport
+         self._access_token: str | None = None
+         self._auth_lock = asyncio.Lock()
++        self._gate = facto_request_gate if transport is None else FactoRequestGate(spacing=0)
+ 
+     @property
+     def configured(self) -> bool:
+@@ -69,6 +71,7 @@ class FactoClient:
+                 "password": self.settings.facto_password.get_secret_value(),
+             }
+             try:
++                await self._gate.wait()
+                 async with httpx.AsyncClient(
+                     timeout=self.settings.facto_request_timeout_seconds,
+                     transport=self.transport,
+@@ -82,7 +85,9 @@ class FactoClient:
+             except (httpx.TimeoutException, httpx.TransportError) as exc:
+                 raise FactoError(f"Facto no responde ({type(exc).__name__})") from exc
+             if response.status_code >= 400:
+-                raise FactoError(f"Facto rechazo la autenticacion ({response.status_code})")
++                if response.status_code in (429, 503):
++                    self._gate.defer()
++                raise FactoError(f"Facto rechazo la autenticacion ({response.status_code})", status_code=response.status_code)
+             payload = response.json()
+             token = payload.get("access_token") if isinstance(payload, dict) else None
+             if not isinstance(token, str) or not token:
+@@ -94,6 +99,7 @@ class FactoClient:
+         token = await self._authenticate()
+         path = resource.strip("/")
+         try:
++            await self._gate.wait()
+             async with httpx.AsyncClient(
+                 timeout=self.settings.facto_request_timeout_seconds,
+                 transport=self.transport,
+@@ -115,6 +121,8 @@ class FactoClient:
+                 retry_after = delay if 0 <= delay <= 300 else None
+             except ValueError:
+                 retry_after = None
++            if response.status_code in (429, 503):
++                self._gate.defer(retry_after)
+             raise FactoError(
+                 f"Facto devolvio un error ({response.status_code})",
+                 status_code=response.status_code,

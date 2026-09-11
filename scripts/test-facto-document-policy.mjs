@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import ts from "typescript";
+import { normalizeFactoDocument as normalize } from "../supabase/functions/accounting-center/facto-document-normalization.ts";
 import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 
 const source = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
-const calculation = source.slice(source.indexOf("function normalizeFactoDocument("), source.indexOf("function findFactoSourceDocument("));
-const javascript = ts.transpileModule(calculation, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-const normalize = new Function("factoHeader", "asObject", "first", "numeric", "dateValue", "dateTimeValue", `${javascript};return normalizeFactoDocument;`)(factoHeader, v => v && typeof v === "object" ? v : {}, (row, keys) => keys.map(k => row[k]).find(v => v !== null && v !== undefined && v !== ""), v => Number(v) || 0, v => v ? String(v).slice(0, 10) : null, v => v || null);
 const note = { document_id: 762, header: { document_number: 80, document_type_taxbureau: "61", received_issued_flag: 1, issue_date: "2026-08-18", currency_id: 39, receiver_legal_name: "ANDREA GARAY" }, totals: { net_amount: 9091838, taxes_amount: 1727449, total_amount: "10819287.00" }, references: [{ reference_number: 1534, reference_date: "2026-07-28", document_id: 731 }] };
 
 test("Details supply nested totals and the original credit reference, never a moved date", () => {

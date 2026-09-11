@@ -104,16 +104,16 @@ export async function getForeignTradeCenterData(): Promise<ForeignTradeCenterDat
 
   const [summaryResult, operationResult, statusResult, supplierResult, containerResult, parameterResult, auditResult] = await Promise.all([
     supabase.rpc("foreign_trade_dashboard_summary"),
-    supabase
+    readAllRecords<ForeignTradeOperation>((from, to) => supabase!
       .from("import_shipments")
-      .select("id,supplier_id,reference,title,operation_type,transport_type,origin_port,destination_port,status,value_usd,base_currency,exchange_rate_clp,exchange_rate_source,incoterm,target_container_cbm,order_date,estimated_departure,estimated_arrival,inventory_mode,notes,created_at,updated_at")
+      .select("id,supplier_id,reference,title,operation_type,transport_type,origin_port,destination_port,status,value_usd,base_currency,exchange_rate_clp,exchange_rate_source,incoterm,target_container_cbm,order_date,estimated_departure,estimated_arrival,inventory_mode,notes,created_at,updated_at", { count: "exact" })
       .order("created_at", { ascending: false })
-      .limit(300),
+      .order("id").range(from, to)).then(data => ({ data, error: null })),
     supabase.from("foreign_trade_operation_statuses").select("*").order("sort_order"),
-    supabase
+    readAllRecords<ForeignTradeSupplier>((from, to) => supabase!
       .from("suppliers")
-      .select("id,name,company_name,country_code,factory_city,contact_name,email,whatsapp,phone,currency,usual_incoterms,payment_terms,default_production_days,notes,active,created_at,updated_at")
-      .order("name"),
+      .select("id,name,company_name,country_code,factory_city,contact_name,email,whatsapp,phone,currency,usual_incoterms,payment_terms,default_production_days,notes,active,created_at,updated_at", { count: "exact" })
+      .order("name").order("id").range(from, to)).then(data => ({ data, error: null })),
     supabase.from("foreign_trade_container_types").select("*").eq("active", true).order("name"),
     supabase.from("foreign_trade_cost_parameters").select("*").eq("active", true).order("category").order("name"),
     supabase.from("foreign_trade_audit_log").select("*").order("created_at", { ascending: false }).limit(100),
@@ -1302,3 +1302,4 @@ function normalizeForeignTradeIntelligenceRecommendation(value: unknown): Foreig
   normalized.warnings = Array.isArray(raw.warnings) ? raw.warnings.map(String) : [];
   return normalized as unknown as ForeignTradeIntelligenceRecommendation;
 }
+import { readAllRecords } from "./readAllRecords";

@@ -17,6 +17,7 @@ import { accountingToday, dashboardSalesEvidence, dashboardSalesPeriodBridge } f
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "./dashboard-purchases.ts";
 import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "./facto-document-policy.ts";
 import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
+import { normalizeFactoDocument } from "./facto-document-normalization.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -236,13 +237,13 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     selectRows(rest, `accounting_accounts?select=*&entity_id=eq.${entityId}&order=code.asc`),
     detail(`accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
-    detail(`accounting_bank_transactions?select=*&entity_id=eq.${entityId}&order=transaction_date.desc&limit=250`),
+    summaryOnly ? Promise.resolve([]) : selectAllRows(rest, `accounting_bank_transactions?select=*&entity_id=eq.${entityId}&order=transaction_date.desc,id.asc`),
     selectRows(rest, `accounting_bank_balance_snapshots?select=*&entity_id=eq.${entityId}&status=eq.verified&order=as_of_date.desc,created_at.desc&limit=100`),
     readSourceDocumentSummaries(path => selectRows(rest, path), entityId),
     detail(`accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
     selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=id.asc`),
     summaryOnly ? Promise.resolve([]) : selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast,id.asc`),
-    detail(`accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast&limit=500`),
+    summaryOnly ? Promise.resolve([]) : selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast,id.asc`),
     detail(`accounting_payment_events?select=*&entity_id=eq.${entityId}&order=event_date.desc,event_time.desc.nullslast&limit=2000`),
     detail(`accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
     detail(`accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
@@ -254,7 +255,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
   const asOf = accountingToday();
   const [rawSummary, dashboard] = await Promise.all([
     rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: asOf }),
-    buildDashboardAnalytics(rest, entityId, asOf, sources, accounts),
+    buildDashboardAnalytics(rest, entityId, asOf, sources, accounts, !summaryOnly),
   ]);
   const bankReality = await buildBankReality(rest, entityId, bankAccounts, bankTransactions, bankBalanceSnapshots);
   const latestFactoCollections = analyzeFactoReceivablesSnapshot(
@@ -547,6 +548,7 @@ async function buildDashboardAnalytics(
   asOf: string,
   sources: JsonRecord[],
   accounts: JsonRecord[],
+  includeDetails = false,
 ) {
   const year = Number(asOf.slice(0, 4));
   const currentMonth = Number(asOf.slice(5, 7));
@@ -563,6 +565,8 @@ async function buildDashboardAnalytics(
 
   const warnings: string[] = [];
   const accountTypes = new Map(accounts.map((account) => [String(account.id), String(account.account_type || "")]));
+  const accountsById = new Map(accounts.map(account => [String(account.id), account]));
+  const sourcesById = new Map(sources.map(source => [String(source.id), source]));
   const accountClassifications = new Map(accounts.map((account) => [String(account.id), String(account.classification || "")]));
   const monthTotals = new Map(monthRanges.map((month) => [month.period, emptyDashboardTotals()]));
   const expenseBreakdown = emptyDashboardExpenseBreakdown();
@@ -572,7 +576,7 @@ async function buildDashboardAnalytics(
 
   try {
     ledgerLines = await selectAllRows(rest,
-      `accounting_journal_lines?select=account_id,debit_clp,credit_clp,accounting_journal_entries!inner(entry_date,idempotency_key,source_document_id,status)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${asOf}&order=id.asc`,
+      `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(entry_date,entry_number,description,idempotency_key,source_document_id,status)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${asOf}&order=id.asc`,
     );
   } catch (error) {
     ledgerReadFailed = true;
@@ -681,6 +685,17 @@ async function buildDashboardAnalytics(
   return {
     available,
     basis,
+    ...(includeDetails ? { detail: {
+      ledgerAvailable: !ledgerReadFailed,
+      sales: salesEvidence.map(row => ({ ...row, exactCost: exactCostSourceIds.has(row.id), counterpart: String(sourcesById.get(row.id)?.counterpart_name || "") })),
+      ledger: ledgerLines.flatMap(line => {
+        const entry = asObject(line.accounting_journal_entries);
+        const account = accountsById.get(String(line.account_id));
+        if (!account || !["income", "cost", "expense", "result"].includes(String(account.account_type)) || String(entry.entry_date) < `${priorYear}-01-01` || (!numeric(line.debit_clp) && !numeric(line.credit_clp))) return [];
+        const source = sourcesById.get(String(entry.source_document_id));
+        return [{ id: String(line.id), sourceId: String(entry.source_document_id || ""), issuedOn: String(source?.issued_on || ""), date: String(entry.entry_date), entryNumber: String(entry.entry_number), description: String(entry.description || ""), status: String(entry.status), accountType: String(account.account_type), accountCode: String(account.code), accountName: String(account.name), debit: numeric(line.debit_clp), credit: numeric(line.credit_clp) }];
+      }),
+    } } : {}),
     warnings,
     ledgerLines: relevantLedgerLines,
     year,
@@ -4586,79 +4601,6 @@ function accountingLineBankTransactionId(line: JsonRecord) {
   return match?.[1] || "";
 }
 
-function normalizeFactoDocument(payload: JsonRecord, purchase: boolean, externalId: string) {
-  const document = factoHeader(payload);
-  const counterpartObject = asObject(first(document, ["customer","client","supplier","provider","receptor","emisor"]));
-  const currencyId = String(first(document, ["currency_id"]) || "");
-  const currency = String(first(document, ["currency","moneda","currency_code"]) || (!currencyId || currencyId === "39" ? "CLP" : "UNK")).toUpperCase().slice(0, 3);
-  const rate = numeric(first(document, ["exchange_rate","exchange_rate_value","tipo_cambio","dolar"])) || (currency === "CLP" ? 1 : 0);
-  let net = numeric(first(document, ["net","net_amount","monto_neto","total_neto"]));
-  const tax = numeric(first(document, ["tax","vat","iva","monto_iva","taxes_amount"]));
-  let exempt = numeric(first(document, ["exempt","exempt_amount","monto_exento"]));
-  const total = numeric(first(document, ["total","total_amount","monto_total","amount"]));
-  const documentType = factoDocumentType(document, purchase);
-  if (documentType.includes("exempt_") && tax === 0 && total > 0) {
-    exempt = total;
-    net = 0;
-  }
-  let counterpart = String(
-    first(counterpartObject, ["name","business_name","razon_social"])
-      || first(document, purchase
-        ? ["issuer_name","issuer_legal_name","supplier_name","provider_name","razon_social"]
-        : ["receiver_legal_name","receiver_name","customer_name","client_name","razon_social"])
-      || "",
-  ).trim();
-  // Chilean receipts can legitimately omit the customer's identity. Preserve the
-  // sale without inventing a person while keeping it reconcilable as consumer sales.
-  if (!counterpart && !purchase && ["sales_receipt", "sales_exempt_receipt"].includes(documentType)) {
-    counterpart = "Consumidor final";
-  }
-  const errors: string[] = [];
-  if (currency === "UNK") errors.push("currency_unknown");
-  if (!/^(sales|purchase)_(invoice|exempt_invoice|receipt|exempt_receipt|debit_note|credit_note|document)$/.test(documentType)) errors.push("document_type_unsupported");
-  if (Math.abs(net + exempt + tax - total) > 1) errors.push("totals_mismatch");
-  if (!counterpart) errors.push("counterpart_missing");
-  if (!total) errors.push("total_missing");
-  if (currency !== "CLP" && !rate) errors.push("exchange_rate_missing");
-  return {
-    documentType,
-    folio: String(first(document, ["folio","number","document_number","numero"]) || externalId),
-    taxId: String(
-      first(counterpartObject, ["tax_id","rut","document_number"])
-        || first(document, purchase
-          ? ["issuer_tax_id_code","supplier_tax_id","provider_tax_id","rut"]
-          : ["receiver_tax_id_code","customer_tax_id","client_tax_id","rut"])
-        || "",
-    ),
-    counterpart,
-    issuedOn: dateValue(first(document, ["issued_on","issue_date","date","fecha_emision","fecha"])),
-    dueOn: dateValue(first(document, ["due_on","due_date","fecha_vencimiento"])),
-    currency,
-    exchangeRate: rate || 1,
-    net, tax, exempt, total,
-    totalClp: total * (rate || 1),
-    sourceCreatedAt: dateTimeValue(first(document, ["created_at","createdAt","fecha_creacion"])),
-    errors,
-  };
-}
-
-function factoDocumentType(document: JsonRecord, purchase: boolean) {
-  // Verified Facto foreign invoice type; its tax-bureau code is 0, not a DTE code.
-  if (purchase && String(document.document_type_id) === "57") return "purchase_document";
-  const taxType = String(first(document, ["document_type_taxbureau", "tax_document_type"]) || "");
-  const direction = purchase ? "purchase" : "sales";
-  const suffixByTaxType: Record<string, string> = {
-    "33": "invoice",
-    "34": "exempt_invoice",
-    "39": "receipt",
-    "41": "exempt_receipt",
-    "56": "debit_note",
-    "61": "credit_note",
-  };
-  if (suffixByTaxType[taxType]) return `${direction}_${suffixByTaxType[taxType]}`;
-  if (taxType) return `${direction}_unsupported_${taxType}`;
-  return String(first(document, ["document_type", "type", "tipo_documento"]) || `${direction}_invoice`);
-}
 
 function findFactoSourceDocument(documents: JsonRecord[], data: JsonRecord) {
   const folio = normalizeDocumentNumber(data.document_number || data.source_document_number);

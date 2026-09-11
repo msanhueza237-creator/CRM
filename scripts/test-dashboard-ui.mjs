@@ -37,22 +37,27 @@ const financialRow = (page, label, section = ".overview-results") => page.locato
 async function assertValue(page, label, value, section) {
   assert.equal(await financialRow(page, label, section).locator("strong").innerText(), clp(value));
 }
-async function assertSourceLink(link, from, to, search, source) {
+async function assertDetailLink(link, from, to, metric) {
   const target = new URL(await link.getAttribute("href"), base);
   assert.equal(target.pathname, "/finanzas-contabilidad");
-  assert.equal(target.searchParams.get("view"), "facto");
+  assert.equal(target.searchParams.get("view"), "detail");
+  assert.equal(target.searchParams.get("metric"), metric);
   assert.equal(target.searchParams.get("from"), from);
   assert.equal(target.searchParams.get("to"), to);
-  assert.equal(target.searchParams.get("search"), search === "purchase" ? "" : search);
-  assert.equal(target.searchParams.get("source"), search === "purchase" ? null : source ?? null);
-  if (search === "purchase") assert.equal(target.searchParams.get("type"), source === "FACTO" ? "domestic" : source === "COMERCIO_EXTERIOR" ? "international" : "purchases");
+}
+async function assertDocumentLink(link, id, issuedOn) {
+  const target = new URL(await link.getAttribute("href"), base);
+  assert.equal(target.searchParams.get("view"), "facto");
+  assert.equal(target.searchParams.get("document"), id);
+  assert.equal(target.searchParams.get("from"), issuedOn);
+  assert.equal(target.searchParams.get("to"), issuedOn);
 }
 async function assertLayout(page, label) {
   const issues = await page.evaluate(() => {
     const problems = [];
     if (document.documentElement.scrollWidth > innerWidth + 2) problems.push("page overflow");
     const intersect = (a, b) => a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
-    for (const selector of [".overview-chart-legend", ".overview-bar-group", ".overview-result-row", ".overview-purchase-documents[open] li > a"]) {
+    for (const selector of [".overview-chart-legend", ".overview-bar-group", ".overview-result-row", ".overview-result-total", ".overview-purchase-documents[open] li > a"]) {
       document.querySelectorAll(selector).forEach(parent => {
         const rectangles = [...parent.children].map(child => child.getBoundingClientRect()).filter(rect => rect.width && rect.height);
         rectangles.forEach((rect, index) => rectangles.slice(index + 1).forEach(other => {
@@ -141,13 +146,13 @@ try {
         await page.keyboard.press("Enter");
         assert.notEqual(await details.getAttribute("open"), null);
         assert.equal(await details.locator("li").count(), 6);
-        await assertSourceLink(details.locator(".overview-chart-link"), "2026-01-01", "2026-09-09", "purchase");
+        await assertDetailLink(details.locator(".overview-chart-link"), "2026-01-01", "2026-09-09", "purchases");
         await assertLayout(page, `annual ${width} ${role}`);
         await page.getByRole("combobox", { name: "Período financiero" }).selectOption("2026-02");
         assert.equal(await page.locator(".overview-results h3").innerText(), "Feb 2026");
         assert.match(await page.locator(".overview-results").innerText(), /13\.000\.000/);
         const reportLink = new URL(await page.locator(".overview-result-total").getAttribute("href"), base);
-        assert.equal(reportLink.searchParams.get("report"), "income");
+        assert.equal(reportLink.searchParams.get("metric"), "operating-profit");
         assert.equal(reportLink.searchParams.get("from"), monthly[1].from);
         assert.equal(reportLink.searchParams.get("to"), monthly[1].to);
         await assertValue(page, "Compras netas", 68000000, ".overview-purchases");
@@ -160,12 +165,12 @@ try {
         assert.match(await details.innerText(), /Nacional/);
         assert.match(await details.innerText(), /Internacional/);
         assert.ok((await details.innerText()).includes(clp(-30000)));
-        await assertSourceLink(details.getByRole("link").filter({ hasText: "IMP/2026 & A+B#1" }), "2026-02-01", "2026-02-28", "IMP/2026 & A+B#1", "COMERCIO_EXTERIOR");
-        await assertSourceLink(details.getByRole("link").filter({ hasText: "FEB-28" }), "2026-02-01", "2026-02-28", "FEB-28", "FACTO");
-        await assertSourceLink(financialRow(page, "Compras nacionales", ".overview-purchases"), "2026-02-01", "2026-02-28", "purchase", "FACTO");
-        await assertSourceLink(financialRow(page, "Compras internacionales", ".overview-purchases"), "2026-02-01", "2026-02-28", "purchase", "COMERCIO_EXTERIOR");
-        await assertSourceLink(financialRow(page, "Notas de crédito de venta"), "2026-02-01", "2026-02-28", "sales_credit_note");
-        await assertSourceLink(financialRow(page, "Notas de crédito de compra", ".overview-purchases"), "2026-02-01", "2026-02-28", "purchase_credit_note");
+        await assertDocumentLink(details.getByRole("link").filter({ hasText: "IMP/2026 & A+B#1" }), "feb-import", "2026-02-01");
+        await assertDocumentLink(details.getByRole("link").filter({ hasText: "FEB-28" }), "feb-local", "2026-02-28");
+        await assertDetailLink(financialRow(page, "Compras nacionales", ".overview-purchases"), "2026-02-01", "2026-02-28", "domestic");
+        await assertDetailLink(financialRow(page, "Compras internacionales", ".overview-purchases"), "2026-02-01", "2026-02-28", "international");
+        await assertDetailLink(financialRow(page, "Notas de crédito de venta"), "2026-02-01", "2026-02-28", "sales-credit");
+        await assertDetailLink(financialRow(page, "Notas de crédito de compra", ".overview-purchases"), "2026-02-01", "2026-02-28", "purchase-credit");
         const bars = await page.locator(".overview-bars button").nth(1).evaluate(button => {
           const height = selector => button.querySelector(selector).getBoundingClientRect().height;
           return { group: height(".overview-bar-group"), sales: height(".sales"), costs: height(".costs"), purchases: height(".purchases"), domestic: height(".purchases-domestic"), international: height(".purchases-international") };
@@ -189,18 +194,18 @@ try {
         assert.match(await page.locator(".overview-result-total").innerText(), /base mixta/);
         assert.match(await page.locator(".overview-results").innerText(), /Por validar/);
         assert.match(await page.locator(".overview-recent-sales").innerText(), /Documento 1557/);
-        assert.equal(await page.locator(".overview-recent-sales a").getAttribute("href"), "/finanzas-contabilidad?view=facto");
+        await assertDocumentLink(page.locator(".overview-recent-sales a"), "1557", "2026-09-08");
         await assertValue(page, "Compras netas", 200000, ".overview-purchases");
         const adjustments = page.locator(".overview-sales-adjustments");
         await adjustments.locator("summary").click();
         assert.match(await adjustments.innerText(), /Nota de crédito 72/);
-        await assertSourceLink(adjustments.locator("li a"), "2026-01-20", "2026-01-20", "72", "FACTO");
+        await assertDocumentLink(adjustments.locator("li a"), "nc72", "2026-01-20");
         assert.ok((await adjustments.innerText()).includes(clp(-310640)));
         await assertValue(page, "Compras nacionales", -50000, ".overview-purchases");
         await assertValue(page, "Notas de crédito de compra", -75000, ".overview-purchases");
         assert.equal(await page.locator(".overview-result-total strong").innerText(), clp(-200579));
         assert.equal(await details.locator("li").count(), 2);
-        await assertSourceLink(details.getByRole("link").filter({ hasText: "SEP-09" }), "2026-09-01", "2026-09-09", "SEP-09");
+        await assertDocumentLink(details.getByRole("link").filter({ hasText: "SEP-09" }), "sep-end", "2026-09-09");
         assert.equal(await page.locator(".overview-bars .sales").nth(8).evaluate(el => el.getBoundingClientRect().height >= 2), true);
         assert.equal(await page.locator(".overview-bars button").nth(8).locator(".purchases-domestic").evaluate(el => el.getBoundingClientRect().height), 0);
         await assertLayout(page, `September ${width} ${role}`);

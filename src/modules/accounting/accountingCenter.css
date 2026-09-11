@@ -1795,3 +1795,25 @@
   .accounting-reconciliation-recovery { grid-template-columns: auto minmax(0, 1fr); }
   .accounting-reconciliation-recovery button { grid-column: 1 / -1; width: 100%; justify-content: center; }
 }
+.accounting-dashboard-detail { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+.accounting-dashboard-detail > * { min-width: 0; }
+.accounting-dashboard-detail .table-scroll { overflow-x: auto; }
+.accounting-dashboard-detail .accounting-filter-grid { grid-template-columns: repeat(2, minmax(150px, 1fr)) minmax(180px, 2fr); }
+.accounting-dashboard-detail .accounting-filter-grid label { min-width: 0; }
+.accounting-dashboard-detail input { width: 100%; min-width: 0; border: 1px solid #bfd1d6; border-radius: 4px; padding: 10px; font: inherit; background: #fff; }
+.accounting-dashboard-detail table { width: 100%; border-collapse: collapse; }
+.accounting-dashboard-detail th, .accounting-dashboard-detail td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border, #d7e3e6); vertical-align: top; }
+.accounting-dashboard-detail th { font-size: 12px; color: var(--muted, #506b73); }
+.accounting-dashboard-detail td { max-width: 340px; overflow-wrap: anywhere; }
+.accounting-dashboard-detail .accounting-detail-money { white-space: nowrap; font-variant-numeric: tabular-nums; text-align: right; }
+.accounting-detail-total, .accounting-detail-empty { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.accounting-facto-support-grid[hidden] { display: none; }
+@media (max-width: 640px) {
+  .accounting-dashboard-detail .accounting-filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .accounting-dashboard-detail table, .accounting-dashboard-detail tbody { display: block; min-width: 0; width: 100%; }
+  .accounting-dashboard-detail thead { display: none; }
+  .accounting-dashboard-detail tr { display: block; padding: 12px 0; border-bottom: 2px solid #d7e3e6; }
+  .accounting-dashboard-detail td { display: grid; grid-template-columns: minmax(90px, 32%) minmax(0, 1fr); gap: 8px; max-width: none; padding: 7px 0; border: 0; }
+  .accounting-dashboard-detail td::before { content: attr(data-label); font-size: 12px; font-weight: 600; color: #506b73; }
+  .accounting-dashboard-detail .accounting-detail-money { text-align: left; }
+}

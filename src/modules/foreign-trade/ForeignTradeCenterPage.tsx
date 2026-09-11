@@ -40,12 +40,14 @@ import { ForeignTradeOperationDetail } from "./ForeignTradeOperationDetail";
 import { ForeignTradeQuoteCalculator } from "./ForeignTradeQuoteCalculator";
 import { ForeignTradeSupplierDialog } from "./ForeignTradeSupplierDialog";
 import { ForeignTradeIntelligencePanel } from "./ForeignTradeIntelligencePanel";
+import { ForeignTradeAlertsView } from "./ForeignTradeAlertsView";
 
 const views = [
   { id: "dashboard", label: "Resumen", icon: Landmark },
   { id: "calculator", label: "Calculadora", icon: Calculator },
   { id: "intelligence", label: "Inteligencia", icon: BrainCircuit },
   { id: "operations", label: "Operaciones", icon: Ship },
+  { id: "alerts", label: "Alertas", icon: AlertTriangle },
   { id: "suppliers", label: "Proveedores", icon: UsersRound },
   { id: "settings", label: "Configuración", icon: Settings2 },
   { id: "audit", label: "Auditoría", icon: History },
@@ -69,7 +71,7 @@ export function ForeignTradeCenterPage() {
   }
 
   function openOperationDetail(operationId: string) {
-    setParams({ view: "operations", operation: operationId });
+    const next = new URLSearchParams(params); next.set("view", "operations"); next.set("operation", operationId); setParams(next);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -142,11 +144,12 @@ export function ForeignTradeCenterPage() {
       {!error ? (
         <>
           {activeView === "dashboard" ? <ForeignTradeOverview data={data} onNavigate={navigate} onNew={openOperation} onOpen={openOperationDetail} /> : null}
+          {activeView === "alerts" ? <ForeignTradeAlertsView /> : null}
           {activeView === "calculator" ? <ForeignTradeQuoteCalculator data={data} /> : null}
           {activeView === "intelligence" ? <ForeignTradeIntelligencePanel operationId={selectedOperationId} operations={data.operations} onSelectOperation={(operationId) => setParams(operationId ? { view: "intelligence", operation: operationId } : { view: "intelligence" })} /> : null}
-          {activeView === "operations" && selectedOperationId ? <ForeignTradeOperationDetail operationId={selectedOperationId} statuses={data.statuses} suppliers={data.suppliers} costParameters={data.costParameters} onBack={() => navigate("operations")} onDelete={removeOperation} onChanged={refresh} /> : null}
+          {activeView === "operations" && selectedOperationId ? <ForeignTradeOperationDetail operationId={selectedOperationId} statuses={data.statuses} suppliers={data.suppliers} costParameters={data.costParameters} onBack={() => { const next = new URLSearchParams(params); next.delete("operation"); setParams(next); }} onDelete={removeOperation} onChanged={refresh} /> : null}
           {activeView === "operations" && !selectedOperationId ? <ForeignTradeOperations data={data} onNew={openOperation} onOpen={openOperationDetail} onDelete={removeOperation} /> : null}
-          {activeView === "suppliers" ? <ForeignTradeSuppliers suppliers={data.suppliers} onNew={() => setSupplierDialog("new")} onEdit={setSupplierDialog} /> : null}
+          {activeView === "suppliers" ? <ForeignTradeSuppliers suppliers={params.get("active") === "true" ? data.suppliers.filter(row => row.active) : data.suppliers} onNew={() => setSupplierDialog("new")} onEdit={setSupplierDialog} /> : null}
           {activeView === "settings" ? <ForeignTradeSettings data={data} /> : null}
           {activeView === "audit" ? <ForeignTradeAudit events={data.audit} /> : null}
         </>
@@ -245,18 +248,23 @@ function ForeignTradeOverview({
 }
 
 function ForeignTradeOperations({ data, onNew, onOpen, onDelete }: { data: ForeignTradeCenterData; onNew: (type: ForeignTradeOperationType) => void; onOpen: (operationId: string) => void; onDelete: (operation: ForeignTradeOperation) => Promise<void> }) {
+  const [params, setParams] = useSearchParams();
+  const scope = params.get("scope");
   const [status, setStatus] = useState("");
   const [search, setSearch] = useState("");
   const filtered = useMemo(() => data.operations.filter((operation) => {
     const matchesStatus = !status || operation.status === status;
     const term = search.trim().toLocaleLowerCase("es");
     const matchesSearch = !term || `${operation.reference} ${operation.title}`.toLocaleLowerCase("es").includes(term);
-    return matchesStatus && matchesSearch;
-  }), [data.operations, search, status]);
+    const matchesScope = !scope || (scope === "active-shipments" ? ["production", "ready", "in_transit", "chile_port", "customs", "warehouse_transport"].includes(operation.status)
+      : scope === "preparation" ? data.statuses.some(item => item.code === operation.status && !item.final_state) : false);
+    return matchesStatus && matchesSearch && matchesScope;
+  }), [data.operations, data.statuses, search, status, scope]);
 
   return (
     <div className="foreign-trade-view-stack">
       <section className="foreign-trade-toolbar">
+        {scope && <div><strong>{scope === "active-shipments" ? "Embarques activos" : "En preparación"} · {filtered.length}</strong><button type="button" className="icon-button" title="Quitar filtro del dashboard" aria-label="Quitar filtro del dashboard" onClick={() => { const next = new URLSearchParams(params); next.delete("scope"); setParams(next); }}><X size={16} /></button></div>}
         <label><span>Buscar</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Referencia o nombre" /></label>
         <label><span>Estado</span><select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">Todos</option>{data.statuses.filter((item) => item.active).map((item) => <option value={item.code} key={item.code}>{item.name}</option>)}</select></label>
         <button className="primary-button" type="button" onClick={() => onNew("simulation")}><Plus size={17} /> Nueva operación</button>
@@ -277,9 +285,10 @@ function ForeignTradeOperations({ data, onNew, onOpen, onDelete }: { data: Forei
 }
 
 function ForeignTradeSuppliers({ suppliers, onNew, onEdit }: { suppliers: ForeignTradeSupplier[]; onNew: () => void; onEdit: (supplier: ForeignTradeSupplier) => void }) {
+  const [params, setParams] = useSearchParams();
   return (
     <div className="foreign-trade-view-stack">
-      <section className="panel foreign-trade-section-heading"><div><h2>Proveedores</h2><p>Fichas existentes del Agent Hub, ahora protegidas como información gerencial.</p></div><button className="primary-button" type="button" onClick={onNew}><Plus size={17} /> Nuevo proveedor</button></section>
+      <section className="panel foreign-trade-section-heading"><div><h2>{params.get("active") === "true" ? "Proveedores activos" : "Proveedores"}</h2>{params.get("active") === "true" && <button className="icon-button" type="button" title="Quitar filtro del dashboard" aria-label="Quitar filtro del dashboard" onClick={() => { const next = new URLSearchParams(params); next.delete("active"); setParams(next); }}><X size={16} /></button>}<p>Fichas existentes del Agent Hub, ahora protegidas como información gerencial.</p></div><button className="primary-button" type="button" onClick={onNew}><Plus size={17} /> Nuevo proveedor</button></section>
       <section className="foreign-trade-supplier-grid">
         {suppliers.map((supplier) => (
           <article key={supplier.id}>

@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
+import { AgentFocusView } from "./AgentFocusView";
 import { Activity, ArrowRight, Bot, Check, CircleDollarSign, Clock3, ExternalLink, Mail, Megaphone, PackageSearch, Play, RefreshCw, Search, Sparkles, Truck, Users, WalletCards, X } from "lucide-react";
 import { agentActivity, agentDefinitions, approvedActionPath, chileDay, proposalDestinations, statusLabels, type AgentTask, type AgentType, type Proposal, type AgentActionItem, type RiskAlert, type Connection, type Delivery } from "./agent-center";
 import "./agentsDashboard.css";
@@ -9,6 +10,7 @@ const icons = { executive: Sparkles, commercial: Users, finance: CircleDollarSig
 const dateText = (v?: string | null) => v ? new Intl.DateTimeFormat("es-CL", { dateStyle: "short", timeStyle: "short", timeZone: "America/Santiago" }).format(new Date(v)) : "Sin informe";
 const amount = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? v.toLocaleString("es-CL", { maximumFractionDigits: 0 }) : "No disponible";
 export function AgentsDashboard({ data, loading, notice, busy, canManage, refresh, request, decide, more }: Props) {
+  const [params] = useSearchParams();
   const [filter, setFilter] = useState("all"), [search, setSearch] = useState(""), [tab, setTab] = useState("pending"), [day, setDay] = useState<string | null>(null);
   const activity = agentActivity(data.activity), max = Math.max(1, ...activity.map((d) => d.total));
   const latest = (type: AgentType) => data.tasks.find((task) => task.agent_type === type);
@@ -16,6 +18,8 @@ export function AgentsDashboard({ data, loading, notice, busy, canManage, refres
   const running = agentDefinitions.filter((a) => ["in_progress", "pending"].includes(latest(a.type)?.status || "")).length;
   const filtered = agentDefinitions.filter((a) => `${a.title} ${a.source}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").includes(search.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")) && (filter === "all" || (filter === "ready" ? latest(a.type)?.status === "completed" : latest(a.type)?.status === "failed")));
   const history = data.activity.filter((t) => !day || chileDay(t.created_at) === day).slice(0, 40);
+  const focus = params.get("focus") || "";
+  if (["proposals", "inventory", "connection"].includes(focus)) return <AgentFocusView {...{ data, focus, loading, notice, busy, canManage, refresh, more, decide }} provider={params.get("provider")} />;
   return <section className="agents-center" aria-busy={loading}>
     <header className="ac-heading"><div><span className="eyebrow">CLIMACTIVA / OPERACIONES</span><h1>Centro de agentes</h1><p>{new Intl.DateTimeFormat("es-CL", { dateStyle: "full", timeZone: "America/Santiago" }).format(new Date())}</p></div><button className="ac-icon" title="Actualizar informes" aria-label="Actualizar informes" disabled={loading} onClick={refresh}><RefreshCw size={20} className={loading ? "ac-spin" : ""} /></button></header>
     {notice && <p className="notice-banner warning" role="alert">{notice}</p>}

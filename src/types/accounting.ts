@@ -1,5 +1,5 @@
 export type AccountingRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
-export type AccountingView = "dashboard" | "accounts" | "ledger" | "facto" | "banks" | "reconcile" | "receivables" | "payables" | "checks" | "periods" | "reports" | "controls";
+export type AccountingView = "dashboard" | "detail" | "accounts" | "ledger" | "facto" | "banks" | "reconcile" | "receivables" | "payables" | "checks" | "periods" | "reports" | "controls";
 
 export interface AccountingEntity {
   id: string;
@@ -456,6 +456,11 @@ export interface AccountingDashboardMonth extends AccountingDashboardTotals {
 }
 
 export interface AccountingDashboardAnalytics {
+  detail?: {
+    ledgerAvailable: boolean;
+    sales: Array<{ id: string; folio: string; issuedOn: string; recognizedOn: string; netClp: number; posted: boolean; creditNote: boolean; exactCost: boolean; counterpart: string }>;
+    ledger: Array<{ id: string; sourceId: string; issuedOn: string; date: string; entryNumber: string; description: string; status: string; accountType: string; accountCode: string; accountName: string; debit: number; credit: number }>;
+  };
   available: boolean;
   basis: "ledger" | "mixed" | "documentary" | "unavailable";
   warnings: string[];

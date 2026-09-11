@@ -1,0 +1,9 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG CRM_REVISION
+LABEL cl.latinchile.crm-revision=${CRM_REVISION} \
+      cl.latinchile.facto-document-overlay="v2-recent"
+COPY --chown=app:app app/hub/worker.py /app/app/hub/worker.py
+COPY --chown=app:app app/hub/recent_documents.py /app/app/hub/recent_documents.py
+COPY --chown=app:app app/integrations/facto.py /app/app/integrations/facto.py
+COPY --chown=app:app app/integrations/request_gate.py /app/app/integrations/request_gate.py

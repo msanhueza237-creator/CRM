@@ -4,6 +4,7 @@ import { buildBusinessModuleReport, assertModuleRequester, type ModuleReader } f
 import { collectModuleRows } from "./module-pagination.ts";
 import { executiveDailySlot } from "./executive-daily.ts";
 import { assistProspectingClaim } from "./prospecting-assistance.ts";
+import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 
 type ApiKeyValidation = {
   valid: boolean;
@@ -280,11 +281,15 @@ async function handleAgentHubRoute(
             updated_at: observedAt,
           });
         }
-        const { error } = await context.supabase.from("integration_records").upsert(rows, {
+        const { data: savedRecords, error } = await context.supabase.from("integration_records").upsert(rows, {
           onConflict: "provider,resource,external_id",
-        });
+        }).select("id,external_id");
         if (error) return { body: { error: error.message }, status: 400 };
-        return { body: { ok: true, accepted: rows.length } };
+        const savedIds = new Map((savedRecords || []).map(record => [record.external_id, record.id]));
+        const accounting = provider === "facto"
+          ? await mirrorFactoDocuments(context.supabase, resource, rows.map(row => ({ ...row, id: savedIds.get(row.external_id) })))
+          : undefined;
+        return { body: { ok: true, accepted: rows.length, accounting } };
       },
     );
   }

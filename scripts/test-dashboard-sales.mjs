@@ -5,13 +5,14 @@ import ts from "typescript";
 import { accountingToday, dashboardDocumentSales, dashboardSalesEvidence, dashboardSalesPeriodBridge } from "../supabase/functions/accounting-center/dashboard-sales.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "../supabase/functions/accounting-center/dashboard-purchases.ts";
 import { isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
+import { dashboardDetailRows } from "../src/modules/accounting/dashboardNavigation.ts";
 
 // Exercise the actual edge calculation with read-only REST fixtures, without starting Deno.
 const source = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
 const calculation = source.slice(source.indexOf("type DashboardResultTotals ="), source.indexOf("async function createAccount("));
 assert.ok(calculation.includes("async function buildDashboardAnalytics("));
 const javascript = ts.transpileModule(calculation, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-const accounts = [{ id: "income", account_type: "income" }, { id: "cost", account_type: "cost" }, { id: "expense", account_type: "expense" }];
+const accounts = [{ id: "income", account_type: "income" }, { id: "cost", account_type: "cost" }, { id: "expense", account_type: "expense" }, { id: "result", account_type: "result" }];
 const doc = (id, net = 149421, date = "2026-09-08", extra = {}) => ({ id, folio: id, issued_on: date,
   currency: "CLP", net_amount: net, exempt_amount: 0, tax_amount: Math.round(net * .19), total_clp: Math.round(net * 1.19),
   document_type: "sales_invoice", status: "validated", data_quality: "validated", ...extra });
@@ -19,7 +20,7 @@ const line = (id, amount, date = "2026-09-08", account = "income", status = "pos
   debit_clp: account === "income" ? 0 : amount, credit_clp: account === "income" ? amount : 0,
   accounting_journal_entries: { source_document_id: id, entry_date: date, status, idempotency_key: `${account}:${id}` } });
 
-async function build(documents, lines, { failLedger = false, asOf = "2026-09-09" } = {}) {
+async function build(documents, lines, { failLedger = false, asOf = "2026-09-09", includeDetails = false } = {}) {
   const selectAllRows = async (_rest, path) => {
     if (path.startsWith("accounting_journal_lines?")) {
       assert.ok(!path.includes("entry_date=gte."), "Historical postings must remain available for identity deduplication");
@@ -30,8 +31,33 @@ async function build(documents, lines, { failLedger = false, asOf = "2026-09-09"
   };
   const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", `${javascript}\nreturn buildDashboardAnalytics;`)(
     selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge);
-  return run({}, "entity", asOf, documents, accounts);
+  return run({}, "entity", asOf, documents, accounts, includeDetails);
 }
+
+test("Full bootstrap drill-downs exactly reconcile with the actual dashboard calculation", async () => {
+  const docs = Array.from({ length: 162 }, (_, i) => doc(`sale-${i}`, 1000, i < 3 ? "2026-09-09" : "2026-08-18", { counterpart_name: `Cliente ${i}` }));
+  docs.push(doc("credit", 300, "2026-01-20", { document_type: "sales_credit_note" }));
+  const lines = docs.filter(row => !["sale-0", "sale-1", "sale-2"].includes(row.id)).map(row => line(row.id, row.id === "credit" ? -300 : 1000, row.id === "credit" ? "2026-09-09" : row.issued_on));
+  for (let i = 50; i < 162; i++) {
+    const cost = line(`sale-${i}`, 450, "2026-08-18", "cost");
+    cost.accounting_journal_entries.idempotency_key = `facto-cost:sale-${i}`;
+    lines.push(cost);
+  }
+  lines.push(line(null, 10), line(null, 50, "2026-09-09", "expense"), line(null, -70, "2026-09-09", "result"));
+  lines.forEach((row, i) => { row.id = `line-${i}`; row.accounting_journal_entries.entry_number = i; });
+  const result = await build(docs, lines, { includeDetails: true });
+  const sum = values => values.reduce((total, row) => total + row.amount, 0);
+  for (const period of [result, ...result.monthly]) {
+    const totals = period === result ? result.current : period;
+    const rows = metric => dashboardDetailRows(result, metric, period.from, period.to);
+    assert.equal(rows("sales-pending").length, totals.salesPendingDocuments);
+    assert.equal(rows("cost-missing").length, totals.salesCostMissingDocuments);
+    for (const [metric, key] of [["sales-pending", "salesPending"], ["sales-issued", "salesIssued"], ["sales-ledger", "salesLedger"], ["sales-result", "sales"], ["sales-adjustments", "salesOtherAdjustments"], ["costs", "costs"], ["expenses", "expenses"], ["gross-profit", "grossProfit"], ["operating-profit", "operatingProfit"]]) assert.equal(sum(rows(metric)), totals[key], `${period.from} ${metric}`);
+  }
+  assert.equal(dashboardDetailRows(result, "cost-missing", result.from, result.to).length, 50);
+  assert.equal(result.detail.sales.find(row => row.id === "sale-0").counterpart, "Cliente 0");
+  assert.equal((await build(docs, lines)).detail, undefined, "Summary stays lightweight");
+});
 
 test("September includes an unposted invoice even with booked sales in previous months", async () => {
   const docs = [doc("old", 1000, "2026-08-20"), doc("1557")];

@@ -1,6 +1,7 @@
 import { Component, FormEvent, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { reportPeriod } from "./reportNavigation";
+import { DashboardDetailView } from "./DashboardDetailView";
 import {
   AlertTriangle,
   ArrowRight,
@@ -115,7 +116,7 @@ export function AccountingCenterPage() {
   const { user } = useAuth();
   const [params, setParams] = useSearchParams();
   const requested = params.get("view") as AccountingView | null;
-  const activeView = views.some((view) => view.id === requested) ? requested! : "dashboard";
+  const activeView = requested === "detail" || views.some((view) => view.id === requested) ? requested! : "dashboard";
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState("");
@@ -181,12 +182,13 @@ export function AccountingCenterPage() {
           {activeView === "dashboard" ? <DashboardView data={data} navigate={navigate} /> : null}
           {activeView === "accounts" ? <AccountsView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "ledger" ? <LedgerView data={data} busy={busy} runAction={runAction} /> : null}
-          {activeView === "facto" ? <FactoView data={data} busy={busy} runAction={runAction} /> : null}
+          {activeView === "detail" ? <DashboardDetailView data={data} /> : null}
+          {activeView === "facto" ? <FactoView key={params.toString()} data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "banks" ? <BankImportView data={data} busy={busy} runAction={runAction} /> : null}
-          {activeView === "reconcile" ? <ReconciliationErrorBoundary><ReconciliationView data={data} busy={busy} runAction={runAction} /></ReconciliationErrorBoundary> : null}
-          {activeView === "receivables" ? <ReceivablesView data={data} busy={busy} runAction={runAction} /> : null}
-          {activeView === "payables" ? <PayablesView data={data} busy={busy} runAction={runAction} /> : null}
-          {activeView === "checks" ? <ChecksView data={data} busy={busy} runAction={runAction} /> : null}
+          {activeView === "reconcile" ? <ReconciliationErrorBoundary><ReconciliationView key={params.toString()} data={data} busy={busy} runAction={runAction} /></ReconciliationErrorBoundary> : null}
+          {activeView === "receivables" ? <ReceivablesView key={params.toString()} data={data} busy={busy} runAction={runAction} /> : null}
+          {activeView === "payables" ? <PayablesView key={params.toString()} data={data} busy={busy} runAction={runAction} /> : null}
+          {activeView === "checks" ? <ChecksView key={params.toString()} data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "periods" ? <PeriodsView data={data} isAdmin={user?.role === "administrador"} busy={busy} runAction={runAction} /> : null}
           {activeView === "reports" ? <ReportsView data={data} /> : null}
           {activeView === "controls" ? <ControlsView data={data} busy={busy} runAction={runAction} /> : null}
@@ -550,6 +552,7 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
   const [receivablesPreviewLoading, setReceivablesPreviewLoading] = useState(false);
   const [receivablesError, setReceivablesError] = useState("");
   const [documentParams] = useSearchParams();
+  const documentId = documentParams.get("document");
   const [query, setQuery] = useState(documentParams.get("search") || "");
   const [documentFrom, setDocumentFrom] = useState(reportPeriod(documentParams, `${today().slice(0, 4)}-01-01`, today()).from);
   const [documentTo, setDocumentTo] = useState(reportPeriod(documentParams, `${today().slice(0, 4)}-01-01`, today()).to);
@@ -566,6 +569,7 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
   const supportBatches = data.batches.filter((batch) => ["COLLECTIONS", "CHECKS", "PAYMENTS"].includes(batch.source_type));
   const normalizedQuery = normalize(query);
   const filteredSources = sources.filter((row) => {
+    if (documentId) return row.id === documentId;
     const matchesQuery = !normalizedQuery || normalize([row.folio, row.counterpart_name, row.counterpart_tax_id, row.document_type, documentTypeLabel(row.document_type), row.reference_label].filter(Boolean).join(" ")).includes(normalizedQuery);
     const matchesFrom = !documentFrom || !row.issued_on || row.issued_on.slice(0, 10) >= documentFrom;
     const matchesTo = !documentTo || !row.issued_on || row.issued_on.slice(0, 10) <= documentTo;
@@ -652,7 +656,7 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
   }
 
   return <div className="accounting-view-stack">
-    {!excelOnly ? <>
+    {!excelOnly && !documentId ? <>
     <section className="panel accounting-facto-browser-sync">
       <div className="accounting-panel-heading"><div><p>API primero · navegador complementario</p><h2>Previsualizar cobranza Facto</h2><span>Consulta documentos por API y usa navegación de solo lectura únicamente para saldos, vencimientos y pagos parciales que la API no entrega.</span></div><ShieldCheck size={24} /></div>
       <div className="accounting-facto-range"><label>Desde<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>Hasta<input type="date" max={today()} value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary-button" disabled={Boolean(busy) || !fromDate || !toDate || fromDate > toDate} type="button" onClick={() => void requestReceivablesPreview()}><ScanSearch className={busy === "facto-receivables-preview" ? "spin" : ""} size={17} /> {busy === "facto-receivables-preview" ? "Solicitando…" : "Preparar previsualización"}</button></div>
@@ -669,7 +673,7 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
     </section>
 
     </> : null}
-    <div className="accounting-facto-support-grid">
+    <div className="accounting-facto-support-grid" hidden={Boolean(documentId)}>
       <section className="panel accounting-import-card">
         <div className="accounting-panel-heading"><div><p>Información complementaria</p><h2>Cargar Excel de Facto</h2><span>Se conserva el archivo original, se previsualiza y solo después de confirmar se integra.</span></div><FileSpreadsheet size={24} /></div>
         <label>Contenido del archivo<select disabled={preparingExcel} value={profile} onChange={(event) => { setProfile(event.target.value as AccountingFactoExcelProfile); setCompleteReport(false); setLocalError(""); }}>{factoExcelProfiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
@@ -689,10 +693,10 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
     </div>
 
     {!excelOnly ? <section className="panel">
-      <div className="accounting-panel-heading"><div><p>Evidencia normalizada</p><h2>Documentos financieros</h2><span>Busca por cliente, proveedor, RUT o folio y combina filtros de fecha, fuente y estado.</span></div><strong>{filteredSources.length} de {sources.length}</strong></div>
-      <div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Nombre, RUT, folio o documento" /><label>Desde<input type="date" value={documentFrom} onChange={(event) => setDocumentFrom(event.target.value)} /></label><label>Hasta<input type="date" value={documentTo} onChange={(event) => setDocumentTo(event.target.value)} /></label><label>Fuente<select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}><option value="all">Todas</option><option value="FACTO">Facto</option><option value="COMERCIO_EXTERIOR">Comercio Exterior</option></select></label><label>Estado<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos</option><option value="validated">Validado</option><option value="extracted">Extraído</option><option value="inconsistent">Inconsistente</option><option value="pending">Pendiente</option><option value="posted">Contabilizado</option></select></label></div>
+      <div className="accounting-panel-heading"><div><p>Evidencia normalizada</p><h2>{documentId ? "Documento seleccionado" : "Documentos financieros"}</h2>{documentId ? <Link to="/finanzas-contabilidad?view=facto">Ver todos los documentos</Link> : <span>Busca por cliente, proveedor, RUT o folio y combina filtros de fecha, fuente y estado.</span>}</div><strong>{filteredSources.length} de {sources.length}</strong></div>
+      {!documentId && <><div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Nombre, RUT, folio o documento" /><label>Desde<input type="date" value={documentFrom} onChange={(event) => setDocumentFrom(event.target.value)} /></label><label>Hasta<input type="date" value={documentTo} onChange={(event) => setDocumentTo(event.target.value)} /></label><label>Fuente<select value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}><option value="all">Todas</option><option value="FACTO">Facto</option><option value="COMERCIO_EXTERIOR">Comercio Exterior</option></select></label><label>Estado<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="all">Todos</option><option value="validated">Validado</option><option value="extracted">Extraído</option><option value="inconsistent">Inconsistente</option><option value="pending">Pendiente</option><option value="posted">Contabilizado</option></select></label></div>
       <div className="accounting-inline-stats"><span><strong>{sources.filter((row) => row.source_type === "FACTO").length}</strong> Facto</span><span><strong>{sources.filter((row) => row.source_type === "COMERCIO_EXTERIOR").length}</strong> Comercio Exterior</span><span><strong>{sources.filter((row) => row.status === "inconsistent").length}</strong> requieren revisión</span><span><strong>{data.paymentEvents.filter((row) => row.matching_status !== "reconciled").length}</strong> eventos de pago por conciliar</span></div>
-      <label>Tipo de documento<select value={typeFilter} onChange={event => setTypeFilter(event.target.value)}><option value="all">Todos los documentos</option><option value="sales_">Ventas</option><option value="purchases">Compras</option><option value="domestic">Compras nacionales</option><option value="exempt">Facturas y boletas exentas</option><option value="credit">Notas de crédito</option><option value="international">Compras internacionales recibidas</option></select></label>
+      <label>Tipo de documento<select value={typeFilter} onChange={event => setTypeFilter(event.target.value)}><option value="all">Todos los documentos</option><option value="sales_">Ventas</option><option value="purchases">Compras</option><option value="domestic">Compras nacionales</option><option value="exempt">Facturas y boletas exentas</option><option value="credit">Notas de crédito</option><option value="international">Compras internacionales recibidas</option></select></label></>}
       {filteredSources.length ? <Table headers={["Fuente", "Fecha", "Documento", "Contraparte", "Total", "Calidad", "Estado"]}>{filteredSources.map((row) => <tr key={row.id}><td data-label="Fuente"><Status value={row.source_type === "FACTO" ? "Facto" : "Comercio Exterior"} tone="neutral" /></td><td data-label="Fecha">{date(row.issued_on)}</td><td data-label="Documento"><strong>{documentTypeLabel(row.document_type)} {row.folio || ""}</strong>{row.reference_label ? <small>{row.reference_label}</small> : null}</td><td data-label="Contraparte">{row.counterpart_name || "Sin identificar"}<small>{row.counterpart_tax_id || ""}</small></td><td data-label="Total">{clp(row.total_clp)}<small>{row.currency !== "CLP" ? `${money(row.total_amount)} ${row.currency}` : ""}</small></td><td data-label="Calidad"><Status value={humanize(row.data_quality)} tone={row.data_quality === "validated" ? "success" : "review"} /></td><td data-label="Estado">{row.journal_entry_id ? "Contabilizado" : humanize(row.status)}</td></tr>)}</Table> : <Empty icon={Search} text="No hay documentos que coincidan con estos filtros." />}
     </section>
     : null}
@@ -890,15 +894,17 @@ function ImportPreviewDialog({ preview, busy, close, runAction }: { preview: Acc
 }
 
 function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
-  const unmatched = data.bankTransactions.filter((row) => row.reconciliation_status !== "matched" && row.reconciliation_status !== "ignored");
+  const [params] = useSearchParams();
+  const exactUnmatched = params.get("status") === "unmatched";
+  const unmatched = data.bankTransactions.filter((row) => exactUnmatched ? row.reconciliation_status === "unmatched" : row.reconciliation_status !== "matched" && row.reconciliation_status !== "ignored");
   const [selected, setSelected] = useState<AccountingBankTransaction | null>(null);
   const [proposal, setProposal] = useState<AccountingReconciliationProposal | null>(null);
   const [allocations, setAllocations] = useState<Record<string, string>>({});
   const [candidateBusy, setCandidateBusy] = useState(false);
   const [localError, setLocalError] = useState("");
   const [movementQuery, setMovementQuery] = useState("");
-  const [from, setFrom] = useState("2026-01-01");
-  const [to, setTo] = useState(today());
+  const [from, setFrom] = useState(exactUnmatched ? "" : "2026-01-01");
+  const [to, setTo] = useState(exactUnmatched ? "" : today());
   const [movementSort, setMovementSort] = useState<ReconciliationMovementSort>("date-desc");
   const [candidateQuery, setCandidateQuery] = useState("");
   const [candidateSort, setCandidateSort] = useState<ReconciliationDocumentSort>("relevance");
@@ -1035,7 +1041,7 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
   return <div className="accounting-view-stack">
     <div className="accounting-reconcile-layout">
     <section className="panel accounting-reconcile-movements">
-      <div className="accounting-panel-heading"><div><p>Cartola normalizada</p><h2>Movimientos pendientes</h2><span>Busca por nombre, RUT, referencia o fecha.</span></div><Status value={`${unmatched.length} pendientes`} tone={unmatched.length ? "review" : "success"} /></div>
+      <div className="accounting-panel-heading"><div><p>Cartola normalizada</p><h2>{exactUnmatched ? "Movimientos sin conciliar" : "Movimientos pendientes"}</h2>{exactUnmatched && <Link to="/finanzas-contabilidad?view=reconcile">Incluir movimientos parcialmente conciliados</Link>}<span>Busca por nombre, RUT, referencia o fecha.</span></div><Status value={`${unmatched.length} pendientes`} tone={unmatched.length ? "review" : "success"} /></div>
       <div className="accounting-reconcile-filters">
         <label className="accounting-reconcile-search"><span>Buscar movimiento</span><input placeholder="Nombre, RUT o referencia" type="search" value={movementQuery} onChange={(event) => setMovementQuery(event.target.value)} /></label>
         <div className="accounting-reconcile-date-range"><label><span>Desde</span><input max={to || today()} type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label><span>Hasta</span><input min={from || undefined} max={today()} type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label></div>
@@ -1105,13 +1111,14 @@ function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
 }
 
 function ReceivablesView({ data, busy, runAction }: ActionViewProps) {
+  const [params] = useSearchParams();
   const [showExcel, setShowExcel] = useState(false);
   const factoReceivables = data.factoReceivables;
   const receivablesSuppressed = data.summary.receivables_suppressed === true;
   const [bucket, setBucket] = useState("all");
   const [query, setQuery] = useState("");
-  const [from, setFrom] = useState("2026-01-01");
-  const [to, setTo] = useState(today());
+  const [from, setFrom] = useState(params.get("scope") === "outstanding" ? "" : "2026-01-01");
+  const [to, setTo] = useState(params.get("scope") === "outstanding" ? "" : today());
   const [status, setStatus] = useState("facto-open");
   const filtered = data.receivables.filter((row) => {
     const matchesQuery = !query || normalize(`${row.customer_name} ${row.customer_tax_id || ""} ${row.document_number}`).includes(normalize(query));
@@ -1154,10 +1161,11 @@ function operationalReceivableBalance(row: AccountingReceivable) {
 }
 
 function PayablesView({ data, busy, runAction }: ActionViewProps) {
+  const [params] = useSearchParams();
   const [showExcel, setShowExcel] = useState(false);
   const [query, setQuery] = useState("");
-  const [from, setFrom] = useState("2026-01-01");
-  const [to, setTo] = useState(today());
+  const [from, setFrom] = useState(params.get("scope") === "outstanding" ? "" : "2026-01-01");
+  const [to, setTo] = useState(params.get("scope") === "outstanding" ? "" : today());
   const [status, setStatus] = useState("open");
   const batches = new Map(data.batches.map((batch) => [batch.id, batch]));
   const latest = data.batches.filter((batch) => batch.import_profile === "facto_unpaid_documents" && batch.status === "imported" && number(batch.summary.payables_documents) > 0)
@@ -1192,11 +1200,12 @@ function PayablesView({ data, busy, runAction }: ActionViewProps) {
 }
 
 function ChecksView({ data, busy, runAction }: ActionViewProps) {
+  const [params] = useSearchParams();
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState("");
-  const [from, setFrom] = useState("2026-01-01");
-  const [to, setTo] = useState(today());
-  const [status, setStatus] = useState("all");
+  const [from, setFrom] = useState(params.has("status") ? "" : "2026-01-01");
+  const [to, setTo] = useState(params.has("status") ? "" : today());
+  const [status, setStatus] = useState(params.get("status") || "all");
   const filtered = data.checks.filter((row) => (!query || normalize(`${row.customer_name} ${row.bank_name} ${row.check_number}`).includes(normalize(query))) && (!from || row.received_on >= from) && (!to || row.received_on <= to) && (status === "all" || row.status === status));
   return <div className="accounting-view-stack"><section className="panel"><div className="accounting-panel-heading"><div><p>Documentos por cobrar</p><h2>Cheques en cartera</h2><span>Banco emisor identifica el cheque; BancoEstado es la cuenta esperada de cobro. Solo la cartola confirmará disponibilidad.</span></div><div className="accounting-source-actions"><strong>{clp(filtered.filter((row) => row.status === "portfolio").reduce((sum, row) => sum + number(row.amount_clp), 0))}</strong><button className="primary-button" type="button" onClick={() => setShowForm(true)}><Plus size={17} /> Registrar cheque</button></div></div><div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Cliente, banco o número" /><label>Recepción desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Recepción hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Todos</option><option value="portfolio">En cartera</option><option value="deposited">Depositado</option><option value="collected">Cobrado</option><option value="protested">Protestado</option><option value="voided">Anulado</option></select></label></div>{filtered.length ? <Table headers={["Cliente", "Banco emisor", "Cobro esperado", "N.º cheque", "Recepción", "Vencimiento", "Monto", "Estado"]}>{filtered.map((row) => { const settlement = data.bankAccounts.find((account) => account.id === row.settlement_bank_account_id); return <tr key={row.id}><td data-label="Cliente"><strong>{row.customer_name}</strong></td><td data-label="Banco emisor">{row.bank_name}</td><td data-label="Cobro esperado">{settlement?.institution || (row.import_batch_id ? "BancoEstado" : "Sin asignar")}<small>{settlement?.account_name || "Pendiente de cartola"}</small></td><td data-label="N.º cheque">{row.check_number}</td><td data-label="Recepción">{date(row.received_on)}</td><td data-label="Vencimiento">{date(row.due_on)}</td><td data-label="Monto">{clp(row.amount_clp)}</td><td data-label="Estado"><Status value={row.source_status ? `${humanize(row.status)} · Facto ${row.source_status}` : humanize(row.status)} tone={row.status === "collected" ? "success" : row.status === "protested" ? "danger" : "review"} /></td></tr>; })}</Table> : <Empty icon={FileCheck2} text="No hay cheques que coincidan con los filtros." />}</section>{showForm ? <CheckDialog data={data} busy={busy} close={() => setShowForm(false)} runAction={runAction} /> : null}</div>;
 }
