@@ -3,7 +3,7 @@ import { runAccountingTask } from "./accounting-task-runner.ts";
 import { buildBusinessModuleReport, assertModuleRequester, type ModuleReader } from "./module-reports.ts";
 import { collectModuleRows } from "./module-pagination.ts";
 import { executiveDailySlot } from "./executive-daily.ts";
-import { assistProspectingClaim } from "./prospecting-assistance.ts";
+import { executeResearch, RESEARCH_CAPABILITY } from "./prospecting-research.ts";
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 
 type ApiKeyValidation = {
@@ -1474,6 +1474,8 @@ async function handleProspectingEnrichmentRoute(
   if (req.method === "POST" && jobId === "claim" && routeParts.length === 1) {
     const payload = await readJsonObject(req);
     return withProspectingIdempotency(context, validation, "enrichment/claim", payload, async () => {
+      const nativeWorker = Array.isArray(payload.capabilities) && payload.capabilities.includes(RESEARCH_CAPABILITY);
+      if (!nativeWorker) throw new RequestValidationError("Actualiza el worker de Prospeccion para DeepSeek Pro antes de tomar ejecuciones");
       const workerId = requiredString(payload.worker_id, "worker_id", 120);
       const leaseSeconds = boundedInteger(payload.lease_seconds, 60, 600, 300);
       const { data, error } = await context.supabase.rpc("claim_prospect_enrichment", {
@@ -1488,11 +1490,7 @@ async function handleProspectingEnrichmentRoute(
         const { data: run, error: runError } = await context.supabase.from("prospecting_runs")
           .select("snapshot").eq("id", job.run_id).single();
         if (runError) return rpcErrorResult(runError);
-        const { data: policy, error: policyError } = await context.supabase.from("prospecting_provider_settings")
-          .select("monthly_limit_usd,free_credit_usd,social_search_enabled,max_social_queries_per_campaign")
-          .eq("provider", "brave_search").maybeSingle();
-        if (policyError) return rpcErrorResult(policyError);
-        result.snapshot = { ...asObject(run.snapshot), brave_policy: policy ?? {} };
+        result.snapshot = { ...asObject(run.snapshot), brave_disabled: true };
       }
       return { body: result };
     });
@@ -1566,6 +1564,8 @@ async function handleProspectingRoute(
   if (req.method === "POST" && runId === "claim" && routeParts.length === 1) {
     const payload = await readJsonObject(req);
     return withProspectingIdempotency(context, validation, "claim", payload, async () => {
+      const nativeWorker = Array.isArray(payload.capabilities) && payload.capabilities.includes(RESEARCH_CAPABILITY);
+      if (!nativeWorker) throw new RequestValidationError("Actualiza el worker de Prospeccion para DeepSeek Pro antes de tomar ejecuciones");
       const workerId = requiredString(payload.worker_id, "worker_id", 120);
       const leaseSeconds = boundedInteger(payload.lease_seconds, 30, 300, 120);
       const { data, error } = await context.supabase.rpc("claim_prospecting_run", {
@@ -1579,17 +1579,7 @@ async function handleProspectingRoute(
 
       const run = asObject(result.run);
       let snapshot = asObject(run.snapshot);
-      const { data: braveSettings } = await context.supabase
-        .from("prospecting_provider_settings")
-        .select("monthly_limit_usd,free_credit_usd,social_search_enabled,max_social_queries_per_campaign")
-        .eq("provider", "brave_search")
-        .maybeSingle();
-      snapshot.brave_policy = {
-        monthly_limit_usd: Number(braveSettings?.monthly_limit_usd ?? 5),
-        free_credit_usd: Number(braveSettings?.free_credit_usd ?? 5),
-        social_search_enabled: Boolean(braveSettings?.social_search_enabled ?? false),
-        max_social_queries_per_campaign: Number(braveSettings?.max_social_queries_per_campaign ?? 6),
-      };
+      snapshot.brave_disabled = true;
       const campaign = asObject(snapshot.campaign);
       const maxResults = boundedInteger(campaign.max_results_per_task, 1, 20, 20);
       const territories = Array.isArray(campaign.territories) ? campaign.territories.map(asObject) : [];
@@ -1606,42 +1596,7 @@ async function handleProspectingRoute(
         })
         : [];
 
-      if (snapshot.deepseek_enabled === true && tasks.length && run.status === "running") {
-        // Keep the lease longer than the bounded AI call, before the worker heartbeat starts.
-        const { data: heartbeat, error: heartbeatError } = await context.supabase.rpc("heartbeat_prospecting_run", {
-          p_run_id: run.id, p_api_key_id: validation.key_id, p_worker_id: workerId,
-          p_lease_token: result.lease_token, p_lease_seconds: 120,
-        });
-        if (heartbeatError) return rpcErrorResult(heartbeatError);
-        run.lease_expires_at = asObject(heartbeat).lease_expires_at;
-        const assisted = await assistProspectingClaim(snapshot, tasks, {
-          webDiscoverySupported: Array.isArray(payload.capabilities) && payload.capabilities.includes("deepseek_web_v1"),
-          secret: Deno.env.get("PROSPECTING_SECRET_ENCRYPTION_KEY") || "",
-          reserve: async () => {
-            const { data, error } = await context.supabase.rpc("reserve_prospecting_search_assistance", {
-              p_run_id: run.id, p_api_key_id: validation.key_id, p_worker_id: workerId, p_lease_token: result.lease_token,
-            });
-            if (error) throw new Error("Search assistance storage unavailable");
-            return asObject(data);
-          },
-          finish: async (token, report) => {
-            const { data, error } = await context.supabase.rpc("finish_prospecting_search_assistance", {
-              p_run_id: run.id, p_reservation_token: token, p_report: report,
-            });
-            if (error) throw new Error("Search assistance audit unavailable");
-            return asObject(data);
-          },
-          credentials: async () => {
-            const { data, error } = await context.supabase.from("prospecting_ai_integrations")
-              .select("status,api_key_encrypted,models").eq("provider", "deepseek").maybeSingle();
-            if (error) throw new Error("Credential storage unavailable");
-            return asObject(data);
-          },
-        });
-        snapshot = assisted.snapshot;
-        tasks = assisted.tasks;
-      }
-      if (Array.isArray(payload.capabilities) && payload.capabilities.includes("deepseek_candidates_v2")) {
+      if (nativeWorker) {
         const { data: staged, error: stageError } = await context.supabase.rpc("stage_prospecting_discoveries", { p_run_id: run.id });
         if (stageError) return rpcErrorResult(stageError);
         run.candidates_found = asObject(staged).candidates_found ?? run.candidates_found;
@@ -1661,6 +1616,37 @@ async function handleProspectingRoute(
   }
 
   if (!isUuid(runId)) return json({ error: "Invalid prospecting run id" }, 400);
+
+  if (req.method === "POST" && action === "research" && routeParts.length === 2) {
+    const payload = await readJsonObject(req);
+    const lease = readLeasePayload(payload);
+    const operationId = String(payload.operation_id ?? "");
+    const kind = payload.kind === "validation" ? "validation" : payload.kind === "discovery" ? "discovery" : "";
+    if (!isUuid(operationId) || !kind) throw new RequestValidationError("Invalid research operation");
+    const report = await executeResearch({
+      secret: Deno.env.get("PROSPECTING_SECRET_ENCRYPTION_KEY") || "",
+      reserve: async () => {
+        const { data, error } = await context.supabase.rpc("reserve_native_prospecting_research", {
+          p_run_id: runId, p_operation_id: operationId, p_kind: kind, p_api_key_id: validation.key_id,
+          p_worker_id: lease.workerId, p_lease_token: lease.leaseToken,
+        });
+        if (error) throw new RequestValidationError("No hay una reserva de investigacion valida para esta tarea");
+        return asObject(data);
+      },
+      credentials: async () => {
+        const { data, error } = await context.supabase.from("prospecting_ai_integrations")
+          .select("status,api_key_encrypted,models").eq("provider", "deepseek").maybeSingle();
+        if (error) throw new Error("Credential storage unavailable");
+        return asObject(data);
+      },
+      finish: async (token, outcome) => {
+        const { data, error } = await context.supabase.rpc("finish_native_prospecting_research", { p_token: token, p_report: outcome });
+        if (error) throw new Error("Research audit unavailable");
+        return asObject(data);
+      },
+    });
+    return json({ data: report });
+  }
 
   if (req.method === "GET" && routeParts.length === 1) {
     return handleGetProspectingRun(context, runId);

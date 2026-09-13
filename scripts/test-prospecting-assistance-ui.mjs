@@ -20,7 +20,7 @@ try {
     const second = { ...campaign, id: "44444444-4444-4444-8444-444444444444", name: "Refrigeración Valdivia", keywords: ["refrigeracion"], status: "draft", updated_at: "2026-09-09T10:00:00Z" };
     const run = { id: rid, campaign_id: cid, status: "completed", created_at: "2026-09-10T10:00:00Z", total_tasks: 1, completed_tasks: 1, candidates_found: 19,
       snapshot: { deepseek_enabled: true, campaign: { crm_campaign_id: cid, name: campaign.name, keywords: campaign.keywords, sources: campaign.sources, target_types: ["tecnico"], territories: [{ region_code: "13", region_name: "Metropolitana", comuna_code: "13101", comuna_name: "Santiago" }] } },
-      search_assistance: { status: "applied", mode: "web_discovery_v1", model: "deepseek-v4-flash", discovered_websites: 10, web_requests: 2, completed_at: "2026-09-10T10:00:03Z", queries: ["empresas climatizacion Santiago"], discoveries: [{ name: "Clima Andes", website: "https://climaandes.cl/" }] } };
+      search_assistance: { status: "applied", mode: "native_research_v3", model: "deepseek-v4-pro", tokens: 3200, balance_after_usd: 4.95, discovered_websites: 10, web_requests: 2, completed_at: "2026-09-10T10:00:03Z", queries: ["empresas climatizacion Santiago"], discoveries: [{ name: "Clima Andes", website: "https://climaandes.cl/" }] } };
     const mutations = [], external = [];
     const candidates = Array.from({ length: 19 }, (_, i) => ({ id: `candidate-${i}`, entity_id: `entity-${i}`, campaign_id: cid, run_id: rid,
       review_status: "pending", discovery_status: "pending", discovery_origin: { website: `https://directorio.cl/${i}` }, enrichment_status: "pending",
@@ -52,7 +52,8 @@ try {
     const page = await context.newPage(), errors = [];
     page.on("pageerror", e => errors.push(e.message));
     await page.goto(`${base}/prospeccion`);
-    await page.getByRole("tab", { name: "Base histórica" }).waitFor();
+    try { await page.getByRole("tab", { name: "Base histórica" }).waitFor(); }
+    catch (error) { console.error("UI state", page.url(), errors, (await page.locator("body").innerText()).slice(0, 1500)); throw error; }
     await page.getByPlaceholder("Nombre, término o comuna").fill("climatizacion");
     assert.equal(await page.locator(".prospecting-campaign-card").count(), 1);
     await page.getByPlaceholder("Nombre, término o comuna").fill("sin coincidencias");
@@ -70,9 +71,9 @@ try {
         await page.screenshot({ path: `outputs/prospecting-assistance/campaigns-${width}.png`, fullPage: true });
       }
       await page.getByRole("button", { name: "Editar definición" }).click();
-      await page.getByRole("checkbox", { name: /DeepSeek Web/ }).check();
-      await page.getByRole("checkbox", { name: /DeepSeek Web/ }).scrollIntoViewIfNeeded();
-      const checkbox = await page.getByRole("checkbox", { name: /DeepSeek Web/ }).boundingBox();
+      await page.getByRole("checkbox", { name: /DeepSeek Pro/ }).check();
+      await page.getByRole("checkbox", { name: /DeepSeek Pro/ }).scrollIntoViewIfNeeded();
+      const checkbox = await page.getByRole("checkbox", { name: /DeepSeek Pro/ }).boundingBox();
       assert.ok(checkbox.width <= 24 && checkbox.height <= 24, "checkbox must retain compact stable dimensions");
       await page.screenshot({ path: "outputs/prospecting-assistance/edit-mobile.png" });
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false, "form overflow");
@@ -84,7 +85,7 @@ try {
     }
     if (role === "visualizador") assert.equal(await page.getByRole("button", { name: "Editar definición" }).count(), 0);
     await page.goto(`${base}/prospeccion?view=operation&run=${rid}`);
-    await page.getByRole("heading", { name: "DeepSeek Web · búsqueda realizada" }).waitFor();
+    await page.getByRole("heading", { name: "DeepSeek Pro · búsqueda realizada" }).waitFor();
     await page.getByText("Sitios descubiertos", { exact: true }).waitFor();
     await page.getByText("Consultas realizadas", { exact: true }).click();
     await page.getByText("empresas climatizacion Santiago", { exact: true }).waitFor();

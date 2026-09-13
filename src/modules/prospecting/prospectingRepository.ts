@@ -40,7 +40,7 @@ type Row = Record<string, unknown>;
 const campaignStatuses: ProspectingCampaignStatus[] = ["draft", "active", "archived"];
 const runStatuses: ProspectingRunStatus[] = ["pending", "running", "paused", "partial", "completed", "failed", "cancel_requested", "cancelled"];
 const reviewStatuses: ProspectReviewStatus[] = ["pending", "possible_duplicate", "approved", "rejected", "linked"];
-const sourceIds = SOURCE_DEFINITIONS.map((source) => source.id);
+const sourceIds = [...SOURCE_DEFINITIONS.map((source) => source.id), "brave_search"];
 export const PROSPECTING_CAMPAIGN_NAME_MAX_LENGTH = 200;
 export const PROSPECTING_KEYWORD_MAX_LENGTH = 200;
 export const PROSPECTING_KEYWORDS_MAX_COUNT = 50;
@@ -172,9 +172,9 @@ function validateCampaignDefinition(campaign: ProspectingCampaign) {
   ) {
     throw new Error("Competencia sólo puede utilizarse en el Radar de mercado.");
   }
-  if (campaign.sources.includes("brave_search") && !campaign.sources.includes("official_website")) {
+  if ((campaign.sources.includes("deepseek_web") || campaign.sources.includes("brave_search")) && !campaign.sources.includes("official_website")) {
     throw new Error(
-      "Brave Search requiere el sitio web oficial: Brave descubre empresas y el sitio oficial valida contacto y domicilio.",
+      "La búsqueda web requiere el sitio oficial para validar contacto y domicilio.",
     );
   }
   return keywords;
@@ -758,6 +758,7 @@ function mapRun(row: Row, campaign?: ProspectingCampaign): ProspectingRun {
       status: String(assistance.status ?? (snapshot.deepseekEnabled ? "pending" : "disabled")),
       model: String(assistance.model ?? ""), reasonCode: String(assistance.reason_code ?? ""),
       completedAt: String(assistance.completed_at ?? ""),
+      tokens: typeof assistance.tokens === "number" ? assistance.tokens : undefined, balanceUsd: typeof assistance.balance_after_usd === "number" ? assistance.balance_after_usd : null,
       mode: String(assistance.mode ?? ""), discoveredWebsites: asNumber(assistance.discovered_websites), webRequests: asNumber(assistance.web_requests),
       queries: (Array.isArray(assistance.queries) ? assistance.queries : []).map(q => typeof q === "string" ? q : String(asRecord(q).effective ?? "")),
       discoveries: (Array.isArray(assistance.discoveries) ? assistance.discoveries : []).map(asRecord)

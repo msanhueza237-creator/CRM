@@ -50,7 +50,7 @@ export async function prospectingReport(source: CopilotSources, args: Row) {
     for (const run of related) {
       const assistance = object(run.search_assistance), snapshot = object(run.snapshot), definition = object(snapshot.campaign);
       const status = String(assistance.status || (snapshot.deepseek_enabled ? "pending" : "disabled"));
-      const labels: Record<string, string> = { applied: assistance.mode === "web_discovery_v1" ? "Busqueda web realizada con DeepSeek" : "Preparacion de terminos (version anterior)", fallback: "DeepSeek no disponible; otras fuentes continuan", pending: "Pendiente de worker compatible", preparing: "Buscando empresas", disabled: "DeepSeek desactivado" };
+      const labels: Record<string, string> = { applied: ["web_discovery_v1", "native_research_v3"].includes(String(assistance.mode)) ? "Busqueda web realizada con DeepSeek" : "Preparacion de terminos (version anterior)", fallback: "DeepSeek no disponible; otras fuentes continuan", pending: "Pendiente de worker compatible", preparing: "Buscando empresas", disabled: "DeepSeek desactivado" };
       data.push({ campaign_id: campaign.id, campaign: campaign.name, run_id: run.id, status: run.status,
         deepseek: labels[status] ?? "Sin verificar", mode: assistance.mode ?? null, model: assistance.model ?? null,
         assistance_reason: assistance.reason_code ?? null, queries: assistance.queries ?? [],

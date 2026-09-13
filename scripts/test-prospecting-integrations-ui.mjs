@@ -36,7 +36,7 @@ try {
         if (action === "save") {
           assert.equal(request.postDataJSON().apiKey, fakeKey);
           if (failure) return route.fulfill({ status: 422, headers, body: JSON.stringify({ error: "DeepSeek rechazó la clave. Revísala o genera una nueva." }) });
-          state = { ...state, configured: true, status: "verified", models: ["model-fixture"], lastCheckedAt: "2026-09-09T17:15:00Z" };
+          state = { ...state, configured: true, status: "verified", models: ["deepseek-v4-pro"], lastCheckedAt: "2026-09-09T17:15:00Z" };
         }
         if (action === "verify") { assert.equal(request.postData(), null); state = { ...state, status: "verified" }; }
         if (action === "disconnect") state = initial();
@@ -73,7 +73,7 @@ try {
       await page.getByText("Credencial verificada. La asistencia depende de la configuración de cada campaña.", { exact: true }).waitFor();
       assert.equal(await field.inputValue(), "");
       assert.equal(await page.evaluate(key => JSON.stringify(localStorage).includes(key) || JSON.stringify(sessionStorage).includes(key), fakeKey), false);
-      assert.match(await page.locator(".deepseek-details").innerText(), /Opcional por campaña/);
+      assert.match(await page.locator(".deepseek-details").innerText(), /Investigador principal/);
       await page.getByRole("button", { name: "Verificar conexión" }).click();
       await page.waitForFunction(() => !document.querySelector("#deepseek-api-key")?.disabled);
       failure = true;

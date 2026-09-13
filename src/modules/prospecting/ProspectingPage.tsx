@@ -1,5 +1,4 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
 import {
   AlertTriangle,
   Ban,
@@ -248,7 +247,7 @@ export function ProspectingPage() {
       )
       .filter(
         (candidate) =>
-          candidateSource === "all" || candidate.evidence.some((evidence) => evidence.source === candidateSource),
+          candidateSource === "all" || (candidateSource === "deepseek_web" && Boolean(candidate.discoveryUrl)) || candidate.evidence.some((evidence) => evidence.source === candidateSource),
       )
       .filter(
         (candidate) =>
@@ -774,11 +773,11 @@ function CampaignForm({
   const defaultRegion = regions.find((region) => region.code === "13")?.code ?? regions[0]?.code ?? "";
   const [name, setName] = useState(initialCampaign?.name ?? "");
   const [description, setDescription] = useState(initialCampaign?.description ?? "");
-  const [deepseekEnabled, setDeepseekEnabled] = useState(initialCampaign?.deepseekEnabled ?? false);
+  const [deepseekEnabled, setDeepseekEnabled] = useState(initialCampaign ? initialCampaign.deepseekEnabled || initialCampaign.sources.includes("brave_search") : true);
   const [keywords, setKeywords] = useState(initialCampaign?.keywords ?? DEFAULT_PROSPECTING_KEYWORDS.slice(0, 3));
   const [keywordDraft, setKeywordDraft] = useState("");
   const [sources, setSources] = useState<ProspectingSource[]>(
-    initialCampaign?.sources ?? ["google_places", "brave_search", "official_website"],
+    initialCampaign?.sources.map(source => source === "brave_search" ? "deepseek_web" : source) ?? ["deepseek_web", "google_places", "official_website"],
   );
   const [targetTypes, setTargetTypes] = useState<CompanyType[]>(
     initialCampaign?.targetTypes ?? ["tecnico", "instalador grande"],
@@ -820,9 +819,9 @@ function CampaignForm({
   ).length;
   const estimatedTasks = selectedComunaCount * keywords.length * discoverySourceCount;
   const estimatedCandidates = Math.min(maxCandidates, estimatedTasks * resultsPerTask);
-  const braveNeedsOfficialWebsite = requiresOfficialWebsite(sources);
+  const searchNeedsOfficialWebsite = requiresOfficialWebsite(sources);
   const googleOnlyDiscovery =
-    sources.includes("google_places") && !sources.includes("brave_search") && !sources.includes("official_website");
+    sources.includes("google_places") && !sources.includes("deepseek_web") && !sources.includes("official_website");
   const visibleTargetTypeLabels = searchMode === "market_radar"
     ? marketRadarTargetTypeLabels
     : territorialTargetTypeLabels;
@@ -885,8 +884,8 @@ function CampaignForm({
       return setFormError("Las palabras clave no pueden estar duplicadas.");
     }
     if (!sources.some((source) => source !== "official_website")) return setFormError("Selecciona una fuente de descubrimiento.");
-    if (braveNeedsOfficialWebsite) {
-      return setFormError("Brave Search requiere el sitio oficial para validar contacto y domicilio antes de importar.");
+    if (searchNeedsOfficialWebsite) {
+      return setFormError("DeepSeek Pro requiere el sitio oficial para validar contacto y domicilio antes de importar.");
     }
     if (!targetTypes.length) return setFormError("Selecciona al menos un tipo de empresa.");
     if (targetTypes.some((targetType) => !PROSPECTING_TARGET_TYPES.includes(targetType))) {
@@ -982,13 +981,14 @@ function CampaignForm({
           <label className="checkbox-card">
             <input type="radio" name="search-mode" checked={searchMode === "market_radar"} onChange={() => {
               setSearchMode("market_radar");
+              setDeepseekEnabled(true);
               setTargetTypes([...MARKET_RADAR_TARGET_TYPES]);
-              setSources(["google_places", "brave_search", "official_website"]);
+              setSources(["google_places", "deepseek_web", "official_website"]);
             }} />
             Radar de mercado
           </label>
         </div>
-        {searchMode === "market_radar" ? <div className="source-contract-message info" role="status"><Sparkles size={17} /><span><strong>Descubrimiento amplio activado</strong>Brave buscará distribuidores, mayoristas, importadores, tiendas, catálogos y marcas a nivel regional y nacional. Google Places validará ubicación y el sitio oficial completará la investigación.</span></div> : null}
+        {searchMode === "market_radar" ? <div className="source-contract-message info" role="status"><Sparkles size={17} /><span><strong>Descubrimiento amplio activado</strong>DeepSeek Pro investigará distribuidores, mayoristas, importadores, tiendas, catálogos y marcas a nivel regional y nacional. Google Places validará ubicación y el sitio oficial completará la investigación.</span></div> : null}
       </div>
 
       <div className="prospecting-form-section">
@@ -1083,18 +1083,18 @@ function CampaignForm({
         </div>
         <label className={`prospecting-ai-option ${deepseekEnabled ? "selected" : ""}`}>
           <input type="checkbox" checked={deepseekEnabled} disabled={!liveMode || saving}
-            onChange={event => { setDeepseekEnabled(event.target.checked); if (event.target.checked) setSources(current => [...new Set<ProspectingSource>([...current, "brave_search", "official_website"])]); }} />
+            onChange={event => { setDeepseekEnabled(event.target.checked); setSources(current => event.target.checked ? [...new Set<ProspectingSource>([...current, "deepseek_web", "official_website"])] : current.filter(source => source !== "deepseek_web")); }} />
           <Sparkles size={20} />
-          <span><strong>DeepSeek Web</strong><small>{liveMode ? "Empresas y sitios nuevos · enriquecimiento desde su web oficial" : "No disponible en demo"}</small><small>Hasta 30 sitios adicionales por ejecución · 20 solicitudes al día</small></span>
+          <span><strong>DeepSeek Pro</strong><small>{liveMode ? "Empresas y sitios nuevos · enriquecimiento desde su web oficial" : "No disponible en demo"}</small><small>Web, Instagram y Facebook públicos · hasta 12 etapas por ejecución · 20 solicitudes al día</small></span>
         </label>
         <div className="source-grid">
-          {SOURCE_DEFINITIONS.map((source) => {
+          {SOURCE_DEFINITIONS.filter(source => source.id !== "deepseek_web").map((source) => {
             const checked = sources.includes(source.id);
             return (
               <label key={source.id} className={`source-option ${checked ? "selected" : ""} ${source.disabled ? "disabled" : ""}`}>
                 <input
                   type="checkbox"
-                  disabled={source.disabled || (deepseekEnabled && ["brave_search", "official_website"].includes(source.id))}
+                  disabled={source.disabled || (deepseekEnabled && ["deepseek_web", "official_website"].includes(source.id))}
                   checked={checked}
                   onChange={() =>
                     setSources((current) =>
@@ -1109,10 +1109,10 @@ function CampaignForm({
             );
           })}
         </div>
-        {braveNeedsOfficialWebsite ? (
+        {searchNeedsOfficialWebsite ? (
           <div className="source-contract-message error" role="alert">
             <AlertTriangle size={17} />
-            <span><strong>Configuración incompleta</strong>Activa “Sitio web oficial”. Brave Search descubre resultados, pero no reemplaza la validación permanente de contacto y domicilio.</span>
+            <span><strong>Configuración incompleta</strong>Activa “Sitio web oficial”. DeepSeek Pro descubre resultados, pero no reemplaza la validación permanente de contacto y domicilio.</span>
           </div>
         ) : googleOnlyDiscovery ? (
           <div className="source-contract-message info" role="status">
@@ -1169,7 +1169,7 @@ function CampaignForm({
       {formError ? <p className="form-error">{formError}</p> : null}
       <div className="form-actions">
         <span className="form-safety-note"><ShieldCheck size={15} /> Guardar no inicia consultas ni crea empresas.</span>
-        <button className="primary-button" type="submit" disabled={saving || braveNeedsOfficialWebsite}>
+        <button className="primary-button" type="submit" disabled={saving || searchNeedsOfficialWebsite}>
           {saving ? "Guardando…" : initialCampaign ? "Guardar nueva versión" : "Guardar borrador"}
         </button>
       </div>
@@ -1249,7 +1249,7 @@ function CampaignsView({
                   </div>
                   <div><p>HVAC · Chile</p><h3>{campaign.name}</h3><span className="campaign-description">{campaign.description || "Sin descripción operativa"}</span></div>
                   <div className="campaign-scope-summary"><MapPin size={16} /><span>{territorySummary(campaign.territories)}</span></div>
-                  <div className="campaign-scope-summary"><Sparkles size={16} /><span>{campaign.deepseekEnabled ? "DeepSeek Web activado" : "DeepSeek Web desactivado"}</span></div>
+                  <div className="campaign-scope-summary"><Sparkles size={16} /><span>{campaign.deepseekEnabled ? "DeepSeek Pro activado" : "DeepSeek Pro desactivado"}</span></div>
                   <div className="prospecting-chip-row compact">
                     {campaign.keywords.slice(0, 3).map((keyword) => <span key={keyword}>{keyword}</span>)}
                     {campaign.keywords.length > 3 ? <span>+{campaign.keywords.length - 3}</span> : null}
@@ -1284,7 +1284,7 @@ function CampaignsView({
                   className="primary-button"
                   type="button"
                   disabled={busyAction === `run:${selectedCampaign.id}` || selectedCampaignNeedsOfficialWebsite}
-                  title={selectedCampaignNeedsOfficialWebsite ? "Agrega el sitio oficial antes de iniciar una campaña con Brave Search" : undefined}
+                  title={selectedCampaignNeedsOfficialWebsite ? "Agrega el sitio oficial antes de iniciar una campaña con DeepSeek Pro" : undefined}
                   onClick={() => onStart(selectedCampaign)}
                 >
                   <Play size={17} /> {selectedRuns.length ? "Nueva ejecución" : "Iniciar búsqueda"}
@@ -1295,7 +1295,7 @@ function CampaignsView({
           {selectedCampaignNeedsOfficialWebsite ? (
             <div className="source-contract-message error campaign-source-warning" role="alert">
               <AlertTriangle size={17} />
-              <span><strong>No se puede iniciar esta definición</strong>Edita las fuentes y agrega “Sitio web oficial” para validar los resultados descubiertos por Brave Search.</span>
+              <span><strong>No se puede iniciar esta definición</strong>Edita las fuentes y agrega “Sitio web oficial” para validar los resultados descubiertos por DeepSeek Pro.</span>
             </div>
           ) : null}
           <div className="campaign-detail-strip">
@@ -1330,14 +1330,16 @@ function CampaignsView({
 
 function assistanceLabel(run: ProspectingRun) {
   const status = run.searchAssistance?.status ?? (run.snapshot.deepseekEnabled ? "pending" : "disabled");
-  if (status === "applied" && run.searchAssistance?.mode !== "web_discovery_v1") return "Preparación de términos (versión anterior)";
-  return ({ applied: "DeepSeek Web · búsqueda realizada", fallback: "DeepSeek Web no disponible · otras fuentes continúan", preparing: "DeepSeek buscando empresas", pending: "DeepSeek pendiente de ejecución compatible", disabled: "DeepSeek Web desactivado" } as Record<string, string>)[status] ?? "Búsqueda sin verificar";
+  if (status === "applied" && !["web_discovery_v1", "native_research_v3"].includes(run.searchAssistance?.mode ?? "")) return "Preparación de términos (versión anterior)";
+  if (status === "applied" && run.searchAssistance?.mode === "web_discovery_v1") return "DeepSeek Web · búsqueda histórica";
+  return ({ applied: "DeepSeek Pro · búsqueda realizada", fallback: "DeepSeek Pro no disponible · otras fuentes continúan", preparing: "DeepSeek buscando empresas", pending: "DeepSeek pendiente de ejecución compatible", disabled: "DeepSeek Pro desactivado" } as Record<string, string>)[status] ?? "Búsqueda sin verificar";
 }
 
 function assistanceReason(code: string) {
   return ({ NOT_CONFIGURED: "La API no está conectada o requiere verificación.", MODEL_UNAVAILABLE: "El modelo configurado no está disponible.",
-    DAILY_LIMIT: "Se alcanzó el límite de 20 asistencias del día.", INTERRUPTED: "La solicitud se interrumpió; no se repitió el consumo.",
-    RATE_LIMIT: "DeepSeek alcanzó su límite de solicitudes.", INSUFFICIENT_BALANCE: "DeepSeek informó saldo insuficiente.",
+    MODEL_MISMATCH: "El proveedor no confirmó el modelo Pro solicitado. No se aceptaron resultados de otro modelo.",
+    RUN_LIMIT: "Se alcanzó el límite de etapas de esta ejecución. Los candidatos encontrados se conservan.", BALANCE_UNAVAILABLE: "No se pudo verificar el saldo. No se inició otra consulta de pago.", DAILY_LIMIT: "Se alcanzó el límite de 20 solicitudes del día, compartido entre descubrimiento e investigación.", INTERRUPTED: "La solicitud se interrumpió; no se repitió el consumo.",
+    RATE_LIMIT: "DeepSeek alcanzó su límite de solicitudes.", INSUFFICIENT_BALANCE: "Saldo no disponible o inferior a la reserva de seguridad de US$0,25.",
     WEB_SEARCH_FAILED: "La herramienta web de DeepSeek devolvió un error.", NO_WEB_SEARCH: "DeepSeek no devolvió una búsqueda web verificable.",
     VALIDATION_SOURCE_REQUIRED: "Faltan las fuentes de descubrimiento y validación web." } as Record<string, string>)[code] ?? "La asistencia no estuvo disponible. Se conservaron las otras fuentes.";
 }
@@ -1380,7 +1382,7 @@ function OperationView({
         {campaignNeedsOfficialWebsite ? (
           <div className="source-contract-message error campaign-source-warning" role="alert">
             <AlertTriangle size={17} />
-            <span><strong>Configuración incompleta</strong>Agrega “Sitio web oficial” antes de iniciar una búsqueda con Brave Search.</span>
+            <span><strong>Configuración incompleta</strong>Agrega “Sitio web oficial” antes de iniciar una búsqueda con DeepSeek Pro.</span>
           </div>
         ) : null}
         {canExecute ? <div className="center-action"><button className="primary-button" type="button" disabled={campaignNeedsOfficialWebsite} onClick={onStart}><Play size={17} /> Iniciar búsqueda</button></div> : null}
@@ -1420,7 +1422,7 @@ function OperationView({
         {campaignNeedsOfficialWebsite ? (
           <div className="source-contract-message error campaign-source-warning" role="alert">
             <AlertTriangle size={17} />
-            <span><strong>No se puede repetir esta definición</strong>Brave Search requiere el sitio oficial para validar contacto y domicilio.</span>
+            <span><strong>No se puede repetir esta definición</strong>DeepSeek Pro requiere el sitio oficial para validar contacto y domicilio.</span>
           </div>
         ) : null}
         <div className="operation-progress-row">
@@ -1466,8 +1468,9 @@ function OperationView({
           </dl>
           <section className="prospecting-assistance" aria-label="Asistencia de búsqueda">
             <div className="prospecting-assistance-heading"><Sparkles size={19} /><h3>{assistanceLabel(selectedRun)}</h3></div>
-            {selectedRun.searchAssistance?.mode === "web_discovery_v1" && selectedRun.searchAssistance.status === "applied" ? <dl className="deepseek-result-totals"><div><dt>Sitios descubiertos</dt><dd>{selectedRun.searchAssistance.discoveredWebsites}</dd></div><div><dt>Consultas web</dt><dd>{selectedRun.searchAssistance.webRequests}</dd></div><div><dt>Candidatos de todas las fuentes</dt><dd>{selectedRun.progress.candidatesFound}</dd></div></dl> : null}
+            {["web_discovery_v1", "native_research_v3"].includes(selectedRun.searchAssistance?.mode ?? "") && selectedRun.searchAssistance && selectedRun.searchAssistance.status === "applied" ? <dl className="deepseek-result-totals"><div><dt>Sitios descubiertos</dt><dd>{selectedRun.searchAssistance.discoveredWebsites}</dd></div><div><dt>Consultas web</dt><dd>{selectedRun.searchAssistance.webRequests}</dd></div><div><dt>Candidatos de todas las fuentes</dt><dd>{selectedRun.progress.candidatesFound}</dd></div></dl> : null}
             {selectedRun.searchAssistance?.reasonCode ? <p role="status">{assistanceReason(selectedRun.searchAssistance.reasonCode)}</p> : null}
+            {selectedRun.searchAssistance?.mode === "native_research_v3" ? <dl className="deepseek-result-totals"><div><dt>Tokens de búsqueda</dt><dd>{selectedRun.searchAssistance.tokens?.toLocaleString("es-CL") ?? "Sin dato"}</dd></div><div><dt>Saldo al terminar búsqueda</dt><dd>{selectedRun.searchAssistance.balanceUsd == null ? "Sin dato" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "USD" }).format(selectedRun.searchAssistance.balanceUsd)}</dd></div></dl> : null}
             {selectedRun.searchAssistance?.completedAt ? <small>{formatDateTime(selectedRun.searchAssistance.completedAt)}</small> : null}
             {selectedRun.searchAssistance?.queries.length ? <details><summary>Consultas realizadas</summary><ul>{selectedRun.searchAssistance.queries.map((q, i) => <li key={i}>{q}</li>)}</ul></details> : null}
             {selectedRun.searchAssistance?.discoveries.length ? <details><summary>Origen de los hallazgos · no acredita aprobación</summary><ul>{selectedRun.searchAssistance.discoveries.map(d => <li key={d.website}><a href={d.website} target="_blank" rel="noopener noreferrer">{d.name}</a></li>)}</ul></details> : null}
@@ -1843,11 +1846,11 @@ function SnowflakeMark() {
 }
 
 function requiresOfficialWebsite(sources: ProspectingSource[]) {
-  return sources.includes("brave_search") && !sources.includes("official_website");
+  return (sources.includes("deepseek_web") || sources.includes("brave_search")) && !sources.includes("official_website");
 }
 
 function sourceName(source: ProspectingSource) {
-  return SOURCE_DEFINITIONS.find((definition) => definition.id === source)?.name ?? source;
+  return source === "brave_search" ? "Brave (histórico)" : SOURCE_DEFINITIONS.find((definition) => definition.id === source)?.name ?? source;
 }
 
 function territorySummary(territories: ProspectingTerritory[]) {

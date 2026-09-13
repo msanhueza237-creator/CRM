@@ -8,3 +8,5 @@ COPY --chown=app:app app/prospecting/sources.py /app/app/prospecting/sources.py
 COPY --chown=app:app app/prospecting/deepseek_discovery.py /app/app/prospecting/deepseek_discovery.py
 COPY --chown=app:app app/prospecting/discovery_validation.py /app/app/prospecting/discovery_validation.py
 COPY --chown=app:app app/prospecting/worker.py /app/app/prospecting/worker.py
+COPY --chown=app:app app/prospecting/store.py /app/app/prospecting/store.py
+COPY --chown=app:app app/integrations/monitor.py /app/app/integrations/monitor.py

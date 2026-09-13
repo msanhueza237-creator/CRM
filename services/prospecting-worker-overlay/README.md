@@ -1,71 +1,72 @@
-# DeepSeek Web: worker comercial
+# DeepSeek Pro: worker comercial v3
 
-El worker se mantiene en otro repositorio del mismo CRM:
-`https://github.com/msanhueza237-creator/agente-inteligente-comercial.git`.
-Este overlay versiona el cambio coordinado sin copiar todo ese proyecto al CRM.
+El worker vive en `https://github.com/msanhueza237-creator/agente-inteligente-comercial.git`.
+Este overlay versiona la integracion coordinada, sin copiar el repositorio ni secretos.
+Base: `3ae811f705944ad662bfc6aaecb41721ab7e2e6c`.
 
-Base verificada: `3ae811f705944ad662bfc6aaecb41721ab7e2e6c`.
-Archivo: `deepseek-web.patch`. No incluye secretos, Docker Compose ni contabilidad.
+## Aplicacion y pruebas
 
-## Aplicacion
+1. Revisar HEAD y cambios existentes del worker. Conservar Facto, hub-worker,
+   Docker Compose y configuracion privada.
+2. Ejecutar `git apply --check <ruta/deepseek-web.patch>` contra la base.
+   No forzar si el parche v2 ya esta instalado: comparar el resultado v3 y
+   actualizar solo los archivos incluidos. No usar reset.
+3. Aplicar el parche y ejecutar:
+   `pytest tests/test_native_research.py tests/test_deepseek_discovery.py tests/test_authorized_sources.py tests/test_http_crm.py tests/test_worker.py tests/test_contracts_and_expansion.py tests/test_integration_monitor.py`.
+4. Construir una imagen con el Dockerfile de este directorio, BASE_IMAGE fijada
+   a una imagen previa verificada y CRM_REVISION al commit publicado.
+   El contexto contiene los ocho archivos Python indicados por COPY, sin .env.
+   Los archivos de pruebas y fake.py van al checkout, no al contenedor.
+5. Conservar las correcciones de Facto en la imagen base. Si varios servicios
+   comparten etiqueta, no sustituirla por una imagen que retroceda hub-worker.
+   Reiniciar solo el worker de prospeccion con su mecanismo habitual.
 
-1. Verificar `git rev-parse HEAD` y `git status --short` en el repo comercial.
-   Conservar sus cambios existentes, especialmente `docker-compose.yml`.
-2. Ejecutar `git apply --check <ruta-absoluta-al-patch>` antes de aplicar.
-   Si hay divergencias, revisar: no usar reset ni forzar el parche.
-3. Ejecutar `git apply <ruta-absoluta-al-patch>`.
-4. Ejecutar `pytest tests/test_deepseek_discovery.py tests/test_authorized_sources.py
-   tests/test_http_crm.py tests/test_worker.py tests/test_contracts_and_expansion.py`.
-5. Publicar una nueva imagen del worker mediante su despliegue existente,
-   conservando el archivo de composicion y configuracion privada del servidor.
+No basta editar archivos dentro del contenedor: se perderian al reiniciar.
+Actualizar tambien el checkout del servidor; un despliegue posterior debe
+integrar o conservar el overlay.
 
-No basta copiar archivos al contenedor: desaparecerian al reiniciarlo.
-La publicacion del worker requiere la misma autorizacion que el CRM.
+## Contrato v3
 
-Para una publicacion coordinada sin actualizar dependencias, el Dockerfile de
-este directorio admite `BASE_IMAGE` fijada a una imagen previa respaldada y
-verificada. Si los servicios comparten `clima-activa-agent:latest`, conservar
-tambien las correcciones vigentes de hub-worker: comparar los archivos de
-prospeccion entre ambas imagenes antes de elegir la base comun. No reemplazar
-la etiqueta compartida por una imagen que retroceda Finanzas.
-Usar
-`CRM_REVISION` al commit del CRM. Su contexto contiene solo los seis archivos
-Python parcheados; no se incluyen .env ni credenciales. Publicar esa imagen como
-`clima-activa-agent:latest` y ejecutar `docker compose up -d --no-deps --no-build
-worker` conserva los demas servicios, la base y las migraciones del agente.
-El parche queda aplicado tambien en el checkout del servidor. Un despliegue
-futuro del repositorio comercial debe incorporar este parche, o verificar que
-ya haya sido integrado upstream, antes de reemplazar la imagen.
+- El worker anuncia `deepseek_research_v3`. El claim ya no consulta al proveedor.
+- DeepSeek tiene prioridad sobre Places; cada tarea corresponde a rubro y comuna.
+- POST `prospecting-runs/:run/research` recibe operation_id, kind, worker_id y
+  lease_token. Solo el servidor descifra la clave DeepSeek.
+- La reserva SQL impide repetir una llamada pagada por el mismo operation_id.
+- V4 Pro con razonamiento alto; hasta tres consultas web por etapa de
+  descubrimiento y dos por investigacion del sitio oficial.
+- Hasta 12 etapas de descubrimiento por ejecucion; 20 solicitudes diarias
+  compartidas con validaciones. Se respeta el limite de resultados de la tarea
+  y de candidatos de la campana. El saldo USD se consulta antes de pagar:
+  se requiere al menos US$0,25. No es un presupuesto mensual exacto ni una
+  reserva monetaria; el proveedor es la fuente de facturacion.
+- Los hallazgos reales de la herramienta web se guardan en Candidatos.
+  Los perfiles sociales se distinguen por URL, no por dominio compartido.
+- No se importan telefonos/correos generados por IA. Solo evidencia del sitio
+  oficial permite validar identidad, domicilio y contacto. Los no confirmados
+  permanecen visibles y no pueden aprobarse.
+- Brave queda sin llamadas, incluyendo pruebas de conexion antiguas.
+  No se cancela su suscripcion ni se borra la atribucion historica.
+- Copiloto consulta los resultados y fuentes; no es un paso del proceso.
 
-## Contrato
+## Despliegue coordinado
 
-- El claim anuncia `deepseek_web_v1` y `deepseek_candidates_v2`; admite 65 segundos.
-- `deepseek_discoveries` sobrevive la validacion Pydantic del snapshot.
-- Los hallazgos no traen telefono, direccion ni evidencia atribuida a Brave.
-- Solo la lectura del sitio oficial aporta campos verificados. El nombre SEO
-  inicial se reemplaza por el nombre encontrado en ese sitio, no por IA.
-- La deduplicacion, limites por tarea/campana y aprobacion humana se mantienen.
-- Los workers v2 guardan primero los hallazgos como candidatos pendientes y
-  consumen la cola durable de investigacion entre tareas, sin pasar por Copiloto.
-- Cada validacion usa una consulta Brave con el presupuesto mensual existente,
-  seguida del sitio oficial y el territorio completo del snapshot de campana.
-- Si Brave falla, el candidato permanece visible y se registran reintentos
-  acotados. Los campos de directorios no habilitan importaciones.
+Aplicar `supabase/prospecting_native_research.sql` despues de
+`prospecting_deepseek_search.sql`, `prospecting_enrichment.sql` y
+`prospecting_discovery_candidates.sql`. Es una migracion de Prospeccion,
+no de Finanzas. Migra fuentes de campanas actuales; conserva snapshots y
+evidencia historicos. El SQL puede aplicarse de nuevo.
 
-## Publicacion de candidatos pendientes
+Publicar juntos SQL, `crm-agent` (incluido prospecting-research.ts y sus
+dependencias), `crm-copilot/prospecting-report.ts`, worker v3 e interfaz.
+Detener nuevas ejecuciones durante la ventana y esperar las activas antes
+de cambiar versiones. El nuevo API rechaza workers antiguos ANTES de asignar
+un run. Verificar disponibilidad de deepseek-v4-pro con la clave guardada.
 
-Aplicar `supabase/prospecting_discovery_candidates.sql` despues de las
-migraciones `prospecting_deepseek_search.sql` y `prospecting_enrichment.sql`.
-Luego publicar `crm-agent` y el worker v2. No afecta contabilidad.
-El esquema nuevo conserva los RPC existentes y protege tambien la aprobacion
-por contacto. Una busqueda no crea empresas ni destinatarios comerciales.
+La publicacion y una prueba real de pago requieren autorizacion.
+Comprobar en una campana acotada: modelo real Pro, consultas auditadas,
+candidatos persistidos, validacion publica, ausencia de llamadas Brave,
+deduplicacion y revision humana.
 
-Para recuperar hallazgos ya auditados, invocar como administrador de servicio
-`stage_prospecting_discoveries(run_uuid)` para la ejecucion autorizada. La
-operacion es idempotente, respeta el limite congelado y no consulta DeepSeek
-otra vez. No ejecutar reintentos masivos ni modificar snapshots historicos.
-Los hallazgos pueden ser directorios o productos: son candidatos de revision,
-no empresas verificadas. La validacion mantiene visibles los no confirmados.
-
-Rollback: restaurar la imagen anterior y desactivar DeepSeek en las campanas;
-conservar auditoria y evidencia. No borrar ejecuciones ni reservas.
+Rollback: restaurar funciones, interfaz e imagen previa como conjunto.
+Conservar auditoria y reservas. No ejecutar snapshots v3 con un worker v2;
+pausar esas ejecuciones, sin borrarlas ni reescribir su evidencia.

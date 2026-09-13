@@ -85,7 +85,7 @@ export interface Activity {
   text: string;
 }
 
-export type ProspectingSource = "google_places" | "brave_search" | "official_website" | "amarillas";
+export type ProspectingSource = "google_places" | "deepseek_web" | "brave_search" | "official_website" | "amarillas";
 export type ProspectingCampaignStatus = "draft" | "active" | "archived";
 export type ProspectingRunStatus =
   | "pending"
@@ -174,6 +174,8 @@ export interface ProspectingRun {
     completedAt: string;
     mode: string;
     discoveredWebsites: number;
+    tokens?: number;
+    balanceUsd?: number | null;
     webRequests: number;
     queries: string[];
     discoveries: { name: string; website: string }[];

@@ -149,3 +149,31 @@ npm run test:prospecting
 
 Ejecuta el esquema en PostgreSQL WASM, lo repite, simula una migracion parcial
 y cubre limites, historial por run, aprobacion, retencion, leases y sucursales.
+
+## Investigacion nativa DeepSeek Pro (v3)
+
+El contrato anterior se conserva para historial; en nuevas campanas
+`deepseek_web` reemplaza a `brave_search`, con `official_website` obligatorio.
+Google Places sigue como fuente complementaria. El claim solo entrega trabajo;
+no realiza consultas de pago.
+
+`POST /crm-agent/prospecting-runs/:runId/research` requiere la clave de worker
+y cuerpo con `worker_id`, `lease_token`, `operation_id` y `kind`
+(`discovery` o `validation`). El servidor obtiene rubro, comuna o candidato
+desde la tarea/job del CRM, no desde instrucciones libres del worker.
+Respuesta: `{data: {status, discoveries, queries, model, ...}}`.
+Un resultado `preparing` se consulta de nuevo; no habilita otro cargo.
+Una reserva interrumpida se conserva sin repetir automaticamente la llamada.
+
+La auditoria privada conserva reservas, tokens y saldos observados. El run
+expone un resumen sin secretos. Tokens de busqueda no incluyen investigaciones
+posteriores de candidatos ni garantizan equivaler a la factura del proveedor.
+Las URLs reales de la herramienta web son pistas; nombres/contactos generados
+en texto libre no se importan. Perfiles sociales publicos no se confunden entre
+si por compartir dominio y no constituyen evidencia suficiente para aprobar.
+
+Despliegue y limites: [worker v3](../services/prospecting-worker-overlay/README.md).
+Pruebas: `npm run test:prospecting:native` y `npm run test:prospecting`.
+Documentacion oficial consultada:
+[Anthropic compatible](https://api-docs.deepseek.com/guides/anthropic_api/) y
+[saldo de API](https://api-docs.deepseek.com/api/get-user-balance/).
