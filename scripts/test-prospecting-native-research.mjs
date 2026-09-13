@@ -178,8 +178,18 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
       try {
         const row = (await db.query("update prospecting_campaign_candidates set enrichment_status='completed',candidate_snapshot=$2::jsonb,enrichment_summary=$3::jsonb where id=$1 returning discovery_status", [job.candidate_relation_id, JSON.stringify({ ...valid, ...changes }), JSON.stringify({ validation_version: "public-web-v4", official_pages_verified: 1 })])).rows[0];
         assert.equal(row.discovery_status, expected);
+        if (expected === "validated")
+          await db.query("update prospecting_campaign_candidates set review_status='approved' where id=$1", [job.candidate_relation_id]);
       } finally { await db.exec("rollback"); }
     }
+    await db.exec("begin");
+    try {
+      // Fixture for a record validated by the retired worker, not a production mutation.
+      await db.exec("alter table prospecting_campaign_candidates disable trigger prospect_discovery_review_guard");
+      await db.query("update prospecting_campaign_candidates set discovery_status='validated',enrichment_status='completed',enrichment_summary='{\"validation_version\":\"public-web-v3\"}' where id=$1", [job.candidate_relation_id]);
+      await db.exec("alter table prospecting_campaign_candidates enable trigger prospect_discovery_review_guard");
+      await assert.rejects(db.query("update prospecting_campaign_candidates set review_status='approved' where id=$1", [job.candidate_relation_id]), /validacion anterior/);
+    } finally { await db.exec("rollback"); }
     const v = await reserve(job.id, "validation", jobClaim.lease_token ?? job.lease_token); assert.ok(v.reservation_token);
     await finish(v.reservation_token, { status: "applied", discoveries: [], queries: ["oficial"] });
     const two = await reserve(tasks[1].id);

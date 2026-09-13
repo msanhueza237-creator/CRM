@@ -1740,9 +1740,9 @@ function CandidateDetail({
         </div>
       ) : null}
 
-      {candidate.discoveryStatus ? <div className={`candidate-import-readiness ${candidate.discoveryStatus === "validated" ? "ready" : "partial"}`} role="status">
+      {candidate.discoveryStatus ? <div className={`candidate-import-readiness ${commercialReady ? "ready" : "partial"}`} role="status">
         <Search size={19} /><div><strong>{discoveryLabel(candidate)}</strong>
-          <p>{candidate.enrichmentError || String(candidate.enrichmentSummary.validation_message || "Hallazgo guardado. Pendiente de comprobar en fuentes oficiales.")}</p>
+          <p>{candidate.discoveryStatus === "validated" && !commercialReady ? "La validación anterior no acredita los criterios actuales de identidad, actividad y contacto. Requiere revisión antes de uso comercial." : candidate.enrichmentError || String(candidate.enrichmentSummary.validation_message || "Hallazgo guardado. Pendiente de comprobar en fuentes oficiales.")}</p>
           {safeExternalUrl(candidate.discoveryUrl || "") ? <a href={safeExternalUrl(candidate.discoveryUrl || "") || undefined} target="_blank" rel="noreferrer">Origen del hallazgo <ExternalLink size={12} /></a> : null}
         </div></div> : null}
 
@@ -1973,7 +1973,7 @@ function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
 }
 
 function discoveryLabel(candidate: ProspectCandidate) {
-  if (candidate.discoveryStatus === "validated") return "Datos contrastados en sitio oficial";
+  if (candidate.discoveryStatus === "validated") return candidateQuality(candidate) === "contactable" ? "Datos contrastados en sitio oficial" : "Validación anterior · requiere revisión";
   if (candidate.discoveryStatus === "unverified" || candidate.enrichmentStatus === "failed") return "Requiere revision";
   if (candidate.enrichmentStatus === "paused") return "Validacion pausada";
   return candidate.enrichmentStatus === "running" ? "Verificando fuentes" : "Pendiente de verificación";

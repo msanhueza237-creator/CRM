@@ -6,9 +6,23 @@ import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE, DEFAULT_PROSPEC
 import { readFile } from "node:fs/promises";
 
 const candidate = () => ({ name: "Clima Andes", phone: "+56721234567", email: "ventas@climaandes.com", website: "https://climaandes.com",
-  discoveryStatus: "validated", importEligible: true, reviewFlags: [], businessLine: "Tienda y distribuidor de aire acondicionado",
+  discoveryStatus: "validated", enrichmentSummary: { validation_version: "public-web-v4" }, importEligible: true, reviewFlags: [], businessLine: "Tienda y distribuidor de aire acondicionado",
   locations: [{ regionCode: "06", comunaCode: "06101", address: "Av. Republica 100" }],
-  evidence: [{ field: "name", value: "Clima Andes" }, { field: "phone", value: "+56721234567" }, { field: "description", value: "Tienda y distribuidor de aire acondicionado" }].map(e => ({ ...e, source: "official_website" })),
+  evidence: [{ field: "name", value: "Clima Andes" }, { field: "phone", value: "+56721234567" }, { field: "description", value: "Tienda y distribuidor de aire acondicionado" }].map(e => ({ ...e, source: "official_website", url: "https://climaandes.com/contacto" })),
+});
+
+test("historical validations and directory contacts cannot enter the contactable list", () => {
+  for (const enrichmentSummary of [{}, { validation_version: "public-web-v3" }])
+    assert.equal(candidateQuality({ ...candidate(), enrichmentSummary }), "pending");
+  const directory = "Ferreterias Chile es el directorio mas completo de ferreterias en Chile";
+  assert.equal(candidateQuality({ ...candidate(), businessLine: directory }), "outside");
+  for (const field of ["name", "phone", "description"]) {
+    const evidence = candidate().evidence.map(e => e.field === field ? { ...e, url: "https://directorio.cl/empresa" } : e);
+    assert.equal(candidateQuality({ ...candidate(), evidence }), "pending");
+  }
+  const otherSector = "Tienda y servicio de reparacion de computadores y celulares";
+  const evidence = candidate().evidence.map(e => e.field === "description" ? { ...e, value: otherSector } : e);
+  assert.equal(candidateQuality({ ...candidate(), businessLine: otherSector, evidence }), "pending");
 });
 
 test("contactable list requires identity, activity, territory and business contact evidence", () => {

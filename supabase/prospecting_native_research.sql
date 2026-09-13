@@ -295,6 +295,10 @@ begin
         'La misma empresa ya tiene un candidato en esta ejecucion. Revisar el registro relacionado antes de importar.');
     end if;
   end if;
+  if new.review_status in ('approved','linked') and new.review_status is distinct from old.review_status
+     and coalesce(new.enrichment_summary->>'validation_version','')<>'public-web-v4' then
+    raise exception using errcode='22023',message='La validacion anterior requiere nueva investigacion public-web-v4 antes de aprobar';
+  end if;
   if new.discovery_status<>'validated' then
     new.candidate_snapshot:=new.candidate_snapshot||jsonb_build_object('import_eligible',false,'importable_location_indexes','[]'::jsonb);
     if new.review_status in ('approved','linked') then
