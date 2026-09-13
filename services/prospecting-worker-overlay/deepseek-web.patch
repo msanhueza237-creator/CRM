@@ -2,9 +2,7 @@ diff --git a/app/crm/fake.py b/app/crm/fake.py
 index ebb8546..295ea33 100644
 --- a/app/crm/fake.py
 +++ b/app/crm/fake.py
-@@ -38,11 +38,11 @@ class _FakeRun:
- 
- def _claimed_tasks(snapshot: ProspectingRunSnapshot) -> tuple[ClaimedTask, ...]:
+@@ -40,7 +40,7 @@ def _claimed_tasks(snapshot: ProspectingRunSnapshot) -> tuple[ClaimedTask, ...]:
      discovery_sources = tuple(
          source
          for source in snapshot.campaign.sources
@@ -13,28 +11,21 @@ index ebb8546..295ea33 100644
      )
      tasks: list[ClaimedTask] = []
      for source, keyword, territory in product(
-         discovery_sources, snapshot.campaign.keywords, snapshot.campaign.territories
-     ):
 diff --git a/app/crm/http.py b/app/crm/http.py
-index 1607202..fcd7069 100644
+index 1607202..ff4b67e 100644
 --- a/app/crm/http.py
 +++ b/app/crm/http.py
-@@ -159,29 +159,41 @@ class HttpCRMPort:
-     async def claim_run(self, worker_id: str, lease_seconds: int = 120) -> ClaimedRun | None:
-         self._worker_id = worker_id
+@@ -161,7 +161,8 @@ class HttpCRMPort:
          response = await self._request(
              "POST",
              "prospecting-runs/claim",
 -            json={"worker_id": worker_id, "lease_seconds": lease_seconds},
 +            timeout=max(self.timeout, 65),
-+            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_research_v3", "deepseek_candidates_v2"]},
++            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_research_v3", "deepseek_candidates_v2", "google_first_research_v1"]},
              headers={"Idempotency-Key": str(uuid.uuid4())},
          )
          if response.status_code == 204:
-             return None
-         self._ensure_success(response)
-         payload = self._unwrap(response.json())
-         if payload.get("run") is None and "run" in payload:
+@@ -172,6 +173,25 @@ class HttpCRMPort:
              return None
          return ClaimedRun.model_validate(payload)
  
@@ -49,23 +40,27 @@ index 1607202..fcd7069 100644
 +            raise CRMRetryableError("Research request is already reserved")
 +        return report
 +
++    async def stage_google(self, run_id: str, task_id: str, lease_token: str, candidates: list) -> dict:
++        response = await self._request("POST", f"prospecting-runs/{run_id}/google-discoveries",
++            headers={"Idempotency-Key": str(uuid.uuid4())},
++            json={"worker_id": self._require_worker_id(), "task_id": task_id, "lease_token": lease_token,
++                  "candidates": [candidate.model_dump(mode="json") for candidate in candidates]})
++        self._ensure_success(response)
++        return self._unwrap(response.json())
++
      async def claim_enrichment(
          self, worker_id: str, lease_seconds: int = 300
      ) -> ClaimedEnrichment | None:
-         self._worker_id = worker_id
+@@ -179,7 +199,7 @@ class HttpCRMPort:
          response = await self._request(
              "POST",
              "prospecting-enrichment/claim",
 -            json={"worker_id": worker_id, "lease_seconds": lease_seconds},
-+            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_research_v3"]},
++            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_research_v3", "google_first_research_v1"]},
              headers={"Idempotency-Key": str(uuid.uuid4())},
          )
          self._ensure_success(response)
-         payload = self._unwrap(response.json())
-         job = payload.get("job")
-@@ -191,10 +203,11 @@ class HttpCRMPort:
-             {
-                 "job_id": job.get("id"),
+@@ -193,6 +213,7 @@ class HttpCRMPort:
                  "run_id": job.get("run_id"),
                  "candidate_relation_id": job.get("candidate_relation_id"),
                  "candidate": payload.get("candidate"),
@@ -73,15 +68,11 @@ index 1607202..fcd7069 100644
                  "lease_token": payload.get("lease_token"),
                  "lease_expires_at": payload.get("lease_expires_at"),
              }
-         )
- 
 diff --git a/app/enrichment/web_scraper.py b/app/enrichment/web_scraper.py
 index ffd5d9e..c918635 100644
 --- a/app/enrichment/web_scraper.py
 +++ b/app/enrichment/web_scraper.py
-@@ -150,10 +150,11 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
-     whatsapp_numbers: set[str] = set()
-     names: list[str] = []
+@@ -152,6 +152,7 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
      descriptions: list[str] = []
      locations: list[dict] = []
      declared_url: str | None = None
@@ -89,11 +80,7 @@ index ffd5d9e..c918635 100644
  
      for anchor in soup.find_all("a", href=True):
          href = urljoin(source_url, str(anchor["href"]))
-         if href.lower().startswith("mailto:"):
-             emails.add(href.split(":", 1)[1].split("?", 1)[0])
-@@ -168,10 +169,16 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
-         try:
-             raw = json.loads(script.string or script.get_text() or "null")
+@@ -170,6 +171,12 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
          except (json.JSONDecodeError, TypeError):
              continue
          for node in _jsonld_nodes(raw):
@@ -106,11 +93,7 @@ index ffd5d9e..c918635 100644
              if isinstance(node.get("name"), str):
                  names.append(node["name"].strip())
              if isinstance(node.get("email"), str):
-                 emails.add(node["email"].removeprefix("mailto:").strip())
-             if isinstance(node.get("telephone"), str):
-@@ -190,10 +197,11 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
-                     continue
-                 prepared = {
+@@ -192,6 +199,7 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
                      "address": address.get("streetAddress"),
                      "comuna_name": address.get("addressLocality"),
                      "region_name": address.get("addressRegion"),
@@ -118,11 +101,7 @@ index ffd5d9e..c918635 100644
                      "source_url": source_url,
                  }
                  if any(prepared.get(key) for key in ("address", "comuna_name", "region_name")):
-                     locations.append(prepared)
- 
-@@ -201,10 +209,12 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
-     if site_name and site_name.get("content"):
-         names.append(str(site_name["content"]).strip())
+@@ -203,6 +211,8 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
      item_name = soup.select_one('[itemprop="name"]')
      if item_name:
          names.append(str(item_name.get("content") or item_name.get_text(" ")).strip())
@@ -131,11 +110,7 @@ index ffd5d9e..c918635 100644
      for selector in (
          ('meta[name="description"]', "content"),
          ('meta[property="og:description"]', "content"),
-     ):
-         element = soup.select_one(selector[0])
-@@ -218,13 +228,19 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
-                 for paragraph in container.find_all("p")
-             ]
+@@ -220,9 +230,15 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
              about_text = " ".join(value for value in paragraphs if value)[:500]
              if about_text:
                  descriptions.insert(0, about_text)
@@ -151,11 +126,7 @@ index ffd5d9e..c918635 100644
      if locality or region or street:
          locations.append(
              {
-                 "address": (
-                     str(street.get("content") or street.get_text(" ")).strip()
-@@ -240,10 +256,11 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
-                     str(region.get("content") or region.get_text(" ")).strip()
-                     if region
+@@ -242,6 +258,7 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
                      else None
                  ),
                  "source_url": source_url,
@@ -163,11 +134,7 @@ index ffd5d9e..c918635 100644
              }
          )
  
-     social: dict[str, str] = {}
-     relevant_urls: list[tuple[int, str]] = []
-@@ -265,10 +282,19 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
-             clean = href.split("#", 1)[0]
-             if all(clean != existing for _, existing in relevant_urls):
+@@ -267,6 +284,15 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
                  relevant_urls.append((_link_priority(clean, anchor_label), clean))
  
      visible_text = " ".join(unidecode(page_text).casefold().split())
@@ -183,11 +150,7 @@ index ffd5d9e..c918635 100644
      specialties = sorted({term for term in _SPECIALTY_TERMS if term in visible_text})
      brands = sorted({brand for brand in _BRAND_TERMS if re.search(rf"(?<!\w){re.escape(brand.casefold())}(?!\w)", visible_text)}, key=str.casefold)
  
-     description = next(
-         (prepared for value in descriptions if (prepared := _clean_public_description(value))),
-@@ -293,10 +319,12 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
-         )
-         if present
+@@ -295,6 +321,8 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
      }
      field_sources.update({f"social_media.{platform}": source_url for platform in social})
      result = {
@@ -196,11 +159,7 @@ index ffd5d9e..c918635 100644
          "name": next((name for name in names if name), None),
          "email": sorted(email for email in emails if email)[0] if emails else None,
          "phone": primary_phone,
-         "whatsapp_number": primary_whatsapp,
-         "phones": normalized_phones or None,
-@@ -481,21 +509,25 @@ async def enrich_from_website(
-         return {}
-     secure_client = client or SecureWebClient()
+@@ -483,6 +511,8 @@ async def enrich_from_website(
      try:
          response = await secure_client.fetch_html(website)
          enrichment, relevant_urls = _page_enrichment(response)
@@ -209,7 +168,7 @@ index ffd5d9e..c918635 100644
          visited = {response.final_url.rstrip("/")}
          for page_url in relevant_urls[:MAX_SITE_PAGES]:
              if page_url.rstrip("/") in visited:
-                 continue
+@@ -490,10 +520,12 @@ async def enrich_from_website(
              visited.add(page_url.rstrip("/"))
              try:
                  contact_response = await secure_client.fetch_html(page_url)
@@ -223,11 +182,7 @@ index ffd5d9e..c918635 100644
                  for field_name in ("name", "email", "phone", "whatsapp_number"):
                      if not enrichment.get(field_name) and contact.get(field_name):
                          enrichment[field_name] = contact[field_name]
-                         source = (contact.get("field_sources") or {}).get(field_name)
-                         if source:
-@@ -517,18 +549,20 @@ async def enrich_from_website(
-                 if contact.get("locations"):
-                     enrichment["locations"] = [
+@@ -519,6 +551,7 @@ async def enrich_from_website(
                          *(enrichment.get("locations") or []),
                          *contact["locations"],
                      ]
@@ -235,10 +190,7 @@ index ffd5d9e..c918635 100644
                  enrichment["social_media"] = {
                      **(enrichment.get("social_media") or {}),
                      **(contact.get("social_media") or {}),
-                 } or None
-                 for field_name, field_source in (contact.get("field_sources") or {}).items():
-                     if field_name.startswith("social_media."):
-                         enrichment.setdefault("field_sources", {})[field_name] = field_source
+@@ -529,6 +562,7 @@ async def enrich_from_website(
                  enrichment["specialties"] = sorted({*(enrichment.get("specialties") or []), *(contact.get("specialties") or [])}) or None
                  enrichment["brands"] = sorted({*(enrichment.get("brands") or []), *(contact.get("brands") or [])}, key=str.casefold) or None
                  enrichment["pages_visited"] = [*(enrichment.get("pages_visited") or []), contact_response.final_url]
@@ -252,8 +204,7 @@ diff --git a/app/integrations/monitor.py b/app/integrations/monitor.py
 index 3d49537..744d349 100644
 --- a/app/integrations/monitor.py
 +++ b/app/integrations/monitor.py
-@@ -1,15 +1,13 @@
- from __future__ import annotations
+@@ -2,12 +2,10 @@ from __future__ import annotations
  
  import logging
  
@@ -267,11 +218,7 @@ index 3d49537..744d349 100644
  
  logger = logging.getLogger("clima_activa.integrations")
  
- 
- class IntegrationMonitor:
-@@ -63,90 +61,17 @@ class IntegrationMonitor:
-                 "budget_alert_percent": int(self.settings.google_places_budget_alert_ratio * 100),
-             },
+@@ -65,86 +63,13 @@ class IntegrationMonitor:
          )
  
      async def _check_brave_search(self, check_id: str) -> None:
@@ -364,15 +311,30 @@ index 3d49537..744d349 100644
          )
  
      async def _report_not_configured(self, check_id: str, provider: str, configured: bool) -> None:
-         await self.crm.report_integration_status(
-             worker_id=self.settings.crm_worker_id,
+diff --git a/app/prospecting/budget.py b/app/prospecting/budget.py
+index 8ba9193..cf69d89 100644
+--- a/app/prospecting/budget.py
++++ b/app/prospecting/budget.py
+@@ -62,10 +62,12 @@ def estimate_google_run(
+     tasks = len(snapshot.campaign.territories) * len(snapshot.campaign.keywords)
+     minimum_search_cost = (
+         tasks
+-        * settings.google_places_queries_per_task
++        * (max(5, settings.google_places_queries_per_task) if snapshot.discovery_strategy == "google_places_first"
++           else settings.google_places_queries_per_task)
+         * COST_ESTIMATE_USD["pro"]
+     )
+-    planned_search_cost = minimum_search_cost * settings.google_places_pages_per_query
++    planned_search_cost = minimum_search_cost * (3 if snapshot.discovery_strategy == "google_places_first"
++        else settings.google_places_pages_per_query)
+     expected_details = tasks * snapshot.campaign.max_results_per_task
+     maximum_details = expected_details * settings.google_places_detail_multiplier
+     expected = planned_search_cost + expected_details * COST_ESTIMATE_USD["enterprise"]
 diff --git a/app/prospecting/contracts.py b/app/prospecting/contracts.py
-index 971c529..e4c8f43 100644
+index 971c529..da584a8 100644
 --- a/app/prospecting/contracts.py
 +++ b/app/prospecting/contracts.py
-@@ -12,10 +12,11 @@ def utc_now() -> datetime:
- 
- 
+@@ -14,6 +14,7 @@ def utc_now() -> datetime:
  class SourceName(str, Enum):
      google_places = "google_places"
      brave_search = "brave_search"
@@ -380,11 +342,7 @@ index 971c529..e4c8f43 100644
      official_website = "official_website"
  
  
- class RunStatus(str, Enum):
-     pending = "pending"
-@@ -66,15 +67,16 @@ class ProspectingCampaign(BaseModel):
- 
-     model_config = ConfigDict(frozen=True)
+@@ -68,11 +69,12 @@ class ProspectingCampaign(BaseModel):
  
      crm_campaign_id: str = Field(min_length=1, max_length=200)
      name: str = Field(min_length=1, max_length=200)
@@ -398,11 +356,7 @@ index 971c529..e4c8f43 100644
          SourceName.official_website,
      )
      sector: Literal["hvac"] = "hvac"
-     target_types: tuple[
-         Literal[
-@@ -113,14 +115,14 @@ class ProspectingCampaign(BaseModel):
-     def unique_sources(cls, values: tuple[SourceName, ...]) -> tuple[SourceName, ...]:
-         return tuple(dict.fromkeys(values))
+@@ -115,10 +117,10 @@ class ProspectingCampaign(BaseModel):
  
      @model_validator(mode="after")
      def has_discovery_source(self) -> ProspectingCampaign:
@@ -415,25 +369,18 @@ index 971c529..e4c8f43 100644
              and SourceName.official_website not in self.sources
          ):
              raise ValueError(
-                 "brave_search requires official_website for territorial verification"
-             )
-@@ -141,11 +143,13 @@ class ProspectingRunSnapshot(BaseModel):
-     crm_run_id: str = Field(min_length=1, max_length=200)
-     campaign_version: int = Field(ge=1)
+@@ -143,7 +145,10 @@ class ProspectingRunSnapshot(BaseModel):
      campaign: ProspectingCampaign
      requested_at: datetime = Field(default_factory=utc_now)
      requested_by: str = Field(min_length=1, max_length=200)
 +    deepseek_enabled: bool = False
++    discovery_strategy: Literal["legacy", "google_places_first"] = "legacy"
      brave_policy: BravePolicy = Field(default_factory=BravePolicy)
 +    deepseek_discoveries: list[dict[str, str]] = Field(default_factory=list, max_length=30)
  
      @model_validator(mode="after")
      def campaign_id_present(self) -> ProspectingRunSnapshot:
-         if not self.campaign.crm_campaign_id.strip():
-             raise ValueError("campaign id is required")
-@@ -337,10 +341,11 @@ class ClaimedRun(BaseModel):
-     # remaining task UUIDs and must never trigger local expansion.
-     tasks: tuple[ClaimedTask, ...] | None = None
+@@ -339,6 +344,7 @@ class ClaimedRun(BaseModel):
  
  
  class ClaimedEnrichment(BaseModel):
@@ -441,8 +388,6 @@ index 971c529..e4c8f43 100644
      job_id: str = Field(min_length=1, max_length=200)
      run_id: str = Field(min_length=1, max_length=200)
      candidate_relation_id: str = Field(min_length=1, max_length=200)
-     candidate: ProspectCandidate
-     lease_token: str = Field(min_length=1, max_length=200)
 diff --git a/app/prospecting/deepseek_discovery.py b/app/prospecting/deepseek_discovery.py
 new file mode 100644
 index 0000000..36efc9e
@@ -481,10 +426,10 @@ index 0000000..36efc9e
 +    return results
 diff --git a/app/prospecting/discovery_validation.py b/app/prospecting/discovery_validation.py
 new file mode 100644
-index 0000000..c58bd1e
+index 0000000..1d1077a
 --- /dev/null
 +++ b/app/prospecting/discovery_validation.py
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,59 @@
 +from __future__ import annotations
 +
 +from app.prospecting.contracts import ProspectCandidate, ProspectLocation, SourceName
@@ -499,8 +444,11 @@ index 0000000..c58bd1e
 +    if SourceName.official_website not in snapshot.campaign.sources:
 +        raise RuntimeError("La campana requiere una fuente oficial para verificar datos")
 +    prepared = ProspectCandidate(candidate_id=candidate.candidate_id, name=candidate.name,
-+        location=ProspectLocation(), market_signals={"deepseek_discovery": True})
-+    urls = [candidate.website] if executor._is_official_website_candidate(candidate) else list(research_urls or [])
++        location=ProspectLocation(), market_signals={
++            "google_discovery" if candidate.market_signals.get("google_discovery") else "deepseek_discovery": True})
++    # An explicit empty analysis is not permission to fall back to the original site.
++    urls = list(research_urls) if research_urls is not None else (
++        [candidate.website] if executor._is_official_website_candidate(candidate) else [])
 +    origin_issue = site_issue(candidate.website)
 +    territory = snapshot.campaign.territories[0]
 +    task = WorkerTask(id=f"discovery-{candidate.candidate_id}", run_id=snapshot.crm_run_id,
@@ -545,9 +493,7 @@ diff --git a/app/prospecting/quality.py b/app/prospecting/quality.py
 index 1dbf6bb..bbf3810 100644
 --- a/app/prospecting/quality.py
 +++ b/app/prospecting/quality.py
-@@ -71,14 +71,22 @@ _STRONG_HVAC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-         ),
-     ),
+@@ -73,10 +73,18 @@ _STRONG_HVAC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
      (
          "servicios_hvac",
          re.compile(
@@ -567,11 +513,7 @@ index 1dbf6bb..bbf3810 100644
  )
  
  _HVAC_CONTEXT = re.compile(
-     r"\b(?:hvac|aire acondicionado|climatizacion|refrigeracion (?:comercial|industrial)|"
-     r"frio industrial|camaras? (?:frigorificas?|de frio)|chillers?|vrf|vrv)\b"
-@@ -87,19 +95,20 @@ _WEAK_ACTIVITY = re.compile(
-     r"\b(?:refrigeracion|ventilacion|calefaccion|mantencion|mantenimiento|instalacion|"
-     r"servicio tecnico|tecnico|repuestos?|ingenieria|proyectos?)\b"
+@@ -89,15 +97,16 @@ _WEAK_ACTIVITY = re.compile(
  )
  
  _DISTRIBUTOR = re.compile(
@@ -591,8 +533,6 @@ index 1dbf6bb..bbf3810 100644
  )
  _LARGE_INSTALLER = re.compile(
      r"\b(?:ingenieria|contratista|proyectos? (?:hvac|de climatizacion|de refrigeracion)|"
-     r"instalaciones? (?:comerciales?|industriales?)|climatizacion (?:comercial|industrial)|"
-     r"refrigeracion industrial|frio industrial)\b"
 diff --git a/app/prospecting/site_quality.py b/app/prospecting/site_quality.py
 new file mode 100644
 index 0000000..c030516
@@ -639,10 +579,10 @@ index 0000000..c030516
 +def chilean_phone(value: str | None) -> bool:
 +    return bool(re.fullmatch(r"\+56[2-9]\d{8}", value or ""))
 diff --git a/app/prospecting/sources.py b/app/prospecting/sources.py
-index 715ab57..0abcf21 100644
+index 715ab57..90bc2ce 100644
 --- a/app/prospecting/sources.py
 +++ b/app/prospecting/sources.py
-@@ -1,45 +1,44 @@
+@@ -1,14 +1,14 @@
  from __future__ import annotations
  
 +import json
@@ -661,10 +601,7 @@ index 715ab57..0abcf21 100644
  
  from app.config import get_settings
  from app.db.models import PlacesFieldTier, PlacesQueryType
- from app.enrichment.google_places import (
-     COST_ESTIMATE_USD,
-     GooglePlacesClient,
-     GooglePlacesError,
+@@ -19,25 +19,24 @@ from app.enrichment.google_places import (
      extract_region_comuna,
  )
  from app.enrichment.web_scraper import enrich_from_website
@@ -697,11 +634,20 @@ index 715ab57..0abcf21 100644
  from app.prospecting.quality import evaluate_google_discovery, evaluate_hvac_quality
  from app.prospecting.store import WorkerTask
  from app.prospecting.validation import normalize_geo
+@@ -64,6 +63,12 @@ class SourceNotConfigured(RuntimeError):
+     pass
  
  
-@@ -186,11 +185,11 @@ def _spanish_list(values: Sequence[str]) -> str:
- 
- def build_company_summary(candidate: ProspectCandidate) -> str:
++def _foreign_google_country(place: dict) -> bool:
++    return any("country" in component.get("types", []) and
++        not chilean_country(component.get("shortText") or component.get("longText") or "")
++        for component in place.get("addressComponents", []))
++
++
+ class SourceExecutor(Protocol):
+     async def search(
+         self, task: WorkerTask, snapshot: ProspectingRunSnapshot
+@@ -188,7 +193,7 @@ def build_company_summary(candidate: ProspectCandidate) -> str:
      """Create a cautious Spanish summary using only persisted public signals."""
  
      comuna = candidate.location.comuna_name or candidate.location.region_name
@@ -710,11 +656,7 @@ index 715ab57..0abcf21 100644
      specialties = tuple(
          dict.fromkeys(_SPECIALTY_LABELS.get(value.casefold(), value) for value in candidate.specialties)
      )[:5]
-     brands = tuple(dict.fromkeys(candidate.brands))[:5]
-     category = (candidate.category or "").strip().casefold()
-@@ -354,13 +353,28 @@ class AuthorizedSourceExecutor:
-         if task.source == SourceName.google_places:
-             result = await self._google(task, snapshot)
+@@ -356,9 +361,24 @@ class AuthorizedSourceExecutor:
              candidates = list(result)
              metrics = dict(result.metrics)
          elif task.source == SourceName.brave_search:
@@ -742,11 +684,112 @@ index 715ab57..0abcf21 100644
          else:
              raise SourceNotConfigured(f"{task.source.value} is not a discovery source")
  
-         # Google is the primary discovery pass. Brave is staged by the worker:
-         # exact Google matches are merged without crawling the same site again,
-@@ -653,146 +667,23 @@ class AuthorizedSourceExecutor:
-                 "run_budget_usd": self.settings.google_places_run_budget_usd,
-             },
+@@ -368,6 +388,7 @@ class AuthorizedSourceExecutor:
+         if (
+             task.source == SourceName.google_places
+             and SourceName.official_website in snapshot.campaign.sources
++            and snapshot.discovery_strategy != "google_places_first"
+         ):
+             candidates = [
+                 await self._enrich_official_website(candidate, task, snapshot) for candidate in candidates
+@@ -390,7 +411,8 @@ class AuthorizedSourceExecutor:
+         queries = build_google_query_plan(
+             task,
+             snapshot,
+-            max_queries=self.settings.google_places_queries_per_task,
++            max_queries=max(5, self.settings.google_places_queries_per_task)
++                if snapshot.discovery_strategy == "google_places_first" else self.settings.google_places_queries_per_task,
+         )
+         unique_places: dict[str, dict] = {}
+         place_query_hits: dict[str, int] = {}
+@@ -406,6 +428,8 @@ class AuthorizedSourceExecutor:
+         monthly_spend = 0.0
+         paged_search = getattr(client, "text_search_page", None)
+         page_limit = self.settings.google_places_pages_per_query if callable(paged_search) else 1
++        if snapshot.discovery_strategy == "google_places_first" and callable(paged_search):
++            page_limit = 3
+         for query in queries:
+             next_page_token: str | None = None
+             query_keys: set[str] = set()
+@@ -426,7 +450,7 @@ class AuthorizedSourceExecutor:
+                 if callable(paged_search):
+                     page = await paged_search(
+                         query,
+-                        max_results=task.max_results,
++                        max_results=20 if snapshot.discovery_strategy == "google_places_first" else task.max_results,
+                         page_token=next_page_token,
+                     )
+                     places = list(page.places)
+@@ -472,7 +496,7 @@ class AuthorizedSourceExecutor:
+         for key, place in unique_places.items():
+             name = (place.get("displayName") or {}).get("text") or ""
+             location = _location_for_google(place, task)
+-            if location.region_code != task.region_code or location.comuna_code != task.comuna_code:
++            if _foreign_google_country(place) or location.region_code != task.region_code or location.comuna_code != task.comuna_code:
+                 outside_territory += 1
+                 continue
+             assessment = evaluate_google_discovery(
+@@ -480,7 +504,7 @@ class AuthorizedSourceExecutor:
+                 place_types=tuple(place.get("types") or ()),
+                 independent_query_hits=place_query_hits.get(key, 1),
+             )
+-            if not assessment.allow_details:
++            if not assessment.allow_details and snapshot.discovery_strategy != "google_places_first":
+                 reason = assessment.exclusion_reasons[0] if assessment.exclusion_reasons else "not_hvac_related"
+                 if reason == "excluded_business_type":
+                     prefilter_excluded += 1
+@@ -499,10 +523,14 @@ class AuthorizedSourceExecutor:
+         )
+         details_requested = 0
+         closed_permanently = 0
+-        for _priority, _query_hits, _order, place in survivors[:detail_limit]:
++        google_first = snapshot.discovery_strategy == "google_places_first"
++        selected_places = survivors if google_first else survivors[:detail_limit]
++        for index, (_priority, _query_hits, _order, place) in enumerate(selected_places):
+             place_id = place.get("id")
+             details = None
+-            if place_id:
++            if google_first and not place_id:
++                continue
++            if place_id and index < detail_limit and not (google_first and budget_limited):
+                 reservation = await self.budget.reserve(
+                     run_id=snapshot.crm_run_id,
+                     task_id=task.id,
+@@ -514,14 +542,16 @@ class AuthorizedSourceExecutor:
+                 if not reservation.allowed:
+                     budget_limited = True
+                     budget_reason = reservation.reason
+-                    break
+-                details = await client.get_place_details(place_id)
+-                await self.budget.complete(reservation, int(details is not None))
+-                budget_alert = budget_alert or reservation.alert
+-                run_spend = reservation.run_spend_usd
+-                daily_spend = reservation.daily_spend_usd
+-                monthly_spend = reservation.monthly_spend_usd
+-            details_requested += int(bool(place_id))
++                    if not google_first:
++                        break
++                else:
++                    details = await client.get_place_details(place_id)
++                    details_requested += 1
++                    await self.budget.complete(reservation, int(details is not None))
++                    budget_alert = budget_alert or reservation.alert
++                    run_spend = reservation.run_spend_usd
++                    daily_spend = reservation.daily_spend_usd
++                    monthly_spend = reservation.monthly_spend_usd
+             source = details or place
+             if str(source.get("businessStatus") or "").upper() == "CLOSED_PERMANENTLY":
+                 closed_permanently += 1
+@@ -530,7 +560,7 @@ class AuthorizedSourceExecutor:
+             if not name:
+                 continue
+             location = _location_for_google(source, task)
+-            if location.region_code != task.region_code or location.comuna_code != task.comuna_code:
++            if _foreign_google_country(source) or location.region_code != task.region_code or location.comuna_code != task.comuna_code:
+                 outside_territory += 1
+                 continue
+             source_url = source.get("googleMapsUri")
+@@ -655,132 +685,7 @@ class AuthorizedSourceExecutor:
          )
  
      async def _brave(self, task: WorkerTask, snapshot: ProspectingRunSnapshot) -> SourceSearchResult:
@@ -880,10 +923,7 @@ index 715ab57..0abcf21 100644
  
      async def _enrich_official_website(
          self, candidate: ProspectCandidate, task: WorkerTask,
-         snapshot: ProspectingRunSnapshot | None = None,
-     ) -> ProspectCandidate:
-         if not self._is_official_website_candidate(candidate):
-             return candidate
+@@ -791,6 +696,8 @@ class AuthorizedSourceExecutor:
          enrichment = await enrich_from_website(candidate.website)
          if not enrichment:
              return candidate
@@ -892,11 +932,7 @@ index 715ab57..0abcf21 100644
          source_url = enrichment.get("source_url") or candidate.website
          field_sources = enrichment.get("field_sources") or {}
          provider_id = normalize_website(candidate.website)
-         evidence = list(candidate.evidence)
- 
-@@ -805,15 +696,21 @@ class AuthorizedSourceExecutor:
-                 provider_record_id=provider_id,
-             )
+@@ -807,11 +714,17 @@ class AuthorizedSourceExecutor:
              if item is not None:
                  evidence.append(item)
  
@@ -917,11 +953,7 @@ index 715ab57..0abcf21 100644
  
          website_locations = list(enrichment.get("locations") or [])
          if not website_locations and any(
-             enrichment.get(field_name) for field_name in ("address", "comuna_name", "region_name")
-         ):
-@@ -831,11 +728,27 @@ class AuthorizedSourceExecutor:
-             territories = [type("TaskTerritory", (), {
-                 "region_code": task.region_code, "region_name": task.region_name,
+@@ -833,7 +746,23 @@ class AuthorizedSourceExecutor:
                  "comuna_code": task.comuna_code, "comuna_name": task.comuna_name,
              })()]
          prepared_locations: list[ProspectLocation] = []
@@ -945,11 +977,7 @@ index 715ab57..0abcf21 100644
              website_comuna = website_location.get("comuna_name")
              website_region = website_location.get("region_name")
              target = next((territory for territory in territories
-                 if normalize_geo(website_comuna) == normalize_geo(territory.comuna_name)
-                 and (not website_region or normalize_geo(website_region) == normalize_geo(territory.region_name))), None)
-@@ -861,10 +774,16 @@ class AuthorizedSourceExecutor:
-         if website_locations and not matched_official_location and "official_location_conflict" not in review_flags:
-             review_flags.append("official_location_conflict")
+@@ -863,6 +792,12 @@ class AuthorizedSourceExecutor:
  
          email = enrichment.get("email")
          phone = normalize_phone(enrichment.get("phone"))
@@ -962,11 +990,7 @@ index 715ab57..0abcf21 100644
          whatsapp_number = normalize_whatsapp_number(enrichment.get("whatsapp_number") or phone)
          website_description = enrichment.get("description")
          add("email", email, url=field_sources.get("email"))
-         add("phone", phone, url=field_sources.get("phone"))
-         add("whatsapp_number", whatsapp_number, url=field_sources.get("whatsapp_number") or field_sources.get("phone"))
-@@ -901,15 +820,23 @@ class AuthorizedSourceExecutor:
-                 "evidence": evidence,
-                 "review_flags": tuple(review_flags),
+@@ -903,11 +838,19 @@ class AuthorizedSourceExecutor:
              }
          )
  
@@ -987,11 +1011,7 @@ index 715ab57..0abcf21 100644
          if not website_available:
              prepared = prepared.model_copy(update={
                  "review_flags": tuple(dict.fromkeys((*prepared.review_flags, "official_site_missing")))
-             })
- 
-@@ -969,44 +896,44 @@ class AuthorizedSourceExecutor:
-             "brands_found": len(enriched.brands),
-             "official_pages_with_evidence": len({item.source_url for item in official_evidence if item.source_url}),
+@@ -971,40 +914,40 @@ class AuthorizedSourceExecutor:
              "company_summary_created": True,
          }
  
@@ -1051,28 +1071,21 @@ index 715ab57..0abcf21 100644
              "mercantil.com",
              "google.com",
              "google.cl",
-             "facebook.com",
-             "instagram.com",
 diff --git a/app/prospecting/store.py b/app/prospecting/store.py
-index a1f71b7..58a68d9 100644
+index a1f71b7..71103c0 100644
 --- a/app/prospecting/store.py
 +++ b/app/prospecting/store.py
-@@ -64,11 +64,11 @@ class TaskSpec:
- def expand_task_specs(snapshot: ProspectingRunSnapshot) -> list[TaskSpec]:
-     """Expand discovery work. official_website enriches hits; it is not a search source."""
+@@ -66,7 +66,8 @@ def expand_task_specs(snapshot: ProspectingRunSnapshot) -> list[TaskSpec]:
      discovery_sources = tuple(
          source
          for source in snapshot.campaign.sources
 -        if source in {SourceName.google_places, SourceName.brave_search}
 +        if source in {SourceName.google_places, SourceName.brave_search, SourceName.deepseek_web}
++        and (snapshot.discovery_strategy != "google_places_first" or source == SourceName.google_places)
      )
      return [
          TaskSpec(
-             source=source,
-             keyword=keyword,
-@@ -83,11 +83,11 @@ def expand_task_specs(snapshot: ProspectingRunSnapshot) -> list[TaskSpec]:
-         for territory in snapshot.campaign.territories
-     ]
+@@ -85,7 +86,7 @@ def expand_task_specs(snapshot: ProspectingRunSnapshot) -> list[TaskSpec]:
  
  
  def validate_claimed_task(snapshot: ProspectingRunSnapshot, task: ClaimedTask) -> Territory:
@@ -1081,11 +1094,7 @@ index a1f71b7..58a68d9 100644
      if task.source not in discovery_sources or task.source not in snapshot.campaign.sources:
          raise ValueError("claimed task source is outside the run snapshot")
      if task.keyword not in snapshot.campaign.keywords:
-         raise ValueError("claimed task keyword is outside the run snapshot")
-     if task.max_results > snapshot.campaign.max_results_per_task:
-@@ -674,12 +674,13 @@ class SQLWorkerStore:
-                             ),
-                         ),
+@@ -676,8 +677,9 @@ class SQLWorkerStore:
                      )
                      .order_by(
                          case(
@@ -1097,11 +1106,7 @@ index a1f71b7..58a68d9 100644
                              else_=2,
                          ),
                          ProspectingTask.created_at,
-                         ProspectingTask.id,
-                     )
-@@ -1385,12 +1386,13 @@ class MemoryWorkerStore:
-         self, run_id: str, worker_id: str, lease_seconds: int
-     ) -> WorkerTask | None:
+@@ -1387,8 +1389,9 @@ class MemoryWorkerStore:
          now = now_utc()
          async with self._lock:
              source_priority = {
@@ -1113,15 +1118,11 @@ index a1f71b7..58a68d9 100644
              }
              records = sorted(
                  self.runs[run_id].tasks.values(),
-                 key=lambda item: source_priority.get(item.task.source, 2),
-             )
 diff --git a/app/prospecting/worker.py b/app/prospecting/worker.py
-index 439a859..800a674 100644
+index 439a859..1e83f17 100644
 --- a/app/prospecting/worker.py
 +++ b/app/prospecting/worker.py
-@@ -15,38 +15,42 @@ from app.crm.port import (
-     CRMPermanentError,
-     CRMPort,
+@@ -17,9 +17,10 @@ from app.crm.port import (
      CRMRetryableError,
      HeartbeatResult,
  )
@@ -1133,7 +1134,7 @@ index 439a859..800a674 100644
      CompletionReport,
      EventLevel,
      ProspectCandidate,
-     RunEvent,
+@@ -27,9 +28,9 @@ from app.prospecting.contracts import (
      RunStatus,
      SourceName,
  )
@@ -1145,10 +1146,7 @@ index 439a859..800a674 100644
  from app.prospecting.store import (
      OutboxEnvelope,
      TerminalOutboxReplay,
-     WorkerStore,
-     WorkerTask,
- )
- from app.prospecting.validation import (
+@@ -40,11 +41,14 @@ from app.prospecting.validation import (
      sanitize_unsubstantiated_external_fields,
      validate_candidate,
  )
@@ -1164,20 +1162,26 @@ index 439a859..800a674 100644
  @dataclass(frozen=True)
  class WorkerConfig:
      poll_seconds: float = 15
-     lease_seconds: int = 120
-     heartbeat_seconds: float = 30
-@@ -87,11 +91,38 @@ class ProspectingWorker:
-     async def _process_enrichment(self, claim) -> None:
-         try:
+@@ -68,6 +72,7 @@ class ProspectingWorker:
+         self.sources = sources
+         self.worker_id = worker_id or f"worker-{uuid.uuid4()}"
+         self.config = config or WorkerConfig()
++        self._staged_count = 0
+ 
+     async def poll_once(self) -> bool:
+         reconciled_terminal = await self._reconcile_terminal_outbox()
+@@ -89,7 +94,39 @@ class ProspectingWorker:
              enrich = getattr(self.sources, "enrich_existing", None)
              if enrich is None:
                  raise RuntimeError("The configured source executor cannot enrich existing candidates")
 -            candidate, summary = await enrich(claim.candidate, claim.run_id)
-+            if claim.candidate.market_signals.get("deepseek_discovery"):
++            google_hint = bool(claim.candidate.market_signals.get("google_discovery"))
++            if claim.candidate.market_signals.get("deepseek_discovery") or google_hint:
 +                if not claim.snapshot:
 +                    raise RuntimeError("Discovery validation requires the campaign snapshot")
 +                urls = None
-+                if not self.sources._is_official_website_candidate(claim.candidate):
++                report = {}
++                if google_hint or not self.sources._is_official_website_candidate(claim.candidate):
 +                    report = await self.crm.research(claim.run_id, claim.job_id, "validation", claim.lease_token)
 +                    urls = [hit["website"] for hit in report.get("discoveries", []) if isinstance(hit.get("website"), str)]
 +                    if report.get("status") != "applied":
@@ -1186,6 +1190,9 @@ index 439a859..800a674 100644
 +                            raise ResearchDeferred(reason)
 +                        raise RuntimeError("Investigacion pendiente: " + reason)
 +                candidate, summary = await self.sources.validate_discovery(claim.candidate, claim.snapshot, urls)
++                if google_hint:
++                    summary.update({"analysis_version": str(report.get("analysis_version", "")),
++                        "analysis_accepted": bool(report.get("analysis_accepted")), "discovery_provider": "google_places"})
 +            else:
 +                urls = None
 +                if (claim.snapshot and claim.snapshot.deepseek_enabled
@@ -1204,11 +1211,15 @@ index 439a859..800a674 100644
              await self.crm.complete_enrichment(
                  claim,
                  candidate,
-                 summary,
-                 f"enrichment:{claim.job_id}:attempt:{claim.lease_token}:complete",
-@@ -135,11 +166,17 @@ class ProspectingWorker:
-                 if cancel_requested.is_set() or await self.crm.is_cancel_requested(
-                     snapshot.crm_run_id, claim.lease_token
+@@ -118,6 +155,7 @@ class ProspectingWorker:
+ 
+     async def _process_claim(self, claim: ClaimedRun) -> None:
+         snapshot = claim.snapshot
++        self._staged_count = claim.candidates_found
+         local_run_id = await self.store.ensure_run(
+             claim,
+             self.config.task_max_attempts,
+@@ -137,7 +175,13 @@ class ProspectingWorker:
                  ):
                      await self._cancel(local_run_id, claim)
                      return
@@ -1223,11 +1234,16 @@ index 439a859..800a674 100644
                  summary = await self.store.summary(local_run_id)
                  if summary.dead_letters:
                      await self.store.cancel_tasks(local_run_id)
-                     await self._complete(
-                         local_run_id,
-@@ -297,17 +334,25 @@ class ProspectingWorker:
-             if not await self._deliver_outbox(local_run_id, claim):
-                 lease_lost.set()
+@@ -148,7 +192,7 @@ class ProspectingWorker:
+                         extra_stats={"delivery_failed": True},
+                     )
+                     return
+-                if summary.candidates >= snapshot.campaign.max_candidates:
++                if max(summary.candidates, self._staged_count) >= snapshot.campaign.max_candidates:
+                     await self.store.cancel_tasks(local_run_id)
+                     terminal = (
+                         RunStatus.partial
+@@ -299,13 +343,21 @@ class ProspectingWorker:
                  return
              if cancel_requested.is_set():
                  return
@@ -1256,15 +1272,51 @@ index 439a859..800a674 100644
              if search_result is None:
                  return
              if isinstance(search_result, SourceSearchResult):
-                 candidates = list(search_result.candidates)
-                 source_metrics = dict(search_result.metrics)
+@@ -315,6 +367,21 @@ class ProspectingWorker:
+                 candidates = list(search_result)
+                 source_metrics = {}
+ 
++            google_first = task.source == SourceName.google_places and claim.snapshot.discovery_strategy == "google_places_first"
++            discovered_count = len(candidates)
++            staged = 0
++            if google_first:
++                # Persist every bounded Google hint before applying qualification.
++                # Place ID deduplication in CRM makes replay safe after connection loss.
++                for offset in range(0, len(candidates), 100):
++                    report = await self.crm.stage_google(claim.snapshot.crm_run_id, task.id, claim.lease_token,
++                        candidates[offset:offset + 100])
++                    staged += int(report.get("added", 0))
++                    self._staged_count = int(report.get("candidates_found", self._staged_count))
++                source_metrics.update({"google_hints_prepared": discovered_count, "candidates_staged": staged,
++                    "analysis_pending": staged, "qualification_deferred": True})
++                candidates = []
++
+             if task.source == SourceName.brave_search:
+                 novel, google_matches = await self.store.partition_discoveries(
+                     local_run_id, candidates
+@@ -352,7 +419,7 @@ class ProspectingWorker:
+             await self.store.finish_task(
+                 task.id,
+                 self.worker_id,
+-                results=len(saved),
++                results=staged if google_first else len(saved),
+                 rejected=len(candidates) - len(qualified) + limited,
+             )
+             await self.store.save_event(
+@@ -378,7 +445,7 @@ class ProspectingWorker:
+                     ),
+                     metrics={
+                         **source_metrics,
+-                        "results_found": len(candidates),
++                        "results_found": discovered_count if google_first else len(candidates),
+                         "results_qualified": len(qualified),
+                         "results_accepted": len(saved),
+                         "results_discarded": len(candidates) - len(qualified),
 diff --git a/tests/test_authorized_sources.py b/tests/test_authorized_sources.py
 index a2cd64a..2ca3f72 100644
 --- a/tests/test_authorized_sources.py
 +++ b/tests/test_authorized_sources.py
-@@ -658,17 +658,13 @@ async def test_brave_service_area_mention_does_not_prove_business_domicile(monke
-             keywords=("climatización",),
-             sources=(SourceName.brave_search, SourceName.official_website),
+@@ -660,13 +660,9 @@ async def test_brave_service_area_mention_does_not_prove_business_domicile(monke
          ),
      )
  
@@ -1281,8 +1333,6 @@ index a2cd64a..2ca3f72 100644
  
  
  @pytest.mark.asyncio
- async def test_post_enrichment_never_uses_brave_to_find_a_missing_site(monkeypatch) -> None:
-     executor = AuthorizedSourceExecutor()
 diff --git a/tests/test_deepseek_discovery.py b/tests/test_deepseek_discovery.py
 new file mode 100644
 index 0000000..aaaaa4b
@@ -1459,22 +1509,131 @@ index 0000000..aaaaa4b
 +    claimed = await port.claim_enrichment("worker")
 +    assert claimed.snapshot == snapshot
 +    assert claimed.candidate.market_signals["deepseek_discovery"]
+diff --git a/tests/test_google_first.py b/tests/test_google_first.py
+new file mode 100644
+index 0000000..23205cc
+--- /dev/null
++++ b/tests/test_google_first.py
+@@ -0,0 +1,107 @@
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import pytest
++
++from app.crm.fake import FakeCRMPort
++from app.prospecting.contracts import ProspectCandidate, ProspectLocation, SourceName
++from app.prospecting.discovery_validation import validate_discovery
++from app.prospecting.sources import AuthorizedSourceExecutor, StaticSourceExecutor
++from app.prospecting.store import MemoryWorkerStore, expand_task_specs, WorkerTask
++from app.prospecting.worker import ProspectingWorker
++from tests.test_native_research import snapshot
++
++
++def scope():
++    return snapshot().model_copy(update={"discovery_strategy": "google_places_first"})
++
++
++@pytest.mark.asyncio
++async def test_google_hints_are_staged_before_contact_quality_and_not_lost_at_task_limit(monkeypatch):
++    crm, store = FakeCRMPort(), MemoryWorkerStore()
++    seeds = [ProspectCandidate(name=f"Empresa {i}", location=ProspectLocation(),
++        provider_ids={"google_places": f"place{i}"}) for i in range(35)]
++    source = StaticSourceExecutor(seeds)
++    calls = []
++    async def stage(run_id, task_id, lease_token, candidates):
++        calls.append(candidates)
++        return {"added": 35 if len(calls) == 1 else 0, "candidates_found": 35}
++    monkeypatch.setattr(crm, "stage_google", stage, raising=False)
++    monkeypatch.setattr(crm, "research", AsyncMock(side_effect=AssertionError("No DeepSeek discovery")), raising=False)
++    await crm.enqueue(scope())
++    assert len(expand_task_specs(scope())) == 2
++    assert all(t.source == SourceName.google_places for t in expand_task_specs(scope()))
++    await ProspectingWorker(crm, store, source).poll_once()
++    assert len(calls) == 2 and all(len(batch) == 35 for batch in calls)
++    remote = await crm.inspect_run("run")
++    events = [e for e in remote.events if e.stage == "task_completed"]
++    assert sum(e.metrics["candidates_staged"] for e in events) == 35
++    assert all(e.metrics["results_accepted"] == 0 for e in events)
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize("accepted", [True, False])
++async def test_every_google_hint_is_analyzed_even_with_official_website(monkeypatch, accepted):
++    crm, source = FakeCRMPort(), StaticSourceExecutor([])
++    seed = ProspectCandidate(name="Clima Andes", website="https://climaandes.cl", location=ProspectLocation(),
++        market_signals={"google_discovery": True})
++    job = SimpleNamespace(candidate=seed, snapshot=scope(), run_id="run", job_id="job", lease_token="lease")
++    source._is_official_website_candidate = lambda _: True
++    source.validate_discovery = AsyncMock(return_value=(seed, {}))
++    urls = [seed.website] if accepted else []
++    monkeypatch.setattr(crm, "research", AsyncMock(return_value={"status": "applied", "analysis_version": "climactiva-google-v1",
++        "analysis_accepted": accepted, "discoveries": [{"website": url} for url in urls]}), raising=False)
++    monkeypatch.setattr(crm, "complete_enrichment", AsyncMock())
++    await ProspectingWorker(crm, MemoryWorkerStore(), source)._process_enrichment(job)
++    crm.research.assert_awaited_once()
++    source.validate_discovery.assert_awaited_once_with(seed, job.snapshot, urls)
++    assert crm.complete_enrichment.call_args.args[2]["analysis_accepted"] == accepted
++
++
++@pytest.mark.asyncio
++async def test_empty_analysis_never_falls_back_to_unapproved_original_website():
++    executor = AuthorizedSourceExecutor()
++    executor._enrich_official_website = AsyncMock(side_effect=AssertionError("No crawl without accepted analysis"))
++    seed = ProspectCandidate(name="Clima Andes", website="https://climaandes.cl", location=ProspectLocation(), market_signals={"google_discovery": True})
++    candidate, summary = await validate_discovery(executor, seed, scope(), [])
++    assert not candidate.import_eligible
++    assert summary["official_pages_verified"] == 0
++
++
++@pytest.mark.asyncio
++async def test_five_google_queries_all_pages_and_no_inline_crawl(monkeypatch):
++    calls = []
++    address = [{"types": ["administrative_area_level_1"], "longText": "Region Metropolitana de Santiago"},
++        {"types": ["administrative_area_level_3"], "longText": "Santiago"},
++        {"types": ["country"], "shortText": "CL", "longText": "Chile"}]
++    class Google:
++        async def text_search_page(self, query, *, max_results, page_token):
++            calls.append((query, max_results, page_token))
++            page = int(page_token or "1")
++            return SimpleNamespace(places=[{"id": f"place{page}", "displayName": {"text": f"Empresa {page}"},
++                "addressComponents": address, "formattedAddress": "Santiago, Chile", "types": ["store"]}],
++                next_page_token=str(page + 1) if page < 3 else None)
++        async def get_place_details(self, place_id):
++            return None
++    monkeypatch.setattr("app.prospecting.sources.GooglePlacesClient", Google)
++    executor = AuthorizedSourceExecutor()
++    executor.settings = executor.settings.model_copy(update={"google_places_queries_per_task": 1})
++    executor.budget = SimpleNamespace(reserve=AsyncMock(return_value=SimpleNamespace(allowed=True, alert=False,
++        run_spend_usd=0, daily_spend_usd=0, monthly_spend_usd=0)), complete=AsyncMock())
++    executor._enrich_official_website = AsyncMock(side_effect=AssertionError("Must stage first"))
++    task = WorkerTask(id="task", run_id="run", source=SourceName.google_places, keyword="climatizacion",
++        region_code="13", region_name="Metropolitana", comuna_code="13101", comuna_name="Santiago",
++        max_results=1, attempt_count=1, max_attempts=3)
++    result = await executor.search(task, scope())
++    assert len(set(c[0] for c in calls)) == 5
++    assert len(calls) == 15
++    assert all(c[1] == 20 and "Chile" in c[0] for c in calls)
++    assert len(result.candidates) == 3
++    assert result.metrics["raw_results"] == 15
++    assert result.metrics["unique_results"] == 3
++
++
++def test_google_country_rejects_foreign_addresses_even_when_names_match_chile():
++    from app.prospecting.sources import _foreign_google_country
++    assert _foreign_google_country({"addressComponents": [{"types": ["country"], "shortText": "AR"}]})
++    assert not _foreign_google_country({"addressComponents": [{"types": ["country"], "shortText": "CL"}]})
 diff --git a/tests/test_integration_monitor.py b/tests/test_integration_monitor.py
 index 4db2e2f..8e65b46 100644
 --- a/tests/test_integration_monitor.py
 +++ b/tests/test_integration_monitor.py
-@@ -1,7 +1,8 @@
+@@ -1,5 +1,6 @@
  from types import SimpleNamespace
  
 +import httpx
  import pytest
  
  from app.integrations.monitor import IntegrationMonitor
- 
- 
-@@ -11,66 +12,18 @@ class RecordingCRM:
- 
-     async def report_integration_status(self, **payload):
+@@ -13,64 +14,16 @@ class RecordingCRM:
          self.reported.append(payload)
  
  
@@ -1795,15 +1954,9 @@ diff --git a/tests/test_secure_web_scraper.py b/tests/test_secure_web_scraper.py
 index 22b97b7..1a5063f 100644
 --- a/tests/test_secure_web_scraper.py
 +++ b/tests/test_secure_web_scraper.py
-@@ -170,10 +170,11 @@ async def test_enrichment_reads_structured_identity_and_address_from_contact_pag
-         {
-             "address": "Av. Apoquindo 123",
-             "comuna_name": "Las Condes",
+@@ -173,4 +173,5 @@ async def test_enrichment_reads_structured_identity_and_address_from_contact_pag
              "region_name": "Región Metropolitana de Santiago",
              "source_url": "https://climaandes.cl/contacto",
 +            "country_code": None,
          }
      ]
- 
- 
- @pytest.mark.asyncio

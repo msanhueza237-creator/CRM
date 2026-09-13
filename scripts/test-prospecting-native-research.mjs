@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import ts from "typescript";
-import { executeResearch, parseResearch, selectBusinesses, businessSiteIssue, discoveryIdentity, RESEARCH_MODEL } from "../supabase/functions/crm-agent/prospecting-research.ts";
+import { executeResearch, parseResearch, selectBusinesses, businessSiteIssue, discoveryIdentity, RESEARCH_MODEL, RESEARCH_CAPABILITY } from "../supabase/functions/crm-agent/prospecting-research.ts";
 import { encryptApiKey } from "../supabase/functions/prospecting-integrations/deepseek.ts";
 
 const secret = "fixture-master-secret-at-least-32-characters", key = "sk-fixture-not-real-do-not-send";
@@ -27,7 +27,7 @@ test("API claim rejects old workers before assigning a run and stages candidates
     readJsonObject: request => request.json(), requiredString: value => value,
     boundedInteger: (value, _min, _max, fallback) => value ?? fallback,
     asObject: value => value && typeof value === "object" ? value : {},
-    RequestValidationError: Error, RESEARCH_CAPABILITY: "deepseek_research_v3",
+    RequestValidationError: Error, RESEARCH_CAPABILITY,
   });
   const calls = [], run = { id: "run", snapshot: { campaign: { sources: ["deepseek_web"] } }, candidates_found: 0 };
   const supabase = { rpc: async name => {
@@ -37,7 +37,8 @@ test("API claim rejects old workers before assigning a run and stages candidates
   const request = capabilities => ({ req: new Request("https://fixture/claim", { method: "POST", body: JSON.stringify({ worker_id: "worker", capabilities }) }), supabase });
   await assert.rejects(route(request(["deepseek_candidates_v2"]), { key_id: "key" }, ["claim"]), /Actualiza el worker/);
   assert.equal(calls.length, 0);
-  const result = await route(request(["deepseek_research_v3"]), { key_id: "key" }, ["claim"]);
+  await assert.rejects(route(request(["deepseek_research_v3"]), { key_id: "key" }, ["claim"]), /Actualiza el worker/);
+  const result = await route(request([RESEARCH_CAPABILITY]), { key_id: "key" }, ["claim"]);
   assert.deepEqual(calls, ["claim_prospecting_run", "stage_prospecting_discoveries"]);
   assert.equal(result.body.candidates_found, 19);
   assert.equal(result.body.snapshot.brave_disabled, true);
@@ -87,6 +88,29 @@ test("service businesses are discovered when requested, but do not widen a store
   const hits = parseResearch(payload, "t").discoveries;
   assert.equal(selectBusinesses(payload, hits, ["tienda comercial", "tecnico"], []).discoveries.length, 1);
   assert.equal(selectBusinesses(payload, hits, ["tienda comercial"], []).discoveries.length, 0);
+});
+
+test("Google candidate analysis keeps its own previously discovered site and returns a grounded fit decision", async () => {
+  const website="https://climaandes.cl/";
+  const report=await executeResearch({secret,
+    reserve:async()=>({reservation_token:"fixture",kind:"validation",operation_id:"job",previous_sites:[website],
+      candidate:{name:"Clima Andes",website,location:{comuna_name:"Santiago"}},
+      snapshot:{campaign:{target_types:["tecnico"],territories:[{comuna_name:"Santiago"}]}}}),
+    credentials:async()=>({status:"verified",models:[RESEARCH_MODEL],api_key_encrypted:await encryptApiKey(key,secret)}),
+    finish:async(_,report)=>report,
+    send:async(url,init)=>{
+      if(url.endsWith("/balance")) return json(balance());
+      const request=JSON.parse(init.body);
+      assert.equal(request.tools[0].max_uses,2);
+      assert.match(request.system,/Analiza y clasifica UNICAMENTE/);
+      assert.equal(JSON.parse(request.messages[0].content).discovery_location.comuna_name,"Santiago");
+      const payload=body([hit(website)]);
+      payload.content.at(-1).text=JSON.stringify({businesses:[{name:"Clima Andes",source_url:website,country_code:"CL",is_business:true,in_requested_territory:true,target_type:"tecnico",activity:"Instalacion y mantencion de aire acondicionado"}]});
+      return json(payload);
+    }});
+  assert.equal(report.analysis_version,"climactiva-google-v1");
+  assert.equal(report.analysis_accepted,true);
+  assert.equal(report.discoveries[0].website,website);
 });
 
 test("social business identities stay separate; untrusted text and private URLs never become candidates", () => {
@@ -141,6 +165,8 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     await db.exec(await sql("prospecting_native_research"));
     await db.exec(await sql("prospecting_quality_pause"));
     await db.exec(await sql("prospecting_quality_pause"));
+    await db.exec(await sql("prospecting_google_first"));
+    await db.exec(await sql("prospecting_google_first"));
     const config = (await db.query("select sources,deepseek_enabled from prospecting_campaigns where id=$1", [campaign])).rows[0];
     assert.ok(config.sources.includes("deepseek_web") && !config.sources.includes("brave_search"));
     assert.equal(config.deepseek_enabled, true);
@@ -223,6 +249,42 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     await db.exec("set role authenticated");
     await assert.rejects(db.query("select * from prospecting_research_requests"), /permission denied/);
     await assert.rejects(reserve(tasks[0].id), /permission denied/);
+    await db.exec("reset role");
+
+    // A new mixed-source campaign discovers only through Google, without rewriting old runs.
+    const googleCampaign = (await db.query(`insert into prospecting_campaigns(name,keywords,sources,region_codes,comuna_codes,candidate_limit,created_by)
+      values('Google HVAC',array['clima','frio'],array['google_places','deepseek_web','official_website'],array['13'],array['13101'],1000,$1) returning id`, [uid])).rows[0].id;
+    const googleRun = (await db.query("select enqueue_prospecting_run($1,$2) result", [googleCampaign,uid])).rows[0].result;
+    assert.equal(googleRun.total_tasks, 2);
+    assert.equal(googleRun.snapshot.discovery_strategy, "google_places_first");
+    assert.deepEqual((await db.query("select distinct source from prospecting_tasks where run_id=$1",[googleRun.id])).rows, [{source:"google_places"}]);
+    const googleClaim = (await db.query("select claim_prospecting_run($1,'google-worker',300) result",[api])).rows[0].result;
+    assert.equal(googleClaim.run.id,googleRun.id);
+    const googleTask = (await db.query("select id from prospecting_tasks where run_id=$1 limit 1",[googleRun.id])).rows[0].id;
+    const hint = {name:"Clima Andes",provider_ids:{google_places:"place-123"},website:"https://climaandes.cl",location,
+      evidence:[{provider:"google_places",provider_record_id:"place-123",field:"name",value:"Clima Andes",observed_at:new Date().toISOString()}]};
+    const stage = async (hints, token=googleClaim.lease_token) => (await db.query("select stage_google_prospecting_candidates($1,$2,$3,'google-worker',$4,$5::jsonb) result",[googleRun.id,googleTask,api,token,JSON.stringify(hints)])).rows[0].result;
+    await assert.rejects(stage([hint],api),/Invalid Google discovery lease/);
+    await assert.rejects(stage([{...hint,location:{...location,country_code:"AR"}}]),/task territory/);
+    assert.equal((await stage([hint])).added,1);
+    assert.equal((await stage([hint])).added,0);
+    const googleRelation = (await db.query("select * from prospecting_campaign_candidates where run_id=$1",[googleRun.id])).rows[0];
+    assert.equal(googleRelation.discovery_origin.provider,"google_places");
+    assert.equal(googleRelation.discovery_origin.website,undefined);
+    assert.equal(googleRelation.candidate_snapshot.import_eligible,false);
+    assert.equal((await db.query("select count(*)::int n from prospect_enrichment_jobs where run_id=$1",[googleRun.id])).rows[0].n,1);
+    assert.equal((await db.query("select count(*)::int n from prospect_source_records where run_id=$1 and retention_until<=now()+interval '30 days'",[googleRun.id])).rows[0].n,1);
+    const googleJob = (await db.query("select claim_prospect_enrichment($1,'google-worker',300) result",[api])).rows[0].result.job;
+    assert.equal(googleJob.candidate_relation_id,googleRelation.id);
+    const promote = () => db.query("update prospecting_campaign_candidates set enrichment_status='completed',candidate_snapshot=$2::jsonb,enrichment_summary=$3::jsonb where id=$1 returning discovery_status",[googleRelation.id,JSON.stringify(valid),JSON.stringify({validation_version:"public-web-v4",official_pages_verified:1})]);
+    await assert.rejects(promote(),/require DeepSeek analysis/);
+    await db.query(`insert into prospecting_research_requests(run_id,operation_id,kind,completed_at,report)
+      values($1,$2,'validation',now(),'{"status":"applied","analysis_version":"climactiva-google-v1","analysis_accepted":false}')`,[googleRun.id,googleJob.id]);
+    await assert.rejects(promote(),/did not confirm/);
+    await db.query("update prospecting_research_requests set report=report||'{\"analysis_accepted\":true}'::jsonb where operation_id=$1",[googleJob.id]);
+    assert.equal((await promote()).rows[0].discovery_status,"validated");
+    await db.exec("set role authenticated");
+    await assert.rejects(stage([hint]),/permission denied/);
     await db.exec("reset role");
   } finally { await db.close(); }
 });

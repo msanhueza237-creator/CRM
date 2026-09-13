@@ -1486,7 +1486,8 @@ async function handleProspectingEnrichmentRoute(
       if (error) return rpcErrorResult(error);
       const result = asObject(data);
       const job = asObject(result.job);
-      if (job.run_id && asObject(asObject(result.candidate).market_signals).deepseek_discovery === true) {
+      const signals = asObject(asObject(result.candidate).market_signals);
+      if (job.run_id && (signals.deepseek_discovery === true || signals.google_discovery === true)) {
         const { data: run, error: runError } = await context.supabase.from("prospecting_runs")
           .select("snapshot").eq("id", job.run_id).single();
         if (runError) return rpcErrorResult(runError);
@@ -1616,6 +1617,22 @@ async function handleProspectingRoute(
   }
 
   if (!isUuid(runId)) return json({ error: "Invalid prospecting run id" }, 400);
+
+  if (req.method === "POST" && action === "google-discoveries" && routeParts.length === 2) {
+    const payload = await readJsonObject(req);
+    return withProspectingIdempotency(context, validation, `${runId}/google-discoveries`, payload, async () => {
+      const lease = readLeasePayload(payload);
+      if (!isUuid(String(payload.task_id ?? ""))) throw new RequestValidationError("Invalid Google task");
+      const candidates = requireBatch(payload.candidates, "candidates");
+      validateCandidateBatch(candidates);
+      const { data, error } = await context.supabase.rpc("stage_google_prospecting_candidates", {
+        p_run_id: runId, p_task_id: payload.task_id, p_api_key_id: validation.key_id,
+        p_worker_id: lease.workerId, p_lease_token: lease.leaseToken, p_candidates: candidates,
+      });
+      if (error) return rpcErrorResult(error);
+      return { body: asObject(data) };
+    });
+  }
 
   if (req.method === "POST" && action === "research" && routeParts.length === 2) {
     const payload = await readJsonObject(req);

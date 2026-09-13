@@ -100,7 +100,8 @@ begin
   end if;
 
   v_task_count := cardinality(v_comuna_codes) * cardinality(v_campaign.keywords)
-    * (select count(*) from unnest(v_campaign.sources) s where s in ('google_places','deepseek_web'));
+    * (select count(*) from unnest(v_campaign.sources) s where s = 'google_places'
+       or (s = 'deepseek_web' and not ('google_places' = any(v_campaign.sources))));
   if v_task_count = 0 then
     raise exception using errcode = '22023', message = 'Campaign requires google_places or deepseek_web as discovery source';
   end if;
@@ -124,6 +125,8 @@ begin
     'schema_version', '1.0',
     'crm_run_id', v_run_id,
     'campaign_version', v_campaign.version,
+    'discovery_strategy', case when 'google_places'=any(v_campaign.sources) and v_campaign.deepseek_enabled
+      then 'google_places_first' else 'legacy' end,
     'campaign', jsonb_build_object(
       'crm_campaign_id', v_campaign.id,
       'name', v_campaign.name,
@@ -161,7 +164,7 @@ begin
   cross join unnest(v_campaign.keywords) keyword
   cross join public.geo_comunas c
   where c.code = any(v_comuna_codes)
-    and source in ('google_places','deepseek_web');
+    and (source='google_places' or (source='deepseek_web' and not ('google_places'=any(v_campaign.sources))));
 
   update public.prospecting_campaigns
   set status = 'active', updated_by = v_requester

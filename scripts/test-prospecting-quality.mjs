@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { candidateQuality } from "../src/modules/prospecting/prospectingQuality.ts";
+import { candidateQuality, candidateCounts, candidateReviewBucket } from "../src/modules/prospecting/prospectingQuality.ts";
 import { readAllRecords } from "../src/lib/readAllRecords.ts";
 import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE, DEFAULT_PROSPECTING_KEYWORDS } from "../src/modules/prospecting/prospectingCommercialProfile.ts";
 import { readFile } from "node:fs/promises";
@@ -31,6 +31,17 @@ test("contactable list requires identity, activity, territory and business conta
     assert.equal(candidateQuality({ ...candidate(), ...changes }), "pending");
   for (const changes of [{ phone: "+5492915666646" }, { website: "https://extremominero.com.ar" }, { reviewFlags: ["official_identity_conflict"] }, { reviewFlags: ["outside_target_types"] }])
     assert.equal(candidateQuality({ ...candidate(), ...changes }), "outside");
+});
+
+test("the review counters partition all 11 discoveries and never count approved rows as waiting", () => {
+  const rows = [
+    ...Array.from({length:3},()=>({...candidate(),reviewStatus:"pending"})),
+    ...Array.from({length:5},()=>({...candidate(),reviewStatus:"pending",importEligible:false})),
+    {...candidate(),reviewStatus:"pending",phone:"+5492915666646"},
+    {...candidate(),reviewStatus:"approved"}, {...candidate(),reviewStatus:"linked"},
+  ];
+  assert.deepEqual(candidateCounts(rows),{total:11,contactable:3,pending:5,outside:1,reviewed:2,rejected:0});
+  assert.equal(rows.filter(c=>candidateReviewBucket(c)==="contactable").length,3);
 });
 
 test("all evidence pages are read, even beyond the default 1000-row API cap", async () => {

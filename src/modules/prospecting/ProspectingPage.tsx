@@ -59,7 +59,7 @@ import {
 } from "./prospectingRepository";
 import { HistoricalBaseView } from "./HistoricalBaseView";
 import { DeepSeekSettings } from "./DeepSeekSettings";
-import { candidateQuality, hasVerifiedContact, qualityLabels } from "./prospectingQuality";
+import { candidateQuality, candidateCounts, candidateReviewBucket, hasVerifiedContact, qualityLabels } from "./prospectingQuality";
 import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE } from "./prospectingCommercialProfile";
 import "./prospectingAssistance.css";
 
@@ -97,6 +97,11 @@ const IDENTITY_CONFLICT_FLAGS = new Set([
   "conflicting_exact_company_identifiers",
 ]);
 
+function CandidateCountSummary({ candidates }: { candidates: ProspectCandidate[] }) {
+  const counts = candidateCounts(candidates);
+  return <span>{counts.contactable} contactables por revisar · {counts.pending} por verificar · {counts.outside} fuera de alcance{counts.reviewed ? ` · ${counts.reviewed} aprobados/vinculados` : ""}{counts.rejected ? ` · ${counts.rejected} rechazados` : ""}</span>;
+}
+
 function hasIdentityConflict(candidate: ProspectCandidate) {
   return candidate.reviewFlags.some((flag) => IDENTITY_CONFLICT_FLAGS.has(flag));
 }
@@ -133,7 +138,7 @@ export function ProspectingPage() {
   const [selectedRunId, setSelectedRunId] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [candidateQuery, setCandidateQuery] = useState("");
-  const [candidateStatus, setCandidateStatus] = useState<CandidateStatusFilter>("contactable");
+  const [candidateStatus, setCandidateStatus] = useState<CandidateStatusFilter>("all");
   const [candidateSource, setCandidateSource] = useState<ProspectingSource | "all">("all");
   const [candidateComuna, setCandidateComuna] = useState("all");
   const [companyToLink, setCompanyToLink] = useState("");
@@ -246,15 +251,15 @@ export function ProspectingPage() {
     return campaignCandidates
       .filter((candidate) =>
         candidateStatus === "all"
-        || (candidateStatus === "contactable" && candidateQuality(candidate) === "contactable" && !["rejected", "approved", "linked"].includes(candidate.reviewStatus))
-        || (candidateStatus === "investigating" && candidateQuality(candidate) === "pending")
-        || (candidateStatus === "outside" && candidateQuality(candidate) === "outside")
+        || (candidateStatus === "contactable" && candidateReviewBucket(candidate) === "contactable")
+        || (candidateStatus === "investigating" && candidateReviewBucket(candidate) === "pending")
+        || (candidateStatus === "outside" && candidateReviewBucket(candidate) === "outside")
         || (candidateStatus === "active" && ["pending", "possible_duplicate"].includes(candidate.reviewStatus))
         || candidate.reviewStatus === candidateStatus,
       )
       .filter(
         (candidate) =>
-          candidateSource === "all" || (candidateSource === "deepseek_web" && Boolean(candidate.discoveryUrl)) || candidate.evidence.some((evidence) => evidence.source === candidateSource),
+          candidateSource === "all" || candidate.discoveryProvider === candidateSource || candidate.evidence.some((evidence) => evidence.source === candidateSource),
       )
       .filter(
         (candidate) =>
@@ -704,7 +709,7 @@ export function ProspectingPage() {
           onControlEnrichment={(run, action) => void controlEnrichment(run, action)}
           onOpenCandidates={() => {
             setCandidateQuery("");
-            setCandidateStatus("contactable");
+            setCandidateStatus("all");
             setCandidateSource("all");
             setCandidateComuna("all");
             setTab("candidates");
@@ -822,7 +827,7 @@ function CampaignForm({
     [comunas, regions, selection],
   );
   const selectedComunaCount = selectedTerritories.reduce((total, territory) => total + territory.comunaCodes.length, 0);
-  const discoverySourceCount = sources.filter(
+  const discoverySourceCount = sources.includes("google_places") ? 1 : sources.filter(
     (source) => SOURCE_DEFINITIONS.find((definition) => definition.id === source)?.discovery,
   ).length;
   const estimatedTasks = selectedComunaCount * keywords.length * discoverySourceCount;
@@ -1005,7 +1010,7 @@ function CampaignForm({
             Radar de mercado
           </label>
         </div>
-        {searchMode === "market_radar" ? <div className="source-contract-message info" role="status"><Sparkles size={17} /><span><strong>Descubrimiento amplio activado</strong>DeepSeek Pro investigará distribuidores, mayoristas, importadores, tiendas, catálogos y marcas a nivel regional y nacional. Google Places validará ubicación y el sitio oficial completará la investigación.</span></div> : null}
+        {searchMode === "market_radar" ? <div className="source-contract-message info" role="status"><Sparkles size={17} /><span><strong>Radar comercial HVAC</strong>Google Places: descubrimiento territorial. DeepSeek Pro: análisis comercial y evidencia pública.</span></div> : null}
       </div>
 
       <div className="prospecting-form-section">
@@ -1096,14 +1101,14 @@ function CampaignForm({
         <div className="prospecting-section-heading">
           <div>
             <strong>3. Fuentes autorizadas</strong>
-            <span>Descubrimiento web y validación de contacto y domicilio.</span>
+            <span>Google Places: descubrimiento · DeepSeek: análisis · sitio oficial: evidencia</span>
           </div>
         </div>
         <label className={`prospecting-ai-option ${deepseekEnabled ? "selected" : ""}`}>
           <input type="checkbox" checked={deepseekEnabled} disabled={!liveMode || saving}
             onChange={event => { setDeepseekEnabled(event.target.checked); setSources(current => event.target.checked ? [...new Set<ProspectingSource>([...current, "deepseek_web", "official_website"])] : current.filter(source => source !== "deepseek_web")); }} />
           <Sparkles size={20} />
-          <span><strong>DeepSeek Pro</strong><small>{liveMode ? "Empresas y sitios nuevos · enriquecimiento desde su web oficial" : "No disponible en demo"}</small><small>Web, Instagram y Facebook públicos · hasta 12 etapas por ejecución · 20 solicitudes al día</small></span>
+          <span><strong>DeepSeek Pro · analista Climactiva</strong><small>{liveMode ? "Actividad HVAC, territorio y potencial comercial" : "No disponible en demo"}</small><small>Hasta 20 análisis por ejecución · máximo compartido de 20 solicitudes al día</small></span>
         </label>
         <div className="source-grid">
           {SOURCE_DEFINITIONS.filter(source => source.id !== "deepseek_web").map((source) => {
@@ -1174,7 +1179,7 @@ function CampaignForm({
 
       <div className="prospecting-estimate">
         <Sparkles size={20} />
-        <div><strong>Estimación antes de iniciar</strong><span>{estimatedTasks.toLocaleString("es-CL")} tareas de descubrimiento · hasta {estimatedCandidates.toLocaleString("es-CL")} resultados brutos · tope final {maxCandidates.toLocaleString("es-CL")} candidatos</span></div>
+        <div><strong>Alcance planificado</strong><span>{estimatedTasks.toLocaleString("es-CL")} tareas de descubrimiento · tope {maxCandidates.toLocaleString("es-CL")} hallazgos. {sources.includes("google_places") && deepseekEnabled ? "Mínimo 5 consultas por tarea y hasta 3 páginas por consulta, sujeto al presupuesto y disponibilidad de Google." : `Hasta ${estimatedCandidates.toLocaleString("es-CL")} resultados.`}</span></div>
         <div className="estimate-providers">
           {sources.filter((source) => SOURCE_DEFINITIONS.find((definition) => definition.id === source)?.discovery).map((source) => (
             <span key={source}>{sourceName(source)}: {selectedComunaCount * keywords.length} consultas</span>
@@ -1238,7 +1243,7 @@ function CampaignsView({
       <div className="prospecting-overview-grid">
         <MetricCard icon={<ListChecks size={20} />} label="Campañas" value={campaigns.length} detail="Definiciones reutilizables" />
         <MetricCard icon={<Clock3 size={20} />} label="Ejecuciones activas" value={runs.filter((run) => ["pending", "running", "cancel_requested"].includes(run.status)).length} detail="Pendientes o en proceso" />
-        <MetricCard icon={<Building2 size={20} />} label="Contactables" value={candidates.filter((candidate) => candidateQuality(candidate) === "contactable" && ["pending", "possible_duplicate"].includes(candidate.reviewStatus)).length} detail="Contacto y actividad comprobados" />
+        <MetricCard icon={<Building2 size={20} />} label="Contactables por revisar" value={candidateCounts(candidates).contactable} detail="Contacto y actividad comprobados" />
         <MetricCard icon={<CheckCircle2 size={20} />} label="Aprobados" value={candidates.filter((candidate) => ["approved", "linked"].includes(candidate.reviewStatus)).length} detail="Creados o vinculados" />
       </div>
 
@@ -1348,6 +1353,7 @@ function CampaignsView({
 }
 
 function assistanceLabel(run: ProspectingRun) {
+  if (run.snapshot.discoveryStrategy === "google_places_first") return "Google Places descubre · DeepSeek analiza";
   const status = run.searchAssistance?.status ?? (run.snapshot.deepseekEnabled ? "pending" : "disabled");
   if (status === "applied" && !["web_discovery_v1", "native_research_v3"].includes(run.searchAssistance?.mode ?? "")) return "Preparación de términos (versión anterior)";
   if (status === "applied" && run.searchAssistance?.mode === "web_discovery_v1") return "DeepSeek Web · búsqueda histórica";
@@ -1476,7 +1482,7 @@ function OperationView({
         <MetricCard icon={<ListChecks size={20} />} label="Tareas totales" value={selectedRun.progress.totalTasks} detail="Fuente × keyword × comuna" />
         <MetricCard icon={<CheckCircle2 size={20} />} label="Completadas" value={selectedRun.progress.completedTasks} detail={`${successPercent}% de tareas procesadas sin error`} />
         <MetricCard icon={<AlertTriangle size={20} />} label="Con error" value={selectedRun.progress.failedTasks} detail="Con reintento o incidencia" />
-        <MetricCard icon={<Building2 size={20} />} label="Candidatos" value={selectedRun.progress.candidatesFound} detail="Antes de revisión humana" />
+        <MetricCard icon={<Building2 size={20} />} label="Hallazgos guardados" value={candidates.filter(c => c.runId === selectedRun.id).length} detail="Incluye pendientes y fuera de alcance" />
       </div>
 
       <div className="two-column operation-columns">
@@ -1490,6 +1496,13 @@ function OperationView({
           </dl>
           <section className="prospecting-assistance" aria-label="Asistencia de búsqueda">
             <div className="prospecting-assistance-heading"><Sparkles size={19} /><h3>{assistanceLabel(selectedRun)}</h3></div>
+            {selectedRun.snapshot.discoveryStrategy === "google_places_first" ? <>
+              <dl className="deepseek-result-totals">
+                <div><dt>Hallazgos Google guardados</dt><dd>{candidates.filter(c => c.runId === selectedRun.id && c.discoveryProvider === "google_places").length}</dd></div>
+                <div><dt>Analizados por DeepSeek</dt><dd>{candidates.filter(c => c.runId === selectedRun.id && c.enrichmentSummary.analysis_version === "climactiva-google-v1").length}</dd></div>
+              </dl>
+              <CandidateCountSummary candidates={candidates.filter(c => c.runId === selectedRun.id)} />
+            </> : null}
             {["web_discovery_v1", "native_research_v3"].includes(selectedRun.searchAssistance?.mode ?? "") && selectedRun.searchAssistance && selectedRun.searchAssistance.status === "applied" ? <dl className="deepseek-result-totals"><div><dt>Sitios descubiertos</dt><dd>{selectedRun.searchAssistance.discoveredWebsites}</dd></div><div><dt>Consultas web</dt><dd>{selectedRun.searchAssistance.webRequests}</dd></div><div><dt>Hallazgos de todas las fuentes</dt><dd>{selectedRun.progress.candidatesFound}</dd></div><div><dt>Empresas contactables verificadas</dt><dd>{candidates.filter(c => c.runId === selectedRun.id && candidateQuality(c) === "contactable").length}</dd></div></dl> : null}
             {selectedRun.searchAssistance?.reasonCode ? <p role="status">{assistanceReason(selectedRun.searchAssistance.reasonCode)}</p> : null}
             {selectedRun.searchAssistance?.mode === "native_research_v3" ? <dl className="deepseek-result-totals"><div><dt>Tokens de búsqueda</dt><dd>{selectedRun.searchAssistance.tokens?.toLocaleString("es-CL") ?? "Sin dato"}</dd></div><div><dt>Saldo al terminar búsqueda</dt><dd>{selectedRun.searchAssistance.balanceUsd == null ? "Sin dato" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "USD" }).format(selectedRun.searchAssistance.balanceUsd)}</dd></div></dl> : null}
@@ -1600,7 +1613,7 @@ function CandidatesView({
       <div className="panel candidate-filters">
         <label className="search-field"><Search size={18} /><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Empresa, RUT, contacto o actividad" /></label>
         <label className="select-field">Ejecución<select value={selectedRun.id} onChange={(event) => onSelectRun(event.target.value)}>{runs.map((run, index) => <option key={run.id} value={run.id}>Run #{runs.length - index} · {runLabels[run.status]}</option>)}</select></label>
-        <label className="select-field">Estado<select value={status} onChange={(event) => onStatus(event.target.value as CandidateStatusFilter)}><option value="contactable">Contactables</option><option value="investigating">Por verificar</option><option value="outside">Fuera de alcance</option><option value="active">Por revisar (todos)</option><option value="all">Todos (incluye descartados)</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="select-field">Estado<select value={status} onChange={(event) => onStatus(event.target.value as CandidateStatusFilter)}><option value="all">Todos</option><option value="contactable">Contactables</option><option value="investigating">Por verificar</option><option value="outside">Fuera de alcance</option><option value="active">Por revisar</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="select-field">Fuente<select value={source} onChange={(event) => onSource(event.target.value as ProspectingSource | "all")}><option value="all">Todas</option>{SOURCE_DEFINITIONS.filter((item) => !item.disabled).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="select-field">Comuna<select value={comuna} onChange={(event) => onComuna(event.target.value)}><option value="all">Todas</option>{comunas.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <span className="filter-result"><Filter size={16} /> {candidates.length} de {totalCandidates}</span>
@@ -1608,14 +1621,14 @@ function CandidatesView({
 
       <div className="candidate-workbench">
         <div className="panel candidate-list-panel">
-          <div className="panel-heading"><div><h2>Bandeja de revisión</h2><span>{allCandidates.filter(c => c.runId === selectedRun.id && candidateQuality(c) === "contactable").length} contactables · {allCandidates.filter(c => c.runId === selectedRun.id && candidateQuality(c) === "pending").length} por verificar · {allCandidates.filter(c => c.runId === selectedRun.id && candidateQuality(c) === "outside").length} fuera de alcance</span></div></div>
+          <div className="panel-heading"><div><h2>Bandeja de revisión</h2><span>Mostrando {candidates.length} de {totalCandidates} hallazgos</span><CandidateCountSummary candidates={allCandidates.filter(c => c.runId === selectedRun.id)} /></div></div>
           <div className="candidate-list">
             {candidates.map((candidate) => {
               const primary = candidate.locations.find((location) => location.isPrimary) ?? candidate.locations[0];
               return (
                 <button key={candidate.id} type="button" className={`candidate-row ${candidate.id === selectedCandidate?.id ? "selected" : ""}`} onClick={() => onSelect(candidate.id)}>
                   <span className="candidate-score">{candidateQuality(candidate) === "contactable" ? Math.round(candidate.marketScore || candidate.score) : "-"}<small>{candidateQuality(candidate) === "contactable" ? "score" : "pendiente"}</small></span>
-                  <span className="candidate-row-main"><strong>{candidate.name}</strong><small><MapPin size={12} /> {primary?.comunaName || "Sin comuna"} · {candidate.companyType}</small><em>{candidateQuality(candidate) === "contactable" ? candidate.phone || candidate.email : qualityLabels[candidateQuality(candidate)]}</em>{candidate.discoveryStatus ? <small>DeepSeek · {discoveryLabel(candidate)}</small> : null}</span>
+                  <span className="candidate-row-main"><strong>{candidate.name}</strong><small><MapPin size={12} /> {primary?.comunaName || "Sin comuna"} · {candidate.companyType}</small><em>{candidateQuality(candidate) === "contactable" ? candidate.phone || candidate.email : qualityLabels[candidateQuality(candidate)]}</em>{candidate.discoveryStatus ? <small>{candidate.discoveryProvider === "google_places" ? "Google Places" : "DeepSeek"} · {discoveryLabel(candidate)}</small> : null}</span>
                   <span className={`status-badge prospecting-status ${candidate.reviewStatus}`}>{reviewLabels[candidate.reviewStatus]}</span>
                   <ChevronRight size={17} />
                 </button>

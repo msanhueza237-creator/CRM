@@ -5,6 +5,7 @@ LABEL cl.latinchile.crm-revision=${CRM_REVISION}
 COPY --chown=app:app app/crm/http.py /app/app/crm/http.py
 COPY --chown=app:app app/prospecting/contracts.py /app/app/prospecting/contracts.py
 COPY --chown=app:app app/prospecting/sources.py /app/app/prospecting/sources.py
+COPY --chown=app:app app/prospecting/budget.py /app/app/prospecting/budget.py
 COPY --chown=app:app app/prospecting/deepseek_discovery.py /app/app/prospecting/deepseek_discovery.py
 COPY --chown=app:app app/prospecting/discovery_validation.py /app/app/prospecting/discovery_validation.py
 COPY --chown=app:app app/prospecting/site_quality.py /app/app/prospecting/site_quality.py

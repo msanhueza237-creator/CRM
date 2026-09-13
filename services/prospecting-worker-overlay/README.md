@@ -1,4 +1,4 @@
-# DeepSeek Pro: worker comercial v3
+# Google Places y DeepSeek Pro: worker comercial
 
 El worker vive en `https://github.com/msanhueza237-creator/agente-inteligente-comercial.git`.
 Este overlay versiona la integracion coordinada, sin copiar el repositorio ni secretos.
@@ -12,7 +12,7 @@ Base: `3ae811f705944ad662bfc6aaecb41721ab7e2e6c`.
    No forzar si el parche v2 ya esta instalado: comparar el resultado v3 y
    actualizar solo los archivos incluidos. No usar reset.
 3. Aplicar el parche y ejecutar:
-   `pytest tests/test_native_research.py tests/test_deepseek_discovery.py tests/test_prospecting_site_quality.py tests/test_secure_web_scraper.py tests/test_authorized_sources.py tests/test_http_crm.py tests/test_worker.py tests/test_contracts_and_expansion.py tests/test_integration_monitor.py tests/test_quality_gate.py`.
+   `pytest tests/test_google_first.py tests/test_native_research.py tests/test_deepseek_discovery.py tests/test_prospecting_site_quality.py tests/test_secure_web_scraper.py tests/test_authorized_sources.py tests/test_http_crm.py tests/test_worker.py tests/test_contracts_and_expansion.py tests/test_integration_monitor.py tests/test_quality_gate.py`.
 4. Construir una imagen con el Dockerfile de este directorio, BASE_IMAGE fijada
    a una imagen previa verificada y CRM_REVISION al commit publicado.
    El contexto contiene solamente los archivos Python indicados por COPY, sin .env.
@@ -25,10 +25,27 @@ No basta editar archivos dentro del contenedor: se perderian al reiniciar.
 Actualizar tambien el checkout del servidor; un despliegue posterior debe
 integrar o conservar el overlay.
 
-## Contrato v3
+## Contrato Google First
 
-- El worker anuncia `deepseek_research_v3`. El claim ya no consulta al proveedor.
-- DeepSeek tiene prioridad sobre Places; cada tarea corresponde a rubro y comuna.
+- El worker anuncia `google_first_research_v1`. El claim no consulta al proveedor.
+- Nuevos runs con Places y DeepSeek congelan `discovery_strategy=google_places_first`.
+  Solo generan tareas Google, por keyword y comuna. DeepSeek analiza cada hallazgo
+  en la cola persistente, incluso si Google ya proporciona un sitio oficial.
+  Los snapshots anteriores no cambian y conservan su flujo historico.
+- Se planifican al menos 5 consultas complementarias por tarea (6 por defecto),
+  con paginas de 20 resultados y hasta 3 paginas por consulta. Google Places New
+  admite hasta 60 resultados por consulta; no equivale a 5 paginas del buscador
+  Google. Se detiene ante ausencia de nextPageToken o presupuesto agotado.
+  Referencia: https://developers.google.com/maps/documentation/places/web-service/text-search
+- POST `prospecting-runs/:run/google-discoveries` persiste pistas con Place ID,
+  lease de run y tarea Google comprobados. Deduplica por Place ID dentro del run.
+  Guarda tambien pistas sin detalles cuando se alcanza el presupuesto o el tope
+  de consultas de detalle; no las descarta por carecer aun de contacto o actividad.
+  No se supera el limite de candidatos de la campana. La evidencia Google caduca
+  en 30 dias mediante el purgado existente; no se duplica en discovery_origin.
+- El analisis `climactiva-google-v1` queda auditado por candidato; una seleccion
+  vacia no habilita volver al sitio original ni aprobar. El guard SQL exige
+  analisis positivo mas verificacion oficial public-web-v4 para la importacion.
 - POST `prospecting-runs/:run/research` recibe operation_id, kind, worker_id y
   lease_token. Solo el servidor descifra la clave DeepSeek.
 - La reserva SQL impide repetir una llamada pagada por el mismo operation_id.
@@ -46,8 +63,10 @@ integrar o conservar el overlay.
   no se convierten en empresas. Un dominio oficial se guarda una sola vez por run.
 - `public-web-v4` verifica identidad consistente, contacto propio, actividad y
   domicilio en la campana. No mezcla datos de productos, personas o directorios.
-  Contactables es la vista inicial; los pendientes y fuera de alcance conservan
-  su historial sin presentarse como oportunidades verificadas.
+  Todos es la vista inicial; los pendientes y fuera de alcance conservan
+  su historial sin presentarse como oportunidades verificadas. Los contadores
+  separan contactables por revisar, pendientes, fuera de alcance, revisados y
+  rechazados usando la misma clasificacion que los filtros.
 - Perfil Climactiva: once frases de tiendas, distribuidores, servicios,
   mantencion, reparacion, instalaciones y proyectos residenciales, comerciales
   e industriales. El formulario carga todos los tipos territoriales; aplicar
@@ -84,9 +103,13 @@ Aplicar despues `supabase/prospecting_quality_pause.sql`. La version v4 del
 validador, el guard SQL y el selector API deben publicarse juntos; no activar
 el worker v4 con el guard antiguo v3. No reactivar automaticamente la ejecucion
 pausada del usuario ni volver a pagar investigaciones antiguas sin revision.
+Aplicar tambien `supabase/prospecting_google_first.sql` DESPUES de native_research.
+Versionar API, worker (incluido budget.py), ambos SQL e interfaz como conjunto.
+El cambio de capacidad impide que el worker anterior tome los nuevos trabajos.
+No publicar solo la interfaz ni editar snapshots activos para cambiar de motor.
 
 Publicar juntos SQL, `crm-agent` (incluido prospecting-research.ts y sus
-dependencias), `crm-copilot/prospecting-report.ts`, worker v3 e interfaz.
+dependencias), `crm-copilot/prospecting-report.ts`, worker Google First e interfaz.
 Detener nuevas ejecuciones durante la ventana y esperar las activas antes
 de cambiar versiones. El nuevo API rechaza workers antiguos ANTES de asignar
 un run. Verificar disponibilidad de deepseek-v4-pro con la clave guardada.

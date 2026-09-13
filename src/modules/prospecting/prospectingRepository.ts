@@ -803,6 +803,7 @@ function mapSnapshot(value: unknown, campaign: ProspectingCampaign | undefined, 
   return {
     schemaVersion: 1,
     deepseekEnabled: raw.deepseek_enabled === true || raw.deepseekEnabled === true,
+    discoveryStrategy: raw.discovery_strategy === "google_places_first" ? "google_places_first" : "legacy",
     campaignVersion: Math.max(1, asNumber(raw.campaignVersion ?? raw.campaign_version ?? rawCampaign.version, campaign?.version ?? 1)),
     campaignId: String(
       raw.campaignId ?? raw.campaign_id ?? rawCampaign.crm_campaign_id ?? rawCampaign.id ?? row.campaign_id ?? campaign?.id ?? "",
@@ -906,6 +907,7 @@ function mapCandidate(
   return {
     discoveryStatus,
     discoveryUrl: String(asRecord(association.discovery_origin).website ?? ""),
+    discoveryProvider: association.discovery_origin ? asSource(asRecord(association.discovery_origin).provider) : undefined,
     id: String(association.id),
     entityId: String(association.entity_id ?? safeEntity.id ?? ""),
     externalCandidateId: String(association.external_candidate_id ?? snapshot.candidate_id ?? ""),
@@ -1056,7 +1058,7 @@ function runEntityKey(runId: unknown, entityId: unknown) {
 }
 
 function estimateTaskCount(campaign: ProspectingCampaign) {
-  const discoverySources = campaign.sources.filter((source) => SOURCE_DEFINITIONS.find((definition) => definition.id === source)?.discovery).length;
+  const discoverySources = campaign.sources.includes("google_places") ? 1 : campaign.sources.filter((source) => SOURCE_DEFINITIONS.find((definition) => definition.id === source)?.discovery).length;
   const comunaCount = campaign.territories.reduce((total, territory) => total + territory.comunaCodes.length, 0);
   return discoverySources * campaign.keywords.length * comunaCount;
 }

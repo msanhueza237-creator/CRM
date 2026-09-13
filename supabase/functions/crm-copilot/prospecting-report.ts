@@ -10,7 +10,7 @@ export async function prospectingReport(source: CopilotSources, args: Row) {
   }
   const warnings = [
     "Lectura de registros del modulo Prospeccion, no una nueva busqueda en internet. No ejecuta campañas ni consume DeepSeek.",
-    "DeepSeek Web descubre sitios; solo el rastreo oficial verifica contactos y domicilios. Sitios descubiertos no equivale a candidatos aprobados ni a cobertura exhaustiva. Una clave conectada no acredita uso en una ejecucion.",
+    "En ejecuciones google_places_first, Google Places descubre empresas y DeepSeek analiza su encaje Climactiva; solo las fuentes oficiales verifican contactos y domicilios. Los hallazgos incluyen pendientes, no equivalen a contactables ni a aprobados. Una clave conectada no acredita uso en una ejecucion.",
     "Los candidatos no son clientes ni autorizan envios. No apruebes candidatos solo por una puntuacion o una respuesta de IA.",
   ];
   if (args.view === "candidates") {
@@ -52,7 +52,8 @@ export async function prospectingReport(source: CopilotSources, args: Row) {
       const status = String(assistance.status || (snapshot.deepseek_enabled ? "pending" : "disabled"));
       const labels: Record<string, string> = { applied: ["web_discovery_v1", "native_research_v3"].includes(String(assistance.mode)) ? "Busqueda web realizada con DeepSeek" : "Preparacion de terminos (version anterior)", fallback: "DeepSeek no disponible; otras fuentes continuan", pending: "Pendiente de worker compatible", preparing: "Buscando empresas", disabled: "DeepSeek desactivado" };
       data.push({ campaign_id: campaign.id, campaign: campaign.name, run_id: run.id, status: run.status,
-        deepseek: labels[status] ?? "Sin verificar", mode: assistance.mode ?? null, model: assistance.model ?? null,
+        deepseek: snapshot.discovery_strategy === "google_places_first" ? "Analista de hallazgos Google; avance en la bandeja de candidatos" : labels[status] ?? "Sin verificar",
+        discovery_strategy: snapshot.discovery_strategy ?? "legacy", mode: assistance.mode ?? null, model: assistance.model ?? null,
         assistance_reason: assistance.reason_code ?? null, queries: assistance.queries ?? [],
         discovered_websites: assistance.discovered_websites ?? null, web_requests: assistance.web_requests ?? null,
         discoveries_unverified: assistance.discoveries ?? [],

@@ -21,13 +21,13 @@ export const SOURCE_DEFINITIONS: Array<{
   {
     id: "google_places",
     name: "Google Places API",
-    description: "Descubrimiento territorial mediante la API oficial; por sí solo no habilita la importación.",
+    description: "Descubrimiento principal por territorio y rubro HVAC.",
     discovery: true,
   },
   {
     id: "deepseek_web",
     name: "DeepSeek Pro",
-    description: "Investigación web por territorio y rubro, con fuentes públicas y perfiles comerciales.",
+    description: "Análisis del perfil Climactiva y verificación de empresas descubiertas.",
     discovery: true,
   },
   {

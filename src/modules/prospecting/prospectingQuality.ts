@@ -55,3 +55,15 @@ export function candidateQuality(candidate: ProspectCandidate): CandidateQuality
 export const qualityLabels: Record<CandidateQuality, string> = {
   contactable: "Contactable", pending: "Por verificar", outside: "Fuera de alcance",
 };
+
+export function candidateReviewBucket(candidate: ProspectCandidate) {
+  if (["approved", "linked"].includes(candidate.reviewStatus)) return "reviewed";
+  if (candidate.reviewStatus === "rejected") return "rejected";
+  return candidateQuality(candidate);
+}
+
+export function candidateCounts(candidates: ProspectCandidate[]) {
+  const counts = { total: candidates.length, contactable: 0, pending: 0, outside: 0, reviewed: 0, rejected: 0 };
+  for (const candidate of candidates) counts[candidateReviewBucket(candidate)]++;
+  return counts;
+}

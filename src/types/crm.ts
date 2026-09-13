@@ -151,6 +151,7 @@ export interface ProspectingRunProgress {
 }
 
 export interface ProspectingRunSnapshot {
+  discoveryStrategy?: "legacy" | "google_places_first";
   deepseekEnabled?: boolean;
   schemaVersion: 1;
   campaignVersion: number;
@@ -222,6 +223,7 @@ export interface SourceEvidence {
 export interface ProspectCandidate {
   discoveryStatus?: "pending" | "validated" | "unverified";
   discoveryUrl?: string;
+  discoveryProvider?: ProspectingSource;
   id: string;
   entityId: string;
   externalCandidateId: string;
