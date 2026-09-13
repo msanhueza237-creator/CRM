@@ -18,6 +18,7 @@
     "facto:receivables:watch": "node --experimental-transform-types services/facto-connector/src/worker.ts --watch",
     "facto:receivables:phase4": "node --experimental-transform-types services/facto-connector/src/phase4-diagnostic.ts",
     "test:prospecting:native": "node --experimental-transform-types --test scripts/test-prospecting-native-research.mjs",
+    "test:prospecting:quality": "node --experimental-transform-types --test scripts/test-prospecting-quality.mjs scripts/test-prospecting-native-research.mjs",
     "test:prospecting": "node scripts/test-prospecting-contract.mjs",
     "commit": "node scripts/commit.js"
   },

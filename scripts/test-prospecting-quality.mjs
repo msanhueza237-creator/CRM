@@ -1,0 +1,71 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { candidateQuality } from "../src/modules/prospecting/prospectingQuality.ts";
+import { readAllRecords } from "../src/lib/readAllRecords.ts";
+import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE, DEFAULT_PROSPECTING_KEYWORDS } from "../src/modules/prospecting/prospectingCommercialProfile.ts";
+import { readFile } from "node:fs/promises";
+
+const candidate = () => ({ name: "Clima Andes", phone: "+56721234567", email: "ventas@climaandes.com", website: "https://climaandes.com",
+  discoveryStatus: "validated", importEligible: true, reviewFlags: [], businessLine: "Tienda y distribuidor de aire acondicionado",
+  locations: [{ regionCode: "06", comunaCode: "06101", address: "Av. Republica 100" }],
+  evidence: [{ field: "name", value: "Clima Andes" }, { field: "phone", value: "+56721234567" }, { field: "description", value: "Tienda y distribuidor de aire acondicionado" }].map(e => ({ ...e, source: "official_website" })),
+});
+
+test("contactable list requires identity, activity, territory and business contact evidence", () => {
+  assert.equal(candidateQuality(candidate()), "contactable");
+  for (const changes of [{ phone: "", email: "" }, { evidence: [] }, { locations: [] }, { businessLine: "" }, { discoveryStatus: "pending" }, { importEligible: false }])
+    assert.equal(candidateQuality({ ...candidate(), ...changes }), "pending");
+  for (const changes of [{ phone: "+5492915666646" }, { website: "https://extremominero.com.ar" }, { reviewFlags: ["official_identity_conflict"] }, { reviewFlags: ["outside_target_types"] }])
+    assert.equal(candidateQuality({ ...candidate(), ...changes }), "outside");
+});
+
+test("all evidence pages are read, even beyond the default 1000-row API cap", async () => {
+  const rows = Array.from({ length: 1803 }, (_, i) => ({ id: String(i) })), calls = [];
+  const result = await readAllRecords(async (from, to) => {
+    calls.push([from, to]); return { data: rows.slice(from, to + 1), count: rows.length, error: null };
+  });
+  assert.equal(result.length, 1803); assert.equal(calls.length, 4);
+  await assert.rejects(readAllRecords(async () => ({ data: [], count: 1, error: null })), /completar/);
+});
+
+test("Climactiva defaults cover shops, services and all three segments without truncation", async () => {
+  assert.equal(DEFAULT_PROSPECTING_KEYWORDS.length, 11);
+  assert.equal(new Set(DEFAULT_PROSPECTING_KEYWORDS).size, 11);
+  assert.ok(DEFAULT_PROSPECTING_KEYWORDS.every(k => k.length <= 200));
+  assert.ok(DEFAULT_PROSPECTING_KEYWORDS.every(k => /climatizacion|refrigeracion|aire acondicionado/.test(k)), "Every default phrase must include the HVAC sector");
+  const keywords = DEFAULT_PROSPECTING_KEYWORDS.join(" ");
+  for (const term of ["tiendas", "locales comerciales", "distribuidores", "servicios", "mantencion", "mantenimiento", "reparacion", "instalacion", "residencial", "comercial", "industrial", "grandes proyectos"])
+    assert.ok(keywords.includes(term), term);
+  assert.match(CLIMACTIVA_PROSPECTING_OBJECTIVE, /no necesitan tener tienda/);
+  assert.match(CLIMACTIVA_PROSPECTING_OBJECTIVE, /exclusivamente del rubro/);
+  const page = await readFile(new URL("../src/modules/prospecting/ProspectingPage.tsx", import.meta.url), "utf8");
+  assert.ok(!page.includes("DEFAULT_PROSPECTING_KEYWORDS.slice"));
+  assert.match(page, /initialCampaign\?\.keywords \?\? \[\.\.\.DEFAULT_PROSPECTING_KEYWORDS\]/);
+  assert.match(page, /initialCampaign\?\.targetTypes \?\? \[\.\.\.DEFAULT_PROSPECTING_TARGET_TYPES\]/);
+  const apply = page.slice(page.indexOf("function applyClimactivaProfile()"), page.indexOf("function submit(event:"));
+  assert.match(apply, /setDescription\(CLIMACTIVA_PROSPECTING_OBJECTIVE\)/);
+  for (const untouched of ["setSelection", "setSources", "setResultsPerTask", "setMaxCandidates", "onSave", "startRun"])
+    assert.ok(!apply.includes(untouched), `Profile must not change ${untouched}`);
+});
+
+test("visit brief uses matching official activity, not guessed project scale or CRM summary", () => {
+  const activity = "Empresa de mantencion e instalacion de climatizacion residencial y refrigeracion comercial e industrial";
+  const company = { ...candidate(), businessLine: activity, companySummary: "Mayor distribuidor nacional con 30 proyectos",
+    evidence: [{ source: "official_website", field: "description", value: activity, url: "https://climaandes.com/servicios" }] };
+  const brief = buildCommercialBrief(company);
+  assert.deepEqual(brief.approaches, ["Suministro para servicios y proyectos"]);
+  assert.deepEqual(brief.segments, ["Residencial", "Comercial", "Industrial"]);
+  assert.equal(brief.activity[0].url, "https://climaandes.com/servicios");
+  for (const changes of [{ source: "deepseek_web" }, { url: "https://directorio.cl" }, { value: "Texto de otra empresa" }]) {
+    const rejected = buildCommercialBrief({ ...company, evidence: [{ ...company.evidence[0], ...changes }] });
+    assert.deepEqual(rejected.approaches, []); assert.deepEqual(rejected.segments, []);
+  }
+  const shop = "Tienda y distribuidor con local comercial de equipos de aire acondicionado";
+  const retail = buildCommercialBrief({ ...company, businessLine: shop, evidence: [{ ...company.evidence[0], value: shop }] });
+  assert.deepEqual(retail.approaches, ["Distribución y reventa de productos"]);
+  assert.deepEqual(retail.segments, [], "A commercial shop does not establish commercial HVAC project experience");
+  const excluded = "Instalacion de aire acondicionado para comercios. No realizamos proyectos industriales ni venta de equipos.";
+  const limited = buildCommercialBrief({ ...company, businessLine: excluded, evidence: [{ ...company.evidence[0], value: excluded }] });
+  assert.deepEqual(limited.approaches, ["Suministro para servicios y proyectos"]);
+  assert.deepEqual(limited.segments, ["Comercial"]);
+});

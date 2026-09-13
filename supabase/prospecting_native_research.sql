@@ -127,6 +127,7 @@ begin
     'campaign', jsonb_build_object(
       'crm_campaign_id', v_campaign.id,
       'name', v_campaign.name,
+      'description', v_campaign.description,
       'sector', v_campaign.sector,
       'territories', v_territories,
       'keywords', to_jsonb(v_campaign.keywords),
@@ -180,6 +181,13 @@ end;
 $$;
 
 
+create or replace function public.prospecting_discovery_identity(p_url text)
+returns text language sql immutable set search_path=public,pg_temp as $$
+  select case when lower(p_url) ~ '^https?://(www[.]|m[.])?(instagram[.]com|facebook[.]com)/'
+    then regexp_replace(regexp_replace(lower(p_url),'^https?://(www[.]|m[.])?',''),'[/]$','')
+    else split_part(regexp_replace(lower(p_url),'^https?://(www[.])?',''),'/',1) end
+$$;
+
 create or replace function public.stage_prospecting_discoveries(p_run_id uuid)
 returns jsonb language plpgsql security definer set search_path=public,pg_temp as $$
 declare
@@ -197,12 +205,13 @@ begin
   v_limit:=least(10000,greatest(0,coalesce((v_run.snapshot#>>'{campaign,max_candidates}')::integer,1000)));
   select count(*) into v_count from public.prospecting_campaign_candidates where run_id=p_run_id;
   for v_hit in select value from jsonb_array_elements(v_run.search_assistance->'discoveries') limit 1000 loop
+    if v_run.search_assistance->>'mode'='native_research_v3' and v_hit->>'selection_version' is distinct from 'business-selection-v1' then continue; end if;
     v_url:=trim(v_hit->>'website'); v_name:=left(trim(v_hit->>'name'),300);
     if coalesce(v_name,'')='' or length(v_url)>2048 or coalesce(v_url,'') !~ '^https?://[^/@[:space:]]+([/?#]|$)'
        or coalesce(v_hit->>'source_url','') !~ '^https?://[^/@[:space:]]+([/?#]|$)' then continue; end if;
-    -- Keep different directory entries separate; a directory domain is not a business identity.
-    v_key:='deepseek:'||md5(regexp_replace(v_url,'#.*$',''));
-    if exists(select 1 from public.prospecting_campaign_candidates where run_id=p_run_id and external_candidate_id=v_key)
+    v_key:='deepseek:'||md5(public.prospecting_discovery_identity(v_url));
+    if exists(select 1 from public.prospecting_campaign_candidates where run_id=p_run_id and (external_candidate_id=v_key
+      or public.prospecting_discovery_identity(coalesce(discovery_origin->>'website',candidate_snapshot->>'website'))=public.prospecting_discovery_identity(v_url)))
        then continue; end if;
     exit when v_count>=v_limit;
     insert into public.prospect_entities(name,name_normalized)
@@ -245,12 +254,27 @@ begin
   if new.enrichment_status='completed' and old.enrichment_status='running'
      and exists(select 1 from public.prospect_enrichment_jobs where candidate_relation_id=old.id
        and status='running' and lease_expires_at>now()) then
-    v_valid:=coalesce(new.enrichment_summary->>'validation_version','')='public-web-v3'
+    v_valid:=coalesce(new.enrichment_summary->>'validation_version','')='public-web-v4'
       and coalesce(new.enrichment_summary->>'official_pages_verified','0')='1'
       and coalesce(new.candidate_snapshot->>'import_eligible','false')='true'
       and jsonb_array_length(coalesce(new.candidate_snapshot->'importable_location_indexes','[]'::jsonb))>0
       and exists(select 1 from jsonb_array_elements(coalesce(new.candidate_snapshot->'evidence','[]'::jsonb)) e
-        where e->>'provider'='official_website' and e->>'field'='name' and nullif(e->>'source_url','') is not null);
+        where e->>'provider'='official_website' and e->>'field'='name' and e->>'value'=new.candidate_snapshot->>'name'
+          and public.prospecting_discovery_identity(e->>'source_url')=public.prospecting_discovery_identity(new.candidate_snapshot->>'website'))
+      and length(trim(coalesce(new.candidate_snapshot->>'description','')))>=20
+      and exists(select 1 from jsonb_array_elements(coalesce(new.candidate_snapshot->'evidence','[]'::jsonb)) e
+        where e->>'provider'='official_website' and e->>'field'='description' and e->>'value'=new.candidate_snapshot->>'description')
+      and exists(select 1 from jsonb_array_elements(coalesce(new.candidate_snapshot->'evidence','[]'::jsonb)) e
+        where e->>'provider'='official_website' and e->>'value'=new.candidate_snapshot->>(e->>'field')
+          and public.prospecting_discovery_identity(e->>'source_url')=public.prospecting_discovery_identity(new.candidate_snapshot->>'website')
+          and ((e->>'field'='phone' and e->>'value' ~ '^\+56[2-9][0-9]{8}$')
+            or (e->>'field'='email' and e->>'value' ~ '^[^[:space:]@]+@[^[:space:]@]+[.][^[:space:]@]+$')))
+      and exists(select 1 from public.prospecting_runs r, jsonb_array_elements(r.snapshot#>'{campaign,territories}') t
+        where r.id=old.run_id and new.candidate_snapshot#>>'{location,country_code}'='CL'
+          and t->>'comuna_code'=new.candidate_snapshot#>>'{location,comuna_code}'
+          and t->>'region_code'=new.candidate_snapshot#>>'{location,region_code}'
+          and nullif(trim(new.candidate_snapshot#>>'{location,address}'),'') is not null
+          and (r.snapshot#>'{campaign,target_types}') ? (new.candidate_snapshot->>'category'));
     new.discovery_status:=case when v_valid then 'validated' else 'unverified' end;
     -- Failure to verify is not a human rejection; retain the candidate and reasons.
     new.review_status:=old.review_status; new.review_notes:=old.review_notes; new.reviewed_at:=old.reviewed_at;
@@ -363,7 +387,7 @@ begin
   insert into public.prospecting_research_requests(run_id,operation_id,kind)
     values(p_run_id,p_operation_id,p_kind) returning * into v_request;
   select coalesce(jsonb_agg(website),'[]'::jsonb) into v_previous from
-    (select candidate_snapshot->>'website' website from public.prospecting_campaign_candidates where run_id=p_run_id limit 150) previous;
+    (select coalesce(discovery_origin->>'website',candidate_snapshot->>'website') website from public.prospecting_campaign_candidates where run_id=p_run_id order by id limit 1000) previous;
   return jsonb_build_object('reservation_token',v_request.reservation_token,'task',v_task,'candidate',v_candidate,
     'kind',p_kind,'operation_id',p_operation_id,'snapshot',v_run.snapshot,'previous_sites',v_previous);
 end $$;

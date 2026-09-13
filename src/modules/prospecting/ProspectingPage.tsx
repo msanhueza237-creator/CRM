@@ -17,9 +17,11 @@ import {
   Link2,
   ListChecks,
   MapPin,
+  Mail,
   PauseCircle,
   Pencil,
   Play,
+  Phone,
   Plus,
   RefreshCw,
   Search,
@@ -57,11 +59,13 @@ import {
 } from "./prospectingRepository";
 import { HistoricalBaseView } from "./HistoricalBaseView";
 import { DeepSeekSettings } from "./DeepSeekSettings";
+import { candidateQuality, hasVerifiedContact, qualityLabels } from "./prospectingQuality";
+import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE } from "./prospectingCommercialProfile";
 import "./prospectingAssistance.css";
 
 type ViewTab = "campaigns" | "operation" | "candidates" | "historical" | "deepseek";
 type Notice = { type: "info" | "success" | "error"; text: string } | null;
-type CandidateStatusFilter = ProspectReviewStatus | "all" | "active";
+type CandidateStatusFilter = ProspectReviewStatus | "all" | "active" | "contactable" | "investigating" | "outside";
 
 const runLabels: Record<ProspectingRun["status"], string> = {
   pending: "Pendiente",
@@ -100,8 +104,8 @@ function hasIdentityConflict(candidate: ProspectCandidate) {
 const territorialTargetTypeLabels: Array<{ id: CompanyType; label: string }> = [
   { id: "distribuidor", label: "Distribuidores" },
   { id: "tienda comercial", label: "Tiendas comerciales" },
-  { id: "tecnico", label: "Técnicos" },
-  { id: "instalador grande", label: "Instaladores grandes" },
+  { id: "tecnico", label: "Empresas de servicios y técnicos HVAC" },
+  { id: "instalador grande", label: "Instaladores y contratistas de proyectos" },
 ];
 
 const marketRadarTargetTypeLabels: Array<{ id: CompanyType; label: string }> = [
@@ -129,7 +133,7 @@ export function ProspectingPage() {
   const [selectedRunId, setSelectedRunId] = useState("");
   const [selectedCandidateId, setSelectedCandidateId] = useState("");
   const [candidateQuery, setCandidateQuery] = useState("");
-  const [candidateStatus, setCandidateStatus] = useState<CandidateStatusFilter>("active");
+  const [candidateStatus, setCandidateStatus] = useState<CandidateStatusFilter>("contactable");
   const [candidateSource, setCandidateSource] = useState<ProspectingSource | "all">("all");
   const [candidateComuna, setCandidateComuna] = useState("all");
   const [companyToLink, setCompanyToLink] = useState("");
@@ -242,6 +246,9 @@ export function ProspectingPage() {
     return campaignCandidates
       .filter((candidate) =>
         candidateStatus === "all"
+        || (candidateStatus === "contactable" && candidateQuality(candidate) === "contactable" && !["rejected", "approved", "linked"].includes(candidate.reviewStatus))
+        || (candidateStatus === "investigating" && candidateQuality(candidate) === "pending")
+        || (candidateStatus === "outside" && candidateQuality(candidate) === "outside")
         || (candidateStatus === "active" && ["pending", "possible_duplicate"].includes(candidate.reviewStatus))
         || candidate.reviewStatus === candidateStatus,
       )
@@ -349,7 +356,7 @@ export function ProspectingPage() {
     if (requiresOfficialWebsite(campaign.sources)) {
       setNotice({
         type: "error",
-        text: "No se puede iniciar: Brave descubre empresas, pero el sitio oficial debe validar contacto y domicilio.",
+        text: "No se puede iniciar: la búsqueda requiere sitio oficial para validar contacto y domicilio.",
       });
       return;
     }
@@ -465,7 +472,7 @@ export function ProspectingPage() {
       setNotice({ type: "error", text: "Los identificadores son contradictorios. Vincula una empresa explícitamente o rechaza el candidato." });
       return;
     }
-    if (!candidate.importEligible) {
+    if (!candidate.importEligible || candidateQuality(candidate) !== "contactable") {
       setNotice({ type: "error", text: "Este candidato no tiene evidencia permanente suficiente para aprobarlo." });
       return;
     }
@@ -523,7 +530,7 @@ export function ProspectingPage() {
 
   async function linkCandidate(candidate: ProspectCandidate) {
     if (!user || !canReview || !companyToLink) return;
-    if (!candidate.importEligible) {
+    if (!candidate.importEligible || candidateQuality(candidate) !== "contactable") {
       setNotice({ type: "error", text: "Este candidato no tiene evidencia permanente suficiente para vincularlo." });
       return;
     }
@@ -686,6 +693,7 @@ export function ProspectingPage() {
           runs={campaignRuns}
           selectedRun={selectedRun}
           events={workspace.events.filter((event) => event.runId === selectedRun?.id)}
+          candidates={campaignCandidates}
           canExecute={canExecute}
           busyAction={busyAction}
           onSelectRun={setSelectedRunId}
@@ -696,7 +704,7 @@ export function ProspectingPage() {
           onControlEnrichment={(run, action) => void controlEnrichment(run, action)}
           onOpenCandidates={() => {
             setCandidateQuery("");
-            setCandidateStatus("active");
+            setCandidateStatus("contactable");
             setCandidateSource("all");
             setCandidateComuna("all");
             setTab("candidates");
@@ -772,15 +780,15 @@ function CampaignForm({
 }) {
   const defaultRegion = regions.find((region) => region.code === "13")?.code ?? regions[0]?.code ?? "";
   const [name, setName] = useState(initialCampaign?.name ?? "");
-  const [description, setDescription] = useState(initialCampaign?.description ?? "");
+  const [description, setDescription] = useState(initialCampaign?.description ?? CLIMACTIVA_PROSPECTING_OBJECTIVE);
   const [deepseekEnabled, setDeepseekEnabled] = useState(initialCampaign ? initialCampaign.deepseekEnabled || initialCampaign.sources.includes("brave_search") : true);
-  const [keywords, setKeywords] = useState(initialCampaign?.keywords ?? DEFAULT_PROSPECTING_KEYWORDS.slice(0, 3));
+  const [keywords, setKeywords] = useState(initialCampaign?.keywords ?? [...DEFAULT_PROSPECTING_KEYWORDS]);
   const [keywordDraft, setKeywordDraft] = useState("");
   const [sources, setSources] = useState<ProspectingSource[]>(
     initialCampaign?.sources.map(source => source === "brave_search" ? "deepseek_web" : source) ?? ["deepseek_web", "google_places", "official_website"],
   );
   const [targetTypes, setTargetTypes] = useState<CompanyType[]>(
-    initialCampaign?.targetTypes ?? ["tecnico", "instalador grande"],
+    initialCampaign?.targetTypes ?? [...DEFAULT_PROSPECTING_TARGET_TYPES],
   );
   const initialRadar = Boolean(initialCampaign?.targetTypes.includes("competencia"));
   const [searchMode, setSearchMode] = useState<"territorial" | "market_radar">(initialRadar ? "market_radar" : "territorial");
@@ -860,6 +868,15 @@ function CampaignForm({
       return;
     }
     setKeywords((current) => [...current, clean]);
+    setKeywordDraft("");
+    setFormError("");
+  }
+
+  function applyClimactivaProfile() {
+    setDescription(CLIMACTIVA_PROSPECTING_OBJECTIVE);
+    setKeywords([...DEFAULT_PROSPECTING_KEYWORDS]);
+    setTargetTypes([...DEFAULT_PROSPECTING_TARGET_TYPES]);
+    setSearchMode("territorial");
     setKeywordDraft("");
     setFormError("");
   }
@@ -961,7 +978,7 @@ function CampaignForm({
         </label>
         <label>
           Descripción operativa
-          <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Objetivo y perfil que debe encontrar el agente" />
+          <textarea rows={6} maxLength={4000} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Objetivo y perfil que debe encontrar el agente" />
         </label>
       </div>
 
@@ -973,7 +990,7 @@ function CampaignForm({
               setSearchMode("territorial");
               setTargetTypes((current) => {
                 const allowed = current.filter((type) => DEFAULT_PROSPECTING_TARGET_TYPES.includes(type));
-                return allowed.length ? allowed : ["tecnico", "instalador grande"];
+                return allowed.length ? allowed : [...DEFAULT_PROSPECTING_TARGET_TYPES];
               });
             }} />
             Búsqueda territorial
@@ -1047,8 +1064,9 @@ function CampaignForm({
         <div className="prospecting-section-heading">
           <div>
             <strong>2. Palabras clave HVAC</strong>
-            <span>Combina términos que describan servicios, tiendas e instaladores.</span>
+            <span>Distribución y servicios · residencial, comercial e industrial</span>
           </div>
+          <button className="ghost-button compact-button" type="button" disabled={saving} onClick={applyClimactivaProfile}><RefreshCw size={16} /> Aplicar perfil Climactiva</button>
         </div>
         <div className="keyword-editor">
           <div className="keyword-input-row">
@@ -1068,7 +1086,7 @@ function CampaignForm({
           </div>
           <div className="prospecting-chip-row">
             {keywords.map((keyword) => (
-              <span key={keyword}>{keyword}<button type="button" onClick={() => setKeywords((current) => current.filter((item) => item !== keyword))} aria-label={`Quitar ${keyword}`}><X size={13} /></button></span>
+              <span key={keyword}><span>{keyword}</span><button type="button" onClick={() => setKeywords((current) => current.filter((item) => item !== keyword))} aria-label={`Quitar ${keyword}`}><X size={13} /></button></span>
             ))}
           </div>
         </div>
@@ -1220,7 +1238,7 @@ function CampaignsView({
       <div className="prospecting-overview-grid">
         <MetricCard icon={<ListChecks size={20} />} label="Campañas" value={campaigns.length} detail="Definiciones reutilizables" />
         <MetricCard icon={<Clock3 size={20} />} label="Ejecuciones activas" value={runs.filter((run) => ["pending", "running", "cancel_requested"].includes(run.status)).length} detail="Pendientes o en proceso" />
-        <MetricCard icon={<Building2 size={20} />} label="Por revisar" value={candidates.filter((candidate) => ["pending", "possible_duplicate"].includes(candidate.reviewStatus)).length} detail="No están aún en Empresas" />
+        <MetricCard icon={<Building2 size={20} />} label="Contactables" value={candidates.filter((candidate) => candidateQuality(candidate) === "contactable" && ["pending", "possible_duplicate"].includes(candidate.reviewStatus)).length} detail="Contacto y actividad comprobados" />
         <MetricCard icon={<CheckCircle2 size={20} />} label="Aprobados" value={candidates.filter((candidate) => ["approved", "linked"].includes(candidate.reviewStatus)).length} detail="Creados o vinculados" />
       </div>
 
@@ -1249,6 +1267,7 @@ function CampaignsView({
                   </div>
                   <div><p>HVAC · Chile</p><h3>{campaign.name}</h3><span className="campaign-description">{campaign.description || "Sin descripción operativa"}</span></div>
                   <div className="campaign-scope-summary"><MapPin size={16} /><span>{territorySummary(campaign.territories)}</span></div>
+                  <div className="campaign-scope-summary"><Building2 size={16} /><span>{campaign.targetTypes.join(" · ")}</span></div>
                   <div className="campaign-scope-summary"><Sparkles size={16} /><span>{campaign.deepseekEnabled ? "DeepSeek Pro activado" : "DeepSeek Pro desactivado"}</span></div>
                   <div className="prospecting-chip-row compact">
                     {campaign.keywords.slice(0, 3).map((keyword) => <span key={keyword}>{keyword}</span>)}
@@ -1341,6 +1360,7 @@ function assistanceReason(code: string) {
     RUN_LIMIT: "Se alcanzó el límite de etapas de esta ejecución. Los candidatos encontrados se conservan.", BALANCE_UNAVAILABLE: "No se pudo verificar el saldo. No se inició otra consulta de pago.", DAILY_LIMIT: "Se alcanzó el límite de 20 solicitudes del día, compartido entre descubrimiento e investigación.", INTERRUPTED: "La solicitud se interrumpió; no se repitió el consumo.",
     RATE_LIMIT: "DeepSeek alcanzó su límite de solicitudes.", INSUFFICIENT_BALANCE: "Saldo no disponible o inferior a la reserva de seguridad de US$0,25.",
     WEB_SEARCH_FAILED: "La herramienta web de DeepSeek devolvió un error.", NO_WEB_SEARCH: "DeepSeek no devolvió una búsqueda web verificable.",
+    INVALID_BUSINESS_SELECTION: "La búsqueda no devolvió una selección verificable de empresas. No se agregaron páginas genéricas como candidatos.",
     VALIDATION_SOURCE_REQUIRED: "Faltan las fuentes de descubrimiento y validación web." } as Record<string, string>)[code] ?? "La asistencia no estuvo disponible. Se conservaron las otras fuentes.";
 }
 
@@ -1349,6 +1369,7 @@ function OperationView({
   runs,
   selectedRun,
   events,
+  candidates,
   canExecute,
   busyAction,
   onSelectRun,
@@ -1363,6 +1384,7 @@ function OperationView({
   runs: ProspectingRun[];
   selectedRun?: ProspectingRun;
   events: ProspectingWorkspace["events"];
+  candidates: ProspectCandidate[];
   canExecute: boolean;
   busyAction: string;
   onSelectRun: (id: string) => void;
@@ -1428,14 +1450,14 @@ function OperationView({
         <div className="operation-progress-row">
           <span className={`status-badge prospecting-status ${selectedRun.status}`}>{runLabels[selectedRun.status]}</span>
           <div className="run-progress"><div><span style={{ width: `${progressPercent}%` }} /></div><strong>{progressPercent}%</strong></div>
-          <span>{selectedRun.progress.completedTasks} exitosas · {selectedRun.progress.failedTasks} con error · {processedTasks} de {selectedRun.progress.totalTasks} procesadas</span>
+          <span>{selectedRun.progress.completedTasks} tareas completadas · {selectedRun.progress.failedTasks} con error · {processedTasks} de {selectedRun.progress.totalTasks} procesadas</span>
         </div>
         {selectedRun.lastError ? <div className="run-error"><AlertTriangle size={17} /><span><strong>Última incidencia</strong>{selectedRun.lastError}</span></div> : null}
       </div>
 
       <div className="panel operation-header">
         <div className="operation-title-row">
-          <div><p>Validación de candidatos</p><h2>Brave y sitio oficial</h2><span>Contacto, actividad y ubicación por confirmar</span></div>
+          <div><p>Validación de candidatos</p><h2>{campaign.deepseekEnabled ? "DeepSeek y fuentes oficiales" : "Verificación de fuentes"}</h2><span>Contacto, actividad y ubicación de la misma empresa</span></div>
           <div className="operation-controls">
             {canExecute && selectedRun.enrichmentStatus === "not_requested" ? <button className="primary-button" type="button" disabled={busyAction === `enrich:${selectedRun.id}` || selectedRun.progress.candidatesFound === 0} onClick={() => onStartEnrichment(selectedRun)}><Sparkles size={16} /> Investigar {selectedRun.progress.candidatesFound} empresas</button> : null}
             {canExecute && enrichmentActive ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-pause:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "pause")}><PauseCircle size={16} /> Pausar investigación</button> : null}
@@ -1452,7 +1474,7 @@ function OperationView({
 
       <div className="prospecting-overview-grid">
         <MetricCard icon={<ListChecks size={20} />} label="Tareas totales" value={selectedRun.progress.totalTasks} detail="Fuente × keyword × comuna" />
-        <MetricCard icon={<CheckCircle2 size={20} />} label="Completadas" value={selectedRun.progress.completedTasks} detail={`${successPercent}% exitosas`} />
+        <MetricCard icon={<CheckCircle2 size={20} />} label="Completadas" value={selectedRun.progress.completedTasks} detail={`${successPercent}% de tareas procesadas sin error`} />
         <MetricCard icon={<AlertTriangle size={20} />} label="Con error" value={selectedRun.progress.failedTasks} detail="Con reintento o incidencia" />
         <MetricCard icon={<Building2 size={20} />} label="Candidatos" value={selectedRun.progress.candidatesFound} detail="Antes de revisión humana" />
       </div>
@@ -1468,7 +1490,7 @@ function OperationView({
           </dl>
           <section className="prospecting-assistance" aria-label="Asistencia de búsqueda">
             <div className="prospecting-assistance-heading"><Sparkles size={19} /><h3>{assistanceLabel(selectedRun)}</h3></div>
-            {["web_discovery_v1", "native_research_v3"].includes(selectedRun.searchAssistance?.mode ?? "") && selectedRun.searchAssistance && selectedRun.searchAssistance.status === "applied" ? <dl className="deepseek-result-totals"><div><dt>Sitios descubiertos</dt><dd>{selectedRun.searchAssistance.discoveredWebsites}</dd></div><div><dt>Consultas web</dt><dd>{selectedRun.searchAssistance.webRequests}</dd></div><div><dt>Candidatos de todas las fuentes</dt><dd>{selectedRun.progress.candidatesFound}</dd></div></dl> : null}
+            {["web_discovery_v1", "native_research_v3"].includes(selectedRun.searchAssistance?.mode ?? "") && selectedRun.searchAssistance && selectedRun.searchAssistance.status === "applied" ? <dl className="deepseek-result-totals"><div><dt>Sitios descubiertos</dt><dd>{selectedRun.searchAssistance.discoveredWebsites}</dd></div><div><dt>Consultas web</dt><dd>{selectedRun.searchAssistance.webRequests}</dd></div><div><dt>Hallazgos de todas las fuentes</dt><dd>{selectedRun.progress.candidatesFound}</dd></div><div><dt>Empresas contactables verificadas</dt><dd>{candidates.filter(c => c.runId === selectedRun.id && candidateQuality(c) === "contactable").length}</dd></div></dl> : null}
             {selectedRun.searchAssistance?.reasonCode ? <p role="status">{assistanceReason(selectedRun.searchAssistance.reasonCode)}</p> : null}
             {selectedRun.searchAssistance?.mode === "native_research_v3" ? <dl className="deepseek-result-totals"><div><dt>Tokens de búsqueda</dt><dd>{selectedRun.searchAssistance.tokens?.toLocaleString("es-CL") ?? "Sin dato"}</dd></div><div><dt>Saldo al terminar búsqueda</dt><dd>{selectedRun.searchAssistance.balanceUsd == null ? "Sin dato" : new Intl.NumberFormat("es-CL", { style: "currency", currency: "USD" }).format(selectedRun.searchAssistance.balanceUsd)}</dd></div></dl> : null}
             {selectedRun.searchAssistance?.completedAt ? <small>{formatDateTime(selectedRun.searchAssistance.completedAt)}</small> : null}
@@ -1578,7 +1600,7 @@ function CandidatesView({
       <div className="panel candidate-filters">
         <label className="search-field"><Search size={18} /><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Empresa, RUT, contacto o actividad" /></label>
         <label className="select-field">Ejecución<select value={selectedRun.id} onChange={(event) => onSelectRun(event.target.value)}>{runs.map((run, index) => <option key={run.id} value={run.id}>Run #{runs.length - index} · {runLabels[run.status]}</option>)}</select></label>
-        <label className="select-field">Estado<select value={status} onChange={(event) => onStatus(event.target.value as CandidateStatusFilter)}><option value="active">Por revisar</option><option value="all">Todos (incluye descartados)</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="select-field">Estado<select value={status} onChange={(event) => onStatus(event.target.value as CandidateStatusFilter)}><option value="contactable">Contactables</option><option value="investigating">Por verificar</option><option value="outside">Fuera de alcance</option><option value="active">Por revisar (todos)</option><option value="all">Todos (incluye descartados)</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="select-field">Fuente<select value={source} onChange={(event) => onSource(event.target.value as ProspectingSource | "all")}><option value="all">Todas</option>{SOURCE_DEFINITIONS.filter((item) => !item.disabled).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="select-field">Comuna<select value={comuna} onChange={(event) => onComuna(event.target.value)}><option value="all">Todas</option>{comunas.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <span className="filter-result"><Filter size={16} /> {candidates.length} de {totalCandidates}</span>
@@ -1586,20 +1608,20 @@ function CandidatesView({
 
       <div className="candidate-workbench">
         <div className="panel candidate-list-panel">
-          <div className="panel-heading"><div><h2>Bandeja de revisión</h2><span>Run del {formatDateTime(selectedRun.createdAt)} · sin mezclar ejecuciones históricas</span></div></div>
+          <div className="panel-heading"><div><h2>Bandeja de revisión</h2><span>{allCandidates.filter(c => c.runId === selectedRun.id && candidateQuality(c) === "contactable").length} contactables · {allCandidates.filter(c => c.runId === selectedRun.id && candidateQuality(c) === "pending").length} por verificar · {allCandidates.filter(c => c.runId === selectedRun.id && candidateQuality(c) === "outside").length} fuera de alcance</span></div></div>
           <div className="candidate-list">
             {candidates.map((candidate) => {
               const primary = candidate.locations.find((location) => location.isPrimary) ?? candidate.locations[0];
               return (
                 <button key={candidate.id} type="button" className={`candidate-row ${candidate.id === selectedCandidate?.id ? "selected" : ""}`} onClick={() => onSelect(candidate.id)}>
-                  <span className="candidate-score">{Math.round(candidate.marketScore || candidate.score)}<small>{candidate.marketScore ? "mercado" : "score"}</small></span>
-                  <span className="candidate-row-main"><strong>{candidate.name}</strong><small><MapPin size={12} /> {primary?.comunaName || "Sin comuna"} · {candidate.companyType}</small><em>{candidate.phone || candidate.email || candidate.website}</em>{candidate.discoveryStatus ? <small>DeepSeek · {discoveryLabel(candidate)}</small> : null}</span>
+                  <span className="candidate-score">{candidateQuality(candidate) === "contactable" ? Math.round(candidate.marketScore || candidate.score) : "-"}<small>{candidateQuality(candidate) === "contactable" ? "score" : "pendiente"}</small></span>
+                  <span className="candidate-row-main"><strong>{candidate.name}</strong><small><MapPin size={12} /> {primary?.comunaName || "Sin comuna"} · {candidate.companyType}</small><em>{candidateQuality(candidate) === "contactable" ? candidate.phone || candidate.email : qualityLabels[candidateQuality(candidate)]}</em>{candidate.discoveryStatus ? <small>DeepSeek · {discoveryLabel(candidate)}</small> : null}</span>
                   <span className={`status-badge prospecting-status ${candidate.reviewStatus}`}>{reviewLabels[candidate.reviewStatus]}</span>
                   <ChevronRight size={17} />
                 </button>
               );
             })}
-            {!candidates.length ? <EmptyState icon={<Search size={24} />} title="Sin coincidencias" text="Prueba quitando uno de los filtros." /> : null}
+            {!candidates.length ? <EmptyState icon={<Search size={24} />} title={status === "contactable" ? "Sin empresas contactables verificadas" : "Sin coincidencias"} text={status === "contactable" ? "Los hallazgos pendientes conservan su evidencia en Por verificar." : "No hay registros con estos filtros."} /> : null}
           </div>
         </div>
 
@@ -1663,10 +1685,13 @@ function CandidateDetail({
   const identityConflict = hasIdentityConflict(candidate);
   const website = safeExternalUrl(candidate.website);
   const importableLocationCount = candidate.importableLocationIndexes.length;
+  const commercialReady = candidate.importEligible && candidateQuality(candidate) === "contactable";
+  const commercialBrief = buildCommercialBrief(candidate);
+  const visitLocation = candidate.locations[candidate.importableLocationIndexes[0]];
   const partialImport = candidate.importEligible && importableLocationCount < candidate.locations.length;
   const readinessId = `candidate-import-readiness-${candidate.id}`;
-  const readinessClass = !candidate.importEligible ? "blocked" : identityConflict ? "partial" : partialImport ? "partial" : "ready";
-  const readinessTitle = !candidate.importEligible
+  const readinessClass = !commercialReady ? "blocked" : identityConflict ? "partial" : partialImport ? "partial" : "ready";
+  const readinessTitle = !commercialReady
     ? "Importación bloqueada"
     : identityConflict
     ? "Vinculación manual requerida"
@@ -1675,8 +1700,8 @@ function CandidateDetail({
       ? "Importación parcial"
       : "Listo para importar"
     : "Importación bloqueada";
-  const readinessDescription = !candidate.importEligible
-    ? "El agente no confirmó evidencia permanente suficiente. Aprobar y vincular están deshabilitados; rechazar sigue disponible."
+  const readinessDescription = !commercialReady
+    ? "Falta confirmar que identidad, actividad, domicilio y contacto pertenecen a una empresa del alcance solicitado. Aprobar y vincular están deshabilitados."
     : identityConflict
     ? "Los identificadores exactos se contradicen. Aprobar está bloqueado; selecciona explícitamente una empresa para vincular o rechaza el candidato."
     : candidate.importEligible
@@ -1689,7 +1714,7 @@ function CandidateDetail({
     <>
       <div className="candidate-detail-heading">
         <div><span className={`status-badge prospecting-status ${candidate.reviewStatus}`}>{reviewLabels[candidate.reviewStatus]}</span><h2>{candidate.name}</h2><p>{candidate.legalName || candidate.businessLine}</p></div>
-        <div className="score-ring"><strong>{Math.round(candidate.marketScore || candidate.score)}</strong><span>{candidate.marketScore ? "mercado" : "de 100"}</span></div>
+        <div className="score-ring"><strong>{commercialReady ? Math.round(candidate.marketScore || candidate.score) : "-"}</strong><span>{commercialReady ? "de 100" : "por verificar"}</span></div>
       </div>
       {candidate.reviewStatus === "possible_duplicate" ? (
         <div className="duplicate-alert">
@@ -1717,11 +1742,11 @@ function CandidateDetail({
 
       {candidate.discoveryStatus ? <div className={`candidate-import-readiness ${candidate.discoveryStatus === "validated" ? "ready" : "partial"}`} role="status">
         <Search size={19} /><div><strong>{discoveryLabel(candidate)}</strong>
-          <p>{candidate.enrichmentError || String(candidate.enrichmentSummary.validation_message || "Hallazgo guardado. Pendiente de contraste con Brave y el sitio oficial.")}</p>
+          <p>{candidate.enrichmentError || String(candidate.enrichmentSummary.validation_message || "Hallazgo guardado. Pendiente de comprobar en fuentes oficiales.")}</p>
           {safeExternalUrl(candidate.discoveryUrl || "") ? <a href={safeExternalUrl(candidate.discoveryUrl || "") || undefined} target="_blank" rel="noreferrer">Origen del hallazgo <ExternalLink size={12} /></a> : null}
         </div></div> : null}
 
-      {candidate.marketScore ? (
+      {candidate.marketScore && candidateQuality(candidate) === "contactable" ? (
         <div className="candidate-import-readiness ready" role="status">
           <Sparkles size={19} />
           <div><strong>Importancia de mercado: {Math.round(candidate.marketScore)}/100</strong><p>Apareció en {Number(candidate.marketSignals?.query_hits || 0)} búsquedas; mejor posición {Number(candidate.marketSignals?.best_rank || 0) || "sin dato"}. El ranking también considera perfil comercial, marcas, sucursales y evidencia oficial.</p></div>
@@ -1731,9 +1756,9 @@ function CandidateDetail({
       <div
         id={readinessId}
         className={`candidate-import-readiness ${readinessClass}`}
-        role={candidate.importEligible ? "status" : "alert"}
+        role={commercialReady ? "status" : "alert"}
       >
-        {candidate.importEligible ? <ShieldCheck size={19} /> : <AlertTriangle size={19} />}
+        {commercialReady ? <ShieldCheck size={19} /> : <AlertTriangle size={19} />}
         <div>
           <strong>{readinessTitle}</strong>
           <p>{readinessDescription}</p>
@@ -1746,15 +1771,32 @@ function CandidateDetail({
       </div>
 
       <dl className="candidate-definition-grid">
+        {candidateQuality(candidate) !== "contactable" ? <div><dt>Calidad del registro</dt><dd>{qualityLabels[candidateQuality(candidate)]}. Contactos y actividad no habilitados para uso comercial.</dd></div> : null}
         <div><dt>Actividad</dt><dd>{candidate.businessLine || "No informada"}</dd></div>
         <div><dt>Tipo sugerido</dt><dd>{candidate.companyType}</dd></div>
         <div><dt>RUT</dt><dd>{candidate.rut || "No encontrado"}</dd></div>
-        <div><dt>Ubicación validada</dt><dd>{primary ? `${primary.comunaName}, ${primary.regionName}` : "Sin ubicación"}</dd></div>
+        <div><dt>Ubicación validada</dt><dd>{[primary?.comunaName, primary?.regionName].filter(Boolean).join(", ") || "Sin ubicación verificada"}</dd></div>
         <div><dt>Dirección</dt><dd>{primary?.address || "No informada"}</dd></div>
         <div><dt>Teléfono</dt><dd>{candidate.phone || "No encontrado"}</dd></div>
         <div><dt>Email</dt><dd>{candidate.email || "No encontrado"}</dd></div>
         <div><dt>{candidate.discoveryStatus ? "Sitio oficial" : "Sitio web"}</dt><dd>{candidate.discoveryStatus && !candidate.evidence.some((e) => e.source === "official_website" && e.field === "website") ? "Por verificar" : website ? <a href={website} target="_blank" rel="noreferrer">Abrir sitio <ExternalLink size={12} /></a> : "No encontrado"}</dd></div>
       </dl>
+
+      <section className="candidate-visit-section" aria-label="Preparar visita comercial">
+        <h3><MapPin size={18} /> Preparar visita comercial</h3>
+        <dl className="candidate-definition-grid">
+          <div><dt>Enfoque comercial sugerido</dt><dd>{commercialReady && commercialBrief.approaches.length ? commercialBrief.approaches.join(" · ") : "Por confirmar con evidencia de actividad"}</dd></div>
+          <div><dt>Segmentos indicados en fuentes</dt><dd>{commercialReady && commercialBrief.segments.length ? commercialBrief.segments.join(" · ") : "No comprobados"}</dd></div>
+          <div><dt>Antes de coordinar la visita</dt><dd>Confirmar responsable de compras, horario y domicilio de atención.</dd></div>
+          <div><dt>Potencial de negocio</dt><dd>Volumen de compra, proyectos vigentes y capacidad de distribución por confirmar.</dd></div>
+        </dl>
+        {commercialReady ? <div className="candidate-visit-actions">
+          {hasVerifiedContact(candidate, "phone") ? <a className="ghost-button" href={`tel:${candidate.phone.replace(/[^+\d]/g, "")}`}><Phone size={16} /> Llamar</a> : null}
+          {hasVerifiedContact(candidate, "email") ? <a className="ghost-button" href={`mailto:${candidate.email.trim()}`}><Mail size={16} /> Correo comercial</a> : null}
+          {visitLocation?.address ? <a className="ghost-button" href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent([visitLocation.address, visitLocation.comunaName, visitLocation.regionName, "Chile"].filter(Boolean).join(", "))}`} target="_blank" rel="noreferrer"><MapPin size={16} /> Ver dirección en mapa</a> : null}
+        </div> : <p className="muted">Contacto y visita pendientes de verificar identidad, actividad, territorio y datos comerciales.</p>}
+        {commercialReady && commercialBrief.activity[0] ? <p className="muted">Respaldo del enfoque: <a href={commercialBrief.activity[0].url} target="_blank" rel="noreferrer">Actividad en sitio oficial <ExternalLink size={12} /></a> · {formatDateTime(commercialBrief.activity[0].observedAt)}</p> : null}
+      </section>
 
       {!candidate.discoveryStatus && candidate.enrichmentStatus !== "not_requested" ? (
         <div className="candidate-import-readiness ready" role="status">
@@ -1788,7 +1830,7 @@ function CandidateDetail({
 
       {canReview && reviewable ? (
         <div className="candidate-review-box">
-          {!candidate.discoveryStatus && !candidate.importEligible && website && primary ? (
+          {!candidate.discoveryStatus && !commercialReady && website && primary ? (
             <div className="candidate-import-readiness partial" role="group" aria-label="Verificacion humana">
               <ShieldCheck size={19} />
               <div>
@@ -1804,9 +1846,9 @@ function CandidateDetail({
             <button
               className="primary-button"
               type="button"
-              disabled={busy || !candidate.importEligible || identityConflict}
+              disabled={busy || !commercialReady || identityConflict}
               aria-describedby={readinessId}
-              title={identityConflict ? "Bloqueado por identificadores contradictorios" : !candidate.importEligible ? "Bloqueado por falta de evidencia permanente" : undefined}
+              title={identityConflict ? "Bloqueado por identificadores contradictorios" : !commercialReady ? "Bloqueado por falta de evidencia comercial" : undefined}
               onClick={onApprove}
             ><CheckCircle2 size={17} /> Aprobar prospecto</button>
             <button className="ghost-button danger" type="button" disabled={busy} onClick={onReject}><XCircle size={17} /> Rechazar</button>
@@ -1816,9 +1858,9 @@ function CandidateDetail({
             <button
               className="ghost-button"
               type="button"
-              disabled={busy || !companyToLink || !candidate.importEligible}
+              disabled={busy || !companyToLink || !commercialReady}
               aria-describedby={readinessId}
-              title={!candidate.importEligible ? "Bloqueado por falta de evidencia permanente" : undefined}
+              title={!commercialReady ? "Bloqueado por falta de evidencia comercial" : undefined}
               onClick={onLink}
             ><Link2 size={16} /> Vincular</button>
           </div>
@@ -1884,7 +1926,13 @@ function humanize(value: string) {
 
 function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
   if (flag === "discovery_duplicate") return "La misma empresa ya aparece en otro candidato de esta ejecucion.";
-  if (flag === "discovery_pending") return "Pendiente de validacion con Brave y sitio oficial.";
+  if (flag === "discovery_pending") return "Pendiente de verificar identidad, contacto y territorio en el sitio oficial.";
+  if (["foreign_country", "foreign_phone", "foreign_contact"].includes(flag)) return "La fuente o el contacto corresponde a otro país; no es un prospecto local verificado.";
+  if (flag === "directory_or_non_business") return "La página pertenece a un directorio o no representa una empresa.";
+  if (flag === "official_identity_conflict") return "La identidad del sitio no coincide con la empresa buscada.";
+  if (flag === "missing_business_activity") return "Falta una descripción comprobable de la actividad comercial.";
+  if (flag === "missing_business_address") return "Falta un domicilio comercial verificable dentro del territorio solicitado.";
+  if (flag === "official_site_unreadable") return "No se pudo leer el sitio oficial respetando sus condiciones de acceso; no se inferirán datos faltantes.";
   if (flag === "missing_business_contact") return "No se pudo confirmar un telefono o correo comercial.";
   if (flag === "outside_requested_territory") return "No se pudo confirmar un domicilio dentro del territorio de la campana.";
   if (flag === "missing_required_evidence") return "Falta evidencia oficial suficiente para aprobar.";
@@ -1892,7 +1940,7 @@ function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
     return "La ubicacion publicada en el sitio oficial no coincide con la comuna seleccionada. Revisa antes de aprobar.";
   }
   if (flag === "official_site_missing") {
-    return "No se encontro un sitio oficial util para profundizar. No se consumieron consultas Brave adicionales.";
+    return "No se encontró un sitio oficial verificable para profundizar.";
   }
   if (flag === "contact_only_import") {
     return "Sin sitio web, pero habilitado para importar porque tiene contacto comercial y comuna validada.";
@@ -1925,10 +1973,10 @@ function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
 }
 
 function discoveryLabel(candidate: ProspectCandidate) {
-  if (candidate.discoveryStatus === "validated") return "Validado con Brave y sitio oficial";
+  if (candidate.discoveryStatus === "validated") return "Datos contrastados en sitio oficial";
   if (candidate.discoveryStatus === "unverified" || candidate.enrichmentStatus === "failed") return "Requiere revision";
   if (candidate.enrichmentStatus === "paused") return "Validacion pausada";
-  return candidate.enrichmentStatus === "running" ? "Validando con Brave" : "Pendiente de Brave";
+  return candidate.enrichmentStatus === "running" ? "Verificando fuentes" : "Pendiente de verificación";
 }
 
 function confidencePercent(value: number) {

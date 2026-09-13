@@ -1,4 +1,5 @@
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
+import { readAllRecords } from "../../lib/readAllRecords";
 import type {
   CompanyType,
   GeoComuna,
@@ -277,10 +278,10 @@ export class ProspectingRepository {
       ] = await Promise.all([
         supabase.from("prospecting_campaigns").select("*").order("updated_at", { ascending: false }),
         supabase.from("prospecting_runs").select("*").order("created_at", { ascending: false }),
-        supabase.from("prospecting_campaign_candidates").select("*").order("last_seen_at", { ascending: false }),
-        supabase.from("prospect_entities").select("*"),
-        supabase.from("prospect_locations").select("*"),
-        supabase.from("active_prospect_source_records").select("*"),
+        readAllRecords<Row & { id: string }>((from, to) => supabase!.from("prospecting_campaign_candidates").select("*", { count: "exact" }).order("id").range(from, to)).then(data => ({ data, error: null })),
+        readAllRecords<Row & { id: string }>((from, to) => supabase!.from("prospect_entities").select("*", { count: "exact" }).order("id").range(from, to)).then(data => ({ data, error: null })),
+        readAllRecords<Row & { id: string }>((from, to) => supabase!.from("prospect_locations").select("*", { count: "exact" }).order("id").range(from, to)).then(data => ({ data, error: null })),
+        readAllRecords<Row & { id: string }>((from, to) => supabase!.from("active_prospect_source_records").select("*", { count: "exact" }).order("id").range(from, to)).then(data => ({ data, error: null })),
         supabase.from("prospecting_events").select("*").order("created_at", { ascending: false }).limit(1000),
         supabase.from("geo_regions").select("*").eq("active", true).order("sort_order", { ascending: true }),
         supabase.from("geo_comunas").select("*").eq("active", true).order("name", { ascending: true }),

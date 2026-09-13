@@ -9,13 +9,7 @@ import type {
 
 const REGION_CODES = ["15", "01", "02", "03", "04", "05", "06", "07", "16", "08", "09", "14", "10", "11", "12", "13"];
 
-export const DEFAULT_PROSPECTING_KEYWORDS = [
-  "aire acondicionado",
-  "climatizacion",
-  "refrigeracion comercial",
-  "instalacion HVAC",
-  "servicio tecnico climatizacion",
-];
+export { DEFAULT_PROSPECTING_KEYWORDS } from "./prospectingCommercialProfile";
 
 export const SOURCE_DEFINITIONS: Array<{
   id: ProspectingSource;

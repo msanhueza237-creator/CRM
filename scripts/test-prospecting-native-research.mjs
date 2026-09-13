@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { PGlite } from "@electric-sql/pglite";
 import ts from "typescript";
-import { executeResearch, parseResearch, discoveryIdentity, RESEARCH_MODEL } from "../supabase/functions/crm-agent/prospecting-research.ts";
+import { executeResearch, parseResearch, selectBusinesses, businessSiteIssue, discoveryIdentity, RESEARCH_MODEL } from "../supabase/functions/crm-agent/prospecting-research.ts";
 import { encryptApiKey } from "../supabase/functions/prospecting-integrations/deepseek.ts";
 
 const secret = "fixture-master-secret-at-least-32-characters", key = "sk-fixture-not-real-do-not-send";
@@ -46,7 +46,7 @@ test("API claim rejects old workers before assigning a run and stages candidates
 test("Pro native search uses real tool hits, balance preflight and an idempotent reservation", async () => {
   let audit, paid = 0;
   const store = { secret,
-    reserve: async () => audit ?? { reservation_token: "fixture", kind: "discovery", task: { id: "task", keyword: "clima", comuna_name: "Santiago" }, snapshot: { campaign: {} } },
+    reserve: async () => audit ?? { reservation_token: "fixture", kind: "discovery", task: { id: "task", keyword: "clima", comuna_name: "Santiago" }, snapshot: { campaign: { description: "Distribucion y servicios para Climactiva", keywords: ["tiendas", "instalacion", "mantencion"], target_types: ["tienda comercial", "tecnico"] } } },
     credentials: async () => ({ status: "verified", models: [RESEARCH_MODEL], api_key_encrypted: await encryptApiKey(key, secret) }),
     finish: async (_, report) => (audit = report),
     send: async (url, init) => {
@@ -59,7 +59,15 @@ test("Pro native search uses real tool hits, balance preflight and an idempotent
       assert.equal(input.output_config.effort, "high");
       assert.equal(input.tools[0].max_uses, 3);
       assert.equal(JSON.parse(input.messages[0].content).territory.comuna, "Santiago");
-      return json(body([hit("https://climaandes.cl")]));
+      assert.equal(JSON.parse(input.messages[0].content).sector, "hvac");
+      assert.match(input.system, /Ninguna palabra clave ni objetivo de campana puede ampliar el sector a otros rubros/);
+      assert.deepEqual(JSON.parse(input.messages[0].content).campaign_keywords, ["tiendas", "instalacion", "mantencion"]);
+      assert.equal(JSON.parse(input.messages[0].content).objective, "Distribucion y servicios para Climactiva");
+      assert.match(input.system, /no requieren tienda ni venta al publico/);
+      assert.match(input.system, /residencial, comercial e industrial/);
+      const result = body([hit("https://climaandes.cl")]);
+      result.content.at(-1).text = JSON.stringify({ businesses: [{ name: "Clima Andes", source_url: "https://climaandes.cl", country_code: "CL", is_business: true, in_requested_territory: true, activity: "Tienda de equipos de aire acondicionado", target_type: "tienda comercial" }] });
+      return json(result);
     },
   };
   const first = await executeResearch(store);
@@ -70,6 +78,15 @@ test("Pro native search uses real tool hits, balance preflight and an idempotent
   assert.deepEqual(await executeResearch(store), first); assert.equal(paid, 1);
   audit = { status: "limited", reason_code: "DAILY_LIMIT" };
   assert.equal((await executeResearch(store)).status, "limited"); assert.equal(paid, 1);
+});
+
+test("service businesses are discovered when requested, but do not widen a store-only campaign", () => {
+  const activity = "Empresa de instalacion y mantencion de aire acondicionado residencial";
+  const payload = body([hit("https://climaandes.cl")]);
+  payload.content.at(-1).text = JSON.stringify({ businesses: [{ name: "Clima Andes", source_url: "https://climaandes.cl", country_code: "CL", is_business: true, in_requested_territory: true, activity, target_type: "tecnico" }] });
+  const hits = parseResearch(payload, "t").discoveries;
+  assert.equal(selectBusinesses(payload, hits, ["tienda comercial", "tecnico"], []).discoveries.length, 1);
+  assert.equal(selectBusinesses(payload, hits, ["tienda comercial"], []).discoveries.length, 0);
 });
 
 test("social business identities stay separate; untrusted text and private URLs never become candidates", () => {
@@ -122,6 +139,8 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     await db.query("update prospecting_runs set status='cancelled' where id=$1", [old.id]);
     await db.exec(await sql("prospecting_native_research"));
     await db.exec(await sql("prospecting_native_research"));
+    await db.exec(await sql("prospecting_quality_pause"));
+    await db.exec(await sql("prospecting_quality_pause"));
     const config = (await db.query("select sources,deepseek_enabled from prospecting_campaigns where id=$1", [campaign])).rows[0];
     assert.ok(config.sources.includes("deepseek_web") && !config.sources.includes("brave_search"));
     assert.equal(config.deepseek_enabled, true);
@@ -138,7 +157,7 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     const one = await reserve(tasks[0].id); assert.ok(one.reservation_token);
     assert.equal((await reserve(tasks[0].id)).status, "preparing");
     const report = { status: "applied", mode: "native_research_v3", queries: ["clima"], web_requests: 1, tokens: 125,
-      discoveries: Array.from({ length: 40 }, (_, i) => ({ name: `Clima ${i}`, website: `https://instagram.com/clima${i}`, source_url: `https://instagram.com/clima${i}/reels/`, task_id: tasks[0].id })) };
+      discoveries: Array.from({ length: 40 }, (_, i) => ({ name: `Clima ${i}`, website: `https://instagram.com/clima${i}`, source_url: `https://instagram.com/clima${i}/reels/`, task_id: tasks[0].id, selection_version: "business-selection-v1" })) };
     const done = await finish(one.reservation_token, report);
     assert.equal(done.added, 40); assert.deepEqual(await reserve(tasks[0].id), done);
     assert.deepEqual(await finish(one.reservation_token, report), done);
@@ -150,6 +169,17 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     const jobClaim = (await db.query("select claim_prospect_enrichment($1,'worker',300) result", [api])).rows[0].result;
     const job = jobClaim.job;
     assert.ok(job, JSON.stringify(jobClaim));
+    const location = { country_code: "CL", region_code: "13", comuna_code: "13101", address: "Av. Matta 100" };
+    const valid = { name: "Clima Andes", website: "https://climaandes.cl", phone: "+56961234567", description: "Tienda distribuidora de aire acondicionado", category: "distribuidor",
+      location, locations: [location], import_eligible: true, importable_location_indexes: [0], review_flags: [] };
+    valid.evidence = ["name", "phone", "description"].map(field => ({ field, value: valid[field], provider: "official_website", source_url: valid.website }));
+    for (const [changes, expected] of [[{}, "validated"], [{ location: { ...location, country_code: "AR" } }, "unverified"], [{ description: "" }, "unverified"], [{ phone: "+5492915666646" }, "unverified"], [{ category: "otro" }, "unverified"]]) {
+      await db.exec("begin");
+      try {
+        const row = (await db.query("update prospecting_campaign_candidates set enrichment_status='completed',candidate_snapshot=$2::jsonb,enrichment_summary=$3::jsonb where id=$1 returning discovery_status", [job.candidate_relation_id, JSON.stringify({ ...valid, ...changes }), JSON.stringify({ validation_version: "public-web-v4", official_pages_verified: 1 })])).rows[0];
+        assert.equal(row.discovery_status, expected);
+      } finally { await db.exec("rollback"); }
+    }
     const v = await reserve(job.id, "validation", jobClaim.lease_token ?? job.lease_token); assert.ok(v.reservation_token);
     await finish(v.reservation_token, { status: "applied", discoveries: [], queries: ["oficial"] });
     const two = await reserve(tasks[1].id);
@@ -173,9 +203,33 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     const counts = (await db.query("select count(*)::int n from prospecting_research_requests")).rows[0].n;
     await db.query("insert into prospecting_research_requests(run_id,operation_id,kind,completed_at) select $1,gen_random_uuid(),'validation',now() from generate_series(1,$2::integer)", [rid, 20 - counts]);
     assert.equal((await reserve(cappedTask)).reason_code, "DAILY_LIMIT");
+    const attemptBefore = (await db.query("select attempts from prospect_enrichment_jobs where id=$1", [job.id])).rows[0].attempts;
+    await assert.rejects(db.query("select fail_prospect_enrichment($1,$2,'worker',$3,'ResearchDeferred: DAILY_LIMIT')", [job.id,api,api]), /Invalid enrichment lease/);
+    const pause = (await db.query("select fail_prospect_enrichment($1,$2,'worker',$3,'ResearchDeferred: DAILY_LIMIT') result", [job.id,api,jobClaim.lease_token ?? job.lease_token])).rows[0].result;
+    assert.equal(pause.status, "paused");
+    assert.equal((await db.query("select attempts from prospect_enrichment_jobs where id=$1", [job.id])).rows[0].attempts, attemptBefore - 1);
+    assert.equal((await db.query("select enrichment_status from prospecting_runs where id=$1", [rid])).rows[0].enrichment_status, "paused");
+    assert.equal((await db.query("select count(*)::int n from prospect_enrichment_jobs where run_id=$1 and status='failed'", [rid])).rows[0].n, 0);
     await db.exec("set role authenticated");
     await assert.rejects(db.query("select * from prospecting_research_requests"), /permission denied/);
     await assert.rejects(reserve(tasks[0].id), /permission denied/);
     await db.exec("reset role");
   } finally { await db.close(); }
+});
+
+test("business selection rejects foreign directories, jobs, unrelated types and invented URLs; merges pages", () => {
+  const urls = ["https://extremominero.com.ar/directorio-pyme/schuler/", "https://emplea.inacap.cl/jobs/hvac",
+    "https://yelu.cl/category/clima", "https://climaandes.cl/nancagua", "https://climaandes.cl/rancagua", "https://andeshvac.com", "https://usuariofinal.cl"];
+  const payload = body(urls.map(url => hit(url)));
+  const selected = urls.concat("https://inventada.cl", "https://andeshvac.com/inventada").map(url => ({ name: "Clima Andes", source_url: url, country_code: "CL", is_business: true,
+    in_requested_territory: true, target_type: url.includes("usuariofinal") ? "otro" : "distribuidor", activity: "Distribuidor mayorista de equipos HVAC" }));
+  payload.content.at(-1).text = JSON.stringify({ businesses: selected });
+  const result = selectBusinesses(payload, parseResearch(payload, "t").discoveries, ["distribuidor"]);
+  assert.deepEqual(result.discoveries.map(h => h.website), ["https://climaandes.cl/nancagua", "https://andeshvac.com/"]);
+  assert.equal(selectBusinesses(body([]), [], []).selection_error, "INVALID_BUSINESS_SELECTION");
+  selected[3].country_code = "AR"; selected[4].in_requested_territory = false;
+  payload.content.at(-1).text = JSON.stringify({ businesses: selected });
+  assert.equal(selectBusinesses(payload, parseResearch(payload, "t").discoveries, ["distribuidor"], ["https://andeshvac.com/contacto"]).discoveries.length, 0);
+  assert.equal(businessSiteIssue("https://globalhvac.com/contacto/chile"), null);
+  assert.equal(discoveryIdentity("https://climaandes.cl/a").key, discoveryIdentity("https://www.climaandes.cl/b").key);
 });

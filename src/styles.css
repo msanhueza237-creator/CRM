@@ -2936,6 +2936,7 @@ th {
 
 .prospecting-form input,
 .prospecting-form select,
+.prospecting-form textarea,
 .operation-controls select,
 .candidate-filters select,
 .candidate-link-action select {
@@ -2950,11 +2951,21 @@ th {
 
 .prospecting-form input:focus,
 .prospecting-form select:focus,
+.prospecting-form textarea:focus,
 .operation-controls select:focus,
 .candidate-filters select:focus,
 .candidate-link-action select:focus {
   outline: 3px solid rgba(11, 114, 133, 0.12);
   border-color: #0b7285;
+}
+
+.prospecting-form textarea {
+  font: inherit;
+  font-weight: 400;
+  line-height: 1.5;
+  min-height: 150px;
+  padding: 10px 12px;
+  resize: vertical;
 }
 
 .prospecting-form-heading > div:first-child span {
@@ -3187,6 +3198,9 @@ th {
 
 .prospecting-chip-row > span {
   display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
   align-items: center;
   gap: 5px;
   border-radius: 999px;
@@ -3198,6 +3212,7 @@ th {
 }
 
 .prospecting-chip-row > span button {
+  flex: 0 0 19px;
   width: 19px;
   height: 19px;
   display: grid;
@@ -3214,6 +3229,23 @@ th {
   padding: 4px 7px;
   font-size: 11px;
 }
+
+.candidate-visit-section {
+  border-top: 1px solid #d5e1e5;
+  padding: 20px 0;
+}
+
+.candidate-visit-section h3,
+.candidate-visit-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.candidate-visit-section h3 { font-size: 17px; }
+.candidate-visit-section .candidate-definition-grid { margin-bottom: 18px; }
+.candidate-visit-section a { overflow-wrap: anywhere; }
 
 .source-grid {
   grid-template-columns: repeat(4, minmax(0, 1fr));
