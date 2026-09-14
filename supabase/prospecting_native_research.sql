@@ -258,7 +258,7 @@ begin
       and public.prospecting_discovery_identity(e->>'source_url')=public.prospecting_discovery_identity(p_candidate->>'website'));
   if not v_address then return null; end if;
   v_activity:=translate(lower(coalesce(p_candidate->>'description','')),U&'\00e1\00e9\00ed\00f3\00fa\00fc\00f1','aeiouun');
-  for v_part in select regexp_split_to_table(v_activity,E'[.!?;\n]') loop
+  for v_part in select regexp_split_to_table(v_activity,E'[!?;\n]') loop
     if v_part ~ '\m(no|nunca|excepto|sin|dejamos de)\M'
       or v_part !~ '\m(climatizacion|refrigeracion|aires? acondicionados?|hvac)\M'
       or v_part ~ '\m(centro comercial|mall|optica|neumaticos|supermercado|hotel|restaurante|automotriz|transporte refrigerado)\M' then continue; end if;

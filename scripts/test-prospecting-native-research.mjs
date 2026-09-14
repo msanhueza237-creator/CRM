@@ -202,7 +202,9 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     valid.evidence.push({field:"location.address",value:location.address,provider:"official_website",source_url:valid.website});
     for (const [description,channel] of [[valid.description,"retail"],["Empresa de instalacion de climatizacion residencial","services"],
       ["Empresa de servicios de aire acondicionado residencial","services"],["Nuestras instalaciones cuentan con aire acondicionado",null],
-      ["Distribuidor online de equipos de climatizacion",null],["Centro comercial con aire acondicionado",null],["No hacemos instalacion de aire acondicionado",null]]) {
+      ["Distribuidor online de equipos de climatizacion",null],["Centro comercial con aire acondicionado",null],["No hacemos instalacion de aire acondicionado",null],
+      ["Nuestro equipo realiza la instalacion. Trabajamos en climatizacion y refrigeracion industrial.","services"],
+      ["Somos un hotel con climatizacion. Contratamos instalacion externa.",null]]) {
       const probe={...valid,description,evidence:valid.evidence.map(e=>e.field==="description"?{...e,value:description}:e)};
       assert.equal((await db.query("select prospecting_commercial_channel($1::jsonb) channel",[JSON.stringify(probe)])).rows[0].channel,channel,description);
     }

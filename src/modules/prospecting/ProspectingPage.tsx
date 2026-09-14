@@ -1725,7 +1725,9 @@ function CandidateDetail({
       : "Listo para importar"
     : "Importación bloqueada";
   const readinessDescription = !commercialReady
-    ? "Falta confirmar que identidad, actividad, domicilio y contacto pertenecen a una empresa del alcance solicitado. Aprobar y vincular están deshabilitados."
+    ? candidate.enrichmentSummary.enrichment_version === "retained-sites-v1"
+      ? "La evidencia recuperada se conserva. La admisión sigue pendiente por las comprobaciones indicadas a continuación."
+      : "Falta confirmar que identidad, actividad, domicilio y contacto pertenecen a una empresa del alcance solicitado. Aprobar y vincular están deshabilitados."
     : identityConflict
     ? "Los identificadores exactos se contradicen. Aprobar está bloqueado; selecciona explícitamente una empresa para vincular o rechaza el candidato."
     : candidate.importEligible
@@ -1963,6 +1965,12 @@ function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
   if (flag === "missing_business_activity") return "Falta una descripción comprobable de la actividad comercial.";
   if (flag === "missing_business_address") return "Falta un domicilio comercial verificable dentro del territorio solicitado.";
   if (flag === "official_site_unreadable") return "No se pudo leer el sitio oficial respetando sus condiciones de acceso; no se inferirán datos faltantes.";
+  if (flag === "official_robots_denied") return "El sitio restringe la lectura automática. Se respetó esa restricción.";
+  if (flag === "official_robots_unavailable") return "No se pudo comprobar el permiso de lectura del sitio. No significa que la empresa esté fuera del rubro.";
+  if (flag === "official_site_unavailable") return "El sitio no respondió o no pudo leerse. Los datos faltantes siguen pendientes.";
+  if (flag === "official_site_timeout") return "El sitio excedió el tiempo de lectura. La investigación queda pendiente, sin inferir los datos faltantes.";
+  if (flag === "official_site_unsafe") return "La dirección web no cumple las condiciones de seguridad para consultarla.";
+  if (flag === "analysis_not_confirmed") return "Los datos oficiales se conservaron, pero el análisis guardado de DeepSeek aún no confirma el perfil comercial.";
   if (flag === "missing_business_contact") return "No se pudo confirmar un telefono o correo comercial.";
   if (flag === "outside_requested_territory") return "No se pudo confirmar un domicilio dentro del territorio de la campana.";
   if (flag === "missing_required_evidence") return "Falta evidencia oficial suficiente para aprobar.";

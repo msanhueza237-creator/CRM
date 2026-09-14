@@ -30,6 +30,15 @@ const candidate = () => ({ name: "Clima Andes", phone: "+56721234567", email: "v
   evidence: [{ field: "name", value: "Clima Andes" }, { field: "phone", value: "+56721234567" }, { field: "description", value: "Tienda y distribuidor de aire acondicionado" }, {field:"location.address",value:"Av. Republica 100"}].map(e => ({ ...e, source: "official_website", url: "https://climaandes.com/contacto" })),
 });
 
+test("incomplete analysis or conflicting site identity is pending, not an unrelated business", () => {
+  for (const flag of ["official_identity_conflict", "analysis_not_confirmed", "missing_official_identity"])
+    assert.equal(candidateQuality({...candidate(),reviewFlags:[flag]}),"pending");
+  assert.equal(candidateQuality({...candidate(),reviewFlags:["excluded_business_type"]}),"outside");
+  assert.equal(commercialChannel("Nuestro equipo realiza la instalacion. Trabajamos en climatizacion y refrigeracion industrial.",true),"services");
+  assert.equal(commercialChannel("Somos un hotel con climatizacion. Contratamos instalacion externa.",true),null);
+  assert.equal(commercialChannel("No realizamos instalacion. Vendemos equipos de climatizacion online.",true),null);
+});
+
 test("historical validations and directory contacts cannot enter the contactable list", () => {
   for (const enrichmentSummary of [{}, { validation_version: "public-web-v3" }])
     assert.equal(candidateQuality({ ...candidate(), enrichmentSummary }), "pending");
@@ -48,7 +57,7 @@ test("contactable list requires identity, activity, territory and business conta
   assert.equal(candidateQuality(candidate()), "contactable");
   for (const changes of [{ phone: "", email: "" }, { evidence: [] }, { locations: [] }, { businessLine: "" }, { discoveryStatus: "pending" }, { importEligible: false }])
     assert.equal(candidateQuality({ ...candidate(), ...changes }), "pending");
-  for (const changes of [{ phone: "+5492915666646" }, { website: "https://extremominero.com.ar" }, { reviewFlags: ["official_identity_conflict"] }, { reviewFlags: ["outside_target_types"] }])
+  for (const changes of [{ phone: "+5492915666646" }, { website: "https://extremominero.com.ar" }, { reviewFlags: ["outside_target_types"] }])
     assert.equal(candidateQuality({ ...candidate(), ...changes }), "outside");
 });
 

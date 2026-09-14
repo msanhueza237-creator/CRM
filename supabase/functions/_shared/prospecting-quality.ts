@@ -36,7 +36,7 @@ export function hasVerifiedContact(candidate: ProspectCandidate, field: "phone" 
 }
 
 export function commercialChannel(activity: string, physicalAddress: boolean): "retail" | "services" | null {
-  const fragments = text(activity).split(/[.!?;\n]/).filter(part => !/\b(no|nunca|excepto|sin|dejamos de)\b/.test(part));
+  const fragments = text(activity).split(/[!?;\n]/).filter(part => !/\b(no|nunca|excepto|sin|dejamos de)\b/.test(part));
   for (const fragment of fragments) {
     if (!/\b(?:climatizacion|refrigeracion|aires? acondicionados?|hvac)\b/.test(fragment)) continue;
     if (/\b(?:centro comercial|mall|optica|neumaticos|supermercado|hotel|restaurante|automotriz|transporte refrigerado)\b/.test(fragment)) continue;
@@ -56,7 +56,8 @@ export function candidateQuality(candidate: ProspectCandidate): CandidateQuality
     } catch { /* Missing URLs remain unverified. */ }
   }
   const directory = /\b(?:somos (?:un |el )?directorio|es (?:un |el )directorio|directorio (?:empresarial|de empresas)|bolsa de empleo)\b/.test(text(candidate.businessLine));
-  if (foreignPhone || foreignSite || directory || candidate.reviewFlags.some(flag => ["foreign_country", "foreign_phone", "foreign_contact", "outside_target_types", "excluded_business_type", "directory_or_non_business", "official_identity_conflict"].includes(flag))) return "outside";
+  if (foreignPhone || foreignSite || directory || candidate.reviewFlags.some(flag => ["foreign_country", "foreign_phone", "foreign_contact", "outside_target_types", "excluded_business_type", "directory_or_non_business"].includes(flag))) return "outside";
+  if (candidate.reviewFlags.some(flag => ["official_identity_conflict", "missing_official_identity", "analysis_not_confirmed"].includes(flag))) return "pending";
   // Historical validation did not verify that all fields belonged to one business.
   if (candidate.discoveryStatus && candidate.enrichmentSummary?.validation_version !== "public-web-v4") return "pending";
   const contact = hasVerifiedContact(candidate, "phone") || hasVerifiedContact(candidate, "email");

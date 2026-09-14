@@ -10,7 +10,7 @@ index ebb8546..295ea33 100644
      )
      tasks: list[ClaimedTask] = []
 diff --git a/app/crm/http.py b/app/crm/http.py
-index 1607202..ff4b67e 100644
+index 1607202..820d880 100644
 --- a/app/crm/http.py
 +++ b/app/crm/http.py
 @@ -162,5 +162,6 @@ class HttpCRMPort:
@@ -21,14 +21,15 @@ index 1607202..ff4b67e 100644
 +            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_research_v3", "deepseek_candidates_v2", "google_first_research_v1"]},
              headers={"Idempotency-Key": str(uuid.uuid4())},
          )
-@@ -173,4 +174,23 @@ class HttpCRMPort:
+@@ -173,4 +174,24 @@ class HttpCRMPort:
          return ClaimedRun.model_validate(payload)
  
-+    async def research(self, run_id: str, operation_id: str, kind: str, lease_token: str) -> dict:
++    async def research(self, run_id: str, operation_id: str, kind: str, lease_token: str, *, official_context=None) -> dict:
 +        response = await self._request("POST", f"prospecting-runs/{run_id}/research",
 +            timeout=max(self.timeout, 125),
 +            json={"worker_id": self._require_worker_id(), "operation_id": operation_id,
-+                  "kind": kind, "lease_token": lease_token})
++                  "kind": kind, "lease_token": lease_token,
++                  **({"official_context": official_context} if official_context else {})})
 +        self._ensure_success(response)
 +        report = self._unwrap(response.json())
 +        if report.get("status") == "preparing":
@@ -45,30 +46,61 @@ index 1607202..ff4b67e 100644
 +
      async def claim_enrichment(
          self, worker_id: str, lease_seconds: int = 300
-@@ -180,5 +200,5 @@ class HttpCRMPort:
+@@ -180,5 +201,5 @@ class HttpCRMPort:
              "POST",
              "prospecting-enrichment/claim",
 -            json={"worker_id": worker_id, "lease_seconds": lease_seconds},
 +            json={"worker_id": worker_id, "lease_seconds": lease_seconds, "capabilities": ["deepseek_research_v3", "google_first_research_v1"]},
              headers={"Idempotency-Key": str(uuid.uuid4())},
          )
-@@ -194,4 +214,5 @@ class HttpCRMPort:
+@@ -194,4 +215,6 @@ class HttpCRMPort:
                  "candidate_relation_id": job.get("candidate_relation_id"),
                  "candidate": payload.get("candidate"),
++                "discovery_hint": payload.get("discovery_hint"),
 +                "snapshot": payload.get("snapshot"),
                  "lease_token": payload.get("lease_token"),
                  "lease_expires_at": payload.get("lease_expires_at"),
 diff --git a/app/enrichment/web_scraper.py b/app/enrichment/web_scraper.py
-index ffd5d9e..c918635 100644
+index ffd5d9e..8deb6b1 100644
 --- a/app/enrichment/web_scraper.py
 +++ b/app/enrichment/web_scraper.py
-@@ -153,4 +153,5 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+@@ -28,5 +28,5 @@ from app.normalization.phone import normalize_phone, normalize_whatsapp_number
+ EMAIL_RE = re.compile(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9-]+)+")
+ PHONE_RE = re.compile(
+-    r"(?<!\d)(?:\+?56[ .-]?)?(?:9[ .-]?\d{4}[ .-]?\d{4}|2[ .-]?\d{4}[ .-]?\d{4})(?!\d)"
++    r"(?<!\d)(?:\+?56[ .-]?[2-9](?:[ .-]?\d){8}|[29][ .-]?\d{4}[ .-]?\d{4})(?!\d)"
+ )
+ _SOCIAL_DOMAINS = {
+@@ -65,4 +65,8 @@ class RobotsDenied(PermissionError):
+ 
+ 
++class RobotsUnavailable(OSError):
++    pass
++
++
+ class ResponseTooLarge(ValueError):
+     pass
+@@ -111,5 +115,12 @@ def _clean_public_description(value: str | None) -> str | None:
+     if len(text) < 40:
+         return None
+-    return text[:500].rstrip(" ,;:-")
++    return text[:1200].rstrip(" ,;:-")
++
++
++def _activity_weight(value: str | None) -> int:
++    text = unidecode(value or "").lower()
++    hvac = bool(re.search(r"\b(climatizacion|refrigeracion|aire acondicionado|hvac)\b", text))
++    actions = len(set(re.findall(r"\b(instalacion|mantencion|reparacion|mantenimiento|instalamos|tienda|showroom|sala de ventas)\b", text)))
++    return int(hvac) * 10 + min(actions, 5)
+ 
+ 
+@@ -153,4 +164,5 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
      locations: list[dict] = []
      declared_url: str | None = None
 +    non_business_page = False
  
      for anchor in soup.find_all("a", href=True):
-@@ -171,4 +172,10 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+@@ -171,4 +183,10 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
              continue
          for node in _jsonld_nodes(raw):
 +            node_types = node.get("@type", [])
@@ -79,20 +111,24 @@ index ffd5d9e..c918635 100644
 +                continue
              if isinstance(node.get("name"), str):
                  names.append(node["name"].strip())
-@@ -193,4 +200,5 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+@@ -193,4 +211,5 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
                      "comuna_name": address.get("addressLocality"),
                      "region_name": address.get("addressRegion"),
 +                    "country_code": address.get("addressCountry"),
                      "source_url": source_url,
                  }
-@@ -204,4 +212,6 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+@@ -204,4 +223,6 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
      if item_name:
          names.append(str(item_name.get("content") or item_name.get_text(" ")).strip())
 +    if not names and soup.title:
 +        names.append(soup.title.get_text(" ").strip())
      for selector in (
          ('meta[name="description"]', "content"),
-@@ -221,7 +231,13 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+@@ -218,10 +239,24 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+                 for paragraph in container.find_all("p")
+             ]
+-            about_text = " ".join(value for value in paragraphs if value)[:500]
++            about_text = " ".join(value for value in paragraphs if value)[:1200]
              if about_text:
                  descriptions.insert(0, about_text)
 +    if not descriptions:
@@ -100,47 +136,111 @@ index ffd5d9e..c918635 100644
 +        if container:
 +            descriptions.extend(p.get_text(" ") for p in container.find_all("p")
 +                if any(term in unidecode(p.get_text(" ")).lower() for term in _SPECIALTY_TERMS))
++    # Keep a complete, source-local service description instead of losing the
++    # commercial activity when a generic homepage or about-page tagline wins.
++    container = soup.select_one("main") or soup.body
++    if container:
++        for element in container.find_all(["p", "li", "h1", "h2", "h3", "h4"]):
++            value = _clean_public_description(element.get_text(" "))
++            if value and _activity_weight(value) >= 10:
++                descriptions.append(value)
      locality = soup.select_one('[itemprop="addressLocality"]')
      region = soup.select_one('[itemprop="addressRegion"]')
      street = soup.select_one('[itemprop="streetAddress"]')
 +    country = soup.select_one('[itemprop="addressCountry"]')
      if locality or region or street:
          locations.append(
-@@ -243,4 +259,5 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+@@ -243,4 +278,5 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
                  ),
                  "source_url": source_url,
 +                "country_code": str(country.get("content") or country.get_text(" ")).strip() if country else None,
              }
          )
-@@ -268,4 +285,13 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+@@ -268,9 +304,41 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
  
      visible_text = " ".join(unidecode(page_text).casefold().split())
 +    address_blocks = []
-+    for element in soup.select("address, p, li, footer div"):
++    for element in soup.select("address, p, li, footer div, [itemprop='address']"):
 +        block = " ".join(element.get_text(" ").split())
++        if re.fullmatch(r"\s*(?:direccion|ubicacion)\s*:?\s*", unidecode(block).lower()) and element.parent:
++            block = " ".join(element.parent.get_text(" ").split())
 +        normalized = unidecode(block).lower()
-+        if (12 <= len(block) <= 240 and re.search(r"\d", block)
-+            and (element.name == "address" or re.search(r"\b(direccion|ubicacion|avenida|av\.|calle|pasaje|camino|ruta|carretera)\b", normalized))
++        if (12 <= len(block) <= 800 and re.search(r"\d", block)
++            and (element.name == "address" or re.search(r"\b(direccion|ubicacion|avenida|av\b|calle|pasaje|pje\b|camino|ruta|carretera)\b", normalized))
 +            and not re.search(r"\b(cobertura|atendemos|despachos|envios|servicios en)\b", normalized)
 +            and all(item["text"] != block for item in address_blocks)):
-+            address_blocks.append({"text": block, "source_url": source_url})
++            # Street and locality are often adjacent elements in one contact
++            # block. Never borrow a commune from SEO/coverage elsewhere.
++            parent = element.parent
++            if parent and parent.name not in {"body", "html", "main", "article", "ul", "ol"} and element.name != "li":
++                context = " ".join(parent.get_text(" ").split())
++                clean_context = unidecode(context).lower()
++                if (len(block) < len(context) <= 800
++                    and not re.search(r"\b(cobertura|atendemos|despachos|envios|servicios en)\b", clean_context)
++                    and len(re.findall(r"\b(?:direccion|ubicacion)\b", clean_context)) <= 1):
++                    block = context
++            block = re.split(r"\b(?:e-?mail|correo|telefono|whatsapp|horarios?)\s*:?", block, flags=re.I)[0]
++            phone = PHONE_RE.search(block)
++            if phone:
++                block = block[:phone.start()]
++            email = EMAIL_RE.search(block)
++            if email:
++                block = block[:email.start()]
++            block = re.sub(r"^(?:d[oó]nde estamos\s*)?(?:direcci[oó]n|ubicaci[oó]n)\s*:\s*", "", block, flags=re.I).strip(" ,;|")
++            if not 12 <= len(block) <= 350 or len(re.findall(r"\b(?:direccion|ubicacion)\b", unidecode(block).lower())) > 1:
++                continue
++            if all(item["text"] != block for item in address_blocks):
++                address_blocks.append({"text": block, "source_url": source_url})
      specialties = sorted({term for term in _SPECIALTY_TERMS if term in visible_text})
      brands = sorted({brand for brand in _BRAND_TERMS if re.search(rf"(?<!\w){re.escape(brand.casefold())}(?!\w)", visible_text)}, key=str.casefold)
-@@ -296,4 +322,6 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
+ 
+     description = next(
+-        (prepared for value in descriptions if (prepared := _clean_public_description(value))),
++        (prepared for value in sorted(descriptions, key=_activity_weight, reverse=True) if (prepared := _clean_public_description(value))),
+         None,
+     )
+@@ -296,6 +364,8 @@ def _page_enrichment(response: SafeResponse) -> tuple[dict, list[str]]:
      field_sources.update({f"social_media.{platform}": source_url for platform in social})
      result = {
 +        "non_business_page": non_business_page,
 +        "address_blocks": address_blocks,
          "name": next((name for name in names if name), None),
-         "email": sorted(email for email in emails if email)[0] if emails else None,
-@@ -484,4 +512,6 @@ async def enrich_from_website(
+-        "email": sorted(email for email in emails if email)[0] if emails else None,
++        "email": sorted((email for email in emails if email), key=lambda email: (email.rsplit("@", 1)[-1].lower() != source_host.removeprefix("www."), email.lower()))[0] if emails else None,
+         "phone": primary_phone,
+         "whatsapp_number": primary_whatsapp,
+@@ -433,12 +503,18 @@ class SecureWebClient:
+         robots_url = urlunsplit((parsed.scheme, parsed.netloc, "/robots.txt", "", ""))
+         robots_url = await self.validate_url(robots_url)
+-        try:
+-            status, _, content = await self._request_once(robots_url)
+-        except (httpx.HTTPError, OSError, ResponseTooLarge):
+-            return False
++        for redirect_number in range(MAX_REDIRECTS + 1):
++            try:
++                status, headers, content = await self._request_once(robots_url)
++            except (httpx.HTTPError, OSError, ResponseTooLarge) as error:
++                raise RobotsUnavailable("robots.txt could not be read") from error
++            if status not in {301, 302, 303, 307, 308}:
++                break
++            if redirect_number == MAX_REDIRECTS or not headers.get("location"):
++                raise RobotsUnavailable("robots.txt redirect could not be resolved")
++            robots_url = await self.validate_url(urljoin(robots_url, headers["location"]))
+         if status == 404:
+             return True
+         if status < 200 or status >= 300:
+-            return False
++            raise RobotsUnavailable("robots.txt returned an unavailable status")
+         parser = urllib.robotparser.RobotFileParser()
+         parser.set_url(robots_url)
+@@ -484,4 +560,6 @@ async def enrich_from_website(
          response = await secure_client.fetch_html(website)
          enrichment, relevant_urls = _page_enrichment(response)
 +        if enrichment.get("non_business_page"):
 +            return enrichment
          visited = {response.final_url.rstrip("/")}
          for page_url in relevant_urls[:MAX_SITE_PAGES]:
-@@ -491,8 +521,10 @@ async def enrich_from_website(
+@@ -491,8 +569,10 @@ async def enrich_from_website(
              try:
                  contact_response = await secure_client.fetch_html(page_url)
 +                if urlsplit(contact_response.final_url).hostname != urlsplit(response.final_url).hostname:
@@ -152,19 +252,26 @@ index ffd5d9e..c918635 100644
 +            if contact and not contact.get("non_business_page"):
                  for field_name in ("name", "email", "phone", "whatsapp_number"):
                      if not enrichment.get(field_name) and contact.get(field_name):
-@@ -520,4 +552,5 @@ async def enrich_from_website(
+@@ -509,5 +589,5 @@ async def enrich_from_website(
+                     ) or None
+                 if contact.get("description") and (
+-                    not enrichment.get("description") or _is_about_url(contact_response.final_url)
++                    not enrichment.get("description") or _activity_weight(contact["description"]) > _activity_weight(enrichment.get("description"))
+                 ):
+                     enrichment["description"] = contact["description"]
+@@ -520,4 +600,5 @@ async def enrich_from_website(
                          *contact["locations"],
                      ]
 +                enrichment["address_blocks"] = [*(enrichment.get("address_blocks") or []), *(contact.get("address_blocks") or [])]
                  enrichment["social_media"] = {
                      **(enrichment.get("social_media") or {}),
-@@ -530,5 +563,6 @@ async def enrich_from_website(
+@@ -530,5 +611,6 @@ async def enrich_from_website(
                  enrichment["brands"] = sorted({*(enrichment.get("brands") or []), *(contact.get("brands") or [])}, key=str.casefold) or None
                  enrichment["pages_visited"] = [*(enrichment.get("pages_visited") or []), contact_response.final_url]
 -    except Exception:  # noqa: BLE001 - enrichment is deliberately best-effort
 -        return {}
 +    except Exception as error:  # noqa: BLE001 - never replace missing evidence with invented data
-+        reason = "ROBOTS_DENIED" if isinstance(error, RobotsDenied) else "UNSAFE_TARGET" if isinstance(error, UnsafeTarget) else "SITE_UNAVAILABLE"
++        reason = "ROBOTS_DENIED" if isinstance(error, RobotsDenied) else "ROBOTS_UNAVAILABLE" if isinstance(error, RobotsUnavailable) else "UNSAFE_TARGET" if isinstance(error, UnsafeTarget) else "SITE_UNAVAILABLE"
 +        return {"read_error": reason}
      return enrichment
 diff --git a/app/integrations/monitor.py b/app/integrations/monitor.py
@@ -292,7 +399,7 @@ index 8ba9193..cf69d89 100644
      expected_details = tasks * snapshot.campaign.max_results_per_task
      maximum_details = expected_details * settings.google_places_detail_multiplier
 diff --git a/app/prospecting/contracts.py b/app/prospecting/contracts.py
-index 971c529..da584a8 100644
+index 971c529..11c0005 100644
 --- a/app/prospecting/contracts.py
 +++ b/app/prospecting/contracts.py
 @@ -15,4 +15,5 @@ class SourceName(str, Enum):
@@ -333,12 +440,17 @@ index 971c529..da584a8 100644
 +    deepseek_discoveries: list[dict[str, str]] = Field(default_factory=list, max_length=30)
  
      @model_validator(mode="after")
-@@ -340,4 +345,5 @@ class ClaimedRun(BaseModel):
+@@ -340,8 +345,10 @@ class ClaimedRun(BaseModel):
  
  class ClaimedEnrichment(BaseModel):
 +    snapshot: ProspectingRunSnapshot | None = None
      job_id: str = Field(min_length=1, max_length=200)
      run_id: str = Field(min_length=1, max_length=200)
+     candidate_relation_id: str = Field(min_length=1, max_length=200)
+     candidate: ProspectCandidate
++    discovery_hint: ProspectCandidate | None = None
+     lease_token: str = Field(min_length=1, max_length=200)
+     lease_expires_at: datetime
 diff --git a/app/prospecting/deepseek_discovery.py b/app/prospecting/deepseek_discovery.py
 new file mode 100644
 index 0000000..36efc9e
@@ -377,30 +489,49 @@ index 0000000..36efc9e
 +    return results
 diff --git a/app/prospecting/discovery_validation.py b/app/prospecting/discovery_validation.py
 new file mode 100644
-index 0000000..1813cb4
+index 0000000..33a66ba
 --- /dev/null
 +++ b/app/prospecting/discovery_validation.py
-@@ -0,0 +1,64 @@
+@@ -0,0 +1,99 @@
 +from __future__ import annotations
++from datetime import datetime, timezone
 +
 +from app.prospecting.contracts import ProspectCandidate, ProspectLocation, SourceName
 +from app.prospecting.scoring import classify_and_score
 +from app.prospecting.store import WorkerTask
 +from app.prospecting.validation import sanitize_unsubstantiated_external_fields, validate_candidate
-+from app.prospecting.site_quality import site_issue
++from app.prospecting.site_quality import site_issue, same_site
 +from app.prospecting.quality import commercial_channel
 +
 +
-+async def validate_discovery(executor, candidate, snapshot, research_urls=None):
++def current_google_hint(hint, candidate):
++    if not hint or not candidate.candidate_id or hint.candidate_id != candidate.candidate_id or not hint.website:
++        return None
++    now = datetime.now(timezone.utc)
++    valid = {e.field: e.value for e in hint.evidence if e.provider == SourceName.google_places
++        and e.retention_until and e.retention_until > now and e.observed_at <= now}
++    if valid.get("website") != hint.website or valid.get("name") != hint.name:
++        return None
++    # Hints are ephemeral matching aids, never official evidence in the result.
++    location = hint.location.model_copy(update={"address": valid.get("location.address"),
++        "comuna_name": valid.get("location.comuna_name")})
++    return hint.model_copy(update={"phone": valid.get("phone"), "location": location})
++
++
++async def validate_discovery(executor, candidate, snapshot, research_urls=None, *, known_hint=None, analysis_accepted=None, site_cache=None):
 +    """Only verified official fields can promote a public search hint."""
 +    if SourceName.official_website not in snapshot.campaign.sources:
 +        raise RuntimeError("La campana requiere una fuente oficial para verificar datos")
 +    prepared = ProspectCandidate(candidate_id=candidate.candidate_id, name=candidate.name,
 +        location=ProspectLocation(), market_signals={
 +            "google_discovery" if candidate.market_signals.get("google_discovery") else "deepseek_discovery": True})
++    empty = prepared.model_copy(deep=True)
 +    # An explicit empty analysis is not permission to fall back to the original site.
 +    urls = list(research_urls) if research_urls is not None else (
 +        [candidate.website] if executor._is_official_website_candidate(candidate) else [])
++    hint = current_google_hint(known_hint, candidate)
++    if hint and not site_issue(hint.website) and not executor._is_blocked_discovery_domain(hint.website):
++        urls = list(dict.fromkeys([hint.website, *urls]))
 +    origin_issue = site_issue(candidate.website)
 +    territory = snapshot.campaign.territories[0]
 +    task = WorkerTask(id=f"discovery-{candidate.candidate_id}", run_id=snapshot.crm_run_id,
@@ -410,11 +541,16 @@ index 0000000..1813cb4
 +    for url in urls[:5]:
 +        if not isinstance(url, str) or len(url)>2048:
 +            continue
-+        probe = prepared.model_copy(update={"website": url})
-+        if not executor._is_official_website_candidate(probe):
++        probe = empty.model_copy(deep=True, update={"website": url})
++        if not (hint and same_site(hint.website, url)) and not executor._is_official_website_candidate(probe):
 +            continue
-+        enriched = await executor._enrich_official_website(probe, task, snapshot)
-+        prepared = enriched
++        options = {"known_hint": hint} if hint else {}
++        if site_cache is not None:
++            options["site_cache"] = site_cache
++        enriched = await executor._enrich_official_website(probe, task, snapshot, **options)
++        # A second unreadable or unrelated page must not erase verified fields.
++        if len(enriched.evidence) > len(prepared.evidence) or not prepared.website:
++            prepared = enriched
 +        if (any(e.provider == SourceName.official_website and e.field == "name" for e in enriched.evidence)
 +            and enriched.location.comuna_code and (enriched.phone or enriched.email)):
 +            break
@@ -434,19 +570,30 @@ index 0000000..1813cb4
 +    channel = commercial_channel(prepared.description or "", bool(prepared.location.address))
 +    if not channel:
 +        reasons.append("commercial_profile_unconfirmed")
++    if hint and research_urls is not None and analysis_accepted is not True:
++        reasons.append("analysis_not_confirmed")
++    if not prepared.description:
++        reasons = [r for r in reasons if r != "not_hvac_related"]
 +    accepted = not reasons
 +    prepared = prepared.model_copy(update={"import_eligible": accepted,
 +        "score": prepared.score if accepted else 0, "market_score": prepared.market_score if accepted else 0,
 +        "importable_location_indexes": tuple(range(len(prepared.locations))) if accepted else (),
 +        "review_flags": tuple(dict.fromkeys(reasons))})
++    read_error = next((r for r in reasons if r in {"official_robots_denied", "official_robots_unavailable", "official_site_unsafe", "official_site_unavailable", "official_site_timeout", "official_site_unreadable"}), None)
++    outside = any(r in {"excluded_business_type", "foreign_country", "foreign_phone", "foreign_contact", "outside_target_types", "directory_or_non_business"} for r in reasons)
++    outcome = "qualified" if accepted else "outside_profile" if outside else "read_failed" if read_error else "incomplete_evidence"
 +    return prepared, {"validation_version": "public-web-v4", "official_pages_verified": int(official),
++        "enrichment_version": "retained-sites-v1", "validation_outcome": outcome, "known_site_reused": bool(hint),
 +        "commercial_profile_version": "climactiva-buyer-v1", "commercial_channel": channel or "unconfirmed",
 +        "website_found": bool(prepared.website), "validation_accepted": accepted,
 +        "validation_reasons": ", ".join(dict.fromkeys(reasons)),
 +        "validation_message": "Identidad, contacto y territorio verificados en sitio oficial" if accepted else
-+            "Hallazgo no admitido: perfil comercial o datos verificables incompletos"}
++            "La evidencia confirma un rubro o territorio fuera del perfil" if outside else
++            "Lectura del sitio pendiente; no equivale a una empresa fuera del rubro" if read_error else
++            "Evidencia oficial conservada; faltan comprobaciones para admitir como contactable" if official else
++            "Falta verificar identidad y datos en una fuente oficial; no se ha descartado por rubro"}
 diff --git a/app/prospecting/quality.py b/app/prospecting/quality.py
-index 1dbf6bb..484c7d5 100644
+index 1dbf6bb..bd57d03 100644
 --- a/app/prospecting/quality.py
 +++ b/app/prospecting/quality.py
 @@ -74,8 +74,16 @@ _STRONG_HVAC_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -500,7 +647,7 @@ index 1dbf6bb..484c7d5 100644
 +
 +
 +def commercial_channel(activity: str, physical_address: bool) -> str | None:
-+    for fragment in re.split(r"[.!?;\n]", unidecode(activity or "").casefold()):
++    for fragment in re.split(r"[!?;\n]", unidecode(activity or "").casefold()):
 +        if re.search(r"\b(no|nunca|excepto|sin|dejamos de)\b", fragment):
 +            continue
 +        if not re.search(r"\b(?:climatizacion|refrigeracion|aires? acondicionados?|hvac)\b", fragment):
@@ -514,10 +661,10 @@ index 1dbf6bb..484c7d5 100644
 +    return None
 diff --git a/app/prospecting/site_quality.py b/app/prospecting/site_quality.py
 new file mode 100644
-index 0000000..c030516
+index 0000000..1468e85
 --- /dev/null
 +++ b/app/prospecting/site_quality.py
-@@ -0,0 +1,39 @@
+@@ -0,0 +1,67 @@
 +"""Public business identity safeguards shared by discovery and enrichment."""
 +import re
 +from urllib.parse import urlsplit
@@ -531,7 +678,7 @@ index 0000000..c030516
 +    tld = host.split(".")[-1]
 +    if len(tld) == 2 and tld not in {"cl", "io", "ai", "co", "tv"}:
 +        return "foreign_country"
-+    if re.search(r"(^|\.)(yelu\.cl|cybo\.com|habitissimo\.cl|emplea\.inacap\.cl|auto-repair\.shop|yellowpages\.[a-z.]+)$", host):
++    if re.search(r"(^|\.)(laguiaonline\.cl|yelu\.cl|cybo\.com|habitissimo\.cl|emplea\.inacap\.cl|auto-repair\.shop|yellowpages\.[a-z.]+)$", host):
 +        return "directory_or_non_business"
 +    if re.search(r"/(directorio[^/]*|directory|empleos?|jobs|ofertas?-?(laborales|empleo)?|noticias|news|tag|category|categoria)(/|$)", parsed.path, re.I):
 +        return "directory_or_non_business"
@@ -557,13 +704,42 @@ index 0000000..c030516
 +
 +def chilean_phone(value: str | None) -> bool:
 +    return bool(re.fullmatch(r"\+56[2-9]\d{8}", value or ""))
++
++
++def same_site(left: str | None, right: str | None) -> bool:
++    def host(value):
++        return (urlsplit(value or "").hostname or "").lower().removeprefix("www.")
++    return bool(host(left) and host(left) == host(right))
++
++
++def generic_discovery_name(name: str, commune: str | None) -> bool:
++    value = unidecode(name).lower()
++    value = value.replace(unidecode(commune or "").lower(), "") if commune else value
++    words = set(re.findall(r"[a-z0-9]+", value))
++    return bool(words) and words <= {"aire", "acondicionado", "aires", "acondicionados", "climatizacion", "refrigeracion", "servicio", "servicios", "instalacion", "mantencion", "reparacion", "en", "de", "del", "la", "el", "y"}
++
++
++def matching_street(known_address: str | None, observed: str, commune: str | None) -> bool:
++    def normalized(value):
++        return " ".join(re.findall(r"[a-z0-9]+", unidecode(value or "").lower()))
++    known, actual, city = normalized(known_address), normalized(observed), normalized(commune)
++    if not city or not re.search(r"\b" + re.escape(city) + r"\b", actual):
++        return False
++    # Match the street text with its own civic number, not postal codes,
++    # contact numbers, broad service coverage or a shared commune alone.
++    for match in re.finditer(r"\b([a-z]+(?: [a-z]+){1,5}) (\d{1,5})\b", known):
++        words = match[1].split()[-2:]
++        if re.search(r"\b" + re.escape(" ".join(words) + " " + match[2]) + r"\b", actual):
++            return True
++    return False
 diff --git a/app/prospecting/sources.py b/app/prospecting/sources.py
-index 715ab57..714220a 100644
+index 715ab57..c24d009 100644
 --- a/app/prospecting/sources.py
 +++ b/app/prospecting/sources.py
-@@ -1,13 +1,13 @@
+@@ -1,13 +1,14 @@
  from __future__ import annotations
  
++import asyncio
 +import json
 +import re
 +import uuid
@@ -579,10 +755,10 @@ index 715ab57..714220a 100644
 -from urllib.parse import urlsplit
  
  from app.config import get_settings
-@@ -20,23 +20,22 @@ from app.enrichment.google_places import (
+@@ -20,23 +21,22 @@ from app.enrichment.google_places import (
  )
  from app.enrichment.web_scraper import enrich_from_website
-+from app.prospecting.site_quality import site_issue, same_business, chilean_country, chilean_phone
++from app.prospecting.site_quality import site_issue, same_business, chilean_country, chilean_phone, same_site, generic_discovery_name, matching_street
  from app.normalization.address import normalize_address
  from app.normalization.name import normalize_name
  from app.normalization.phone import normalize_phone, normalize_whatsapp_number
@@ -610,7 +786,7 @@ index 715ab57..714220a 100644
 -from app.prospecting.dedup import merge_exact_candidate
  from app.prospecting.quality import evaluate_google_discovery, evaluate_hvac_quality
  from app.prospecting.store import WorkerTask
-@@ -65,4 +64,10 @@ class SourceNotConfigured(RuntimeError):
+@@ -65,4 +65,10 @@ class SourceNotConfigured(RuntimeError):
  
  
 +def _foreign_google_country(place: dict) -> bool:
@@ -621,14 +797,14 @@ index 715ab57..714220a 100644
 +
  class SourceExecutor(Protocol):
      async def search(
-@@ -189,5 +194,5 @@ def build_company_summary(candidate: ProspectCandidate) -> str:
+@@ -189,5 +195,5 @@ def build_company_summary(candidate: ProspectCandidate) -> str:
  
      comuna = candidate.location.comuna_name or candidate.location.region_name
 -    location_text = f" con actividad en {comuna}" if comuna else " en Chile"
 +    location_text = f" con actividad en {comuna}" if comuna else " con ubicación pendiente de verificar"
      specialties = tuple(
          dict.fromkeys(_SPECIALTY_LABELS.get(value.casefold(), value) for value in candidate.specialties)
-@@ -357,7 +362,22 @@ class AuthorizedSourceExecutor:
+@@ -357,7 +363,22 @@ class AuthorizedSourceExecutor:
              metrics = dict(result.metrics)
          elif task.source == SourceName.brave_search:
 -            result = await self._brave(task, snapshot)
@@ -654,13 +830,13 @@ index 715ab57..714220a 100644
 +            metrics["deepseek_duplicates_merged"] = len(discoveries) - len(novel)
          else:
              raise SourceNotConfigured(f"{task.source.value} is not a discovery source")
-@@ -369,4 +389,5 @@ class AuthorizedSourceExecutor:
+@@ -369,4 +390,5 @@ class AuthorizedSourceExecutor:
              task.source == SourceName.google_places
              and SourceName.official_website in snapshot.campaign.sources
 +            and snapshot.discovery_strategy != "google_places_first"
          ):
              candidates = [
-@@ -391,5 +412,6 @@ class AuthorizedSourceExecutor:
+@@ -391,5 +413,6 @@ class AuthorizedSourceExecutor:
              task,
              snapshot,
 -            max_queries=self.settings.google_places_queries_per_task,
@@ -668,35 +844,35 @@ index 715ab57..714220a 100644
 +                if snapshot.discovery_strategy == "google_places_first" else self.settings.google_places_queries_per_task,
          )
          unique_places: dict[str, dict] = {}
-@@ -407,4 +429,6 @@ class AuthorizedSourceExecutor:
+@@ -407,4 +430,6 @@ class AuthorizedSourceExecutor:
          paged_search = getattr(client, "text_search_page", None)
          page_limit = self.settings.google_places_pages_per_query if callable(paged_search) else 1
 +        if snapshot.discovery_strategy == "google_places_first" and callable(paged_search):
 +            page_limit = 3
          for query in queries:
              next_page_token: str | None = None
-@@ -427,5 +451,5 @@ class AuthorizedSourceExecutor:
+@@ -427,5 +452,5 @@ class AuthorizedSourceExecutor:
                      page = await paged_search(
                          query,
 -                        max_results=task.max_results,
 +                        max_results=20 if snapshot.discovery_strategy == "google_places_first" else task.max_results,
                          page_token=next_page_token,
                      )
-@@ -473,5 +497,5 @@ class AuthorizedSourceExecutor:
+@@ -473,5 +498,5 @@ class AuthorizedSourceExecutor:
              name = (place.get("displayName") or {}).get("text") or ""
              location = _location_for_google(place, task)
 -            if location.region_code != task.region_code or location.comuna_code != task.comuna_code:
 +            if _foreign_google_country(place) or location.region_code != task.region_code or location.comuna_code != task.comuna_code:
                  outside_territory += 1
                  continue
-@@ -483,5 +507,5 @@ class AuthorizedSourceExecutor:
+@@ -483,5 +508,5 @@ class AuthorizedSourceExecutor:
              if not assessment.allow_details:
                  reason = assessment.exclusion_reasons[0] if assessment.exclusion_reasons else "not_hvac_related"
 -                if reason == "excluded_business_type":
 +                if reason != "not_hvac_related":
                      prefilter_excluded += 1
                  else:
-@@ -500,8 +524,12 @@ class AuthorizedSourceExecutor:
+@@ -500,8 +525,12 @@ class AuthorizedSourceExecutor:
          details_requested = 0
          closed_permanently = 0
 -        for _priority, _query_hits, _order, place in survivors[:detail_limit]:
@@ -711,7 +887,7 @@ index 715ab57..714220a 100644
 +            if place_id and index < detail_limit and not (google_first and budget_limited):
                  reservation = await self.budget.reserve(
                      run_id=snapshot.crm_run_id,
-@@ -515,12 +543,14 @@ class AuthorizedSourceExecutor:
+@@ -515,12 +544,14 @@ class AuthorizedSourceExecutor:
                      budget_limited = True
                      budget_reason = reservation.reason
 -                    break
@@ -734,14 +910,14 @@ index 715ab57..714220a 100644
 +                    monthly_spend = reservation.monthly_spend_usd
              source = details or place
              if str(source.get("businessStatus") or "").upper() == "CLOSED_PERMANENTLY":
-@@ -531,5 +561,5 @@ class AuthorizedSourceExecutor:
+@@ -531,5 +562,5 @@ class AuthorizedSourceExecutor:
                  continue
              location = _location_for_google(source, task)
 -            if location.region_code != task.region_code or location.comuna_code != task.comuna_code:
 +            if _foreign_google_country(source) or location.region_code != task.region_code or location.comuna_code != task.comuna_code:
                  outside_territory += 1
                  continue
-@@ -656,130 +686,5 @@ class AuthorizedSourceExecutor:
+@@ -656,140 +687,31 @@ class AuthorizedSourceExecutor:
  
      async def _brave(self, task: WorkerTask, snapshot: ProspectingRunSnapshot) -> SourceSearchResult:
 -        if not self.settings.brave_search_api_key:
@@ -873,33 +1049,63 @@ index 715ab57..714220a 100644
 +        raise SourceNotConfigured("Brave fue retirado. Inicia una nueva ejecucion con DeepSeek Pro.")
  
      async def _enrich_official_website(
-@@ -792,4 +697,6 @@ class AuthorizedSourceExecutor:
+         self, candidate: ProspectCandidate, task: WorkerTask,
+         snapshot: ProspectingRunSnapshot | None = None,
++        known_hint: ProspectCandidate | None = None,
++        site_cache: dict | None = None,
+     ) -> ProspectCandidate:
+-        if not self._is_official_website_candidate(candidate):
++        known_site = bool(known_hint and same_site(known_hint.website, candidate.website)
++            and not self._is_blocked_discovery_domain(candidate.website or "") and not site_issue(candidate.website))
++        if not known_site and not self._is_official_website_candidate(candidate):
+             return candidate
+-        enrichment = await enrich_from_website(candidate.website)
++        if site_cache is not None and candidate.website in site_cache:
++            enrichment = site_cache[candidate.website]
++        else:
++            try:
++                enrichment = await asyncio.wait_for(enrich_from_website(candidate.website), timeout=60)
++            except asyncio.TimeoutError:
++                enrichment = {"read_error": "SITE_TIMEOUT"}
++            if site_cache is not None:
++                site_cache[candidate.website] = enrichment
          if not enrichment:
              return candidate
 +        if enrichment.get("read_error"):
-+            return candidate.model_copy(update={"review_flags": tuple(dict.fromkeys((*candidate.review_flags, "official_site_unreadable")))})
++            reason = {"ROBOTS_DENIED": "official_robots_denied", "ROBOTS_UNAVAILABLE": "official_robots_unavailable",
++                "UNSAFE_TARGET": "official_site_unsafe", "SITE_TIMEOUT": "official_site_timeout", "SITE_UNAVAILABLE": "official_site_unavailable"}.get(enrichment["read_error"], "official_site_unreadable")
++            return candidate.model_copy(update={"review_flags": tuple(dict.fromkeys((*candidate.review_flags, reason)))})
          source_url = enrichment.get("source_url") or candidate.website
          field_sources = enrichment.get("field_sources") or {}
-@@ -808,9 +715,15 @@ class AuthorizedSourceExecutor:
+@@ -808,9 +730,23 @@ class AuthorizedSourceExecutor:
                  evidence.append(item)
  
 -        add("website", candidate.website)
          website_name = enrichment.get("name")
-+        issue = site_issue(source_url)
-+        if issue or enrichment.get("non_business_page") or (website_name and not same_business(candidate.name, website_name)):
-+            return candidate.model_copy(update={"review_flags": tuple(dict.fromkeys((*candidate.review_flags,
-+                issue or "official_identity_conflict")))})
-+        add("website", candidate.website)
-         candidate_name = normalize_name(candidate.name)[0]
+-        candidate_name = normalize_name(candidate.name)[0]
 -        if website_name and normalize_name(website_name)[0] == candidate_name:
 -            add("name", website_name)
-+        if website_name and (normalize_name(website_name)[0] == candidate_name or same_business(candidate.name, website_name)):
-+            if candidate.market_signals.get("deepseek_discovery"):
++        issue = site_issue(source_url)
++        identity_matches = bool(website_name and same_business(candidate.name, website_name))
++        if (not identity_matches and website_name and known_site and same_site(source_url, known_hint.website)
++            and generic_discovery_name(known_hint.name, known_hint.location.comuna_name)):
++            addresses = [str(b.get("text") or "") for b in enrichment.get("address_blocks") or []]
++            addresses += [" ".join(str(a.get(k) or "") for k in ("address", "comuna_name")) for a in enrichment.get("locations") or []]
++            identity_matches = any(matching_street(known_hint.location.address, value, known_hint.location.comuna_name) for value in addresses)
++        if issue or enrichment.get("non_business_page") or (website_name and not identity_matches):
++            return candidate.model_copy(update={"review_flags": tuple(dict.fromkeys((*candidate.review_flags,
++                issue or "official_identity_conflict")))})
++        if not identity_matches and (candidate.market_signals.get("google_discovery") or candidate.market_signals.get("deepseek_discovery")):
++            return candidate.model_copy(update={"review_flags": (*candidate.review_flags, "missing_official_identity")})
++        candidate = candidate.model_copy(update={"website": source_url})
++        add("website", source_url)
++        if website_name and identity_matches:
++            if candidate.market_signals.get("deepseek_discovery") or candidate.market_signals.get("google_discovery"):
 +                candidate = candidate.model_copy(update={"name": str(website_name)[:300]})
 +            add("name", candidate.name)
  
          website_locations = list(enrichment.get("locations") or [])
-@@ -834,5 +747,21 @@ class AuthorizedSourceExecutor:
+@@ -834,5 +770,21 @@ class AuthorizedSourceExecutor:
              })()]
          prepared_locations: list[ProspectLocation] = []
 +        # Only physical-address blocks may establish a branch. Coverage/SEO
@@ -921,7 +1127,7 @@ index 715ab57..714220a 100644
 +                continue
              website_comuna = website_location.get("comuna_name")
              website_region = website_location.get("region_name")
-@@ -864,4 +793,10 @@ class AuthorizedSourceExecutor:
+@@ -864,4 +816,10 @@ class AuthorizedSourceExecutor:
          email = enrichment.get("email")
          phone = normalize_phone(enrichment.get("phone"))
 +        if phone and not chilean_phone(phone):
@@ -932,7 +1138,7 @@ index 715ab57..714220a 100644
 +            review_flags.append("foreign_contact")
          whatsapp_number = normalize_whatsapp_number(enrichment.get("whatsapp_number") or phone)
          website_description = enrichment.get("description")
-@@ -904,9 +839,17 @@ class AuthorizedSourceExecutor:
+@@ -904,9 +862,17 @@ class AuthorizedSourceExecutor:
          )
  
 -    async def enrich_existing(self, candidate: ProspectCandidate, run_id: str) -> tuple[ProspectCandidate, dict]:
@@ -951,12 +1157,12 @@ index 715ab57..714220a 100644
 +                    break
          if not website_available:
              prepared = prepared.model_copy(update={
-@@ -972,24 +915,10 @@ class AuthorizedSourceExecutor:
+@@ -972,24 +938,10 @@ class AuthorizedSourceExecutor:
          }
  
-+    async def validate_discovery(self, candidate: ProspectCandidate, snapshot: ProspectingRunSnapshot, research_urls=None):
++    async def validate_discovery(self, candidate: ProspectCandidate, snapshot: ProspectingRunSnapshot, research_urls=None, **kwargs):
 +        from app.prospecting.discovery_validation import validate_discovery
-+        return await validate_discovery(self, candidate, snapshot, research_urls)
++        return await validate_discovery(self, candidate, snapshot, research_urls, **kwargs)
 +
      async def _find_official_website(self, candidate: ProspectCandidate) -> str | None:
 -        if not self.settings.brave_search_api_key:
@@ -981,7 +1187,7 @@ index 715ab57..714220a 100644
 +        # Official URLs for unverified seeds come from the CRM research queue.
          return None
  
-@@ -998,7 +927,12 @@ class AuthorizedSourceExecutor:
+@@ -998,7 +950,12 @@ class AuthorizedSourceExecutor:
          if not url:
              return True
 +        if site_issue(url):
@@ -994,7 +1200,7 @@ index 715ab57..714220a 100644
 +            "topline.com", "guiahoreca.cl", "glonstruct.com", "chilopina.com",
              "amarillas.cl",
              "chileguia.cl",
-@@ -1006,4 +940,13 @@ class AuthorizedSourceExecutor:
+@@ -1006,4 +963,13 @@ class AuthorizedSourceExecutor:
              "chileinform.com",
              "hotfrog.cl",
 +            "cylex.cl",
@@ -1048,7 +1254,7 @@ index a1f71b7..71103c0 100644
              }
              records = sorted(
 diff --git a/app/prospecting/worker.py b/app/prospecting/worker.py
-index 439a859..1e83f17 100644
+index 439a859..a93737e 100644
 --- a/app/prospecting/worker.py
 +++ b/app/prospecting/worker.py
 @@ -18,7 +18,8 @@ from app.crm.port import (
@@ -1091,7 +1297,14 @@ index 439a859..1e83f17 100644
 +        self._staged_count = 0
  
      async def poll_once(self) -> bool:
-@@ -90,5 +95,37 @@ class ProspectingWorker:
+@@ -77,5 +82,5 @@ class ProspectingWorker:
+             if claim_enrichment is None:
+                 return reconciled_terminal
+-            enrichment = await claim_enrichment(self.worker_id, 300)
++            enrichment = await claim_enrichment(self.worker_id, 600)
+             if enrichment is None:
+                 return reconciled_terminal
+@@ -90,5 +95,48 @@ class ProspectingWorker:
              if enrich is None:
                  raise RuntimeError("The configured source executor cannot enrich existing candidates")
 -            candidate, summary = await enrich(claim.candidate, claim.run_id)
@@ -1101,15 +1314,26 @@ index 439a859..1e83f17 100644
 +                    raise RuntimeError("Discovery validation requires the campaign snapshot")
 +                urls = None
 +                report = {}
++                hint = getattr(claim, "discovery_hint", None) if google_hint else None
++                site_cache = {}
++                context = None
++                if hint:
++                    preview, preview_summary = await self.sources.validate_discovery(claim.candidate, claim.snapshot, [],
++                        known_hint=hint, analysis_accepted=False, site_cache=site_cache)
++                    if preview_summary.get("official_pages_verified"):
++                        context = {"source_url": preview.website, "name": preview.name, "activity": preview.description,
++                            "address": preview.location.address, "comuna_name": preview.location.comuna_name}
 +                if google_hint or not self.sources._is_official_website_candidate(claim.candidate):
-+                    report = await self.crm.research(claim.run_id, claim.job_id, "validation", claim.lease_token)
++                    report = await self.crm.research(claim.run_id, claim.job_id, "validation", claim.lease_token,
++                        **({"official_context": context} if context else {}))
 +                    urls = [hit["website"] for hit in report.get("discoveries", []) if isinstance(hit.get("website"), str)]
 +                    if report.get("status") != "applied":
 +                        reason = str(report.get("reason_code", "NOT_READY"))
 +                        if reason in {"DAILY_LIMIT", "RUN_LIMIT", "INSUFFICIENT_BALANCE", "RATE_LIMIT"}:
 +                            raise ResearchDeferred(reason)
 +                        raise RuntimeError("Investigacion pendiente: " + reason)
-+                candidate, summary = await self.sources.validate_discovery(claim.candidate, claim.snapshot, urls)
++                options = {"known_hint": hint, "analysis_accepted": report.get("analysis_accepted") is True, "site_cache": site_cache} if hint else {}
++                candidate, summary = await self.sources.validate_discovery(claim.candidate, claim.snapshot, urls, **options)
 +                if google_hint:
 +                    summary.update({"analysis_version": str(report.get("analysis_version", "")),
 +                        "analysis_accepted": bool(report.get("analysis_accepted")), "discovery_provider": "google_places"})
@@ -1130,13 +1354,13 @@ index 439a859..1e83f17 100644
 +                    candidate, summary = await enrich(claim.candidate, claim.run_id)
              await self.crm.complete_enrichment(
                  claim,
-@@ -119,4 +156,5 @@ class ProspectingWorker:
+@@ -119,4 +167,5 @@ class ProspectingWorker:
      async def _process_claim(self, claim: ClaimedRun) -> None:
          snapshot = claim.snapshot
 +        self._staged_count = claim.candidates_found
          local_run_id = await self.store.ensure_run(
              claim,
-@@ -138,5 +176,11 @@ class ProspectingWorker:
+@@ -138,5 +187,11 @@ class ProspectingWorker:
                      await self._cancel(local_run_id, claim)
                      return
 -
@@ -1149,14 +1373,14 @@ index 439a859..1e83f17 100644
 +                        await self._process_enrichment(enrichment)
                  summary = await self.store.summary(local_run_id)
                  if summary.dead_letters:
-@@ -149,5 +193,5 @@ class ProspectingWorker:
+@@ -149,5 +204,5 @@ class ProspectingWorker:
                      )
                      return
 -                if summary.candidates >= snapshot.campaign.max_candidates:
 +                if max(summary.candidates, self._staged_count) >= snapshot.campaign.max_candidates:
                      await self.store.cancel_tasks(local_run_id)
                      terminal = (
-@@ -300,11 +344,19 @@ class ProspectingWorker:
+@@ -300,11 +355,19 @@ class ProspectingWorker:
              if cancel_requested.is_set():
                  return
 -            search_result = await self._search_until_stopped(
@@ -1183,7 +1407,7 @@ index 439a859..1e83f17 100644
 +                )
              if search_result is None:
                  return
-@@ -316,4 +368,19 @@ class ProspectingWorker:
+@@ -316,4 +379,19 @@ class ProspectingWorker:
                  source_metrics = {}
  
 +            google_first = task.source == SourceName.google_places and claim.snapshot.discovery_strategy == "google_places_first"
@@ -1203,14 +1427,14 @@ index 439a859..1e83f17 100644
 +
              if task.source == SourceName.brave_search:
                  novel, google_matches = await self.store.partition_discoveries(
-@@ -353,5 +420,5 @@ class ProspectingWorker:
+@@ -353,5 +431,5 @@ class ProspectingWorker:
                  task.id,
                  self.worker_id,
 -                results=len(saved),
 +                results=staged if google_first else len(saved),
                  rejected=len(candidates) - len(qualified) + limited,
              )
-@@ -379,5 +446,5 @@ class ProspectingWorker:
+@@ -379,5 +457,5 @@ class ProspectingWorker:
                      metrics={
                          **source_metrics,
 -                        "results_found": len(candidates),
@@ -1754,7 +1978,7 @@ index 0000000..c223952
 +    assert seen[0] == seen[1] == {"worker_id": "worker", "operation_id": "task", "kind": "discovery", "lease_token": "lease"}
 diff --git a/tests/test_prospecting_site_quality.py b/tests/test_prospecting_site_quality.py
 new file mode 100644
-index 0000000..589180f
+index 0000000..41d4748
 --- /dev/null
 +++ b/tests/test_prospecting_site_quality.py
 @@ -0,0 +1,150 @@
@@ -1840,7 +2064,7 @@ index 0000000..589180f
 +    candidate, _ = await AuthorizedSourceExecutor().validate_discovery(seed(), scope())
 +    assert candidate.import_eligible, candidate.review_flags
 +    assert candidate.location.comuna_code == "06101"
-+    assert candidate.location.address == "Direccion: Av. Republica 100, Rancagua, Chile"
++    assert candidate.location.address == "Av. Republica 100, Rancagua, Chile"
 +
 +
 +def test_scraper_does_not_take_product_or_person_as_company():
@@ -1908,6 +2132,179 @@ index 0000000..589180f
 +    monkeypatch.setattr(crm, "fail_enrichment", AsyncMock())
 +    await ProspectingWorker(crm, MemoryWorkerStore(), sources)._process_enrichment(job)
 +    assert crm.fail_enrichment.await_args.args[1] == "ResearchDeferred: DAILY_LIMIT"
+diff --git a/tests/test_retained_enrichment.py b/tests/test_retained_enrichment.py
+new file mode 100644
+index 0000000..f59d363
+--- /dev/null
++++ b/tests/test_retained_enrichment.py
+@@ -0,0 +1,167 @@
++import asyncio
++from datetime import datetime, timedelta, timezone
++from types import SimpleNamespace
++from unittest.mock import AsyncMock
++
++import httpx
++import pytest
++
++from app.crm.fake import FakeCRMPort
++from app.enrichment.web_scraper import SecureWebClient, SafeResponse, _page_enrichment, enrich_from_website
++from app.prospecting.contracts import ProspectCandidate, ProspectLocation, SourceEvidence, SourceName
++from app.prospecting.discovery_validation import validate_discovery
++from app.prospecting.sources import AuthorizedSourceExecutor
++from app.prospecting.store import MemoryWorkerStore
++from app.prospecting.worker import ProspectingWorker
++from tests.test_prospecting_site_quality import enrichment, scope
++from tests.test_secure_web_scraper import public_resolver
++
++
++def campaign():
++    s = scope()
++    return s.model_copy(update={'campaign': s.campaign.model_copy(update={'target_types': ('tecnico', 'tienda comercial')})})
++
++
++def seed_and_hint(name='Clima Andes', expired=False):
++    seed = ProspectCandidate(candidate_id='google:known', name=name, location=ProspectLocation(), market_signals={'google_discovery': True})
++    fields = {'name': name, 'website': 'https://climaandes.com/', 'phone': '+56721234567',
++        'location.address': 'Av. Republica 100, Rancagua', 'location.comuna_name': 'Rancagua'}
++    now = datetime.now(timezone.utc)
++    hint = ProspectCandidate(candidate_id=seed.candidate_id, name=name, website=fields['website'], phone=fields['phone'],
++        location=ProspectLocation(address=fields['location.address'], comuna_name='Rancagua'),
++        evidence=[SourceEvidence(provider=SourceName.google_places,field=k,value=v,source_url='https://maps.google.com/?cid=known',
++            observed_at=now-timedelta(days=31 if expired else 1), retention_until=now+timedelta(days=-1 if expired else 29)) for k,v in fields.items()])
++    return seed, hint
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('accepted', [False, True])
++async def test_current_hint_preserves_verified_fields_but_never_overrides_analysis(monkeypatch, accepted):
++    seed, hint = seed_and_hint()
++    read = AsyncMock(return_value=enrichment(description='Instalacion y reparacion de aire acondicionado residencial'))
++    monkeypatch.setattr('app.prospecting.sources.enrich_from_website', read)
++    result, summary = await validate_discovery(AuthorizedSourceExecutor(),seed,campaign(),[],known_hint=hint,analysis_accepted=accepted)
++    assert result.phone and result.email and result.location.address
++    assert result.import_eligible == accepted
++    assert summary['known_site_reused']
++    assert ('analysis_not_confirmed' in result.review_flags) != accepted
++    assert all(e.provider == SourceName.official_website for e in result.evidence)
++    assert not result.provider_ids.get('google_places')
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('invalid', ['expired','identity','website'])
++async def test_invalid_hints_do_not_authorize_a_crawl(monkeypatch, invalid):
++    seed, hint = seed_and_hint(expired=invalid=='expired')
++    if invalid=='identity': hint=hint.model_copy(update={'candidate_id':'another'})
++    if invalid=='website': hint=hint.model_copy(update={'website':'https://other.cl'})
++    read = AsyncMock(side_effect=AssertionError('No ungrounded crawl'))
++    monkeypatch.setattr('app.prospecting.sources.enrich_from_website', read)
++    result, _ = await validate_discovery(AuthorizedSourceExecutor(),seed,campaign(),[],known_hint=hint,analysis_accepted=True)
++    assert not result.import_eligible
++    read.assert_not_awaited()
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('address,expected', [('Av. Republica 100, Rancagua',True),('Av. Republica 101, Rancagua',False),('Av. Republica 100, Santiago',False)])
++async def test_generic_google_name_requires_exact_site_and_matching_physical_address(monkeypatch,address,expected):
++    seed, hint = seed_and_hint('Aire acondicionado en Rancagua')
++    monkeypatch.setattr('app.prospecting.sources.enrich_from_website',AsyncMock(return_value=enrichment(
++        description='Instalacion de sistemas de aire acondicionado',locations=[],address_blocks=[{'text':address,'source_url':hint.website}])) )
++    result, summary=await validate_discovery(AuthorizedSourceExecutor(),seed,campaign(),[],known_hint=hint,analysis_accepted=True)
++    assert bool(summary['official_pages_verified']) == expected
++    if expected: assert result.name=='Clima Andes'
++    else: assert not result.email and not result.import_eligible
++
++
++@pytest.mark.asyncio
++async def test_distinct_brand_cannot_be_replaced_even_at_same_address(monkeypatch):
++    seed,hint=seed_and_hint('Otra Marca')
++    monkeypatch.setattr('app.prospecting.sources.enrich_from_website',AsyncMock(return_value=enrichment()))
++    result,_=await validate_discovery(AuthorizedSourceExecutor(),seed,campaign(),[],known_hint=hint,analysis_accepted=True)
++    assert 'official_identity_conflict' in result.review_flags
++    assert not result.email and not result.import_eligible
++
++
++@pytest.mark.asyncio
++async def test_site_timeout_stays_pending_and_is_cached_for_the_job(monkeypatch):
++    seed, hint = seed_and_hint()
++    read = AsyncMock(side_effect=asyncio.TimeoutError)
++    monkeypatch.setattr('app.prospecting.sources.enrich_from_website', read)
++    cache = {}
++    for _ in range(2):
++        result, summary = await validate_discovery(AuthorizedSourceExecutor(), seed, campaign(), [],
++            known_hint=hint, analysis_accepted=True, site_cache=cache)
++        assert 'official_site_timeout' in result.review_flags
++        assert not result.import_eligible
++        assert summary['validation_outcome'] == 'read_failed'
++    read.assert_awaited_once()
++
++
++@pytest.mark.asyncio
++async def test_known_site_read_once_before_analysis_and_negative_result_retains_fields(monkeypatch):
++    seed,hint=seed_and_hint()
++    source=AuthorizedSourceExecutor()
++    read=AsyncMock(return_value=enrichment(description='Instalacion de aire acondicionado'))
++    monkeypatch.setattr('app.prospecting.sources.enrich_from_website',read)
++    crm=FakeCRMPort()
++    async def research(*args,official_context):
++        assert official_context['name']=='Clima Andes'
++        assert official_context['activity']=='Instalacion de aire acondicionado'
++        assert read.await_count==1
++        return {'status':'applied','discoveries':[],'analysis_version':'climactiva-google-v1','analysis_accepted':False}
++    crm.research=research
++    crm.complete_enrichment=AsyncMock()
++    crm.fail_enrichment=AsyncMock(side_effect=AssertionError('Unexpected failure'))
++    job=SimpleNamespace(candidate=seed,discovery_hint=hint,snapshot=campaign(),job_id='job',run_id='run',lease_token='lease')
++    await ProspectingWorker(crm,MemoryWorkerStore(),source)._process_enrichment(job)
++    read.assert_awaited_once()
++    saved=crm.complete_enrichment.call_args.args[1]
++    assert saved.email and not saved.import_eligible
++
++
++def test_split_contact_address_keeps_locality_and_drops_contact_numbers():
++    html=b'<div><p>Direccion:</p><p>Av. Republica 100,</p><p>Rancagua, Chile</p><p>Email: ventas@andes.cl</p><p>Telefono: +56 72 1234567</p></div>'
++    info,_=_page_enrichment(SafeResponse('https://andes.cl/contacto',html,'text/html'))
++    assert info['phone']=='+56721234567'
++    assert any('Rancagua' in b['text'] and 'Republica 100' in b['text'] for b in info['address_blocks'])
++    assert all('@' not in b['text'] and '1234567' not in b['text'] for b in info['address_blocks'])
++
++
++def test_service_heading_is_preserved_without_using_navigation_as_business_evidence():
++    html=b'<meta name="description" content="Somos una empresa especialista en climatizacion y refrigeracion."><main><h2>Nuestro equipo realiza la instalacion. Trabajamos con sistemas de climatizacion y refrigeracion industrial.</h2></main>'
++    info,_=_page_enrichment(SafeResponse('https://andes.cl',html,'text/html'))
++    assert 'realiza la instalacion' in info['description']
++    assert info['field_sources']['description']=='https://andes.cl'
++
++
++def test_coverage_without_physical_address_does_not_create_branch():
++    html=b'<section><p>Direccion: Av. Norte 100, Santiago</p></section><p>Atendemos instalaciones en Rancagua</p>'
++    info,_=_page_enrichment(SafeResponse('https://andes.cl',html,'text/html'))
++    assert all('Rancagua' not in b['text'] for b in info['address_blocks'])
++
++
++@pytest.mark.asyncio
++@pytest.mark.parametrize('robots,status,expected', [('',503,'ROBOTS_UNAVAILABLE'),('User-agent: *\nDisallow: /',200,'ROBOTS_DENIED')])
++async def test_robots_unavailable_and_explicit_denial_are_distinct(robots,status,expected):
++    paths=[]
++    def handler(request):
++        paths.append(request.url.path)
++        assert request.url.path=='/robots.txt'
++        return httpx.Response(status,text=robots)
++    client=SecureWebClient(resolver=public_resolver,transport=httpx.MockTransport(handler),min_host_interval=0)
++    assert (await enrich_from_website('https://andes.cl',client=client))['read_error']==expected
++    assert paths==['/robots.txt']
++
++
++@pytest.mark.asyncio
++async def test_robots_redirect_validates_then_obeys_final_rules():
++    paths=[]
++    def handler(request):
++        paths.append(request.url.path)
++        if request.url.path=='/robots.txt': return httpx.Response(301,headers={'location':'/policy.txt'})
++        if request.url.path=='/policy.txt': return httpx.Response(200,text='User-agent: *\nDisallow: /')
++        raise AssertionError('Disallowed page was fetched')
++    client=SecureWebClient(resolver=public_resolver,transport=httpx.MockTransport(handler),min_host_interval=0)
++    assert (await enrich_from_website('https://andes.cl',client=client))['read_error']=='ROBOTS_DENIED'
++    assert paths==['/robots.txt','/policy.txt']
 diff --git a/tests/test_secure_web_scraper.py b/tests/test_secure_web_scraper.py
 index 22b97b7..1a5063f 100644
 --- a/tests/test_secure_web_scraper.py

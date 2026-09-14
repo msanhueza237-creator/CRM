@@ -12,7 +12,7 @@ Base: `3ae811f705944ad662bfc6aaecb41721ab7e2e6c`.
    No forzar si el parche v2 ya esta instalado: comparar el resultado v3 y
    actualizar solo los archivos incluidos. No usar reset.
 3. Aplicar el parche y ejecutar:
-   `pytest tests/test_google_first.py tests/test_native_research.py tests/test_deepseek_discovery.py tests/test_prospecting_site_quality.py tests/test_secure_web_scraper.py tests/test_authorized_sources.py tests/test_http_crm.py tests/test_worker.py tests/test_contracts_and_expansion.py tests/test_integration_monitor.py tests/test_quality_gate.py`.
+   `pytest tests/test_retained_enrichment.py tests/test_google_first.py tests/test_native_research.py tests/test_deepseek_discovery.py tests/test_prospecting_site_quality.py tests/test_secure_web_scraper.py tests/test_authorized_sources.py tests/test_http_crm.py tests/test_worker.py tests/test_contracts_and_expansion.py tests/test_integration_monitor.py tests/test_quality_gate.py`.
 4. Construir una imagen con el Dockerfile de este directorio, BASE_IMAGE fijada
    a una imagen previa verificada y CRM_REVISION al commit publicado.
    El contexto contiene solamente los archivos Python indicados por COPY, sin .env.
@@ -26,6 +26,49 @@ Actualizar tambien el checkout del servidor; un despliegue posterior debe
 integrar o conservar el overlay.
 
 ## Contrato Google First
+
+### Enriquecimiento con sitios conservados
+
+- `crm-agent/prospecting-enrichment.ts` construye un `discovery_hint` efimero desde
+  `active_prospect_source_records`, acotado al run y entidad del trabajo reclamado.
+  Solo usa evidencia Google vigente. No restaura sus valores como datos oficiales
+  ni los copia a discovery_origin, company_summary o tablas permanentes.
+- El worker lee primero ese sitio, comprueba identidad y envia a DeepSeek un
+  contexto publico acotado de nombre, actividad, domicilio y URL. El API limita
+  ese contexto al dominio del sitio conservado para la misma empresa. No envia
+  telefonos, correos, credenciales ni contenido HTML completo al modelo.
+- DeepSeek puede seleccionar esa URL ya leida sin que web_search deba encontrarla
+  otra vez. La seleccion sigue siendo explicita y el guard SQL sigue exigiendo
+  analisis positivo y evidencia oficial. Un reporte cacheado negativo no se cambia
+  a positivo ni provoca automaticamente otra solicitud pagada.
+- Con un analisis negativo, el sitio conocido puede aportar evidencia a Hallazgos,
+  pero no habilita Candidatos: queda `analysis_not_confirmed`, sin importacion.
+  No hay fallback a una URL arbitraria cuando no existe una pista Google vigente.
+- La lectura se reutiliza dentro del mismo trabajo y se limita a 60 segundos por
+  sitio. La cola solicita un lease de 600 segundos (limite ya soportado por el API)
+  para cubrir lectura, analisis y comprobacion final. No cambia cuotas ni saldo.
+- El lector conserva parrafos/titulos de servicios, direcciones en bloques
+  contiguos de contacto y telefonos regionales. No toma menciones de cobertura
+  como domicilio. Un nombre generico de Google solo se resuelve con el mismo
+  dominio y una direccion fisica coincidente; no reemplaza marcas distintas.
+- `ROBOTS_DENIED`, `ROBOTS_UNAVAILABLE`, sitio inaccesible y timeout son estados
+  distintos. Los redirects de robots se validan contra SSRF y la denegacion se
+  respeta. Falta de lectura o identidad no equivale a actividad fuera de rubro.
+- El canal comercial evalua frases consecutivas del mismo parrafo oficial;
+  conserva exclusiones de usuarios finales, negocios ajenos y negaciones.
+
+Publicar juntos el overlay (21 archivos), el API con su nuevo helper, la interfaz,
+el helper compartido del Copiloto y SOLO la definicion actualizada de
+`prospecting_commercial_channel` en una instalacion Google First existente.
+No reaplicar los SQL historicos completos: conservar colas, reservas, guard de
+analisis, candidatos, evidencias y ausencia del tope diario de validaciones.
+
+Verificacion local sin proveedores: `tests/test_retained_enrichment.py` y
+`npm run test:prospecting:quality` cubren pistas expiradas, identidad, domicilio,
+contexto del modelo, reportes cacheados, ausencia de doble lectura y admision.
+Las pruebas reales de pago y la publicacion siguen requiriendo autorizacion.
+
+### Descubrimiento y admision
 
 - El worker anuncia `google_first_research_v1`. El claim no consulta al proveedor.
 - Nuevos runs con Places y DeepSeek congelan `discovery_strategy=google_places_first`.
@@ -44,7 +87,8 @@ integrar o conservar el overlay.
   No se supera el limite de candidatos de la campana. La evidencia Google caduca
   en 30 dias mediante el purgado existente; no se duplica en discovery_origin.
 - El analisis `climactiva-google-v1` queda auditado por candidato; una seleccion
-  vacia no habilita volver al sitio original ni aprobar. El guard SQL exige
+  vacia no habilita una URL arbitraria ni aprobar. La pista Google vigente permite
+  enriquecer el hallazgo sin convertirlo en candidato contactable. El guard SQL exige
   analisis positivo mas verificacion oficial public-web-v4 para la importacion.
 - Admision comercial Climactiva: Google aplica el prefiltro tambien en google-first.
   Malls, grandes tiendas generalistas, opticas, neumaticos y otros rubros explicitos
@@ -74,7 +118,8 @@ integrar o conservar el overlay.
   y de candidatos de la campana. El saldo USD se consulta antes de pagar:
   se requiere al menos US$0,25. No es un presupuesto mensual exacto ni una
   reserva monetaria; el proveedor es la fuente de facturacion.
-- Los hallazgos reales de la herramienta web se guardan en Candidatos.
+- Los hallazgos reales de la herramienta web se guardan para investigacion;
+  solo los calificados y contactables aparecen en Candidatos.
   Los perfiles sociales se distinguen por URL, no por dominio compartido.
 - `business-selection-v1` selecciona empresas del pais, territorio y tipo
   solicitados entre resultados reales. Directorios, empleo y paginas extranjeras

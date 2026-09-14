@@ -4,6 +4,7 @@ import { buildBusinessModuleReport, assertModuleRequester, type ModuleReader } f
 import { collectModuleRows } from "./module-pagination.ts";
 import { executiveDailySlot } from "./executive-daily.ts";
 import { executeResearch, RESEARCH_CAPABILITY } from "./prospecting-research.ts";
+import { retainedDiscoveryHint, publicResearchContext } from "./prospecting-enrichment.ts";
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 
 type ApiKeyValidation = {
@@ -1487,6 +1488,14 @@ async function handleProspectingEnrichmentRoute(
       const result = asObject(data);
       const job = asObject(result.job);
       const signals = asObject(asObject(result.candidate).market_signals);
+      if (job.run_id && job.entity_id && signals.google_discovery === true) {
+        const { data: records, error: recordsError } = await context.supabase.from("active_prospect_source_records")
+          .select("provider,provider_record_id,field_name,field_value,source_url,observed_at,retention_until")
+          .eq("run_id", job.run_id).eq("entity_id", job.entity_id).eq("provider", "google_places")
+          .order("observed_at", { ascending: false }).limit(100);
+        if (recordsError) return rpcErrorResult(recordsError);
+        result.discovery_hint = retainedDiscoveryHint(result.candidate, records);
+      }
       if (job.run_id && (signals.deepseek_discovery === true || signals.google_discovery === true)) {
         const { data: run, error: runError } = await context.supabase.from("prospecting_runs")
           .select("snapshot").eq("id", job.run_id).single();
@@ -1642,6 +1651,18 @@ async function handleProspectingRoute(
     if (!isUuid(operationId) || !kind) throw new RequestValidationError("Invalid research operation");
     const report = await executeResearch({
       secret: Deno.env.get("PROSPECTING_SECRET_ENCRYPTION_KEY") || "",
+      context: async (reservation) => {
+        if (kind !== "validation" || !payload.official_context) return null;
+        const { data: job, error: jobError } = await context.supabase.from("prospect_enrichment_jobs")
+          .select("entity_id").eq("id", operationId).eq("run_id", runId).single();
+        if (jobError) throw new Error("Research context unavailable");
+        const { data: records, error: recordsError } = await context.supabase.from("active_prospect_source_records")
+          .select("provider,provider_record_id,field_name,field_value,source_url,observed_at,retention_until")
+          .eq("run_id", runId).eq("entity_id", job.entity_id).eq("provider", "google_places")
+          .order("observed_at", { ascending: false }).limit(100);
+        if (recordsError) throw new Error("Research context unavailable");
+        return publicResearchContext(payload.official_context, retainedDiscoveryHint(reservation.candidate, records));
+      },
       reserve: async () => {
         const { data, error } = await context.supabase.rpc("reserve_native_prospecting_research", {
           p_run_id: runId, p_operation_id: operationId, p_kind: kind, p_api_key_id: validation.key_id,
