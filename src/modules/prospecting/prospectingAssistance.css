@@ -41,3 +41,9 @@
 .prospecting-assistance li { margin: 8px 0; overflow-wrap: anywhere; }
 .prospecting-ai-option small { display: block; margin-top: 6px; }
 @media (max-width: 600px) { .deepseek-result-totals { grid-template-columns: 1fr; gap: 12px; } }
+@media (max-width: 560px) {
+  .prospecting-tabs[role="tablist"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .prospecting-tabs[role="tablist"] > button { min-height: 44px; gap: 5px; padding: 6px 5px; }
+  .prospecting-tabs[role="tablist"] > button > svg { flex-shrink: 0; }
+  .prospecting-tabs[role="tablist"] .tab-count { flex-shrink: 0; min-width: max-content; white-space: nowrap; }
+}
