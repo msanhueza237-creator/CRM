@@ -1,5 +1,6 @@
 import { CopilotDataError, matches, object, tableResult, type Row } from "./contracts.ts";
 import type { CopilotSources } from "./sources.ts";
+import { isCommercialCandidate } from "../_shared/prospecting-quality.ts";
 
 const fields = (...pairs: string[]) => pairs.map(pair => { const [key, label] = pair.split(":"); return { key, label }; });
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -18,26 +19,38 @@ export async function prospectingReport(source: CopilotSources, args: Row) {
     const runFilter = `run_id=eq.${args.run_id}`;
     const runs = await source.all(`prospecting_runs?select=id,campaign_id&id=eq.${args.run_id}&order=id.asc`);
     if (!runs.length || (args.campaign_id && runs[0].campaign_id !== args.campaign_id)) throw new CopilotDataError("La ejecucion no pertenece a la campaña solicitada o no existe.", "INVALID_ARGUMENTS");
-    const candidates = await source.all(`prospecting_campaign_candidates?select=id,entity_id,review_status,score,last_seen_at&${runFilter}&order=id.asc`);
-    const evidence = await source.all(`active_prospect_source_records?select=id,entity_id,run_id,provider,source_url,field_name,observed_at&${runFilter}&order=id.asc`);
+    const candidates = await source.all(`prospecting_campaign_candidates?select=id,entity_id,review_status,score,last_seen_at,candidate_snapshot,discovery_status,discovery_origin,enrichment_summary&${runFilter}&order=id.asc`);
+    const evidence = await source.all(`active_prospect_source_records?select=id,entity_id,run_id,provider,source_url,field_name,field_value,observed_at&${runFilter}&order=id.asc`);
     // Names/categories come from CRM entities, never from model-generated lists.
     const entities = candidates.length ? await source.all("prospect_entities?select=id,name,business_line,company_type&order=id.asc") : [];
     const byId = new Map(entities.map(entity => [entity.id, entity]));
     const data = candidates.map(candidate => {
       const entity = byId.get(candidate.entity_id) ?? {};
+      const snapshot = object(candidate.candidate_snapshot);
       const records = evidence.filter(e => e.entity_id === candidate.entity_id);
       const official = records.filter(e => e.provider === "official_website");
-      return { id: candidate.id, name: entity.name ?? "Identidad no disponible", category: entity.company_type ?? null,
-        business_line: entity.business_line ?? null, review_status: candidate.review_status, score: candidate.score,
+      const locations = Array.isArray(snapshot.locations) ? snapshot.locations.map(object) : [object(snapshot.location)];
+      const qualified = isCommercialCandidate({ name: String(snapshot.name ?? entity.name ?? ""), website: String(snapshot.website ?? ""),
+        phone: String(snapshot.phone ?? ""), email: String(snapshot.email ?? ""), businessLine: String(snapshot.description ?? entity.business_line ?? ""),
+        importEligible: snapshot.import_eligible === true && Array.isArray(snapshot.importable_location_indexes) && snapshot.importable_location_indexes.length > 0,
+        discoveryStatus: candidate.discovery_status ? String(candidate.discovery_status) : undefined,
+        discoveryUrl: String(object(candidate.discovery_origin).website ?? ""),
+        reviewStatus: String(candidate.review_status ?? "pending"), enrichmentSummary: object(candidate.enrichment_summary),
+        reviewFlags: Array.isArray(snapshot.review_flags) ? snapshot.review_flags.filter((v): v is string => typeof v === "string") : [],
+        locations: locations.map(l => ({regionCode:String(l.region_code ?? ""),comunaCode:String(l.comuna_code ?? ""),address:String(l.address ?? "")})),
+        evidence: records.map(e => ({field:String(e.field_name ?? ""),value:String(e.field_value ?? ""),source:String(e.provider ?? ""),url:String(e.source_url ?? "")})) });
+      if (!qualified) return null;
+      return { id: candidate.id, name: snapshot.name ?? entity.name ?? "Identidad no disponible", category: snapshot.category ?? entity.company_type ?? null,
+        business_line: snapshot.description ?? entity.business_line ?? null, review_status: candidate.review_status, score: candidate.score,
         evidence_count: records.length, official_evidence_count: official.length,
         sources: [...new Set(records.map(e => e.provider))].join(", "),
         source_urls: [...new Set(official.map(e => e.source_url).filter(url => typeof url === "string" && /^https?:\/\//i.test(url)))].slice(0, 8).join("\n"),
         updated_at: candidate.last_seen_at };
-    }).filter(item => matches(args.query, item.name, item.category, item.business_line));
-    return tableResult("get_prospecting_report", "customers", "Candidatos y evidencia de la ejecucion", data,
+    }).filter((item): item is NonNullable<typeof item> => item !== null).filter(item => matches(args.query, item.name, item.category, item.business_line));
+    return tableResult("get_prospecting_report", "customers", "Candidatos contactables y evidencia de la ejecucion", data,
       fields("name:Empresa", "category:Categoria", "review_status:Revision", "score:Puntuacion CRM", "evidence_count:Evidencias activas", "official_evidence_count:Evidencias oficiales", "source_urls:Sitios oficiales", "updated_at:Ultima observacion"),
       `/prospeccion?view=candidates&run=${args.run_id}`, args,
-      [...warnings, "Solo evidencia activa de esta ejecucion. Tener un sitio oficial no implica cumplir todos los requisitos de importacion."]);
+      [...warnings, "Solo empresas con perfil comercial Climactiva, domicilio y contacto oficial verificados. Los hallazgos en investigacion, fuera de alcance y rechazados no se presentan como candidatos contactables."]);
   }
   const campaigns = await source.all(`prospecting_campaigns?select=id,name,status,keywords,sources,deepseek_enabled,updated_at${args.campaign_id ? `&id=eq.${args.campaign_id}` : ""}&order=id.asc`);
   const runs = await source.all(`prospecting_runs?select=id,campaign_id,status,snapshot,total_tasks,completed_tasks,failed_tasks,candidates_found,search_assistance,created_at,completed_at${args.run_id ? `&id=eq.${args.run_id}` : ""}${args.campaign_id ? `&campaign_id=eq.${args.campaign_id}` : ""}&order=id.asc`);
@@ -65,6 +78,6 @@ export async function prospectingReport(source: CopilotSources, args: Row) {
   }
   data.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)));
   return tableResult("get_prospecting_report", "customers", "Campañas y ejecuciones de prospeccion", data,
-    fields("campaign:Campaña", "run_id:Ejecucion", "status:Estado", "deepseek:Busqueda real", "discovered_websites:Sitios DeepSeek sin validar", "web_requests:Consultas web", "completed:Tareas completas", "tasks:Tareas totales", "failed:Con error", "candidates:Candidatos totales", "updated_at:Fecha del registro"),
+    fields("campaign:Campaña", "run_id:Ejecucion", "status:Estado", "deepseek:Busqueda real", "discovered_websites:Sitios DeepSeek sin validar", "web_requests:Consultas web", "completed:Tareas completas", "tasks:Tareas totales", "failed:Con error", "candidates:Hallazgos totales", "updated_at:Fecha del registro"),
     args.run_id ? `/prospeccion?view=operation&run=${args.run_id}` : "/prospeccion", args, warnings);
 }

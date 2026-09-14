@@ -199,6 +199,14 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     const valid = { name: "Clima Andes", website: "https://climaandes.cl", phone: "+56961234567", description: "Tienda distribuidora de aire acondicionado", category: "distribuidor",
       location, locations: [location], import_eligible: true, importable_location_indexes: [0], review_flags: [] };
     valid.evidence = ["name", "phone", "description"].map(field => ({ field, value: valid[field], provider: "official_website", source_url: valid.website }));
+    valid.evidence.push({field:"location.address",value:location.address,provider:"official_website",source_url:valid.website});
+    for (const [description,channel] of [[valid.description,"retail"],["Empresa de instalacion de climatizacion residencial","services"],
+      ["Empresa de servicios de aire acondicionado residencial","services"],["Nuestras instalaciones cuentan con aire acondicionado",null],
+      ["Distribuidor online de equipos de climatizacion",null],["Centro comercial con aire acondicionado",null],["No hacemos instalacion de aire acondicionado",null]]) {
+      const probe={...valid,description,evidence:valid.evidence.map(e=>e.field==="description"?{...e,value:description}:e)};
+      assert.equal((await db.query("select prospecting_commercial_channel($1::jsonb) channel",[JSON.stringify(probe)])).rows[0].channel,channel,description);
+    }
+    assert.equal((await db.query("select prospecting_commercial_channel($1::jsonb) channel",[JSON.stringify({...valid,evidence:valid.evidence.filter(e=>e.field!=="location.address")})])).rows[0].channel,null);
     for (const [changes, expected] of [[{}, "validated"], [{ location: { ...location, country_code: "AR" } }, "unverified"], [{ description: "" }, "unverified"], [{ phone: "+5492915666646" }, "unverified"], [{ category: "otro" }, "unverified"]]) {
       await db.exec("begin");
       try {

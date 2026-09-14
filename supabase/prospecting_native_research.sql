@@ -245,6 +245,31 @@ begin
   return jsonb_build_object('added',v_added,'candidates_found',v_count);
 end $$;
 
+create or replace function public.prospecting_commercial_channel(p_candidate jsonb)
+returns text language plpgsql stable set search_path=public,pg_temp as $$
+declare v_activity text; v_part text; v_address boolean;
+begin
+  if not exists(select 1 from jsonb_array_elements(coalesce(p_candidate->'evidence','[]'::jsonb)) e
+    where e->>'provider'='official_website' and e->>'field'='description' and e->>'value'=p_candidate->>'description'
+      and public.prospecting_discovery_identity(e->>'source_url')=public.prospecting_discovery_identity(p_candidate->>'website')) then return null; end if;
+  v_address:=exists(select 1 from jsonb_array_elements(coalesce(p_candidate->'evidence','[]'::jsonb)) e
+    where e->>'provider'='official_website' and e->>'field' in ('address','location.address')
+      and nullif(trim(e->>'value'),'')=p_candidate#>>'{location,address}'
+      and public.prospecting_discovery_identity(e->>'source_url')=public.prospecting_discovery_identity(p_candidate->>'website'));
+  if not v_address then return null; end if;
+  v_activity:=translate(lower(coalesce(p_candidate->>'description','')),U&'\00e1\00e9\00ed\00f3\00fa\00fc\00f1','aeiouun');
+  for v_part in select regexp_split_to_table(v_activity,E'[.!?;\n]') loop
+    if v_part ~ '\m(no|nunca|excepto|sin|dejamos de)\M'
+      or v_part !~ '\m(climatizacion|refrigeracion|aires? acondicionados?|hvac)\M'
+      or v_part ~ '\m(centro comercial|mall|optica|neumaticos|supermercado|hotel|restaurante|automotriz|transporte refrigerado)\M' then continue; end if;
+    if v_part ~ '\m(instalacion|instalaciones de|instaladores?|instalamos|mantencion|mantenimiento|mantenemos|reparacion|reparamos|contratistas?|ejecucion de (obras|proyectos)|servicios? (tecnicos?|de (climatizacion|refrigeracion|aires? acondicionados?|hvac)))\M' then return 'services'; end if;
+    if v_part ~ '\m(tiendas?|local(es)? comercial(es)?|sala de ventas|showroom|punto de venta)\M' then return 'retail'; end if;
+  end loop;
+  return null;
+end $$;
+revoke all on function public.prospecting_commercial_channel(jsonb) from public,anon,authenticated;
+grant execute on function public.prospecting_commercial_channel(jsonb) to service_role;
+
 create or replace function public.guard_prospect_discovery_review()
 returns trigger language plpgsql security definer set search_path=public,pg_temp as $$
 declare v_valid boolean; v_duplicate text;
@@ -258,6 +283,7 @@ begin
      and exists(select 1 from public.prospect_enrichment_jobs where candidate_relation_id=old.id
        and status='running' and lease_expires_at>now()) then
     v_valid:=coalesce(new.enrichment_summary->>'validation_version','')='public-web-v4'
+      and public.prospecting_commercial_channel(new.candidate_snapshot) is not null
       and coalesce(new.enrichment_summary->>'official_pages_verified','0')='1'
       and coalesce(new.candidate_snapshot->>'import_eligible','false')='true'
       and jsonb_array_length(coalesce(new.candidate_snapshot->'importable_location_indexes','[]'::jsonb))>0
@@ -301,6 +327,10 @@ begin
   if new.review_status in ('approved','linked') and new.review_status is distinct from old.review_status
      and coalesce(new.enrichment_summary->>'validation_version','')<>'public-web-v4' then
     raise exception using errcode='22023',message='La validacion anterior requiere nueva investigacion public-web-v4 antes de aprobar';
+  end if;
+  if new.review_status in ('approved','linked') and new.review_status is distinct from old.review_status
+    and public.prospecting_commercial_channel(new.candidate_snapshot) is null then
+    raise exception using errcode='22023',message='Falta verificar local comercial HVAC o ejecucion de servicios HVAC y domicilio oficial antes de admitir el candidato';
   end if;
   if new.discovery_status<>'validated' then
     new.candidate_snapshot:=new.candidate_snapshot||jsonb_build_object('import_eligible',false,'importable_location_indexes','[]'::jsonb);

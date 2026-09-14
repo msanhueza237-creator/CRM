@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { candidateQuality, candidateCounts, candidateReviewBucket } from "../src/modules/prospecting/prospectingQuality.ts";
+import { candidateQuality, candidateCounts, candidateReviewBucket, commercialChannel, isCommercialCandidate } from "../src/modules/prospecting/prospectingQuality.ts";
 import { readAllRecords } from "../src/lib/readAllRecords.ts";
 import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE, DEFAULT_PROSPECTING_KEYWORDS } from "../src/modules/prospecting/prospectingCommercialProfile.ts";
 import { readFile } from "node:fs/promises";
@@ -27,7 +27,7 @@ test("legacy quota pauses explain unlimited candidate analysis, not a next-day w
 const candidate = () => ({ name: "Clima Andes", phone: "+56721234567", email: "ventas@climaandes.com", website: "https://climaandes.com",
   discoveryStatus: "validated", enrichmentSummary: { validation_version: "public-web-v4" }, importEligible: true, reviewFlags: [], businessLine: "Tienda y distribuidor de aire acondicionado",
   locations: [{ regionCode: "06", comunaCode: "06101", address: "Av. Republica 100" }],
-  evidence: [{ field: "name", value: "Clima Andes" }, { field: "phone", value: "+56721234567" }, { field: "description", value: "Tienda y distribuidor de aire acondicionado" }].map(e => ({ ...e, source: "official_website", url: "https://climaandes.com/contacto" })),
+  evidence: [{ field: "name", value: "Clima Andes" }, { field: "phone", value: "+56721234567" }, { field: "description", value: "Tienda y distribuidor de aire acondicionado" }, {field:"location.address",value:"Av. Republica 100"}].map(e => ({ ...e, source: "official_website", url: "https://climaandes.com/contacto" })),
 });
 
 test("historical validations and directory contacts cannot enter the contactable list", () => {
@@ -72,7 +72,7 @@ test("all evidence pages are read, even beyond the default 1000-row API cap", as
   await assert.rejects(readAllRecords(async () => ({ data: [], count: 1, error: null })), /completar/);
 });
 
-test("candidate tab counts all discoveries, including rejected records", async () => {
+test("candidate tab includes only qualified companies while findings retain all research", async () => {
   const rows = [
     ...Array.from({length:3},()=>({...candidate(),reviewStatus:"pending"})),
     ...Array.from({length:2},()=>({...candidate(),reviewStatus:"pending",importEligible:false})),
@@ -80,8 +80,34 @@ test("candidate tab counts all discoveries, including rejected records", async (
   ];
   assert.deepEqual(candidateCounts(rows),{total:11,contactable:3,pending:2,outside:0,reviewed:0,rejected:6});
   const page = await readFile(new URL("../src/modules/prospecting/ProspectingPage.tsx", import.meta.url), "utf8");
-  assert.ok(page.includes('Candidatos <span className="tab-count">{campaignCandidates.length}</span>'));
-  assert.ok(!page.includes("{pendingCandidates}"));
+  assert.ok(page.includes('Candidatos <span className="tab-count">{contactableCandidates.length}</span>'));
+  assert.ok(page.includes('Hallazgos <span className="tab-count">{campaignCandidates.length}</span>'));
+  assert.equal(rows.filter(isCommercialCandidate).length,3);
+  assert.match(page,/tab === "candidates" \? contactableCandidates : campaignCandidates/);
+});
+
+test("Climactiva requires HVAC resale premises or service execution, never a generic shop or end user", () => {
+  const cases = [
+    ["Tienda especializada en equipos de aire acondicionado",true,"retail"],
+    ["Tienda especializada en equipos de aire acondicionado",false,null],
+    ["Distribuidor online de equipos de climatizacion",true,null],
+    ["Empresa de instalacion y mantencion de climatizacion residencial",false,"services"],
+    ["Contratistas de refrigeracion industrial",true,"services"],
+    ["Empresa de servicios de aire acondicionado residencial",true,"services"],
+    ["Nuestras instalaciones cuentan con aire acondicionado",true,null],
+    ["Optica y venta de lentes",true,null],
+    ["Centro comercial con aire acondicionado",true,null],
+    ["Venta de neumaticos y reparacion de aire acondicionado automotriz",true,null],
+    ["No realizamos instalacion de aire acondicionado",true,null],
+    ["Tienda de ropa y calzado",true,null],
+  ];
+  for(const [activity,address,expected] of cases) assert.equal(commercialChannel(activity,address),expected,activity);
+  const noAddressProof={...candidate(),evidence:candidate().evidence.filter(e=>e.field!=="location.address")};
+  assert.equal(candidateQuality(noAddressProof),"pending");
+  const otherCompanyAddress={...candidate(),evidence:candidate().evidence.map(e=>e.field==="location.address"?{...e,url:"https://otra.cl"}:e)};
+  assert.equal(candidateQuality(otherCompanyAddress),"pending");
+  for(const name of ["GMO","Ripley Rancagua","Cenco Rancagua","Rancagua Outlet Mall","Neumamundo"])
+    assert.equal(isCommercialCandidate({...candidate(),name,businessLine:"otro",importEligible:false}),false,name);
 });
 
 test("Climactiva defaults cover shops, services and all three segments without truncation", async () => {

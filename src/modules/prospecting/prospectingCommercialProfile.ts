@@ -16,7 +16,7 @@ export const DEFAULT_PROSPECTING_KEYWORDS = [
 
 export const CLIMACTIVA_PROSPECTING_OBJECTIVE = "Encontrar empresas en Chile, dentro de las comunas seleccionadas, "
   + "exclusivamente del rubro de climatizacion, refrigeracion y aire acondicionado residencial, comercial o industrial, "
-  + "para establecer una relacion comercial con Climactiva: tiendas, locales y distribuidores que puedan revender nuestros productos, "
+  + "para establecer una relacion comercial con Climactiva: tiendas, locales y distribuidores con local comercial verificable para exhibir y revender nuestros productos, "
   + "y empresas de servicios, mantencion, mantenimiento, reparacion e instalacion de aire acondicionado, climatizacion y refrigeracion "
   + "que puedan utilizarlos en trabajos y proyectos residenciales, comerciales o industriales. "
   + "Incluir contratistas de grandes proyectos cuando exista evidencia; las empresas de servicios no necesitan tener tienda. "

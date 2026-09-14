@@ -46,6 +46,22 @@ integrar o conservar el overlay.
 - El analisis `climactiva-google-v1` queda auditado por candidato; una seleccion
   vacia no habilita volver al sitio original ni aprobar. El guard SQL exige
   analisis positivo mas verificacion oficial public-web-v4 para la importacion.
+- Admision comercial Climactiva: Google aplica el prefiltro tambien en google-first.
+  Malls, grandes tiendas generalistas, opticas, neumaticos y otros rubros explicitos
+  no consumen Details ni se incorporan a la cola de investigacion.
+  Hallazgos conserva los resultados en investigacion y su historial. Candidatos
+  incluye solo empresas calificadas y contactables, nunca registros rechazados.
+- El canal comercial exige actividad oficial HVAC y un local comercial verificable
+  para reventa, o ejecucion de servicios/obras HVAC (sin exigir tienda). El domicilio
+  y telefono/correo deben tener evidencia del mismo sitio oficial. La regla se
+  comprueba en worker, guard SQL, interfaz y reporte del Copiloto. No se infiere
+  capacidad de compra ni de grandes proyectos. Una busqueda no confirma el perfil.
+- Publicar esta ampliacion requiere el overlay, `prospecting_commercial_channel`
+  y `guard_prospect_discovery_review` de prospecting_native_research.sql, la funcion
+  crm-agent/prospecting-research.ts, crm-copilot/prospecting-report.ts y el nuevo
+  _shared/prospecting-quality.ts, ademas de la interfaz. Conservar reservas previas,
+  candidatos historicos y la ausencia de tope diario de analisis; no aplicar todo el
+  SQL antiguo sobre las definiciones google-first. Respaldar antes de publicar.
 - POST `prospecting-runs/:run/research` recibe operation_id, kind, worker_id y
   lease_token. Solo el servidor descifra la clave DeepSeek.
 - La reserva SQL impide repetir una llamada pagada por el mismo operation_id.
@@ -122,6 +138,13 @@ de cambiar versiones. El nuevo API rechaza workers antiguos ANTES de asignar
 un run. Verificar disponibilidad de deepseek-v4-pro con la clave guardada.
 
 La publicacion y una prueba real de pago requieren autorizacion.
+Para actualizar solo la admision comercial en una instalacion Google First existente,
+aplicar las definiciones `prospecting_commercial_channel` y
+`guard_prospect_discovery_review` de `prospecting_native_research.sql`, con sus
+permisos, conservando el resto de funciones y los limites de investigacion vigentes.
+Incluir `functions/_shared/prospecting-quality.ts` al publicar el Copiloto.
+El criterio se evalua sobre los registros historicos sin borrar hallazgos ni
+modificar snapshots, reservas de pago o decisiones humanas anteriores.
 Comprobar en una campana acotada: modelo real Pro, consultas auditadas,
 candidatos persistidos, validacion publica, ausencia de llamadas Brave,
 deduplicacion y revision humana.

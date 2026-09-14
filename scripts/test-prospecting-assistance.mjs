@@ -126,12 +126,20 @@ test("SQL: opt-in snapshots, versions, lease checks, private reservations, retri
 test("Copilot reads actual run status and active evidence, with strict run/campaign filters and no writes", async () => {
   const runId = "33333333-3333-4333-8333-333333333333", campaignId = "44444444-4444-4444-8444-444444444444";
   const paths = [];
+  const activity="Tienda especializada de aire acondicionado";
+  const snapshot={name:"Clima Uno",description:activity,website:"https://fixture.invalid",phone:"+56961234567",import_eligible:true,importable_location_indexes:[0],
+    locations:[{region_code:"13",comuna_code:"13101",address:"Av. Matta 100"}]};
+  const officialEvidence=[{field_name:"name",field_value:"Clima Uno"},{field_name:"description",field_value:activity},
+    {field_name:"phone",field_value:snapshot.phone},{field_name:"location.address",field_value:"Av. Matta 100"}]
+    .map((e,i)=>({...e,id:`evidence${i}`,entity_id:"entity",provider:"official_website",source_url:snapshot.website}));
   const source = { all: async path => {
     paths.push(path); assert.ok(!path.includes("integrations") && !path.includes("reservations"));
     if (path.startsWith("prospecting_campaigns?")) return [{ id: campaignId, name: "Santiago HVAC", deepseek_enabled: true, keywords: ["climatizacion"] }];
     if (path.startsWith("prospecting_runs?")) return [{ id: runId, campaign_id: campaignId, status: "running", candidates_found: 1, total_tasks: 2, completed_tasks: 1, snapshot: { deepseek_enabled: true }, search_assistance: { status: "fallback", reason_code: "RATE_LIMIT" } }];
-    if (path.startsWith("prospecting_campaign_candidates?")) { assert.ok(path.includes(`run_id=eq.${runId}`)); return [{ id: "candidate", entity_id: "entity", review_status: "pending", score: 80 }]; }
-    if (path.startsWith("active_prospect_source_records?")) { assert.ok(path.includes(`run_id=eq.${runId}`)); return [{ id: "evidence", entity_id: "entity", provider: "official_website", source_url: "https://fixture.invalid" }]; }
+    if (path.startsWith("prospecting_campaign_candidates?")) { assert.ok(path.includes(`run_id=eq.${runId}`)); return [
+      {id:"candidate",entity_id:"entity",review_status:"pending",score:80,candidate_snapshot:snapshot,discovery_status:"validated",enrichment_summary:{validation_version:"public-web-v4"}},
+      {id:"mall",entity_id:"mall",review_status:"pending",score:99,candidate_snapshot:{name:"Clima Mall",description:"Centro comercial"},discovery_status:"unverified"}]; }
+    if (path.startsWith("active_prospect_source_records?")) { assert.ok(path.includes(`run_id=eq.${runId}`)); return officialEvidence; }
     if (path.startsWith("prospect_entities?")) return [{ id: "entity", name: "Clima Uno", business_line: "HVAC" }];
     assert.fail(path);
   } };
@@ -141,7 +149,11 @@ test("Copilot reads actual run status and active evidence, with strict run/campa
   assert.equal((await prospectingReport(source, { view: "runs", query: "Valdivia" })).coverage.totalMatched, 0);
   const report = await prospectingReport(source, { view: "candidates", run_id: runId, campaign_id: campaignId, query: "Clima" });
   assert.equal(report.table.rows[0].name, "Clima Uno"); assert.equal(report.table.rows[0].review_status, "pending");
-  assert.equal(report.table.rows[0].official_evidence_count, 1);
+  assert.equal(report.table.rows[0].official_evidence_count, 4);
+  assert.equal(report.table.rows.length,1,"Unqualified findings are not Copilot contactable candidates");
+  snapshot.importable_location_indexes=[];
+  assert.equal((await prospectingReport(source,{view:"candidates",run_id:runId})).table.rows.length,0,"No importable location is not contactable");
+  snapshot.importable_location_indexes=[0];
   assert.match(report.evidence[0].path, /view=candidates/);
   await assert.rejects(prospectingReport(source, { view: "candidates" }), /run_id/);
   await assert.rejects(prospectingReport(source, { view: "candidates", run_id: "x&select=*" }), /invalido/);

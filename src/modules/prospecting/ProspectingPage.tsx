@@ -59,12 +59,12 @@ import {
 } from "./prospectingRepository";
 import { HistoricalBaseView } from "./HistoricalBaseView";
 import { DeepSeekSettings } from "./DeepSeekSettings";
-import { candidateQuality, candidateCounts, candidateReviewBucket, hasVerifiedContact, qualityLabels } from "./prospectingQuality";
+import { candidateQuality, candidateCounts, candidateReviewBucket, hasVerifiedContact, qualityLabels, isCommercialCandidate, commercialChannel } from "./prospectingQuality";
 import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE } from "./prospectingCommercialProfile";
 import { enrichmentPauseMessage } from "./prospectingEnrichment";
 import "./prospectingAssistance.css";
 
-type ViewTab = "campaigns" | "operation" | "candidates" | "historical" | "deepseek";
+type ViewTab = "campaigns" | "operation" | "findings" | "candidates" | "historical" | "deepseek";
 type Notice = { type: "info" | "success" | "error"; text: string } | null;
 type CandidateStatusFilter = ProspectReviewStatus | "all" | "active" | "contactable" | "investigating" | "outside";
 
@@ -188,7 +188,7 @@ export function ProspectingPage() {
         const linkedRun = result.workspace.runs.find(item => item.id === params.get("run"));
         const campaign = result.workspace.campaigns.find(item => item.id === (linkedRun?.campaignId ?? params.get("campaign"))) ?? result.workspace.campaigns[0];
         const run = linkedRun ?? (campaign ? result.workspace.runs.find((item) => item.campaignId === campaign.id) : undefined);
-        if (linkedRun) setTab(params.get("view") === "candidates" ? "candidates" : "operation");
+        if (linkedRun) setTab(params.get("view") === "candidates" ? "candidates" : params.get("view") === "findings" ? "findings" : "operation");
         const candidate = run
           ? result.workspace.candidates.find((item) => item.campaignId === campaign?.id && item.runId === run.id)
           : undefined;
@@ -247,9 +247,11 @@ export function ProspectingPage() {
       ).sort(),
     [campaignCandidates],
   );
+  const contactableCandidates = useMemo(() => campaignCandidates.filter(isCommercialCandidate), [campaignCandidates]);
+  const candidateCollection = tab === "candidates" ? contactableCandidates : campaignCandidates;
   const filteredCandidates = useMemo(() => {
     const query = normalizeString(candidateQuery);
-    return campaignCandidates
+    return candidateCollection
       .filter((candidate) =>
         candidateStatus === "all"
         || (candidateStatus === "contactable" && candidateReviewBucket(candidate) === "contactable")
@@ -275,7 +277,7 @@ export function ProspectingPage() {
         ).includes(query);
       })
       .sort((a, b) => (b.marketScore || b.score) - (a.marketScore || a.score));
-  }, [campaignCandidates, candidateComuna, candidateQuery, candidateSource, candidateStatus]);
+  }, [candidateCollection, candidateComuna, candidateQuery, candidateSource, candidateStatus]);
   const selectedCandidate =
     filteredCandidates.find((candidate) => candidate.id === selectedCandidateId) ?? filteredCandidates[0];
 
@@ -647,8 +649,11 @@ export function ProspectingPage() {
         <TabButton active={tab === "operation"} onClick={() => setTab("operation")} icon={<Globe2 size={17} />}>
           Operación
         </TabButton>
-        <TabButton active={tab === "candidates"} onClick={() => setTab("candidates")} icon={<Building2 size={17} />}>
-          Candidatos <span className="tab-count">{campaignCandidates.length}</span>
+        <TabButton active={tab === "findings"} onClick={() => { setCandidateStatus("all"); setTab("findings"); }} icon={<Search size={17} />}>
+          Hallazgos <span className="tab-count">{campaignCandidates.length}</span>
+        </TabButton>
+        <TabButton active={tab === "candidates"} onClick={() => { setCandidateStatus("all"); setTab("candidates"); }} icon={<Building2 size={17} />}>
+          Candidatos <span className="tab-count">{contactableCandidates.length}</span>
         </TabButton>
         <TabButton active={tab === "historical"} onClick={() => setTab("historical")} icon={<Database size={17} />}>
           Base histórica
@@ -717,14 +722,15 @@ export function ProspectingPage() {
         />
       ) : null}
 
-      {tab === "candidates" ? (
+      {tab === "candidates" || tab === "findings" ? (
         <CandidatesView
+          findings={tab === "findings"}
           campaign={selectedCampaign}
           runs={campaignRuns}
           selectedRun={selectedRun}
           candidates={filteredCandidates}
           allCandidates={workspace.candidates}
-          totalCandidates={campaignCandidates.length}
+          totalCandidates={candidateCollection.length}
           selectedCandidate={selectedCandidate}
           companies={companies}
           canReview={canReview}
@@ -1280,7 +1286,7 @@ function CampaignsView({
                   </div>
                   <dl>
                     <div><dt>Ejecuciones</dt><dd>{campaignRuns.length}</dd></div>
-                    <div><dt>Candidatos</dt><dd>{candidateCount}</dd></div>
+                    <div><dt>Hallazgos</dt><dd>{candidateCount}</dd></div>
                     <div><dt>Último estado</dt><dd>{latest ? runLabels[latest.status] : "Sin iniciar"}</dd></div>
                   </dl>
                   <button className="ghost-button" type="button" onClick={() => onSelect(campaign)}><Eye size={16} /> Revisar campaña</button>
@@ -1326,11 +1332,11 @@ function CampaignsView({
             <div><span>Fuentes</span><strong>{selectedCampaign.sources.map(sourceName).join(", ")}</strong></div>
             <div><span>Por tarea</span><strong>{selectedCampaign.limits.resultsPerTask} resultados</strong></div>
             <div><span>Tope por run</span><strong>{selectedCampaign.limits.maxCandidates.toLocaleString("es-CL")}</strong></div>
-            <div><span>Revisión pendiente</span><strong>{selectedCandidates.filter((candidate) => ["pending", "possible_duplicate"].includes(candidate.reviewStatus)).length}</strong></div>
+            <div><span>Contactables por revisar</span><strong>{selectedCandidates.filter((candidate) => isCommercialCandidate(candidate) && ["pending", "possible_duplicate"].includes(candidate.reviewStatus)).length}</strong></div>
           </div>
           <div className="table-wrap">
             <table className="prospecting-runs-table">
-              <thead><tr><th>Ejecución</th><th>Estado</th><th>Progreso</th><th>Candidatos</th><th>Inicio</th><th></th></tr></thead>
+              <thead><tr><th>Ejecución</th><th>Estado</th><th>Progreso</th><th>Hallazgos</th><th>Inicio</th><th></th></tr></thead>
               <tbody>
                 {selectedRuns.map((run, index) => (
                   <tr key={run.id}>
@@ -1552,6 +1558,7 @@ function OperationView({
 }
 
 function CandidatesView({
+  findings,
   campaign,
   runs,
   selectedRun,
@@ -1580,6 +1587,7 @@ function CandidatesView({
   onReject,
   onLink,
 }: {
+  findings: boolean;
   campaign?: ProspectingCampaign;
   runs: ProspectingRun[];
   selectedRun?: ProspectingRun;
@@ -1616,7 +1624,7 @@ function CandidatesView({
       <div className="panel candidate-filters">
         <label className="search-field"><Search size={18} /><input value={query} onChange={(event) => onQuery(event.target.value)} placeholder="Empresa, RUT, contacto o actividad" /></label>
         <label className="select-field">Ejecución<select value={selectedRun.id} onChange={(event) => onSelectRun(event.target.value)}>{runs.map((run, index) => <option key={run.id} value={run.id}>Run #{runs.length - index} · {runLabels[run.status]}</option>)}</select></label>
-        <label className="select-field">Estado<select value={status} onChange={(event) => onStatus(event.target.value as CandidateStatusFilter)}><option value="all">Todos</option><option value="contactable">Contactables</option><option value="investigating">Por verificar</option><option value="outside">Fuera de alcance</option><option value="active">Por revisar</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="select-field">Estado<select value={status} onChange={(event) => onStatus(event.target.value as CandidateStatusFilter)}><option value="all">Todos</option>{findings ? <><option value="contactable">Contactables</option><option value="investigating">En investigación</option><option value="outside">Fuera de alcance</option></> : null}<option value="active">Por revisar</option>{Object.entries(reviewLabels).filter(([value]) => findings || value !== "rejected").map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="select-field">Fuente<select value={source} onChange={(event) => onSource(event.target.value as ProspectingSource | "all")}><option value="all">Todas</option>{SOURCE_DEFINITIONS.filter((item) => !item.disabled).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         <label className="select-field">Comuna<select value={comuna} onChange={(event) => onComuna(event.target.value)}><option value="all">Todas</option>{comunas.map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
         <span className="filter-result"><Filter size={16} /> {candidates.length} de {totalCandidates}</span>
@@ -1624,7 +1632,7 @@ function CandidatesView({
 
       <div className="candidate-workbench">
         <div className="panel candidate-list-panel">
-          <div className="panel-heading"><div><h2>Bandeja de revisión</h2><span>Mostrando {candidates.length} de {totalCandidates} hallazgos</span><CandidateCountSummary candidates={allCandidates.filter(c => c.runId === selectedRun.id)} /></div></div>
+          <div className="panel-heading"><div><h2>{findings ? "Hallazgos en investigación" : "Candidatos contactables"}</h2><span>{candidates.length} de {totalCandidates} {findings ? "hallazgos" : "empresas calificadas"}</span>{findings ? <CandidateCountSummary candidates={allCandidates.filter(c => c.runId === selectedRun.id)} /> : <span>Perfil Climactiva · actividad, domicilio y contacto verificados</span>}</div></div>
           <div className="candidate-list">
             {candidates.map((candidate) => {
               const primary = candidate.locations.find((location) => location.isPrimary) ?? candidate.locations[0];
@@ -1637,7 +1645,7 @@ function CandidatesView({
                 </button>
               );
             })}
-            {!candidates.length ? <EmptyState icon={<Search size={24} />} title={status === "contactable" ? "Sin empresas contactables verificadas" : "Sin coincidencias"} text={status === "contactable" ? "Los hallazgos pendientes conservan su evidencia en Por verificar." : "No hay registros con estos filtros."} /> : null}
+            {!candidates.length ? <EmptyState icon={<Search size={24} />} title={!findings && !totalCandidates ? "Sin candidatos contactables" : "Sin coincidencias"} text={!findings ? (totalCandidates ? "No hay candidatos contactables con estos filtros." : "Aún no hay empresas que cumplan el perfil comercial y los datos requeridos.") : "No hay hallazgos con estos filtros."} /> : null}
           </div>
         </div>
 
@@ -1787,6 +1795,7 @@ function CandidateDetail({
       </div>
 
       <dl className="candidate-definition-grid">
+        {commercialReady ? <div><dt>Encaje con Climactiva</dt><dd>{commercialChannel(candidate.businessLine, true) === "retail" ? "Local comercial HVAC para distribución y reventa" : "Ejecutora de servicios y proyectos HVAC"}</dd></div> : null}
         {candidateQuality(candidate) !== "contactable" ? <div><dt>Calidad del registro</dt><dd>{qualityLabels[candidateQuality(candidate)]}. Contactos y actividad no habilitados para uso comercial.</dd></div> : null}
         <div><dt>Actividad</dt><dd>{candidate.businessLine || "No informada"}</dd></div>
         <div><dt>Tipo sugerido</dt><dd>{candidate.companyType}</dd></div>
@@ -1941,6 +1950,11 @@ function humanize(value: string) {
 }
 
 function reviewFlagMessage(flag: string, candidate: ProspectCandidate) {
+  if (flag === "commercial_profile_unconfirmed") return "Falta acreditar un local comercial HVAC o una empresa ejecutora de trabajos del rubro.";
+  if (flag === "not_hvac_related") return "No se pudo acreditar actividad propia de climatización, refrigeración o aire acondicionado.";
+  if (flag === "excluded_business_type") return "La actividad encontrada está fuera del nicho comercial de Climactiva.";
+  if (flag === "target_type_unconfirmed") return "No se confirmó el tipo de empresa que requiere la campaña.";
+  if (flag === "missing_official_identity") return "Falta confirmar la identidad de la empresa en una fuente oficial.";
   if (flag === "discovery_duplicate") return "La misma empresa ya aparece en otro candidato de esta ejecucion.";
   if (flag === "discovery_pending") return "Pendiente de verificar identidad, contacto y territorio en el sitio oficial.";
   if (["foreign_country", "foreign_phone", "foreign_contact"].includes(flag)) return "La fuente o el contacto corresponde a otro país; no es un prospecto local verificado.";
