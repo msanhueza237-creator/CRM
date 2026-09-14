@@ -574,9 +574,6 @@ export function ProspectingPage() {
     setSelectedCandidateId(candidate?.id ?? "");
   }
 
-  const pendingCandidates = campaignCandidates.filter((candidate) =>
-    ["pending", "possible_duplicate"].includes(candidate.reviewStatus),
-  ).length;
   const editingCampaign = workspace.campaigns.find((campaign) => campaign.id === editingCampaignId);
   const canEditCampaign = (campaign: ProspectingCampaign) =>
     role === "administrador" || (role === "vendedor" && campaign.status === "draft");
@@ -648,7 +645,7 @@ export function ProspectingPage() {
           Operación
         </TabButton>
         <TabButton active={tab === "candidates"} onClick={() => setTab("candidates")} icon={<Building2 size={17} />}>
-          Candidatos <span className="tab-count">{pendingCandidates}</span>
+          Candidatos <span className="tab-count">{campaignCandidates.length}</span>
         </TabButton>
         <TabButton active={tab === "historical"} onClick={() => setTab("historical")} icon={<Database size={17} />}>
           Base histórica

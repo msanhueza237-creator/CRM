@@ -53,6 +53,18 @@ test("all evidence pages are read, even beyond the default 1000-row API cap", as
   await assert.rejects(readAllRecords(async () => ({ data: [], count: 1, error: null })), /completar/);
 });
 
+test("candidate tab counts all discoveries, including rejected records", async () => {
+  const rows = [
+    ...Array.from({length:3},()=>({...candidate(),reviewStatus:"pending"})),
+    ...Array.from({length:2},()=>({...candidate(),reviewStatus:"pending",importEligible:false})),
+    ...Array.from({length:6},()=>({...candidate(),reviewStatus:"rejected"})),
+  ];
+  assert.deepEqual(candidateCounts(rows),{total:11,contactable:3,pending:2,outside:0,reviewed:0,rejected:6});
+  const page = await readFile(new URL("../src/modules/prospecting/ProspectingPage.tsx", import.meta.url), "utf8");
+  assert.ok(page.includes('Candidatos <span className="tab-count">{campaignCandidates.length}</span>'));
+  assert.ok(!page.includes("{pendingCandidates}"));
+});
+
 test("Climactiva defaults cover shops, services and all three segments without truncation", async () => {
   assert.equal(DEFAULT_PROSPECTING_KEYWORDS.length, 11);
   assert.equal(new Set(DEFAULT_PROSPECTING_KEYWORDS).size, 11);
