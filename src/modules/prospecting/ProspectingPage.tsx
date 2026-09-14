@@ -61,6 +61,7 @@ import { HistoricalBaseView } from "./HistoricalBaseView";
 import { DeepSeekSettings } from "./DeepSeekSettings";
 import { candidateQuality, candidateCounts, candidateReviewBucket, hasVerifiedContact, qualityLabels } from "./prospectingQuality";
 import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE } from "./prospectingCommercialProfile";
+import { enrichmentPauseMessage } from "./prospectingEnrichment";
 import "./prospectingAssistance.css";
 
 type ViewTab = "campaigns" | "operation" | "candidates" | "historical" | "deepseek";
@@ -207,7 +208,7 @@ export function ProspectingPage() {
   }, [repository]);
 
   const hasLiveRuns = Boolean(
-    workspace?.runs.some((run) => ["pending", "running", "cancel_requested"].includes(run.status) || ["pending", "running"].includes(run.enrichmentStatus)),
+    workspace?.runs.some((run) => ["pending", "running", "cancel_requested"].includes(run.status) || ["pending", "running"].includes(run.enrichmentStatus) || run.enrichmentPause?.autoResume),
   );
 
   useEffect(() => {
@@ -443,7 +444,9 @@ export function ProspectingPage() {
     try {
       const updated = await repository.controlEnrichment(run.id, action);
       setWorkspace((current) => current ? { ...current, runs: current.runs.map((item) => item.id === run.id ? updated : item) } : current);
-      setNotice({ type: "success", text: action === "pause" ? "InvestigaciÃ³n pausada." : "InvestigaciÃ³n reanudada." });
+      setNotice({ type: updated.enrichmentStatus === "paused" && action === "resume" ? "info" : "success",
+        text: action === "pause" ? "Investigacion pausada. Continuacion automatica desactivada."
+          : enrichmentPauseMessage(updated) || (updated.enrichmentStatus === "paused" ? "La investigacion sigue pausada." : "Investigacion reanudada.") });
     } catch (error) { setNotice({ type: "error", text: errorMessage(error) }); }
     finally { setBusyAction(""); }
   }
@@ -1105,7 +1108,7 @@ function CampaignForm({
           <input type="checkbox" checked={deepseekEnabled} disabled={!liveMode || saving}
             onChange={event => { setDeepseekEnabled(event.target.checked); setSources(current => event.target.checked ? [...new Set<ProspectingSource>([...current, "deepseek_web", "official_website"])] : current.filter(source => source !== "deepseek_web")); }} />
           <Sparkles size={20} />
-          <span><strong>DeepSeek Pro · analista Climactiva</strong><small>{liveMode ? "Actividad HVAC, territorio y potencial comercial" : "No disponible en demo"}</small><small>Hasta 20 análisis por ejecución · máximo compartido de 20 solicitudes al día</small></span>
+          <span><strong>DeepSeek Pro · analista Climactiva</strong><small>{liveMode ? "Actividad HVAC, territorio y potencial comercial" : "No disponible en demo"}</small><small>20 solicitudes al día compartidas · continuación diaria de candidatos pendientes</small></span>
         </label>
         <div className="source-grid">
           {SOURCE_DEFINITIONS.filter(source => source.id !== "deepseek_web").map((source) => {
@@ -1423,6 +1426,8 @@ function OperationView({
     : 0;
   const canCancel = ["pending", "running"].includes(selectedRun.status);
   const enrichmentActive = ["pending", "running"].includes(selectedRun.enrichmentStatus);
+  const enrichmentScheduled = selectedRun.enrichmentStatus === "paused" && selectedRun.enrichmentPause?.autoResume;
+  const pauseMessage = enrichmentPauseMessage(selectedRun, candidates);
   const enrichmentPercent = selectedRun.enrichmentTotal
     ? Math.round(((selectedRun.enrichmentCompleted + selectedRun.enrichmentFailed) / selectedRun.enrichmentTotal) * 100)
     : 0;
@@ -1463,16 +1468,17 @@ function OperationView({
           <div><p>Validación de candidatos</p><h2>{campaign.deepseekEnabled ? "DeepSeek y fuentes oficiales" : "Verificación de fuentes"}</h2><span>Contacto, actividad y ubicación de la misma empresa</span></div>
           <div className="operation-controls">
             {canExecute && selectedRun.enrichmentStatus === "not_requested" ? <button className="primary-button" type="button" disabled={busyAction === `enrich:${selectedRun.id}` || selectedRun.progress.candidatesFound === 0} onClick={() => onStartEnrichment(selectedRun)}><Sparkles size={16} /> Investigar {selectedRun.progress.candidatesFound} empresas</button> : null}
-            {canExecute && enrichmentActive ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-pause:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "pause")}><PauseCircle size={16} /> Pausar investigación</button> : null}
-            {canExecute && selectedRun.enrichmentStatus === "paused" ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-resume:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "resume")}><Play size={16} /> Reanudar investigación</button> : null}
+            {canExecute && (enrichmentActive || enrichmentScheduled) ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-pause:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "pause")}><PauseCircle size={16} /> Pausar investigación</button> : null}
+            {canExecute && selectedRun.enrichmentStatus === "paused" && !enrichmentScheduled ? <button className="ghost-button" type="button" disabled={busyAction === `enrichment-resume:${selectedRun.id}`} onClick={() => onControlEnrichment(selectedRun, "resume")}><Play size={16} /> Reanudar investigación</button> : null}
             {canExecute && ["completed", "partial"].includes(selectedRun.enrichmentStatus) ? <button className="ghost-button" type="button" disabled={busyAction === `enrich:${selectedRun.id}`} onClick={() => onStartEnrichment(selectedRun)}><RefreshCw size={16} /> Investigar nuevamente</button> : null}
           </div>
         </div>
         <div className="operation-progress-row">
-          <span className={`status-badge prospecting-status ${selectedRun.enrichmentStatus}`}>{selectedRun.enrichmentStatus === "not_requested" ? "Sin iniciar" : selectedRun.enrichmentStatus === "pending" ? "Pendiente" : selectedRun.enrichmentStatus === "running" ? "Investigando" : selectedRun.enrichmentStatus === "paused" ? "Pausada" : selectedRun.enrichmentStatus === "partial" ? "Parcial" : "Completada"}</span>
+          <span className={`status-badge prospecting-status ${selectedRun.enrichmentStatus}`}>{enrichmentScheduled ? "En espera de cupo diario" : selectedRun.enrichmentStatus === "not_requested" ? "Sin iniciar" : selectedRun.enrichmentStatus === "pending" ? "Pendiente" : selectedRun.enrichmentStatus === "running" ? "Investigando" : selectedRun.enrichmentStatus === "paused" ? "Pausada" : selectedRun.enrichmentStatus === "partial" ? "Parcial" : "Completada"}</span>
           <div className="run-progress"><div><span style={{ width: `${enrichmentPercent}%` }} /></div><strong>{enrichmentPercent}%</strong></div>
           <span>{selectedRun.enrichmentCompleted} completadas · {selectedRun.enrichmentFailed} con error · {selectedRun.enrichmentTotal} total</span>
         </div>
+        {pauseMessage ? <div className="source-contract-message campaign-source-warning" role="status"><Clock3 size={17} /><span>{pauseMessage}</span></div> : null}
       </div>
 
       <div className="prospecting-overview-grid">

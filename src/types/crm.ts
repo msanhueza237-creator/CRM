@@ -195,6 +195,13 @@ export interface ProspectingRun {
   enrichmentTotal: number;
   enrichmentCompleted: number;
   enrichmentFailed: number;
+  enrichmentPause?: {
+    reasonCode: string;
+    autoResume: boolean;
+    resumeAfter: string;
+    dailyLimit: number;
+    dailyUsed: number;
+  };
 }
 
 export interface ProspectLocation {

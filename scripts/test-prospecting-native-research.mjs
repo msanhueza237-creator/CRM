@@ -183,12 +183,12 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     const one = await reserve(tasks[0].id); assert.ok(one.reservation_token);
     assert.equal((await reserve(tasks[0].id)).status, "preparing");
     const report = { status: "applied", mode: "native_research_v3", queries: ["clima"], web_requests: 1, tokens: 125,
-      discoveries: Array.from({ length: 40 }, (_, i) => ({ name: `Clima ${i}`, website: `https://instagram.com/clima${i}`, source_url: `https://instagram.com/clima${i}/reels/`, task_id: tasks[0].id, selection_version: "business-selection-v1" })) };
+      discoveries: Array.from({ length: 43 }, (_, i) => ({ name: `Clima ${i}`, website: `https://instagram.com/clima${i}`, source_url: `https://instagram.com/clima${i}/reels/`, task_id: tasks[0].id, selection_version: "business-selection-v1" })) };
     const done = await finish(one.reservation_token, report);
-    assert.equal(done.added, 40); assert.deepEqual(await reserve(tasks[0].id), done);
+    assert.equal(done.added, 43); assert.deepEqual(await reserve(tasks[0].id), done);
     assert.deepEqual(await finish(one.reservation_token, report), done);
-    assert.equal((await db.query("select count(*)::int n from prospecting_campaign_candidates where run_id=$1", [rid])).rows[0].n, 40);
-    assert.equal((await db.query("select count(*)::int n from prospect_enrichment_jobs where run_id=$1", [rid])).rows[0].n, 40);
+    assert.equal((await db.query("select count(*)::int n from prospecting_campaign_candidates where run_id=$1", [rid])).rows[0].n, 43);
+    assert.equal((await db.query("select count(*)::int n from prospect_enrichment_jobs where run_id=$1", [rid])).rows[0].n, 43);
     const row = (await db.query("select * from prospecting_campaign_candidates where run_id=$1 limit 1", [rid])).rows[0];
     assert.equal(row.candidate_snapshot.import_eligible, false); assert.deepEqual(row.candidate_snapshot.evidence, []);
     await db.query("update prospecting_campaign_candidates set review_status='approved' where id=$1", [row.id]).then(() => assert.fail("Unverified approval allowed"), error => assert.match(error.message, /valid|evid|approv/i));
@@ -221,7 +221,7 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     const two = await reserve(tasks[1].id);
     await db.query("update prospecting_runs set status='paused' where id=$1", [rid]);
     await finish(two.reservation_token, { ...report, discoveries: [{ name: "Paused", website: "https://paused.cl", source_url: "https://paused.cl" }] });
-    assert.equal((await db.query("select count(*)::int n from prospecting_campaign_candidates where run_id=$1", [rid])).rows[0].n, 40);
+    assert.equal((await db.query("select count(*)::int n from prospecting_campaign_candidates where run_id=$1", [rid])).rows[0].n, 43);
     await assert.rejects(reserve(tasks[1].id), /Invalid research lease/);
     await db.query("update prospecting_runs set status='running' where id=$1", [rid]);
     const addTask = async keyword => (await db.query("insert into prospecting_tasks(run_id,source,keyword,region_code,comuna_code) values($1,'deepseek_web',$2,'13','13101') returning id", [rid, keyword])).rows[0].id;
@@ -246,6 +246,62 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     assert.equal((await db.query("select attempts from prospect_enrichment_jobs where id=$1", [job.id])).rows[0].attempts, attemptBefore - 1);
     assert.equal((await db.query("select enrichment_status from prospecting_runs where id=$1", [rid])).rows[0].enrichment_status, "paused");
     assert.equal((await db.query("select count(*)::int n from prospect_enrichment_jobs where run_id=$1 and status='failed'", [rid])).rows[0].n, 0);
+    assert.equal(pause.enrichment_pause.auto_resume, true);
+    assert.equal(pause.enrichment_pause.daily_used, 20);
+    const midnight = (await db.query("select ($1::timestamptz at time zone 'America/Santiago')::time::text t", [pause.enrichment_pause.resume_after])).rows[0].t;
+    assert.equal(midnight, "00:00:00");
+
+    await db.exec("begin");
+    try {
+      const getClaim = async () => (await db.query("select claim_prospect_enrichment($1,'worker',300) result", [api])).rows[0].result;
+      const getState = async () => (await db.query("select enrichment_status,enrichment_pause from prospecting_runs where id=$1",[rid])).rows[0];
+      const resume = async () => (await db.query("select resume_prospect_enrichment($1) result",[rid])).rows[0].result;
+      const nextDay = async () => {
+        // Simulate Chile's next quota window without a paid provider call.
+        await db.exec("update prospecting_research_requests set created_at=created_at-interval '2 days'");
+        await db.query("update prospecting_runs set enrichment_pause=jsonb_set(enrichment_pause,'{resume_after}',to_jsonb(now()-interval '1 second')) where id=$1",[rid]);
+      };
+      assert.equal((await resume()).status,"paused", "Resume must not claim success while quota is exhausted");
+      assert.equal((await getClaim()).job,null);
+      const manuallyPaused = (await db.query("select pause_prospect_enrichment($1) result",[rid])).rows[0].result;
+      assert.equal(manuallyPaused.enrichment_pause.auto_resume,false);
+      await nextDay();
+      assert.equal((await getClaim()).job,null,"Manual pause must survive the next day");
+      await db.query("update prospecting_runs set enrichment_pause='{}' where id=$1",[rid]);
+      assert.equal((await getClaim()).job,null,"Old pauses must not silently resume");
+      await db.query("update prospecting_runs set status='cancelled' where id=$1",[rid]);
+      await db.exec("savepoint cancelled_resume");
+      await assert.rejects(resume(),/pausada o cancelada/);
+      await db.exec("rollback to savepoint cancelled_resume");
+      await db.query("update prospecting_runs set status='completed' where id=$1",[rid]);
+      assert.equal((await resume()).status,"pending");
+      const seen = new Set(); let rollovers=0;
+      while (seen.size<43) {
+        const claimed = await getClaim(); assert.ok(claimed.job);
+        const id=claimed.job.id;
+        const reserved=await reserve(id,"validation",claimed.lease_token);
+        if (reserved.status==="limited") {
+          assert.equal(reserved.reason_code,"DAILY_LIMIT","No lifetime 20-candidate ceiling");
+          await db.query("select fail_prospect_enrichment($1,$2,'worker',$3,'ResearchDeferred: DAILY_LIMIT')",[id,api,claimed.lease_token]);
+          assert.equal((await getState()).enrichment_pause.auto_resume,true);
+          assert.equal((await getClaim()).job,null);
+          await nextDay(); rollovers++;
+          continue;
+        }
+        if (reserved.reservation_token) await finish(reserved.reservation_token,{status:"applied",discoveries:[],queries:["empresa oficial"]});
+        const replay=await reserve(id,"validation",claimed.lease_token);
+        assert.equal(replay.reservation_token,undefined,"Completed reservations must not trigger another paid call");
+        assert.equal(seen.has(id),false); seen.add(id);
+        await db.query("update prospect_enrichment_jobs set status='completed',lease_token=null where id=$1",[id]);
+        await db.query("select refresh_prospect_enrichment_progress($1)",[rid]);
+        const budget=(await db.query("select prospecting_research_daily_budget() b")).rows[0].b;
+        assert.ok(budget.daily_used<=20);
+      }
+      assert.equal(rollovers,2);
+      assert.equal((await getState()).enrichment_status,"completed");
+      assert.equal((await db.query("select count(*)::int n from prospecting_research_requests r join prospect_enrichment_jobs j on r.operation_id=j.id where j.run_id=$1 and r.kind='validation'",[rid])).rows[0].n,43);
+      assert.equal((await getClaim()).job,null);
+    } finally { await db.exec("rollback"); }
     await db.exec("set role authenticated");
     await assert.rejects(db.query("select * from prospecting_research_requests"), /permission denied/);
     await assert.rejects(reserve(tasks[0].id), /permission denied/);

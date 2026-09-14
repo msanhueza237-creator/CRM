@@ -83,8 +83,16 @@ integrar o conservar el overlay.
 - La ficha de visita usa actividad oficial y contactos verificados. Volumen,
   proyectos vigentes, responsable de compras y horario quedan por confirmar.
 - `ResearchDeferred` pausa la investigacion cuando el servidor confirma limite
-  diario, limite de ejecucion, saldo insuficiente o limite del proveedor. No
-  consume un intento de candidato; no eleva presupuestos ni recarga saldo.
+  diario, saldo insuficiente o limite del proveedor. No consume un intento de
+  candidato. No hay un tope acumulado de 20 validaciones por ejecucion: los
+  candidatos pendientes continuan en dias posteriores, manteniendo las 20
+  solicitudes compartidas por dia y una reserva idempotente por candidato.
+- `enrichment_pause` registra motivo, cupo y proxima fecha en America/Santiago.
+  Solo las nuevas pausas por cupo diario se reanudan desde el worker al renovar
+  el dia. Las pausas manuales/historicas, cancelaciones, saldo insuficiente y
+  errores del proveedor no se reactivan automaticamente. Reanudar desde el CRM
+  devuelve el estado real; si no hay cupo, programa sin afirmar que esta activo.
+  No eleva presupuestos, modifica la clave ni recarga saldo.
 - No se importan telefonos/correos generados por IA. Solo evidencia del sitio
   oficial permite validar identidad, domicilio y contacto. Los no confirmados
   permanecen visibles y no pueden aprobarse.

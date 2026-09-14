@@ -1,5 +1,6 @@
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { readAllRecords } from "../../lib/readAllRecords";
+import { readEnrichmentPause } from "./prospectingEnrichment";
 import type {
   CompanyType,
   GeoComuna,
@@ -586,10 +587,14 @@ export class ProspectingRepository {
     const current = this.workspace.runs.find((run) => run.id === runId);
     if (!current) throw new Error("No se encontro la ejecucion seleccionada.");
     const enrichmentStatus = action === "pause" ? "paused" : "pending";
-    let run: ProspectingRun = { ...current, enrichmentStatus };
+    let run: ProspectingRun = { ...current, enrichmentStatus,
+      enrichmentPause: action === "pause" ? readEnrichmentPause({ reason_code: "MANUAL" }) : undefined };
     if (this.mode === "supabase" && supabase) {
-      const { error } = await supabase.rpc(action === "pause" ? "pause_prospect_enrichment" : "resume_prospect_enrichment", { p_run_id: runId });
+      const { data, error } = await supabase.rpc(action === "pause" ? "pause_prospect_enrichment" : "resume_prospect_enrichment", { p_run_id: runId });
       if (error) throw error;
+      const response = asRecord(data);
+      run = { ...run, enrichmentStatus: String(response.status ?? current.enrichmentStatus) as ProspectingRun["enrichmentStatus"],
+        enrichmentPause: readEnrichmentPause(response.enrichment_pause) };
     }
     this.workspace.runs = this.workspace.runs.map((item) => item.id === runId ? run : item);
     this.persistIfLocal();
@@ -785,6 +790,7 @@ function mapRun(row: Row, campaign?: ProspectingCampaign): ProspectingRun {
     enrichmentTotal: asNumber(row.enrichment_total),
     enrichmentCompleted: asNumber(row.enrichment_completed),
     enrichmentFailed: asNumber(row.enrichment_failed),
+    enrichmentPause: readEnrichmentPause(row.enrichment_pause),
   };
 }
 
