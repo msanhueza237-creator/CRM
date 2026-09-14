@@ -109,7 +109,8 @@ export function DeepSeekSettings({ enabled }: { enabled: boolean }) {
               <div><dt>Motor web</dt><dd>{proAvailable ? "DeepSeek V4 Pro · razonamiento alto" : "DeepSeek V4 Pro · requiere verificar disponibilidad"}</dd></div>
               <div><dt>Consumo</dt><dd>Comprobación de saldo antes de cada consulta · sin recargas automáticas</dd></div>
               <div><dt>Verificación</dt><dd>Contacto y domicilio desde sitio oficial</dd></div>
-              <div><dt>Límite de búsqueda</dt><dd>12 etapas por ejecución · 20 solicitudes al día</dd></div>
+              <div><dt>Descubrimiento web</dt><dd>12 etapas por ejecución · 20 solicitudes al día</dd></div>
+              <div><dt>Análisis de candidatos</dt><dd>Todos los pendientes · sin tope diario interno · sujeto a saldo disponible</dd></div>
             </> : null}
             <div><dt>Última verificación</dt><dd>{checkedAt && !Number.isNaN(checkedAt.getTime()) ? new Intl.DateTimeFormat("es-CL", { timeZone: "America/Santiago", dateStyle: "medium", timeStyle: "short" }).format(checkedAt) : "Sin verificar"}</dd></div>
             {connection?.status === "verified" ? <div><dt>Modelos disponibles</dt><dd>{connection.models.length}</dd></div> : null}

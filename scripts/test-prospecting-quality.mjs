@@ -6,20 +6,22 @@ import { buildCommercialBrief, CLIMACTIVA_PROSPECTING_OBJECTIVE, DEFAULT_PROSPEC
 import { readFile } from "node:fs/promises";
 import { enrichmentPauseMessage, readEnrichmentPause } from "../src/modules/prospecting/prospectingEnrichment.ts";
 
-test("research pauses show the daily reason, Chile reset and server scheduling state", () => {
+test("legacy quota pauses explain unlimited candidate analysis, not a next-day wait", () => {
   const run = { id: "run", enrichmentStatus: "paused", enrichmentPause: readEnrichmentPause({
     reason_code: "DAILY_LIMIT", daily_used: 20, daily_limit: 20, auto_resume: true, resume_after: "2026-09-14T03:00:00Z",
   }) };
   const message = enrichmentPauseMessage(run);
-  assert.match(message, /20 de 20/); assert.match(message, /14/); assert.match(message, /00:00/); assert.match(message, /Chile/);
+  assert.match(message, /tope diario ya no aplica/); assert.doesNotMatch(message, /20 de 20|00:00/);
   assert.match(message, /automatica/);
   assert.equal(enrichmentPauseMessage({ ...run, enrichmentStatus: "running" }), "");
   assert.equal(readEnrichmentPause({ reason_code: "DAILY_LIMIT", resume_after: "invalid", auto_resume: true }).autoResume, false);
   assert.equal(readEnrichmentPause({}), undefined);
   const historical = enrichmentPauseMessage({ ...run, enrichmentPause: undefined }, [{ runId: "run", enrichmentError: "Investigacion pausada: DAILY_LIMIT" }]);
-  assert.match(historical, /limite compartido de 20/);
+  assert.match(historical, /reanudar los pendientes sin repetir/);
   assert.equal(enrichmentPauseMessage({ ...run, enrichmentPause: undefined }, [{ runId: "other", enrichmentError: "Investigacion pausada: DAILY_LIMIT" }]), "");
   assert.equal(enrichmentPauseMessage({ ...run, enrichmentPause: readEnrichmentPause({reason_code:"MANUAL"}) }), "");
+  assert.match(enrichmentPauseMessage({ ...run, enrichmentPause: readEnrichmentPause({reason_code:"INSUFFICIENT_BALANCE"}) }), /no se realizan recargas automaticas/);
+  assert.match(enrichmentPauseMessage({ ...run, enrichmentPause: readEnrichmentPause({reason_code:"RATE_LIMIT"}) }), /temporalmente/);
 });
 
 const candidate = () => ({ name: "Clima Andes", phone: "+56721234567", email: "ventas@climaandes.com", website: "https://climaandes.com",

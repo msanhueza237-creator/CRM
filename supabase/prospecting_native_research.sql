@@ -374,14 +374,15 @@ begin
     end if;
     return v_request.report;
   end if;
-  -- Counts include failed and uncertain requests; a timeout never grants another paid call.
-  select count(*) into v_count from public.prospecting_research_requests
-    where created_at >= (date_trunc('day',now() at time zone 'America/Santiago') at time zone 'America/Santiago');
-  if v_count>=20 then v_reason:='DAILY_LIMIT'; end if;
-  select count(*) into v_count from public.prospecting_research_requests where run_id=p_run_id and kind=p_kind;
-  -- Validation is one idempotent request per queued candidate, not 20 for the
-  -- lifetime of a run. The shared daily allowance still bounds paid activity.
-  if v_reason is null and p_kind='discovery' and v_count>=12 then v_reason:='RUN_LIMIT'; end if;
+  -- Discovery keeps its budget. Validation covers every queued candidate;
+  -- the existing reservation above prevents duplicate paid requests.
+  if p_kind='discovery' then
+    select count(*) into v_count from public.prospecting_research_requests where kind='discovery'
+      and created_at >= (date_trunc('day',now() at time zone 'America/Santiago') at time zone 'America/Santiago');
+    if v_count>=20 then v_reason:='DAILY_LIMIT'; end if;
+    select count(*) into v_count from public.prospecting_research_requests where run_id=p_run_id and kind='discovery';
+    if v_reason is null and v_count>=12 then v_reason:='RUN_LIMIT'; end if;
+  end if;
   v_limit:=least(1000,greatest(1,coalesce((v_run.snapshot#>>'{campaign,max_candidates}')::int,1000)));
   if p_kind='discovery' and (select count(*) from public.prospecting_campaign_candidates where run_id=p_run_id)>=v_limit then
     v_reason:=coalesce(v_reason,'CANDIDATE_LIMIT'); end if;

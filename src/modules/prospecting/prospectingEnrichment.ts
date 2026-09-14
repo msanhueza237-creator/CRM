@@ -17,11 +17,9 @@ export function enrichmentPauseMessage(run: Pick<ProspectingRun, "id" | "enrichm
   const reason = pause?.reasonCode ?? candidates.filter(c => c.runId === run.id)
     .map(c => c.enrichmentError.match(/^Investigacion pausada: (DAILY_LIMIT|RUN_LIMIT|INSUFFICIENT_BALANCE|RATE_LIMIT)$/)?.[1]).find(Boolean);
   if (reason === "DAILY_LIMIT") {
-    const quota = pause ? `${pause.dailyUsed} de ${pause.dailyLimit} solicitudes utilizadas hoy.` : "Se alcanzo el limite compartido de 20 solicitudes del dia.";
-    const next = pause?.autoResume ? ` Continuacion automatica desde ${new Intl.DateTimeFormat("es-CL", {
-      dateStyle: "medium", timeStyle: "short", timeZone: "America/Santiago", hourCycle: "h23",
-    }).format(new Date(pause.resumeAfter))} (Chile), sujeta a cupo y saldo disponible.` : " Reanudar conserva el avance y programa la continuacion cuando se renueve el cupo.";
-    return quota + next;
+    return "El antiguo tope diario ya no aplica al analisis de candidatos. " + (pause?.autoResume
+      ? "Los pendientes continuaran automaticamente, sujetos a saldo y disponibilidad del proveedor."
+      : "Puedes reanudar los pendientes sin repetir los ya analizados.");
   }
   if (reason === "INSUFFICIENT_BALANCE") return "DeepSeek no tiene saldo suficiente. La investigacion se conserva en pausa; no se realizan recargas automaticas.";
   if (reason === "RATE_LIMIT") return "DeepSeek limito temporalmente las solicitudes. Los candidatos se conservan; puedes reanudar mas tarde.";

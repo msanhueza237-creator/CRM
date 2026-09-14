@@ -236,58 +236,59 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
     }
     const cappedTask = await addTask("cap");
     assert.equal((await reserve(cappedTask)).reason_code, "RUN_LIMIT");
-    const counts = (await db.query("select count(*)::int n from prospecting_research_requests")).rows[0].n;
-    await db.query("insert into prospecting_research_requests(run_id,operation_id,kind,completed_at) select $1,gen_random_uuid(),'validation',now() from generate_series(1,$2::integer)", [rid, 20 - counts]);
+    // Discovery retains its own cap; validation must not consume it.
+    assert.equal((await db.query("select prospecting_research_daily_budget() b")).rows[0].b.daily_used,12);
+    await db.query("insert into prospecting_research_requests(run_id,operation_id,kind,completed_at) select $1,gen_random_uuid(),'discovery',now() from generate_series(1,8)", [rid]);
     assert.equal((await reserve(cappedTask)).reason_code, "DAILY_LIMIT");
     const attemptBefore = (await db.query("select attempts from prospect_enrichment_jobs where id=$1", [job.id])).rows[0].attempts;
     await assert.rejects(db.query("select fail_prospect_enrichment($1,$2,'worker',$3,'ResearchDeferred: DAILY_LIMIT')", [job.id,api,api]), /Invalid enrichment lease/);
-    const pause = (await db.query("select fail_prospect_enrichment($1,$2,'worker',$3,'ResearchDeferred: DAILY_LIMIT') result", [job.id,api,jobClaim.lease_token ?? job.lease_token])).rows[0].result;
-    assert.equal(pause.status, "paused");
-    assert.equal((await db.query("select attempts from prospect_enrichment_jobs where id=$1", [job.id])).rows[0].attempts, attemptBefore - 1);
-    assert.equal((await db.query("select enrichment_status from prospecting_runs where id=$1", [rid])).rows[0].enrichment_status, "paused");
-    assert.equal((await db.query("select count(*)::int n from prospect_enrichment_jobs where run_id=$1 and status='failed'", [rid])).rows[0].n, 0);
-    assert.equal(pause.enrichment_pause.auto_resume, true);
-    assert.equal(pause.enrichment_pause.daily_used, 20);
-    const midnight = (await db.query("select ($1::timestamptz at time zone 'America/Santiago')::time::text t", [pause.enrichment_pause.resume_after])).rows[0].t;
-    assert.equal(midnight, "00:00:00");
+    for (const reason of ["DAILY_LIMIT","RUN_LIMIT","INSUFFICIENT_BALANCE","RATE_LIMIT"]) {
+      await db.exec("begin");
+      try {
+        const fail = async () => (await db.query("select fail_prospect_enrichment($1,$2,'worker',$3,$4) result", [job.id,api,jobClaim.lease_token,`ResearchDeferred: ${reason}`])).rows[0].result;
+        assert.equal((await fail()).status,"pending","Unconfirmed quota errors cannot pause validation");
+      } finally { await db.exec("rollback"); }
+    }
+    for (const reason of ["INSUFFICIENT_BALANCE","RATE_LIMIT"]) {
+      await db.exec("begin");
+      try {
+        await db.query("update prospecting_research_requests set report=jsonb_build_object('status','fallback','reason_code',$2::text) where operation_id=$1",[job.id,reason]);
+        const pause=(await db.query("select fail_prospect_enrichment($1,$2,'worker',$3,$4) result",[job.id,api,jobClaim.lease_token,`ResearchDeferred: ${reason}`])).rows[0].result;
+        assert.equal(pause.status,"paused"); assert.equal(pause.enrichment_pause.auto_resume,false);
+        assert.equal((await db.query("select attempts from prospect_enrichment_jobs where id=$1",[job.id])).rows[0].attempts,attemptBefore-1);
+        assert.equal((await db.query("select claim_prospect_enrichment($1,'worker',300) result",[api])).rows[0].result.job,null);
+      } finally { await db.exec("rollback"); }
+    }
 
     await db.exec("begin");
     try {
       const getClaim = async () => (await db.query("select claim_prospect_enrichment($1,'worker',300) result", [api])).rows[0].result;
       const getState = async () => (await db.query("select enrichment_status,enrichment_pause from prospecting_runs where id=$1",[rid])).rows[0];
       const resume = async () => (await db.query("select resume_prospect_enrichment($1) result",[rid])).rows[0].result;
-      const nextDay = async () => {
-        // Simulate Chile's next quota window without a paid provider call.
-        await db.exec("update prospecting_research_requests set created_at=created_at-interval '2 days'");
-        await db.query("update prospecting_runs set enrichment_pause=jsonb_set(enrichment_pause,'{resume_after}',to_jsonb(now()-interval '1 second')) where id=$1",[rid]);
-      };
-      assert.equal((await resume()).status,"paused", "Resume must not claim success while quota is exhausted");
-      assert.equal((await getClaim()).job,null);
       const manuallyPaused = (await db.query("select pause_prospect_enrichment($1) result",[rid])).rows[0].result;
       assert.equal(manuallyPaused.enrichment_pause.auto_resume,false);
-      await nextDay();
-      assert.equal((await getClaim()).job,null,"Manual pause must survive the next day");
+      assert.equal((await getClaim()).job,null,"Manual pause must remain paused");
       await db.query("update prospecting_runs set enrichment_pause='{}' where id=$1",[rid]);
       assert.equal((await getClaim()).job,null,"Old pauses must not silently resume");
+      const scheduled = {reason_code:"DAILY_LIMIT",auto_resume:true,daily_used:20,daily_limit:20,resume_after:"2099-01-01T03:00:00Z"};
+      await db.query("update prospecting_runs set enrichment_pause=$2::jsonb where id=$1",[rid,JSON.stringify(scheduled)]);
       await db.query("update prospecting_runs set status='cancelled' where id=$1",[rid]);
+      assert.equal((await getClaim()).job,null,"Cancellation wins over automatic continuation");
       await db.exec("savepoint cancelled_resume");
       await assert.rejects(resume(),/pausada o cancelada/);
       await db.exec("rollback to savepoint cancelled_resume");
       await db.query("update prospecting_runs set status='completed' where id=$1",[rid]);
+      const autoClaim=await getClaim(); assert.ok(autoClaim.job,"Old scheduled quota pause resumes now, not tomorrow");
+      assert.deepEqual((await getState()).enrichment_pause,{});
+      await db.query("select pause_prospect_enrichment($1)",[rid]);
       assert.equal((await resume()).status,"pending");
-      const seen = new Set(); let rollovers=0;
+      const seen = new Set();
       while (seen.size<43) {
         const claimed = await getClaim(); assert.ok(claimed.job);
+        assert.equal((await getClaim()).job.id,claimed.job.id,"Repeated claim by same worker keeps the lease");
         const id=claimed.job.id;
         const reserved=await reserve(id,"validation",claimed.lease_token);
-        if (reserved.status==="limited") {
-          assert.equal(reserved.reason_code,"DAILY_LIMIT","No lifetime 20-candidate ceiling");
-          await db.query("select fail_prospect_enrichment($1,$2,'worker',$3,'ResearchDeferred: DAILY_LIMIT')",[id,api,claimed.lease_token]);
-          assert.equal((await getState()).enrichment_pause.auto_resume,true);
-          assert.equal((await getClaim()).job,null);
-          await nextDay(); rollovers++;
-          continue;
-        }
+        assert.notEqual(reserved.status,"limited","Every candidate can be analyzed in the same day, even when discovery budget is exhausted");
         if (reserved.reservation_token) await finish(reserved.reservation_token,{status:"applied",discoveries:[],queries:["empresa oficial"]});
         const replay=await reserve(id,"validation",claimed.lease_token);
         assert.equal(replay.reservation_token,undefined,"Completed reservations must not trigger another paid call");
@@ -295,13 +296,13 @@ test("SQL: full schema, staged candidates over 30, durable leases, replay, caps,
         await db.query("update prospect_enrichment_jobs set status='completed',lease_token=null where id=$1",[id]);
         await db.query("select refresh_prospect_enrichment_progress($1)",[rid]);
         const budget=(await db.query("select prospecting_research_daily_budget() b")).rows[0].b;
-        assert.ok(budget.daily_used<=20);
+        assert.equal(budget.scope,"discovery"); assert.equal(budget.daily_used,20);
       }
-      assert.equal(rollovers,2);
       assert.equal((await getState()).enrichment_status,"completed");
       assert.equal((await db.query("select count(*)::int n from prospecting_research_requests r join prospect_enrichment_jobs j on r.operation_id=j.id where j.run_id=$1 and r.kind='validation'",[rid])).rows[0].n,43);
       assert.equal((await getClaim()).job,null);
     } finally { await db.exec("rollback"); }
+    await db.query("select pause_prospect_enrichment($1)",[rid]);
     await db.exec("set role authenticated");
     await assert.rejects(db.query("select * from prospecting_research_requests"), /permission denied/);
     await assert.rejects(reserve(tasks[0].id), /permission denied/);

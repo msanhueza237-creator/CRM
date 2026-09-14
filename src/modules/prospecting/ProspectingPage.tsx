@@ -1108,7 +1108,7 @@ function CampaignForm({
           <input type="checkbox" checked={deepseekEnabled} disabled={!liveMode || saving}
             onChange={event => { setDeepseekEnabled(event.target.checked); setSources(current => event.target.checked ? [...new Set<ProspectingSource>([...current, "deepseek_web", "official_website"])] : current.filter(source => source !== "deepseek_web")); }} />
           <Sparkles size={20} />
-          <span><strong>DeepSeek Pro · analista Climactiva</strong><small>{liveMode ? "Actividad HVAC, territorio y potencial comercial" : "No disponible en demo"}</small><small>20 solicitudes al día compartidas · continuación diaria de candidatos pendientes</small></span>
+          <span><strong>DeepSeek Pro · analista Climactiva</strong><small>{liveMode ? "Actividad HVAC, territorio y potencial comercial" : "No disponible en demo"}</small><small>Todos los candidatos · sin tope diario interno de análisis · sujeto a saldo disponible</small></span>
         </label>
         <div className="source-grid">
           {SOURCE_DEFINITIONS.filter(source => source.id !== "deepseek_web").map((source) => {
@@ -1363,7 +1363,7 @@ function assistanceLabel(run: ProspectingRun) {
 function assistanceReason(code: string) {
   return ({ NOT_CONFIGURED: "La API no está conectada o requiere verificación.", MODEL_UNAVAILABLE: "El modelo configurado no está disponible.",
     MODEL_MISMATCH: "El proveedor no confirmó el modelo Pro solicitado. No se aceptaron resultados de otro modelo.",
-    RUN_LIMIT: "Se alcanzó el límite de etapas de esta ejecución. Los candidatos encontrados se conservan.", BALANCE_UNAVAILABLE: "No se pudo verificar el saldo. No se inició otra consulta de pago.", DAILY_LIMIT: "Se alcanzó el límite de 20 solicitudes del día, compartido entre descubrimiento e investigación.", INTERRUPTED: "La solicitud se interrumpió; no se repitió el consumo.",
+    RUN_LIMIT: "Se alcanzó el límite de etapas de esta ejecución. Los candidatos encontrados se conservan.", BALANCE_UNAVAILABLE: "No se pudo verificar el saldo. No se inició otra consulta de pago.", DAILY_LIMIT: "Se alcanzó el límite diario de descubrimiento web. El análisis de candidatos no tiene este tope.", INTERRUPTED: "La solicitud se interrumpió; no se repitió el consumo.",
     RATE_LIMIT: "DeepSeek alcanzó su límite de solicitudes.", INSUFFICIENT_BALANCE: "Saldo no disponible o inferior a la reserva de seguridad de US$0,25.",
     WEB_SEARCH_FAILED: "La herramienta web de DeepSeek devolvió un error.", NO_WEB_SEARCH: "DeepSeek no devolvió una búsqueda web verificable.",
     INVALID_BUSINESS_SELECTION: "La búsqueda no devolvió una selección verificable de empresas. No se agregaron páginas genéricas como candidatos.",
@@ -1474,7 +1474,7 @@ function OperationView({
           </div>
         </div>
         <div className="operation-progress-row">
-          <span className={`status-badge prospecting-status ${selectedRun.enrichmentStatus}`}>{enrichmentScheduled ? "En espera de cupo diario" : selectedRun.enrichmentStatus === "not_requested" ? "Sin iniciar" : selectedRun.enrichmentStatus === "pending" ? "Pendiente" : selectedRun.enrichmentStatus === "running" ? "Investigando" : selectedRun.enrichmentStatus === "paused" ? "Pausada" : selectedRun.enrichmentStatus === "partial" ? "Parcial" : "Completada"}</span>
+          <span className={`status-badge prospecting-status ${selectedRun.enrichmentStatus}`}>{enrichmentScheduled ? "Continuación pendiente" : selectedRun.enrichmentStatus === "not_requested" ? "Sin iniciar" : selectedRun.enrichmentStatus === "pending" ? "Pendiente" : selectedRun.enrichmentStatus === "running" ? "Investigando" : selectedRun.enrichmentStatus === "paused" ? "Pausada" : selectedRun.enrichmentStatus === "partial" ? "Parcial" : "Completada"}</span>
           <div className="run-progress"><div><span style={{ width: `${enrichmentPercent}%` }} /></div><strong>{enrichmentPercent}%</strong></div>
           <span>{selectedRun.enrichmentCompleted} completadas · {selectedRun.enrichmentFailed} con error · {selectedRun.enrichmentTotal} total</span>
         </div>

@@ -52,7 +52,9 @@ integrar o conservar el overlay.
 - V4 Pro con razonamiento alto; hasta tres consultas web por etapa de
   descubrimiento y dos por investigacion del sitio oficial.
 - Hasta 12 etapas de descubrimiento por ejecucion; 20 solicitudes diarias
-  compartidas con validaciones. Se respeta el limite de resultados de la tarea
+  exclusivamente de descubrimiento. El analisis no tiene tope diario interno:
+  una reserva por candidato de la cola, incluidos todos los pendientes.
+  Se respeta el limite de resultados de la tarea
   y de candidatos de la campana. El saldo USD se consulta antes de pagar:
   se requiere al menos US$0,25. No es un presupuesto mensual exacto ni una
   reserva monetaria; el proveedor es la fuente de facturacion.
@@ -82,17 +84,14 @@ integrar o conservar el overlay.
   aunque tengan contacto y domicilio. No basta que un negocio tenga climatizacion.
 - La ficha de visita usa actividad oficial y contactos verificados. Volumen,
   proyectos vigentes, responsable de compras y horario quedan por confirmar.
-- `ResearchDeferred` pausa la investigacion cuando el servidor confirma limite
-  diario, saldo insuficiente o limite del proveedor. No consume un intento de
-  candidato. No hay un tope acumulado de 20 validaciones por ejecucion: los
-  candidatos pendientes continuan en dias posteriores, manteniendo las 20
-  solicitudes compartidas por dia y una reserva idempotente por candidato.
-- `enrichment_pause` registra motivo, cupo y proxima fecha en America/Santiago.
-  Solo las nuevas pausas por cupo diario se reanudan desde el worker al renovar
-  el dia. Las pausas manuales/historicas, cancelaciones, saldo insuficiente y
-  errores del proveedor no se reactivan automaticamente. Reanudar desde el CRM
-  devuelve el estado real; si no hay cupo, programa sin afirmar que esta activo.
-  No eleva presupuestos, modifica la clave ni recarga saldo.
+- `ResearchDeferred` pausa la investigacion cuando el servidor confirma saldo
+  insuficiente o limite temporal del proveedor. No consume un intento de candidato.
+  No existe un tope diario ni acumulado de validaciones por ejecucion.
+- `enrichment_pause` conserva el motivo de pausa. El worker libera las antiguas
+  pausas DAILY_LIMIT con auto_resume=true sin esperar al dia siguiente.
+  Las pausas manuales/historicas sin programacion, cancelaciones, saldo insuficiente
+  y errores del proveedor no se reactivan automaticamente. Reanudar devuelve el
+  estado real. No modifica la clave ni recarga saldo; no es un limite monetario.
 - No se importan telefonos/correos generados por IA. Solo evidencia del sitio
   oficial permite validar identidad, domicilio y contacto. Los no confirmados
   permanecen visibles y no pueden aprobarse.
