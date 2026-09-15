@@ -1,3 +1,4 @@
+import { readStatementClosings, statementClosingBalance, validatedBankBalance } from "./bank-statement-balance.ts";
 import { parseBankWorkbook } from "./bank-parsers.ts";
 import { parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-parsers.ts";
 import {
@@ -334,15 +335,12 @@ async function buildBankReality(
     const accountId = String(line.account_id || "");
     ledgerBalances.set(accountId, (ledgerBalances.get(accountId) || 0) + numeric(line.debit_clp) - numeric(line.credit_clp));
   }
-  const statementBatches = await selectAllRows(rest, `accounting_import_batches?select=id,file_name,storage_path,created_at,summary&entity_id=eq.${entityId}&source_type=in.(BANCO_ESTADO,SCOTIABANK,MERCADO_PAGO)&status=eq.imported&error_count=eq.0&order=created_at.desc,id.desc`);
-  const closingRows = statementBatches.flatMap(batch => {
-    const summary = asObject(batch.summary);
-    const closing = asObject(summary.statement_balance);
-    return closing.transaction_date && closing.balance !== null && closing.balance !== undefined && summary.bank_account_id
-      ? [{ ...closing, id: `statement-${batch.id}`, bank_account_id: summary.bank_account_id, import_batch_id: batch.id, created_at: batch.created_at, metadata: { source_row: closing.row_number } }]
-      : [];
-  });
-  const transactionRows: JsonRecord[] = [...(allStatementRows.length ? allStatementRows : recentTransactions), ...closingRows];
+  const statementBatches = await selectAllRows(rest, `accounting_import_batches?select=id,file_name,storage_path,row_count,created_at,summary&entity_id=eq.${entityId}&source_type=in.(BANCO_ESTADO,SCOTIABANK,MERCADO_PAGO)&status=eq.imported&error_count=eq.0&order=created_at.desc,id.desc`);
+  const statementEvidence = await readStatementClosings(query => selectAllRows(rest, query), statementBatches, allStatementRows.length ? allStatementRows : recentTransactions);
+  const transactionRows: JsonRecord[] = [
+    ...(allStatementRows.length ? allStatementRows : recentTransactions).filter(row => !statementEvidence.excludedBatches.has(String(row.import_batch_id))),
+    ...statementEvidence.closingRows,
+  ];
   const batchIds = [...new Set(transactionRows.map((row) => String(row.import_batch_id || "")).filter(Boolean))];
   const batches = batchIds.length
     ? await selectAllRows(rest, `accounting_import_batches?select=id,file_name,storage_path&id=in.(${batchIds.join(",")})`)
@@ -363,10 +361,10 @@ async function buildBankReality(
       .sort((left, right) => bankRealitySequence(right).localeCompare(bankRealitySequence(left)))[0] || null;
     const snapshot = snapshots
       .filter((row) => accountIds.has(String(row.bank_account_id)))
-      .sort((left, right) => `${right.as_of_date}|${right.created_at}`.localeCompare(`${left.as_of_date}|${left.created_at}`))[0] || null;
+      .sort((left, right) => `${right.as_of_date}|${right.updated_at || right.created_at}`.localeCompare(`${left.as_of_date}|${left.updated_at || left.created_at}`))[0] || null;
     const statementDate = String(statement?.transaction_date || "");
     const snapshotDate = String(snapshot?.as_of_date || "");
-    const useSnapshot = Boolean(snapshot && (!statementDate || snapshotDate > statementDate || (snapshotDate === statementDate && String(snapshot.created_at || "") > String(statement?.created_at || ""))));
+    const useSnapshot = Boolean(snapshot && (!statementDate || snapshotDate > statementDate || (snapshotDate === statementDate && String(snapshot.updated_at || snapshot.created_at || "") > String(statement?.created_at || ""))));
     const ledgerBalanceClp = Math.round((ledgerBalances.get(ledgerAccountId) || 0) * 10000) / 10000;
     const statementRate = Math.max(numeric(statement?.exchange_rate), 1);
     const statementBalance = statement ? numeric(statement.balance) : null;
@@ -387,6 +385,8 @@ async function buildBankReality(
       accountName: String(preferredAccount.account_name || "Cuenta bancaria"),
       accountNumberMasked: String(preferredAccount.account_number_masked || ""),
       currency,
+      exchangeRate: useSnapshot ? numeric(snapshot.exchange_rate) : statement ? statementRate : null,
+      balanceWarning: accounts.map(account => statementEvidence.warnings[String(account.id)]).filter(Boolean).join(" ") || null,
       ledgerBalanceClp,
       statementBalance,
       statementBalanceClp,
@@ -422,12 +422,14 @@ async function confirmBankBalance(rest: RestClient, profile: Profile, payload: J
   const entityId = requiredUuid(payload.entityId);
   const bankAccountId = requiredUuid(payload.bankAccountId);
   const asOfDate = requiredDate(payload.asOfDate);
-  const balance = Math.round(numeric(payload.balance) * 10000) / 10000;
-  if (!Number.isFinite(balance) || balance < 0) throw new HttpError(400, "Ingresa un saldo bancario válido.");
+  if (asOfDate > accountingToday()) throw new HttpError(400, "La fecha del saldo no puede ser futura.");
   const account = (await selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&id=eq.${bankAccountId}&active=eq.true&limit=1`))[0];
   if (!account) throw new HttpError(404, "La cuenta bancaria no existe o está inactiva.");
   const currency = String(account.currency || "CLP").toUpperCase();
-  const exchangeRate = currency === "CLP" ? 1 : positiveNumber(payload.exchangeRate);
+  let amounts: ReturnType<typeof validatedBankBalance>;
+  try { amounts = validatedBankBalance(payload.balance, currency, payload.exchangeRate); }
+  catch (error) { throw new HttpError(400, error instanceof Error ? error.message : "Saldo o tipo de cambio invalido."); }
+  const { balance, exchangeRate, balanceClp } = amounts;
   const sourceReference = optionalText(payload.sourceReference, 180) || "Saldo confirmado por Finanzas";
   const snapshot = (await upsertRows(rest, "accounting_bank_balance_snapshots", [{
     entity_id: entityId,
@@ -436,7 +438,7 @@ async function confirmBankBalance(rest: RestClient, profile: Profile, payload: J
     balance,
     currency,
     exchange_rate: exchangeRate,
-    balance_clp: Math.round(balance * exchangeRate * 10000) / 10000,
+    balance_clp: balanceClp,
     source_type: "MANUAL",
     source_reference: sourceReference,
     status: "verified",
@@ -2355,9 +2357,8 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
     };
   }), "bank_account_id,fingerprint", true);
   const duplicateCount = numeric(batch.duplicate_count) + duplicateImportRowIds.length + Math.max(acceptedRows.length - created.length, 0);
-  const statementBalance = completeRows.map((row): JsonRecord => ({ ...asObject(row.normalized_data), row_number: row.row_number }))
-    .filter(row => row.balance !== null && row.balance !== undefined && Number.isFinite(Number(row.balance)))
-    .sort((a, b) => String(b.transaction_date).localeCompare(String(a.transaction_date)) || numeric(b.row_number) - numeric(a.row_number))[0];
+  const statementClosing = statementClosingBalance(completeRows.map((row): JsonRecord => ({ ...asObject(row.normalized_data), row_number: row.row_number })));
+  const statementBalance = statementClosing.closing;
   const confirmedAt = new Date().toISOString();
   await patchRows(rest, "accounting_import_batches", `id=eq.${batchId}`, {
     status: "imported",
@@ -2365,7 +2366,9 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
     duplicate_count: duplicateCount,
     summary: { ...summary, confirmed_new_count: created.length, confirmed_duplicate_count: duplicateCount,
       confirmed_at: confirmedAt, bank_account_id: bankAccount.id,
+      statement_balance_warning: statementClosing.warning,
       ...(statementBalance ? { statement_balance: {
+        version: 2, order: statementClosing.order,
         transaction_date: statementBalance.transaction_date, balance: Number(statementBalance.balance), row_number: statementBalance.row_number,
         currency: batchCurrency, exchange_rate: batchCurrency === "CLP" ? 1 : requestedRate,
       } } : {}),

@@ -1,3 +1,4 @@
+import { bankControlValue, parseBankControlNumber } from "./bankBalanceInput";
 import { Component, FormEvent, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { reportPeriod } from "./reportNavigation";
@@ -828,10 +829,19 @@ function BankImportView({ data, busy, runAction }: ActionViewProps) {
   };
   const firstReality = bankReality.accounts[0];
   const [balanceAccountId, setBalanceAccountId] = useState(firstReality?.bankAccountId || "");
-  const [balanceValue, setBalanceValue] = useState(firstReality?.verifiedBalance === null || firstReality?.verifiedBalance === undefined ? "" : String(firstReality.verifiedBalance));
+  const [balanceValue, setBalanceValue] = useState(bankControlValue(firstReality?.verifiedBalance));
+  const [balanceRate, setBalanceRate] = useState(bankControlValue(firstReality?.exchangeRate));
+  const [balanceError, setBalanceError] = useState("");
+  const [balanceDirty, setBalanceDirty] = useState(false);
   const [balanceDate, setBalanceDate] = useState(today());
   const [balanceSource, setBalanceSource] = useState("Saldo confirmado por tesorería");
   const selectedReality = bankReality.accounts.find((account) => account.bankAccountId === balanceAccountId) || firstReality;
+  useEffect(() => {
+    if (balanceDirty || !selectedReality) return;
+    setBalanceAccountId(selectedReality.bankAccountId);
+    setBalanceValue(bankControlValue(selectedReality.verifiedBalance));
+    setBalanceRate(bankControlValue(selectedReality.exchangeRate));
+  }, [balanceDirty, selectedReality?.bankAccountId, selectedReality?.verifiedBalance, selectedReality?.exchangeRate]);
   async function prepare() {
     if (!file) return;
     setLocalError("");
@@ -843,23 +853,34 @@ function BankImportView({ data, busy, runAction }: ActionViewProps) {
   function selectBalanceAccount(accountId: string) {
     const selected = bankReality.accounts.find((account) => account.bankAccountId === accountId);
     setBalanceAccountId(accountId);
-    setBalanceValue(selected?.verifiedBalance === null || selected?.verifiedBalance === undefined ? "" : String(selected.verifiedBalance));
+    setBalanceValue(bankControlValue(selected?.verifiedBalance));
+    setBalanceRate(bankControlValue(selected?.exchangeRate));
+    setBalanceError("");
+    setBalanceDirty(false);
   }
   async function saveVerifiedBalance() {
     if (!selectedReality) return;
-    const balance = parseLocalizedNumber(balanceValue);
-    if (balance < 0) {
-      setLocalError("El saldo disponible no puede ser negativo.");
+    const balance = parseBankControlNumber(balanceValue);
+    const exchangeRate = selectedReality.currency === "CLP" ? 1 : parseBankControlNumber(balanceRate);
+    if (!Number.isFinite(balance) || balance < 0) {
+      setBalanceError("Ingresa un saldo disponible válido, igual o mayor que cero.");
       return;
     }
-    await runAction("bank-balance", () => confirmAccountingBankBalance({
+    if (!Number.isFinite(exchangeRate) || exchangeRate <= 0) {
+      setBalanceError(`Ingresa el tipo de cambio ${selectedReality.currency}/CLP.`);
+      return;
+    }
+    setBalanceError("");
+    const confirmed = await runAction("bank-balance", () => confirmAccountingBankBalance({
       entityId: data.entity.id,
       bankAccountId: selectedReality.bankAccountId,
       asOfDate: balanceDate,
       balance,
+      exchangeRate,
       sourceReference: balanceSource,
       notes: "Saldo de control de tesorería; no crea ingresos, gastos ni asientos contables.",
     }), "Saldo bancario verificado y comparado con el Libro Mayor.");
+    if (confirmed) setBalanceDirty(false);
   }
   const bankBatches = data.batches.filter((batch) => ["SCOTIABANK", "BANCO_ESTADO", "MERCADO_PAGO"].includes(batch.source_type));
   return <div className="accounting-view-stack">
@@ -867,10 +888,21 @@ function BankImportView({ data, busy, runAction }: ActionViewProps) {
       <div className="accounting-panel-heading"><div><p>Control de tesorería</p><h2>Saldos verificados y Libro Mayor</h2><span>El saldo disponible se muestra como realidad bancaria. La diferencia contable permanece visible hasta importar y clasificar todos los movimientos.</span></div><strong>{clp(bankReality.availableClp)}</strong></div>
       <div className="accounting-bank-reality-grid">{bankReality.accounts.map((account) => <article key={account.key}>
         <div className="accounting-bank-reality-title"><Landmark size={18} /><div><strong>{account.institution} · {account.currency}</strong><span>{account.accountNumberMasked}</span></div><Status value={account.basis === "verified" ? "Verificado" : account.basis === "statement" ? "Cartola" : "Libro"} tone={account.basis === "ledger" ? "review" : "success"} /></div>
-        <dl><div><dt>Disponible confirmado</dt><dd>{account.currency === "CLP" ? clp(account.verifiedBalance) : currencyMoney(account.verifiedBalance, account.currency)}</dd></div><div><dt>Saldo Libro Mayor</dt><dd>{clp(account.ledgerBalanceClp)}</dd></div><div><dt>Diferencia por canalizar</dt><dd className={Math.abs(account.differenceClp) >= 0.5 ? "review" : "ok"}>{clp(account.differenceClp)}</dd></div></dl>
+        <dl><div><dt>Disponible confirmado</dt><dd>{account.verifiedBalance === null ? "Sin confirmar" : account.currency === "CLP" ? clp(account.verifiedBalance) : currencyMoney(account.verifiedBalance, account.currency)}</dd></div><div><dt>Saldo Libro Mayor</dt><dd>{clp(account.ledgerBalanceClp)}</dd></div><div><dt>Diferencia por canalizar</dt><dd className={Math.abs(account.differenceClp) >= 0.5 ? "review" : "ok"}>{account.verifiedBalance === null ? "Por verificar" : clp(account.differenceClp)}</dd></div></dl>
         <small>{account.verifiedAt ? `Al ${date(account.verifiedAt)} · ${account.verifiedSource}` : "Sin saldo externo verificado"}</small>
+        {account.balanceWarning ? <p className="accounting-local-error"><AlertTriangle size={16} />{account.balanceWarning}</p> : null}
       </article>)}</div>
-      {data.profile.permissions.includes("post") && selectedReality ? <div className="accounting-bank-balance-form"><label>Cuenta<select value={balanceAccountId} onChange={(event) => selectBalanceAccount(event.target.value)}>{bankReality.accounts.map((account) => <option key={account.key} value={account.bankAccountId}>{account.institution} · {account.currency} · {account.accountNumberMasked}</option>)}</select></label><label>Saldo disponible<input inputMode="decimal" value={balanceValue} onChange={(event) => setBalanceValue(event.target.value)} /></label><label>Fecha de confirmación<input max={today()} type="date" value={balanceDate} onChange={(event) => setBalanceDate(event.target.value)} /></label><label>Respaldo<input value={balanceSource} onChange={(event) => setBalanceSource(event.target.value)} /></label><button className="primary-button" disabled={busy === "bank-balance" || !balanceDate || !balanceValue.trim()} type="button" onClick={() => void saveVerifiedBalance()}><ClipboardCheck size={17} /> {busy === "bank-balance" ? "Guardando…" : "Confirmar saldo"}</button></div> : null}
+      {data.profile.permissions.includes("post") && selectedReality ? <>
+        <div className="accounting-bank-balance-form">
+          <label>Cuenta<select value={balanceAccountId} onChange={(event) => selectBalanceAccount(event.target.value)}>{bankReality.accounts.map((account) => <option key={account.key} value={account.bankAccountId}>{account.institution} · {account.currency} · {account.accountNumberMasked}</option>)}</select></label>
+          <label>Saldo disponible ({selectedReality.currency})<input inputMode="decimal" value={balanceValue} onChange={(event) => { setBalanceValue(event.target.value); setBalanceDirty(true); }} /></label>
+          {selectedReality.currency !== "CLP" ? <label>Tipo de cambio {selectedReality.currency}/CLP<input inputMode="decimal" value={balanceRate} onChange={(event) => { setBalanceRate(event.target.value); setBalanceDirty(true); }} /></label> : null}
+          <label>Fecha de confirmación<input max={today()} type="date" value={balanceDate} onChange={(event) => setBalanceDate(event.target.value)} /></label>
+          <label>Respaldo<input value={balanceSource} onChange={(event) => setBalanceSource(event.target.value)} /></label>
+          <button className="primary-button" disabled={busy === "bank-balance" || !balanceDate || !balanceValue.trim()} type="button" onClick={() => void saveVerifiedBalance()}><ClipboardCheck size={17} /> {busy === "bank-balance" ? "Guardando…" : "Confirmar saldo"}</button>
+        </div>
+        {balanceError ? <p className="accounting-local-error" role="alert"><AlertTriangle size={16} />{balanceError}</p> : null}
+      </> : null}
     </section>
     <div className="accounting-bank-layout">
     <section className="panel accounting-import-card">

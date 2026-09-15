@@ -103,6 +103,8 @@ export interface AccountingBankRealityAccount {
   accountName: string;
   accountNumberMasked: string;
   currency: string;
+  exchangeRate?: number | null;
+  balanceWarning?: string | null;
   ledgerBalanceClp: number;
   statementBalance: number | null;
   statementBalanceClp: number | null;

@@ -1313,7 +1313,7 @@
 
 .accounting-bank-balance-form {
   display: grid;
-  grid-template-columns: minmax(170px, 1.2fr) minmax(145px, 0.8fr) minmax(150px, 0.8fr) minmax(190px, 1.1fr) max-content;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
   align-items: end;
   margin-top: 16px;
