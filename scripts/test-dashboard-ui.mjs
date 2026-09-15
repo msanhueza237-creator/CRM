@@ -9,7 +9,7 @@ assert.ok(url);
 const origin = new URL(url).origin;
 const browser = await chromium.launch({ headless: true, channel: "chrome" });
 await mkdir("outputs/dashboard", { recursive: true });
-const totals = { sales: 136494301, costs: 79339554, expenses: 17000000, operatingProfit: 40154747, grossMargin: 41.87,
+const totals = { sales: 136494301, costs: 79339554, expenses: 17000000, grossProfit: 57154747, operatingProfit: 40154747, grossMargin: 41.87,
   purchasesDomestic: 120000000, purchasesInternational: 200000000, purchasesNet: 320000000, salesCreditNotes: 2500000, purchaseCreditNotes: 1100000 };
 const summary = { bank_clp: 8209372, bank_usd_clp: 792, checks_portfolio: 1169981, payables: 12925234, receivables: 11287934, unmatched_bank: 183, as_of: "2026-09-08", bank_balance_basis: "verified_control", receivables_data_quality: "verified_full_snapshot" };
 const monthly = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago"].map((label, i) => ({ ...totals, label, period: `2026-${String(i + 1).padStart(2, "0")}`,
@@ -17,7 +17,7 @@ const monthly = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago"].map((la
   sales: 10000000 + i * 3000000, costs: 6000000 + i * 1000000, expenses: 1000000, operatingProfit: 3000000 + i * 2000000,
   purchasesDomestic: 3000000, purchasesInternational: 65000000, purchasesNet: 68000000, salesCreditNotes: 250000, purchaseCreditNotes: 30000 }));
 monthly.push({ label: "Sep", period: "2026-09", from: "2026-09-01", to: "2026-09-09", sales: 149421,
-  salesLedger: 0, salesPending: 149421, salesPendingDocuments: 1, costs: 0, expenses: 350000, operatingProfit: -200579, grossMargin: 100,
+  salesLedger: 0, salesPending: 149421, salesPendingDocuments: 1, costs: 0, expenses: 350000, grossProfit: 149421, operatingProfit: -200579, grossMargin: 100,
   purchasesDomestic: -50000, purchasesInternational: 250000, purchasesNet: 200000, salesCreditNotes: 500, purchaseCreditNotes: 75000 });
 monthly.push(...["Oct", "Nov", "Dic"].map((label, i) => ({ label, period: `2026-${i + 10}`, from: `2026-${i + 10}-01`, to: new Date(Date.UTC(2026, i + 10, 0)).toISOString().slice(0, 10),
   sales: 0, costs: 0, expenses: 0, operatingProfit: 0, grossMargin: null, purchasesDomestic: 0, purchasesInternational: 0, purchasesNet: 0, salesCreditNotes: 0, purchaseCreditNotes: 0 })));
@@ -78,7 +78,8 @@ try {
     const user = { id: "22222222-2222-4222-8222-222222222222", email: "qa@example.invalid", aud: "authenticated", role: "authenticated", user_metadata: { full_name: "Prueba", role } };
     const payload = Buffer.from(JSON.stringify({ sub: user.id, role: "authenticated", exp: Math.floor(Date.now() / 1000) + 86400 })).toString("base64url");
     await context.addInitScript(({ key, user, payload }) => localStorage.setItem(key, JSON.stringify({ access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.fixture`, refresh_token: "fixture", expires_at: Math.floor(Date.now() / 1000) + 86400, expires_in: 86400, token_type: "bearer", user })), { key: `sb-${new URL(url).hostname.split(".")[0]}-auth-token`, user, payload });
-    let failed = false, suppressed = false, financeRequests = 0, tradeRequests = 0, fixtureMode = "complete";
+    let failed = false, suppressed = false, financeRequests = 0, tradeRequests = 0, fixtureMode = "complete", marginOverride = null;
+    const financeWrites = [];
     const fixtureTotals = value => {
       const fixture = { ...value };
       if (fixtureMode === "legacy") optionalFields.forEach(key => delete fixture[key]);
@@ -92,6 +93,7 @@ try {
       if (u.origin !== origin) return u.origin === new URL(base).origin ? route.continue() : route.abort();
       const headers = { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*", "Access-Control-Expose-Headers": "Content-Range", "Content-Range": "0-9/10" };
       if (route.request().method() === "OPTIONS") return route.fulfill({ status: 204, headers });
+      if (u.pathname.includes("/accounting-center/") && !["GET", "HEAD"].includes(route.request().method())) financeWrites.push(u.pathname);
       let body = [];
       if (u.pathname.includes("/profiles")) body = { id: user.id, role, full_name: "Prueba", active: true };
       if (u.pathname.includes("/auth/v1/user")) body = user;
@@ -100,6 +102,7 @@ try {
         if (failed) return route.fulfill({ status: 503, headers, body: '{"error":"Unavailable"}' });
         body = { summary: { ...summary, receivables_suppressed: suppressed }, dashboard: { available: true, year: 2026, from: "2026-01-01", to: "2026-09-09", basis: "mixed", warnings: [], current: fixtureTotals({ ...totals, salesLedger: totals.sales - 149421, salesPending: 149421, salesPendingDocuments: 1 }), monthly: monthly.map(fixtureTotals), purchaseDocuments: fixtureMode === "legacy" ? undefined : fixtureMode === "empty" ? [] : purchaseDocuments, latestSales: [{ id: "1557", folio: "1557", issuedOn: "2026-09-08", netClp: 149421, posted: false }], costCoverage: { salesWithExactCost: 112, totalSalesDocuments: 163 } }, factoFreshness: { stale: false } };
         if (fixtureMode === "complete") body.dashboard.salesAdjustments = [{ id: "nc72", folio: "72", issuedOn: "2026-01-20", recognizedOn: "2026-09-09", netClp: -310640 }];
+        if (marginOverride) Object.assign(body.dashboard.current, marginOverride);
         if (fixtureMode === "september-adjustments") {
           Object.assign(body.dashboard.monthly[8], { sales: -1782466, salesLedger: -1782466, salesPending: 0, salesPendingDocuments: 0,
             salesIssued: 149421, salesIssuedDocuments: 1, salesIssuedCreditNotes: 0, salesPeriodNet: 149421,
@@ -190,9 +193,10 @@ try {
         await page.getByRole("combobox", { name: "Período financiero" }).selectOption("year");
         await page.getByRole("combobox", { name: "Período financiero" }).selectOption("2026-09");
         assert.match(await page.locator(".overview-results").innerText(), /149\.421/);
-        assert.match(await page.locator(".overview-sales-breakdown").innerText(), /Sin asiento/);
+        assert.match(await page.locator(".overview-sales-breakdown").innerText(), /Sin asiento|Asiento pendiente en CRM/);
         assert.match(await page.locator(".overview-result-total").innerText(), /base mixta/);
-        assert.match(await page.locator(".overview-results").innerText(), /Por validar/);
+        assert.equal(await financialRow(page, "Margen bruto").locator("strong").innerText(), "100%");
+        assert.match(await financialRow(page, "Margen bruto").innerText(), /Provisional.*sin costos incorporados/);
         assert.match(await page.locator(".overview-recent-sales").innerText(), /Documento 1557/);
         await assertDocumentLink(page.locator(".overview-recent-sales a"), "1557", "2026-09-08");
         await assertValue(page, "Compras netas", 200000, ".overview-purchases");
@@ -212,6 +216,7 @@ try {
         await page.getByRole("combobox", { name: "Período financiero" }).selectOption("2026-10");
         await assertValue(page, "Compras netas", 0, ".overview-purchases");
         await assertValue(page, "Notas de crédito de venta", 0);
+        assert.equal(await financialRow(page, "Margen bruto").locator("strong").innerText(), "Sin base");
         assert.equal(await details.locator("li").count(), 0);
         assert.match(await details.innerText(), /Sin documentos de compras en este período/);
         await page.getByRole("combobox", { name: "Período financiero" }).selectOption("2026-09");
@@ -234,13 +239,49 @@ try {
         await assertValue(page, "Otras regularizaciones de ventas", 6418);
         await assertValue(page, "Ventas netas en resultado", -1782466);
         assert.match(await financialRow(page, "Ventas emitidas en el período").innerText(), /1 documento/);
-        assert.match(await financialRow(page, "Costo de ventas").innerText(), /1 documento\(s\) sin costo confirmado/);
-        assert.match(await financialRow(page, "Margen bruto").innerText(), /Por validar/);
+        assert.match(await financialRow(page, "Costo de ventas").innerText(), /1 documento\(s\) (sin costo confirmado|con costo pendiente en CRM)/);
+        assert.equal(await financialRow(page, "Margen bruto").locator("strong").innerText(), "Sin base");
         assert.match(await page.locator(".overview-result-total").innerText(), /Resultado operativo contable/);
         assert.equal(await page.locator(".overview-result-total strong").innerText(), clp(-2132466));
         await assertLayout(page, `September adjustments ${width}`);
         await page.screenshot({ path: `outputs/dashboard/september-adjustments-${width}.png`, fullPage: true });
       }
+      fixtureMode = "gross-margin";
+      const reported = { sales: 130483975, costs: 89031068, expenses: 18636645, grossProfit: 41452907,
+        grossMargin: 41452907 / 130483975 * 100, operatingProfit: 22816262,
+        salesLedger: 130607148, salesPending: -123173, salesPendingDocuments: 5, salesCostMissingDocuments: 50 };
+      const marginCases = [
+        ["reported", reported, "31,8%", /Provisional.*41\.452\.907.*con costos registrados/],
+        ["new-cost", { ...reported, costs: 90031068, grossProfit: 40452907, grossMargin: 40452907 / reported.sales * 100, operatingProfit: 21816262, salesCostMissingDocuments: 49 }, "31%", /Provisional.*40\.452\.907/],
+        ["break-even", { ...reported, costs: reported.sales, grossProfit: 0, grossMargin: 0 }, "0%", /Provisional/],
+        ["loss", { ...reported, costs: reported.sales * 1.1, grossProfit: -reported.sales * 0.1, grossMargin: -10 }, "-10%", /Provisional/],
+        ["no-sales", { ...reported, sales: 0, grossMargin: null }, "Sin base", /Sin ventas netas positivas/],
+        ["negative-sales", { ...reported, sales: -100, grossMargin: 100 }, "Sin base", /Sin ventas netas positivas/],
+        ["missing-costs", { ...reported, costs: null }, "No disponible", /Margen bruto/],
+        ["missing-margin", { ...reported, grossMargin: null }, "No disponible", /Margen bruto/],
+      ];
+      for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({ width, height: 950 });
+        await page.getByRole("combobox", { name: "Período financiero" }).selectOption("year");
+        for (const [name, value, expected, disclosure] of marginCases) {
+          marginOverride = value;
+          await page.getByRole("button", { name: "Actualizar panorama" }).click();
+          await page.waitForFunction(() => !document.querySelector('[aria-label="Actualizar panorama"]')?.disabled);
+          const row = financialRow(page, "Margen bruto");
+          assert.equal(await row.locator("strong").innerText(), expected, `${name} ${width}`);
+          assert.match(await row.innerText(), disclosure);
+          await assertDetailLink(row, "2026-01-01", "2026-09-09", "gross-profit");
+          await assertLayout(page, `gross margin ${name} ${width}`);
+          if (name === "reported") {
+            await assertValue(page, "Costo de ventas", reported.costs);
+            assert.match(await financialRow(page, "Costo de ventas").innerText(), /50 documento/);
+            assert.equal(await page.locator(".overview-result-total strong").innerText(), clp(reported.operatingProfit));
+            await row.scrollIntoViewIfNeeded();
+            await page.screenshot({ path: `outputs/dashboard/gross-margin-${width}.png` });
+          }
+        }
+      }
+      marginOverride = null;
       for (const mode of ["legacy", "net-only", "partial", "split-only", "empty"]) {
         fixtureMode = mode;
         await page.getByRole("button", { name: "Actualizar panorama" }).click();
@@ -272,10 +313,12 @@ try {
       await page.getByText("Lectura parcial", { exact: true }).waitFor();
       assert.doesNotMatch(await page.locator(".overview-kpis").innerText(), /11\.287\.934/);
       assert.match(await page.locator(".overview-kpis").innerText(), /No disponible/);
+      assert.equal(await financialRow(page, "Margen bruto").locator("strong").innerText(), "No disponible");
       await page.locator('.overview-modules a[href="/copiloto"]').click();
       assert.equal(new URL(page.url()).pathname, "/copiloto");
     }
     assert.deepEqual(errors, []);
+    assert.deepEqual(financeWrites, [], "Reading and updating the margin never posts accounting changes");
     console.log(`PASS ${role}: responsive layout, purchases stacks, credit notes, period documents, source links, unchanged results, optional fields and access`);
     await context.close();
   }
