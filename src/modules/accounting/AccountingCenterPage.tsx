@@ -3,6 +3,7 @@ import { Component, FormEvent, useEffect, useRef, useState, type ErrorInfo, type
 import { Link, useSearchParams } from "react-router-dom";
 import { reportPeriod } from "./reportNavigation";
 import { DashboardDetailView } from "./DashboardDetailView";
+import { LoansView } from "./LoansView";
 import {
   AlertTriangle,
   ArrowRight,
@@ -109,6 +110,7 @@ const views: Array<{ id: AccountingView; label: string; icon: typeof Landmark }>
   { id: "receivables", label: "Por cobrar", icon: CircleDollarSign },
   { id: "payables", label: "Por pagar", icon: ReceiptText },
   { id: "checks", label: "Cheques", icon: FileCheck2 },
+  { id: "loans", label: "Préstamos", icon: Landmark },
   { id: "periods", label: "Períodos", icon: LockKeyhole },
   { id: "reports", label: "Informes", icon: FileSpreadsheet },
   { id: "controls", label: "Control", icon: ShieldCheck },
@@ -194,6 +196,7 @@ export function AccountingCenterPage() {
           {activeView === "receivables" ? <ReceivablesView key={params.toString()} data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "payables" ? <PayablesView key={params.toString()} data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "checks" ? <ChecksView key={params.toString()} data={data} busy={busy} runAction={runAction} /> : null}
+          {activeView === "loans" ? <LoansView data={data} refresh={refresh} /> : null}
           {activeView === "periods" ? <PeriodsView data={data} isAdmin={user?.role === "administrador"} busy={busy} runAction={runAction} /> : null}
           {activeView === "reports" ? <ReportsView data={data} /> : null}
           {activeView === "controls" ? <ControlsView data={data} busy={busy} runAction={runAction} /> : null}

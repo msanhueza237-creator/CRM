@@ -1,5 +1,5 @@
 export type AccountingRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
-export type AccountingView = "dashboard" | "detail" | "accounts" | "ledger" | "facto" | "banks" | "reconcile" | "receivables" | "payables" | "checks" | "periods" | "reports" | "controls";
+export type AccountingView = "dashboard" | "detail" | "accounts" | "ledger" | "facto" | "banks" | "reconcile" | "receivables" | "payables" | "checks" | "loans" | "periods" | "reports" | "controls";
 
 export interface AccountingEntity {
   id: string;

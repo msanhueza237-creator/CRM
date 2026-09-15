@@ -56,6 +56,23 @@ Deno.serve(async (request) => {
       requirePermission(profile, "view");
       return json(await bootstrap(rest, profile, true), 200, request);
     }
+    if (route === "loans" && request.method === "GET") {
+      requirePermission(profile, "view");
+      const entityId = requiredUuid(new URL(request.url).searchParams.get("entityId"));
+      return json({ loans: await selectAllRows(rest, `accounting_loans?select=*,accounting_loan_movements(*,accounting_journal_entries(status,entry_date,entry_number))&entity_id=eq.${entityId}&order=received_on.desc,id.asc`) }, 200, request);
+    }
+    if (route === "loans/save" && request.method === "POST") {
+      requirePermission(profile, "entry");
+      return json({ id: await rpc(rest, "accounting_save_loan", { p_payload: await readJson(request), p_actor_id: profile.id }) }, 200, request);
+    }
+    if (["loans/preview", "loans/post"].includes(route) && request.method === "POST") {
+      requirePermission(profile, "post");
+      const input = await readJson(request);
+      return json(await rpc(rest, "accounting_loan_action", {
+        p_loan_id: requiredUuid(input.loanId), p_kind: requiredText(input.kind, 20),
+        p_transaction_id: requiredUuid(input.transactionId), p_actor_id: profile.id, p_confirm: route === "loans/post",
+      }), 200, request);
+    }
     if (route === "facto/sync" && request.method === "POST") {
       requirePermission(profile, "import");
       return json(await syncFacto(rest, profile, requestId, await readJson(request)), 200, request);

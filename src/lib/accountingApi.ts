@@ -17,6 +17,7 @@ import type {
   AccountingReport,
 } from "../types/accounting";
 import { normalizeAccountingReconciliationProposal } from "../modules/accounting/reconciliationCompatibility";
+import type { AccountingLoan, LoanDraft, LoanPosting, LoanPreview } from "../types/loans";
 
 type RequestOptions = { method?: "GET" | "POST"; body?: unknown };
 
@@ -43,6 +44,19 @@ async function accountingRequest<T>(route: string, options: RequestOptions = {})
 
 export function getAccountingBootstrap() {
   return accountingRequest<AccountingBootstrap>("bootstrap");
+}
+
+export function getAccountingLoans(entityId: string) {
+  return accountingRequest<{ loans: AccountingLoan[] }>(`loans?entityId=${encodeURIComponent(entityId)}`);
+}
+export function saveAccountingLoan(input: LoanDraft) {
+  return accountingRequest<{ id: string }>("loans/save", { method: "POST", body: input });
+}
+export function previewAccountingLoan(input: LoanPosting) {
+  return accountingRequest<LoanPreview>("loans/preview", { method: "POST", body: input });
+}
+export function postAccountingLoan(input: LoanPosting) {
+  return accountingRequest<LoanPreview>("loans/post", { method: "POST", body: input });
 }
 
 export function getAccountingOverview() {
