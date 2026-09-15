@@ -81,6 +81,10 @@ export function confirmAccountingFactoExcel(batchId: string) {
   return accountingRequest<AccountingFactoExcelResult>("facto-excel/confirm", { method: "POST", body: { batchId } });
 }
 
+export function getAccountingFactoExcelPreview(batchId: string) {
+  return accountingRequest<AccountingFactoExcelPreview>(`facto-excel/previews/${encodeURIComponent(batchId)}`);
+}
+
 export async function downloadAccountingEvidence(storagePath: string, fileName: string) {
   if (!isSupabaseConfigured || !supabase) throw new Error("Conecta Supabase para descargar respaldos.");
   const { data, error } = await supabase.storage.from("accounting-evidence").download(storagePath);

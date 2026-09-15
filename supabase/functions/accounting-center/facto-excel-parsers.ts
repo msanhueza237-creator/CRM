@@ -31,7 +31,7 @@ export async function parseFactoExcelWorkbook(bytes: Uint8Array, requestedProfil
   const parsed = profile === "facto_unpaid_documents"
     ? parseBalanceSheets(workbook, profile)
     : profile === "facto_checks_banco_estado"
-    ? parseChecks(sheetRows(workbook), profile)
+    ? parseCheckSheets(workbook, profile)
     : parseCash(sheetRows(workbook), profile);
   parsed.rows = await Promise.all(parsed.rows.map(async (row) => ({
     ...row,
@@ -181,22 +181,66 @@ function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExce
   };
 }
 
+function parseCheckSheets(workbook: XLSX.WorkBook, profile: FactoExcelProfile): FactoExcelPreview {
+  const parsed: FactoExcelRow[] = [];
+  let offset = 0;
+  for (const name of workbook.SheetNames) {
+    const rows = sheetRows(workbook, undefined, name, true);
+    const hasHeader = findCheckHeader(rows) >= 0;
+    if (!hasHeader) {
+      if (rows.filter((row) => row.filter((cell) => String(cell ?? "").trim()).length >= 4).length) {
+        throw new Error(`La hoja ${name} contiene datos sin un encabezado de cheques Facto reconocible.`);
+      }
+      continue;
+    }
+    const result = parseChecks(rows, profile);
+    for (const row of result.rows) {
+      row.data.source_sheet = name;
+      row.data.source_row = row.row_number;
+      row.row_number += offset;
+      parsed.push(row);
+    }
+    offset += rows.length;
+  }
+  if (!parsed.length) throw new Error("El archivo no contiene cheques Facto. La cartera existente se conserva.");
+  const seen = new Set<string>();
+  for (const row of parsed) {
+    const identity = [normalizeText(row.data.issuer_bank), row.data.check_number, row.data.received_on,
+      row.data.customer_tax_id || normalizeText(row.data.customer_name), row.data.source_document_number].join("|");
+    if (seen.has(identity)) row.errors.push("Asignación de cheque repetida en el archivo. Revisa las hojas antes de confirmar.");
+    seen.add(identity);
+  }
+  return {
+    profile, source_type: "CHECKS", rows: parsed,
+    summary: { amount_clp: sum(parsed, "amount_clp"), settlement_institution: "BancoEstado" },
+    warnings: [
+      "Se actualizan los cheques incluidos. Los ausentes se conservan: su ausencia no acredita un cobro.",
+      "El estado Facto no confirma disponibilidad bancaria. Los cobros conciliados y estados manuales se conservan.",
+    ],
+  };
+}
+
 function parseChecks(rows: unknown[][], profile: FactoExcelProfile): FactoExcelPreview {
-  const headerIndex = findHeader(rows, ["nombre titular", "banco", "numero documento", "numero", "fecha cobro", "monto"]);
+  const headerIndex = findCheckHeader(rows);
   if (headerIndex < 0) throw new Error("No se encontró el encabezado del listado de cheques Facto.");
   const header = rows[headerIndex].map(normalizeText);
   const parsed: FactoExcelRow[] = [];
   for (let index = headerIndex + 1; index < rows.length; index += 1) {
+    if (findCheckHeader([rows[index]]) === 0) continue;
+    if (!rows[index].some((cell) => String(cell ?? "").trim())) continue;
     const raw = rowObject(header, rows[index]);
     const checkNumber = textAt(raw, "numero");
-    const amount = Math.abs(money(raw.monto));
-    if (!checkNumber && amount === 0) continue;
+    const amount = money(raw.monto);
+    if (!checkNumber && !textAt(raw, "numero documento") && /^(sub)?total( general| cheques)?$/.test(normalizeText(rows[index].find((cell) => String(cell ?? "").trim())))) continue;
     const receivedOn = isoDate(raw.fecha);
     const dueOn = isoDate(raw["fecha cobro"]);
     const errors: string[] = [];
     if (!checkNumber) errors.push("Número de cheque faltante.");
+    if (!textAt(raw, "banco")) errors.push("Banco emisor faltante.");
+    if (!textAt(raw, "nombre titular") && !textAt(raw, "razon social receptor")) errors.push("Titular del cheque faltante.");
     if (!receivedOn) errors.push("Fecha de recepción inválida.");
-    if (amount <= 0) errors.push("Monto inválido.");
+    if (String(raw["fecha cobro"] ?? "").trim() && !dueOn) errors.push("Fecha de cobro inválida.");
+    if (!validAmount(raw.monto) || amount <= 0) errors.push("Monto inválido.");
     parsed.push({
       row_number: index + 1,
       kind: "check",
@@ -228,6 +272,13 @@ function parseChecks(rows: unknown[][], profile: FactoExcelProfile): FactoExcelP
     warnings: ["Los cheques quedan pendientes de confirmación contra la futura cartola de BancoEstado."],
     summary: { amount_clp: sum(parsed, "amount_clp"), settlement_institution: "BancoEstado" },
   };
+}
+
+function findCheckHeader(rows: unknown[][]) {
+  return rows.findIndex((row) => {
+    const cells = row.map(normalizeText);
+    return ["nombre titular", "banco", "numero documento", "numero", "fecha", "fecha cobro", "monto"].every((key) => cells.includes(key));
+  });
 }
 
 function parseCash(rows: unknown[][], profile: FactoExcelProfile): FactoExcelPreview {
@@ -283,7 +334,7 @@ function parseCash(rows: unknown[][], profile: FactoExcelProfile): FactoExcelPre
 function canonicalFingerprint(row: FactoExcelRow) {
   const data = row.data;
   if (row.kind === "document_balance") return [data.direction, data.document_type, data.document_number, data.counterpart_tax_id, data.total_clp, data.reported_paid_clp, data.reported_balance_clp].join("|");
-  if (row.kind === "check") return [data.check_number, data.due_on, data.amount_clp, data.customer_tax_id, normalizeText(data.customer_name)].join("|");
+  if (row.kind === "check") return [normalizeText(data.issuer_bank), data.check_number, data.received_on, data.due_on, data.source_document_number, data.amount_clp, data.customer_tax_id, normalizeText(data.customer_name), normalizeText(data.source_status)].join("|");
   return [data.event_date, data.event_time, data.direction, data.document_type, data.document_number, data.amount_clp, normalizeText(data.payment_method)].join("|");
 }
 

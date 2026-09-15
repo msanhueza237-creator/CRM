@@ -47,6 +47,7 @@ import {
   exportAccountingPdf,
   getAccountingLedgerCoverage,
   getAccountingFactoReceivablesSyncRun,
+  getAccountingFactoExcelPreview,
   getAccountingReport,
   postAccountingEntry,
   prepareAccountingLedger,
@@ -73,6 +74,7 @@ import type {
   AccountingFactoExcelProfile,
   AccountingExactReconciliationRunResult,
   AccountingImportPreview,
+  AccountingImportBatch,
   AccountingJournalDraft,
   AccountingJournalEntry,
   AccountingLedgerCoverage,
@@ -133,7 +135,8 @@ export function AccountingCenterPage() {
     try {
       await action();
       setNotice(success);
-      await refresh();
+      try { await refresh(); }
+      catch { setActionError("La operación se guardó, pero no se pudo refrescar la pantalla. Pulsa Actualizar; no repitas la importación."); }
       return true;
     } catch (caught) {
       setActionError(caught instanceof Error ? caught.message : "No se pudo completar la operación.");
@@ -153,7 +156,7 @@ export function AccountingCenterPage() {
         </div>
         <div className="accounting-heading-actions">
           <span className="accounting-private-badge"><LockKeyhole size={15} /> Solo personal autorizado</span>
-          <button className="ghost-button" type="button" disabled={loading} onClick={() => void refresh()}>
+          <button className="ghost-button" type="button" disabled={loading} onClick={() => void refresh().catch(() => undefined)}>
             <RefreshCw className={loading ? "spin" : ""} size={17} /> Actualizar
           </button>
         </div>
@@ -179,6 +182,7 @@ export function AccountingCenterPage() {
 
       {data ? (
         <>
+          {["dashboard", "banks", "facto", "receivables", "payables", "checks"].includes(activeView) ? <AccountingImportStatus data={data} activeView={activeView} busy={busy} runAction={runAction} /> : null}
           {activeView === "dashboard" ? <DashboardView data={data} navigate={navigate} /> : null}
           {activeView === "accounts" ? <AccountsView data={data} busy={busy} runAction={runAction} /> : null}
           {activeView === "ledger" ? <LedgerView data={data} busy={busy} runAction={runAction} /> : null}
@@ -196,6 +200,47 @@ export function AccountingCenterPage() {
       ) : null}
     </section>
   );
+}
+
+function AccountingImportStatus({ data, activeView, busy, runAction }: ActionViewProps & { activeView: AccountingView }) {
+  const [preview, setPreview] = useState<AccountingFactoExcelPreview | null>(null);
+  const [opening, setOpening] = useState("");
+  const [error, setError] = useState("");
+  const groups = new Map<string, AccountingImportBatch[]>();
+  for (const batch of [...data.batches].sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))) {
+    const bank = ["BANCO_ESTADO", "SCOTIABANK", "MERCADO_PAGO"].includes(batch.source_type);
+    const collection = batch.source_type === "COLLECTIONS";
+    const checks = batch.source_type === "CHECKS";
+    if (!bank && !collection && !checks) continue;
+    if (activeView === "banks" && !bank || ["receivables", "payables"].includes(activeView) && !collection || activeView === "checks" && !checks) continue;
+    const key = bank ? `${humanize(batch.source_type)} ${String(batch.summary?.currency || "CLP")} ${String(batch.summary?.account_hint || "")}` : collection ? "Por cobrar y por pagar" : "Cheques";
+    groups.set(key, [...(groups.get(key) || []), batch]);
+  }
+  async function review(batchId: string) {
+    setOpening(batchId); setError("");
+    try { setPreview(await getAccountingFactoExcelPreview(batchId)); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "No se pudo abrir el archivo pendiente."); }
+    finally { setOpening(""); }
+  }
+  if (!groups.size) return null;
+  return <section className="accounting-import-status" aria-label="Estado de archivos cargados">
+    <h2>Últimos archivos</h2>
+    {[...groups].map(([label, batches]) => {
+      const latest = batches[0];
+      const applied = batches.find((batch) => number(batch.error_count) === 0 && ["imported", "partial"].includes(batch.status) && (batch.status === "imported" || batch.summary?.confirmed_at));
+      const pending = latest.status === "previewed";
+      return <div className="accounting-import-status-row" key={label}>
+        <FileSpreadsheet size={19} />
+        <div><strong>{label}</strong><span>{latest.file_name}</span><small>Cargado: {dateTime(latest.created_at)}</small>
+          {pending ? <small>Último aplicado: {applied ? `${applied.file_name} · ${dateTime(String(applied.summary?.confirmed_at || applied.created_at))}` : "Ninguno"}</small> : null}
+        </div>
+        <Status value={number(latest.error_count) > 0 ? "Archivo con errores" : pending ? "Pendiente de aplicar" : latest.status === "imported" ? "Aplicado" : latest.status === "partial" ? "Con observaciones" : humanize(latest.status)} tone={number(latest.error_count) > 0 ? "danger" : pending || latest.status !== "imported" ? "review" : "success"} />
+        {pending && ["COLLECTIONS", "CHECKS"].includes(latest.source_type) && data.profile.permissions.includes("import") ? <button className="ghost-button" type="button" disabled={Boolean(opening) || Boolean(busy)} onClick={() => void review(latest.id)}><ScanSearch size={16} />{opening === latest.id ? "Abriendo…" : "Revisar y aplicar"}</button> : null}
+      </div>;
+    })}
+    {error ? <div className="accounting-local-error" role="alert">{error}</div> : null}
+    {preview ? <FactoExcelPreviewDialog preview={preview} busy={busy} close={() => setPreview(null)} runAction={runAction} /> : null}
+  </section>;
 }
 
 class ReconciliationErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
@@ -543,7 +588,7 @@ const factoExcelProfiles: Array<{ id: AccountingFactoExcelProfile; label: string
   { id: "facto_cash", label: "Movimiento de caja general Facto", help: "Consolida todos los métodos y evita duplicar eventos ya presentes en archivos específicos." },
 ];
 
-function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps & { excelOnly?: boolean }) {
+function FactoView({ data, busy, runAction, excelOnly = false, excelProfile }: ActionViewProps & { excelOnly?: boolean; excelProfile?: AccountingFactoExcelProfile }) {
   const sources = data.sources.filter((row) => row.source_type === "FACTO" || row.source_type === "COMERCIO_EXTERIOR");
   const [fromDate, setFromDate] = useState("2026-01-01");
   const [toDate, setToDate] = useState(today());
@@ -559,14 +604,14 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
   const [sourceFilter, setSourceFilter] = useState(documentParams.get("source") || "all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState(documentParams.get("type") || "all");
-  const [profile, setProfile] = useState<AccountingFactoExcelProfile>("facto_unpaid_documents");
+  const [profile, setProfile] = useState<AccountingFactoExcelProfile>(excelProfile || "facto_unpaid_documents");
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<AccountingFactoExcelPreview | null>(null);
   const [localError, setLocalError] = useState("");
   const [preparingExcel, setPreparingExcel] = useState(false);
   const [completeReport, setCompleteReport] = useState(false);
   const selectedProfile = factoExcelProfiles.find((item) => item.id === profile)!;
-  const supportBatches = data.batches.filter((batch) => ["COLLECTIONS", "CHECKS", "PAYMENTS"].includes(batch.source_type));
+  const supportBatches = data.batches.filter((batch) => excelProfile ? batch.import_profile === excelProfile : ["COLLECTIONS", "CHECKS", "PAYMENTS"].includes(batch.source_type));
   const normalizedQuery = normalize(query);
   const filteredSources = sources.filter((row) => {
     if (documentId) return row.id === documentId;
@@ -673,10 +718,10 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
     </section>
 
     </> : null}
-    <div className="accounting-facto-support-grid" hidden={Boolean(documentId)}>
+    <div className="accounting-facto-support-grid" hidden={!excelOnly && Boolean(documentId)}>
       <section className="panel accounting-import-card">
-        <div className="accounting-panel-heading"><div><p>Información complementaria</p><h2>Cargar Excel de Facto</h2><span>Se conserva el archivo original, se previsualiza y solo después de confirmar se integra.</span></div><FileSpreadsheet size={24} /></div>
-        <label>Contenido del archivo<select disabled={preparingExcel} value={profile} onChange={(event) => { setProfile(event.target.value as AccountingFactoExcelProfile); setCompleteReport(false); setLocalError(""); }}>{factoExcelProfiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>
+        <div className="accounting-panel-heading"><div><p>Información complementaria</p><h2>{excelProfile === "facto_checks_banco_estado" ? "Cargar listado de cheques Facto" : "Cargar Excel de Facto"}</h2><span>Se conserva el archivo original, se previsualiza y solo después de confirmar se integra.</span></div><FileSpreadsheet size={24} /></div>
+        {!excelProfile ? <label>Contenido del archivo<select disabled={preparingExcel} value={profile} onChange={(event) => { setProfile(event.target.value as AccountingFactoExcelProfile); setCompleteReport(false); setLocalError(""); }}>{factoExcelProfiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label> : null}
         <p className="accounting-profile-help">{selectedProfile.help}</p>
         {profile === "facto_unpaid_documents" ? <>
           <div className="accounting-form-grid"><label>Emisión desde<input disabled={preparingExcel} type="date" value={fromDate} onChange={(event) => { setFromDate(event.target.value); setCompleteReport(false); }} /></label><label>Emisión hasta<input disabled={preparingExcel} type="date" max={today()} value={toDate} onChange={(event) => { setToDate(event.target.value); setCompleteReport(false); }} /></label></div>
@@ -687,8 +732,8 @@ function FactoView({ data, busy, runAction, excelOnly = false }: ActionViewProps
         <button className="primary-button" disabled={!file || Boolean(busy) || preparingExcel || (profile === "facto_unpaid_documents" && (!completeReport || !fromDate || !toDate || fromDate > toDate || toDate > today()))} type="button" onClick={() => void prepareFactoExcel()}><Search size={17} /> {preparingExcel ? "Validando Excel…" : "Previsualizar y validar"}</button>
       </section>
       <section className="panel accounting-import-history">
-        <div className="accounting-panel-heading"><div><p>Respaldo y trazabilidad</p><h2>Archivos complementarios</h2><span>No reemplazan cartolas bancarias ni crean ingresos duplicados.</span></div></div>
-        {supportBatches.length ? <div className="accounting-history-list">{supportBatches.map((batch) => <article key={batch.id}><FileSpreadsheet className="accounting-history-icon" size={18} /><div className="accounting-history-main"><strong title={batch.file_name}>{batch.file_name}</strong><span>{factoProfileLabel(batch.import_profile)} · {dateTime(batch.created_at)}</span></div><small>{batch.new_count} nuevos · {batch.duplicate_count} duplicados · {batch.error_count} errores</small><div className="accounting-history-actions"><Status value={humanize(batch.status)} tone={batch.status === "imported" ? "success" : batch.status === "failed" ? "danger" : "review"} />{batch.storage_path ? <button aria-label={`Descargar ${batch.file_name}`} className="icon-button" title="Descargar original" type="button" onClick={() => void runAction(`download-${batch.id}`, () => downloadAccountingEvidence(batch.storage_path!, batch.file_name), "Respaldo descargado.")}><Download size={16} /></button> : null}</div></article>)}</div> : <Empty icon={FileSpreadsheet} text="Aún no hay archivos Facto complementarios." />}
+        <div className="accounting-panel-heading"><div><p>Respaldo y trazabilidad</p><h2>{excelProfile === "facto_checks_banco_estado" ? "Historial de cheques" : "Archivos complementarios"}</h2><span>No reemplazan cartolas bancarias ni crean ingresos duplicados.</span></div></div>
+        {supportBatches.length ? <div className="accounting-history-list">{supportBatches.map((batch) => <article key={batch.id}><FileSpreadsheet className="accounting-history-icon" size={18} /><div className="accounting-history-main"><strong title={batch.file_name}>{batch.file_name}</strong><span>{factoProfileLabel(batch.import_profile)} · {dateTime(batch.created_at)}</span></div><small>{batch.new_count} {batch.source_type === "CHECKS" ? batch.status === "previewed" ? "filas válidas" : "cheques procesados" : "nuevos"} · {batch.duplicate_count} duplicados · {batch.error_count} errores</small><div className="accounting-history-actions"><Status value={humanize(batch.status)} tone={batch.status === "imported" ? "success" : batch.status === "failed" ? "danger" : "review"} />{batch.storage_path ? <button aria-label={`Descargar ${batch.file_name}`} className="icon-button" title="Descargar original" type="button" onClick={() => void runAction(`download-${batch.id}`, () => downloadAccountingEvidence(batch.storage_path!, batch.file_name), "Respaldo descargado.")}><Download size={16} /></button> : null}</div></article>)}</div> : <Empty icon={FileSpreadsheet} text="Aún no hay archivos Facto complementarios." />}
       </section>
     </div>
 
@@ -747,13 +792,15 @@ function FactoReceivablesPreviewDialog({ detail, busy, close, runAction }: {
 
 function FactoExcelPreviewDialog({ preview, busy, close, runAction }: { preview: AccountingFactoExcelPreview; busy: string; close: () => void; runAction: ActionRunner }) {
   const columns = factoPreviewColumns(preview.profile);
+  const checks = preview.profile === "facto_checks_banco_estado";
   async function confirm() {
-    const completed = await runAction("confirm-facto-excel", () => confirmAccountingFactoExcel(preview.batch.id), "Archivo Facto respaldado e integrado sin duplicar documentos ni pagos.");
+    const completed = await runAction("confirm-facto-excel", () => confirmAccountingFactoExcel(preview.batch.id), checks ? "Cartera de cheques actualizada. Sin generar pagos, movimientos bancarios ni asientos." : "Archivo Facto respaldado e integrado sin duplicar documentos ni pagos.");
     if (completed) close();
   }
-  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide" role="dialog" aria-modal="true" aria-label="Revisar Excel Facto">
+  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide accounting-facto-excel-preview" role="dialog" aria-modal="true" aria-label="Revisar Excel Facto">
     <div className="accounting-modal-heading"><div><p>Revisión del respaldo</p><h2>{factoProfileLabel(preview.profile)}</h2><span>{preview.batch.file_name}</span></div><button className="icon-button" aria-label="Cerrar" type="button" onClick={close}><X /></button></div>
-    <div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Filas</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevas</span><span><strong>{preview.summary.duplicates}</strong>Duplicadas</span><span className="warning"><strong>{preview.summary.errors}</strong>Con errores</span></div>
+    <div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Filas</span><span className="positive"><strong>{checks ? number(preview.summary.checks_new) : preview.summary.new}</strong>{checks ? "Cheques nuevos" : "Nuevas"}</span><span><strong>{checks ? number(preview.summary.checks_update) : preview.summary.duplicates}</strong>{checks ? "Cheques a actualizar" : "Duplicadas"}</span><span className="warning"><strong>{preview.summary.errors}</strong>Con errores</span></div>
+    {checks ? <p className="accounting-table-note"><strong>{clp(preview.summary.amount_clp)}</strong> informados en el archivo · {number(preview.summary.checks_total)} cheques identificados. No es saldo bancario disponible.</p> : null}
     {preview.warnings.map((warning) => <div className="accounting-review-note" key={warning}><AlertTriangle size={16} />{warning}</div>)}
     {preview.profile === "facto_unpaid_documents" ? <>
       <div className="accounting-preview-kpis"><span><strong>{preview.summary.receivables_complete === false ? "Sin cambios" : clp(preview.summary.receivables_total_clp)}</strong>Saldo por cobrar CLP<small>{number(preview.summary.receivables_documents)} documentos emitidos</small></span><span><strong>{preview.summary.payables_complete === false ? "Sin cambios" : clp(preview.summary.payables_total_clp)}</strong>Saldo por pagar CLP<small>{number(preview.summary.payables_documents)} documentos recibidos</small></span></div>
@@ -761,7 +808,7 @@ function FactoExcelPreviewDialog({ preview, busy, close, runAction }: { preview:
     </> : null}
     <Table headers={["Fila", ...columns.headers, "Validación"]}>{preview.rows.slice(0, 200).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.data.source_sheet ? `${row.data.source_sheet} · ${row.data.source_row}` : row.row_number}</td>{columns.values(row.data).map((cell, index) => <td data-label={columns.headers[index]} key={`${row.fingerprint}-${columns.headers[index]}`}>{cell}</td>)}<td data-label="Validación"><Status value={row.errors.length ? row.errors.join(" ") : "Correcto"} tone={row.errors.length ? "danger" : "success"} /></td></tr>)}</Table>
     {preview.summary.total > 200 ? <p className="accounting-table-note">Se muestran 200 de {preview.summary.total} filas; al confirmar se procesará el archivo completo.</p> : null}
-    <div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy === "confirm-facto-excel" || Number(preview.summary.new) === 0 || (preview.profile === "facto_unpaid_documents" && Number(preview.summary.errors) > 0)} type="button" onClick={() => void confirm()}>{busy === "confirm-facto-excel" ? "Integrando…" : `Confirmar ${preview.summary.new} registros`}</button></div>
+    <div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={Boolean(busy) || Number(preview.summary.new) === 0 || ((checks || preview.profile === "facto_unpaid_documents") && Number(preview.summary.errors) > 0)} type="button" onClick={() => void confirm()}>{busy === "confirm-facto-excel" ? "Integrando…" : checks ? "Confirmar y actualizar cheques" : `Confirmar ${preview.summary.new} registros`}</button></div>
   </section></div>;
 }
 
@@ -890,7 +937,7 @@ function ImportPreviewDialog({ preview, busy, close, runAction }: { preview: Acc
     );
     if (completed) close();
   }
-  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide"><div className="accounting-modal-heading"><div><p>Revisión obligatoria</p><h2>Previsualizar cartola</h2><span>{preview.batch.file_name} · cuenta {preview.bankAccount.currency}</span></div><button aria-label="Cerrar" className="icon-button" type="button" onClick={close}><X /></button></div><div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Total</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevos</span><span><strong>{preview.summary.duplicates}</strong>Duplicados</span><span className="warning"><strong>{preview.summary.errors}</strong>Errores</span></div>{foreignCurrency ? <div className="accounting-currency-conversion"><div><strong>Cartola detectada en {preview.bankAccount.currency}</strong><span>Se conservará el monto original y se guardará su equivalente contable en CLP.</span></div><label className="accounting-rate-field"><span>Tipo de cambio {preview.bankAccount.currency}/CLP</span><input aria-invalid={!validRate} inputMode="decimal" placeholder="Ej.: 990,50" required type="text" value={exchangeRate} onChange={(event) => setExchangeRate(event.target.value)} /><small>{preview.suggestedExchangeRate ? `Sugerido: ${money(preview.suggestedExchangeRate.rate)} · ${date(preview.suggestedExchangeRate.rate_date)} · ${preview.suggestedExchangeRate.source}` : "Ingresa el tipo de cambio contable aplicable a esta cartola."}</small>{validRate && sampleAmount > 0 ? <small>Referencia: {currencyMoney(sampleAmount, preview.bankAccount.currency)} = {clp(sampleAmount * parsedRate)}</small> : null}</label></div> : null}<Table headers={["Fila", "Fecha", "Descripción", "Referencia", "Cargo", "Abono", "Saldo", "Validación"]}>{preview.rows.slice(0, 100).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.row_number}</td><td data-label="Fecha">{date(row.transaction_date)}</td><td data-label="Descripción">{row.description}</td><td data-label="Referencia">{row.operation_number || row.reference || "—"}</td><td data-label="Cargo">{currencyMoney(row.debit, row.currency)}</td><td data-label="Abono">{currencyMoney(row.credit, row.currency)}</td><td data-label="Saldo">{row.balance === null ? "—" : currencyMoney(row.balance, row.currency)}</td><td data-label="Validación"><Status value={row.status === "duplicate" ? "Duplicado" : row.errors.length ? row.errors.join(", ") : "Nuevo"} tone={row.status === "duplicate" ? "neutral" : row.errors.length ? "danger" : "success"} /></td></tr>)}</Table><div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={busy === "confirm-import" || preview.summary.new === 0 || !validRate} type="button" onClick={() => void confirm()}>{busy === "confirm-import" ? "Importando y canalizando…" : `Importar y canalizar ${preview.summary.new}`}</button></div></section></div>;
+  return <div className="accounting-modal-backdrop"><section className="accounting-modal wide"><div className="accounting-modal-heading"><div><p>Revisión obligatoria</p><h2>Previsualizar cartola</h2><span>{preview.batch.file_name} · cuenta {preview.bankAccount.currency}</span></div><button aria-label="Cerrar" className="icon-button" type="button" onClick={close}><X /></button></div><div className="accounting-preview-kpis"><span><strong>{preview.summary.total}</strong>Total</span><span className="positive"><strong>{preview.summary.new}</strong>Nuevos</span><span><strong>{preview.summary.duplicates}</strong>Duplicados</span><span className="warning"><strong>{preview.summary.errors}</strong>Errores</span></div>{foreignCurrency ? <div className="accounting-currency-conversion"><div><strong>Cartola detectada en {preview.bankAccount.currency}</strong><span>Se conservará el monto original y se guardará su equivalente contable en CLP.</span></div><label className="accounting-rate-field"><span>Tipo de cambio {preview.bankAccount.currency}/CLP</span><input aria-invalid={!validRate} inputMode="decimal" placeholder="Ej.: 990,50" required type="text" value={exchangeRate} onChange={(event) => setExchangeRate(event.target.value)} /><small>{preview.suggestedExchangeRate ? `Sugerido: ${money(preview.suggestedExchangeRate.rate)} · ${date(preview.suggestedExchangeRate.rate_date)} · ${preview.suggestedExchangeRate.source}` : "Ingresa el tipo de cambio contable aplicable a esta cartola."}</small>{validRate && sampleAmount > 0 ? <small>Referencia: {currencyMoney(sampleAmount, preview.bankAccount.currency)} = {clp(sampleAmount * parsedRate)}</small> : null}</label></div> : null}<Table headers={["Fila", "Fecha", "Descripción", "Referencia", "Cargo", "Abono", "Saldo", "Validación"]}>{preview.rows.slice(0, 100).map((row) => <tr key={`${row.row_number}-${row.fingerprint}`}><td data-label="Fila">{row.row_number}</td><td data-label="Fecha">{date(row.transaction_date)}</td><td data-label="Descripción">{row.description}</td><td data-label="Referencia">{row.operation_number || row.reference || "—"}</td><td data-label="Cargo">{currencyMoney(row.debit, row.currency)}</td><td data-label="Abono">{currencyMoney(row.credit, row.currency)}</td><td data-label="Saldo">{row.balance === null ? "—" : currencyMoney(row.balance, row.currency)}</td><td data-label="Validación"><Status value={row.status === "duplicate" ? "Duplicado" : row.errors.length ? row.errors.join(", ") : "Nuevo"} tone={row.status === "duplicate" ? "neutral" : row.errors.length ? "danger" : "success"} /></td></tr>)}</Table><div className="accounting-modal-actions"><button className="ghost-button" type="button" onClick={close}>Cancelar</button><button className="primary-button" disabled={Boolean(busy) || preview.summary.total === 0 || preview.summary.errors > 0 || !validRate} type="button" onClick={() => void confirm()}>{busy === "confirm-import" ? "Importando y canalizando…" : preview.summary.new === 0 ? "Aplicar cartola sin duplicar movimientos" : `Importar y canalizar ${preview.summary.new}`}</button></div></section></div>;
 }
 
 function ReconciliationView({ data, busy, runAction }: ActionViewProps) {
@@ -1201,13 +1248,14 @@ function PayablesView({ data, busy, runAction }: ActionViewProps) {
 
 function ChecksView({ data, busy, runAction }: ActionViewProps) {
   const [params] = useSearchParams();
+  const [showExcel, setShowExcel] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState("");
   const [from, setFrom] = useState(params.has("status") ? "" : "2026-01-01");
   const [to, setTo] = useState(params.has("status") ? "" : today());
   const [status, setStatus] = useState(params.get("status") || "all");
   const filtered = data.checks.filter((row) => (!query || normalize(`${row.customer_name} ${row.bank_name} ${row.check_number}`).includes(normalize(query))) && (!from || row.received_on >= from) && (!to || row.received_on <= to) && (status === "all" || row.status === status));
-  return <div className="accounting-view-stack"><section className="panel"><div className="accounting-panel-heading"><div><p>Documentos por cobrar</p><h2>Cheques en cartera</h2><span>Banco emisor identifica el cheque; BancoEstado es la cuenta esperada de cobro. Solo la cartola confirmará disponibilidad.</span></div><div className="accounting-source-actions"><strong>{clp(filtered.filter((row) => row.status === "portfolio").reduce((sum, row) => sum + number(row.amount_clp), 0))}</strong><button className="primary-button" type="button" onClick={() => setShowForm(true)}><Plus size={17} /> Registrar cheque</button></div></div><div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Cliente, banco o número" /><label>Recepción desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Recepción hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Todos</option><option value="portfolio">En cartera</option><option value="deposited">Depositado</option><option value="collected">Cobrado</option><option value="protested">Protestado</option><option value="voided">Anulado</option></select></label></div>{filtered.length ? <Table headers={["Cliente", "Banco emisor", "Cobro esperado", "N.º cheque", "Recepción", "Vencimiento", "Monto", "Estado"]}>{filtered.map((row) => { const settlement = data.bankAccounts.find((account) => account.id === row.settlement_bank_account_id); return <tr key={row.id}><td data-label="Cliente"><strong>{row.customer_name}</strong></td><td data-label="Banco emisor">{row.bank_name}</td><td data-label="Cobro esperado">{settlement?.institution || (row.import_batch_id ? "BancoEstado" : "Sin asignar")}<small>{settlement?.account_name || "Pendiente de cartola"}</small></td><td data-label="N.º cheque">{row.check_number}</td><td data-label="Recepción">{date(row.received_on)}</td><td data-label="Vencimiento">{date(row.due_on)}</td><td data-label="Monto">{clp(row.amount_clp)}</td><td data-label="Estado"><Status value={row.source_status ? `${humanize(row.status)} · Facto ${row.source_status}` : humanize(row.status)} tone={row.status === "collected" ? "success" : row.status === "protested" ? "danger" : "review"} /></td></tr>; })}</Table> : <Empty icon={FileCheck2} text="No hay cheques que coincidan con los filtros." />}</section>{showForm ? <CheckDialog data={data} busy={busy} close={() => setShowForm(false)} runAction={runAction} /> : null}</div>;
+  return <div className="accounting-view-stack"><div className="accounting-source-actions"><button className="primary-button" type="button" aria-expanded={showExcel} aria-controls="checks-excel" onClick={() => setShowExcel(!showExcel)}><Upload size={17} />{showExcel ? "Cerrar carga de cheques" : "Actualizar cheques desde Excel Facto"}</button></div><div id="checks-excel" hidden={!showExcel}>{showExcel ? <FactoView data={data} busy={busy} runAction={runAction} excelOnly excelProfile="facto_checks_banco_estado" /> : null}</div><section className="panel"><div className="accounting-panel-heading"><div><p>Documentos por cobrar</p><h2>Cheques en cartera</h2><span>Banco emisor identifica el cheque; BancoEstado es la cuenta esperada de cobro. Solo la cartola confirmará disponibilidad.</span></div><div className="accounting-source-actions"><strong>{clp(filtered.filter((row) => row.status === "portfolio").reduce((sum, row) => sum + number(row.amount_clp), 0))}</strong><button className="primary-button" type="button" onClick={() => setShowForm(true)}><Plus size={17} /> Registrar cheque</button></div></div><div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Cliente, banco o número" /><label>Recepción desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Recepción hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Todos</option><option value="portfolio">En cartera</option><option value="deposited">Depositado</option><option value="collected">Cobrado</option><option value="protested">Protestado</option><option value="voided">Anulado</option></select></label></div>{filtered.length ? <Table headers={["Cliente", "Banco emisor", "Cobro esperado", "N.º cheque", "Recepción", "Vencimiento", "Monto", "Estado"]}>{filtered.map((row) => { const settlement = data.bankAccounts.find((account) => account.id === row.settlement_bank_account_id); return <tr key={row.id}><td data-label="Cliente"><strong>{row.customer_name}</strong></td><td data-label="Banco emisor">{row.bank_name}</td><td data-label="Cobro esperado">{settlement?.institution || (row.import_batch_id ? "BancoEstado" : "Sin asignar")}<small>{settlement?.account_name || "Pendiente de cartola"}</small></td><td data-label="N.º cheque">{row.check_number}</td><td data-label="Recepción">{date(row.received_on)}</td><td data-label="Vencimiento">{date(row.due_on)}</td><td data-label="Monto">{clp(row.amount_clp)}</td><td data-label="Estado"><Status value={row.source_status ? `${humanize(row.status)} · Facto ${row.source_status}` : humanize(row.status)} tone={row.status === "collected" ? "success" : row.status === "protested" ? "danger" : "review"} /></td></tr>; })}</Table> : <Empty icon={FileCheck2} text="No hay cheques que coincidan con los filtros." />}</section>{showForm ? <CheckDialog data={data} busy={busy} close={() => setShowForm(false)} runAction={runAction} /> : null}</div>;
 }
 
 function CheckDialog({ data, busy, close, runAction }: ActionViewProps & { close: () => void }) {
@@ -1314,8 +1362,8 @@ function factoPreviewColumns(profile: AccountingFactoExcelProfile): { headers: s
     values: (data) => [data.balance_kind === "payable" ? "Por pagar" : data.balance_kind === "receivable" ? "Por cobrar" : "Ajuste documental", `${data.document_type_label || "—"} · ${data.document_number || "—"}`, date(String(data.issued_on || "")), `${data.counterpart_name || "—"} ${data.counterpart_tax_id || ""}`, clp(data.total_clp), clp(data.reported_paid_clp), clp(data.reported_balance_clp)],
   };
   if (profile === "facto_checks_banco_estado") return {
-    headers: ["Cliente", "Banco emisor", "N.º cheque", "Cobro", "Monto", "Cuenta esperada"],
-    values: (data) => [String(data.customer_name || "—"), String(data.issuer_bank || "—"), String(data.check_number || "—"), date(String(data.due_on || "")), clp(data.amount_clp), String(data.settlement_institution || "BancoEstado")],
+    headers: ["Cliente", "Banco emisor", "N.º cheque", "Documento", "Recepción", "Cobro", "Monto", "Estado Facto"],
+    values: (data) => [String(data.customer_name || "—"), String(data.issuer_bank || "—"), String(data.check_number || "—"), String(data.source_document_number || "—"), date(String(data.received_on || "")), date(String(data.due_on || "")), clp(data.amount_clp), String(data.source_status || "Sin informar")],
   };
   return {
     headers: ["Fecha", "Documento", "Método", "Responsable", "Monto", "Cuenta esperada"],

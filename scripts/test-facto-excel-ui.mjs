@@ -8,7 +8,7 @@ import { reportPeriod } from "../src/modules/accounting/reportNavigation.ts";
 
 const source = await readFile("src/modules/accounting/AccountingCenterPage.tsx", "utf8");
 const tree = ts.createSourceFile("page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const names = ["FactoView", "ReceivablesView", "PayablesView", "FactoExcelPreviewDialog", "documentTypeLabel"];
+const names = ["FactoView", "ReceivablesView", "PayablesView", "ChecksView", "FactoExcelPreviewDialog", "documentTypeLabel"];
 const pieces = tree.statements.filter((node) => names.includes(node.name?.text)
   || (ts.isVariableStatement(node) && node.declarationList.declarations.some((d) => d.name.getText(tree) === "factoExcelProfiles")));
 const code = ts.transpileModule(pieces.map((node) => node.getText(tree)).join("\n"), {
@@ -17,7 +17,7 @@ const code = ts.transpileModule(pieces.map((node) => node.getText(tree)).join("\
 const label = (value) => value || "Sin fecha";
 let params = new URLSearchParams();
 const context = {
-  React, ...Object.fromEntries(["Upload", "Search", "FileSpreadsheet", "Download", "AlertTriangle", "ShieldCheck", "X", "ScanSearch", "RefreshCw"].map((name) => [name, icons[name]])), useState: React.useState, useEffect: React.useEffect,
+  React, ...Object.fromEntries(["Upload", "Search", "FileSpreadsheet", "Download", "AlertTriangle", "ShieldCheck", "X", "ScanSearch", "RefreshCw", "Plus", "FileCheck2"].map((name) => [name, icons[name]])), useState: React.useState, useEffect: React.useEffect,
   today: () => "2026-09-09", normalize: (text) => String(text).toLowerCase(),
   useSearchParams: () => [params], reportPeriod,
   number: (value) => Number(value || 0), clp: (value) => `$${Number(value).toLocaleString("es-CL")}`,
@@ -29,7 +29,7 @@ const context = {
   factoPreviewColumns: () => ({ headers: [], values: () => [] }),
 };
 const components = new Function(...Object.keys(context), `${code};return {${names.join(",")}};`)(...Object.values(context));
-const data = { sources: [], batches: [], entity: { id: "test" }, receivables: [], payables: [], summary: { as_of: "2026-09-09" } };
+const data = { sources: [], batches: [], entity: { id: "test" }, receivables: [], payables: [], checks: [], bankAccounts: [], summary: { as_of: "2026-09-09" } };
 const props = { data, busy: "", runAction: async () => true };
 const upload = renderToStaticMarkup(React.createElement(components.FactoView, { ...props, excelOnly: true }));
 assert.match(upload, /Cargar Excel de Facto/);
@@ -51,6 +51,27 @@ const review = renderToStaticMarkup(React.createElement(components.FactoExcelPre
 assert.match(review, /\$150.000/);
 assert.match(review, /\$30.000/);
 assert.match(review, /disabled=""[^>]*>Confirmar 1 registros/);
+const checks = renderToStaticMarkup(React.createElement(components.ChecksView, props));
+assert.match(checks, /Actualizar cheques desde Excel Facto/);
+assert.match(checks, /aria-controls="checks-excel"/);
+assert.match(checks, /Registrar cheque/);
+const checksData = { ...data, batches: [
+  { id: 'checks', source_type: 'CHECKS', import_profile: 'facto_checks_banco_estado', file_name: 'cheques.xlsx', status: 'imported', new_count: 3, duplicate_count: 0, error_count: 0 },
+  { id: 'unpaid', source_type: 'COLLECTIONS', import_profile: 'facto_unpaid_documents', file_name: 'impagos.xlsx', status: 'imported' },
+] };
+const checkUpload = renderToStaticMarkup(React.createElement(components.FactoView, { ...props, data: checksData, excelOnly: true, excelProfile: 'facto_checks_banco_estado' }));
+assert.match(checkUpload, /Cargar listado de cheques Facto/);
+assert.match(checkUpload, /Historial de cheques/);
+assert.match(checkUpload, /cheques.xlsx/);
+assert.doesNotMatch(checkUpload, /impagos.xlsx|Emisión desde|Contenido del archivo|todos los documentos impagos/);
+const checksPreview = { ...preview, profile: 'facto_checks_banco_estado', summary: { ...preview.summary, checks_new: 1, checks_update: 2, checks_total: 3, amount_clp: 120000 } };
+const checksReview = renderToStaticMarkup(React.createElement(components.FactoExcelPreviewDialog, { preview: checksPreview, busy: '', close() {}, runAction: props.runAction }));
+assert.match(checksReview, /Cheques nuevos/);
+assert.match(checksReview, /Cheques a actualizar/);
+assert.match(checksReview, /\$120.000/);
+assert.match(checksReview, /disabled=""[^>]*>Confirmar y actualizar cheques/);
+const checksValid = renderToStaticMarkup(React.createElement(components.FactoExcelPreviewDialog, { preview: { ...checksPreview, summary: { ...checksPreview.summary, errors: 0 } }, busy: '', close() {}, runAction: props.runAction }));
+assert.doesNotMatch(checksValid, /disabled=""/);
 params = new URLSearchParams({ from: "2026-06-01", to: "2026-06-30", search: "ADS", type: "exempt" });
 const sourcesData = { ...data, factoFreshness: {}, factoSyncRuns: [], factoReceivableSyncRuns: [], paymentEvents: [], sources: [
   { id: "ads", source_type: "FACTO", document_type: "purchase_exempt_invoice", folio: "1702", issued_on: "2026-06-03", counterpart_name: "ADS CARGO", total_clp: 3128000, currency: "CLP", status: "validated", data_quality: "validated", journal_entry_id: "posted" },

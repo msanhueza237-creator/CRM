@@ -83,6 +83,10 @@ Deno.serve(async (request) => {
       requirePermission(profile, "import");
       return json(await confirmFactoExcel(rest, profile, requestId, await readJson(request)), 200, request);
     }
+    if (route.startsWith("facto-excel/previews/") && request.method === "GET") {
+      requirePermission(profile, "import");
+      return json(await getFactoExcelPreview(rest, route.split("/").at(-1) || ""), 200, request);
+    }
     if (route === "foreign-trade/sync" && request.method === "POST") {
       requirePermission(profile, "import");
       return json(await syncForeignTrade(rest, profile, requestId), 200, request);
@@ -258,9 +262,9 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     buildDashboardAnalytics(rest, entityId, asOf, sources, accounts, !summaryOnly),
   ]);
   const bankReality = await buildBankReality(rest, entityId, bankAccounts, bankTransactions, bankBalanceSnapshots);
-  const latestFactoCollections = analyzeFactoReceivablesSnapshot(
-    asObject(asObject(factoIntegrationRows[0]?.payload).collections),
-  );
+  const collections = asObject(asObject(factoIntegrationRows[0]?.payload).collections);
+  const latestCollectionBatch = await latestAppliedReceivablesBatch(rest, entityId);
+  const latestFactoCollections = analyzeFactoReceivablesSnapshot(isFactoSnapshotCurrent(collections, latestCollectionBatch) ? collections : {});
   const integrationUpdatedAt = dateTimeValue(factoIntegrationRows[0]?.updated_at);
   const rowsStampedByLatestSnapshot = integrationUpdatedAt
     ? receivables.filter((row) => dateTimeValue(row.reported_at) === integrationUpdatedAt).length
@@ -330,12 +334,21 @@ async function buildBankReality(
     const accountId = String(line.account_id || "");
     ledgerBalances.set(accountId, (ledgerBalances.get(accountId) || 0) + numeric(line.debit_clp) - numeric(line.credit_clp));
   }
-  const transactionRows = allStatementRows.length ? allStatementRows : recentTransactions;
+  const statementBatches = await selectAllRows(rest, `accounting_import_batches?select=id,file_name,storage_path,created_at,summary&entity_id=eq.${entityId}&source_type=in.(BANCO_ESTADO,SCOTIABANK,MERCADO_PAGO)&status=eq.imported&error_count=eq.0&order=created_at.desc,id.desc`);
+  const closingRows = statementBatches.flatMap(batch => {
+    const summary = asObject(batch.summary);
+    const closing = asObject(summary.statement_balance);
+    return closing.transaction_date && closing.balance !== null && closing.balance !== undefined && summary.bank_account_id
+      ? [{ ...closing, id: `statement-${batch.id}`, bank_account_id: summary.bank_account_id, import_batch_id: batch.id, created_at: batch.created_at, metadata: { source_row: closing.row_number } }]
+      : [];
+  });
+  const transactionRows: JsonRecord[] = [...(allStatementRows.length ? allStatementRows : recentTransactions), ...closingRows];
   const batchIds = [...new Set(transactionRows.map((row) => String(row.import_batch_id || "")).filter(Boolean))];
   const batches = batchIds.length
     ? await selectAllRows(rest, `accounting_import_batches?select=id,file_name,storage_path&id=in.(${batchIds.join(",")})`)
     : [];
   const batchMap = new Map(batches.map((batch) => [String(batch.id), batch]));
+  for (const batch of statementBatches) batchMap.set(String(batch.id), batch);
   const groups = new Map<string, JsonRecord[]>();
   for (const account of bankAccounts.filter((row) => row.active !== false)) {
     const key = `${String(account.institution || "")}|${String(account.currency || "CLP")}|${String(account.ledger_account_id || "")}`;
@@ -353,7 +366,7 @@ async function buildBankReality(
       .sort((left, right) => `${right.as_of_date}|${right.created_at}`.localeCompare(`${left.as_of_date}|${left.created_at}`))[0] || null;
     const statementDate = String(statement?.transaction_date || "");
     const snapshotDate = String(snapshot?.as_of_date || "");
-    const useSnapshot = Boolean(snapshot && (!statementDate || snapshotDate >= statementDate));
+    const useSnapshot = Boolean(snapshot && (!statementDate || snapshotDate > statementDate || (snapshotDate === statementDate && String(snapshot.created_at || "") > String(statement?.created_at || ""))));
     const ledgerBalanceClp = Math.round((ledgerBalances.get(ledgerAccountId) || 0) * 10000) / 10000;
     const statementRate = Math.max(numeric(statement?.exchange_rate), 1);
     const statementBalance = statement ? numeric(statement.balance) : null;
@@ -1126,17 +1139,24 @@ async function syncFactoReportedBalances(
   ))[0];
   if (!snapshotRecord) return { updated: 0, cleared: 0, skipped: 0 };
   const collections = asObject(asObject(snapshotRecord.payload).collections);
+  const latestBatch = await latestAppliedReceivablesBatch(rest, entityId);
+  if (!isFactoSnapshotCurrent(collections, latestBatch)) return { updated: 0, cleared: 0, skipped: 0, reason: "newer_excel_applied" };
   const portfolio = analyzeFactoReceivablesSnapshot(collections);
   if (!portfolio.detailsVerified && !portfolio.canCloseMissing) return { updated: 0, cleared: 0, skipped: 0 };
   const details = portfolio.details;
   if (!details.length && !portfolio.canCloseMissing) return { updated: 0, cleared: 0, skipped: 0 };
+  const coverageFrom = String(collections.coverage_from || fromDate);
+  const coverageTo = portfolio.asOf || toDate;
+  const scopedFrom = coverageFrom > fromDate ? coverageFrom : fromDate;
+  const scopedTo = coverageTo < toDate ? coverageTo : toDate;
+  if (scopedFrom > scopedTo) return { updated: 0, cleared: 0, skipped: 0 };
 
   const [sources, receivables] = await Promise.all([
     selectAllRows(rest,
-      `accounting_source_documents?select=id,external_id,folio,issued_on,document_type&entity_id=eq.${entityId}&source_type=eq.FACTO&issued_on=gte.${fromDate}&issued_on=lte.${toDate}`,
+      `accounting_source_documents?select=id,external_id,folio,issued_on,document_type&entity_id=eq.${entityId}&source_type=eq.FACTO&issued_on=gte.${scopedFrom}&issued_on=lte.${scopedTo}`,
     ),
     selectAllRows(rest,
-      `accounting_receivables?select=id,source_document_id,original_amount_clp,paid_amount_clp,balance_clp,status,due_on&entity_id=eq.${entityId}`,
+      `accounting_receivables?select=id,source_document_id,original_amount_clp,paid_amount_clp,balance_clp,status,due_on,reported_at,reported_source_batch_id&entity_id=eq.${entityId}`,
     ),
   ]);
   const sourceByExternalId = new Map(sources.flatMap((source) => {
@@ -1149,7 +1169,10 @@ async function syncFactoReportedBalances(
     if (folio) sourcesByFolio.set(folio, [...(sourcesByFolio.get(folio) || []), source]);
   }
   const receivableBySourceId = new Map(receivables.map((row) => [String(row.source_document_id), row]));
-  const reportedAt = dateTimeValue(snapshotRecord.updated_at) || new Date().toISOString();
+  const reportedAt = dateTimeValue(collections.evidence_observed_at || (collections.source_batch_id === latestBatch?.id ? latestBatch?.created_at : snapshotRecord.updated_at)) || "";
+  const canUpdate = (row: JsonRecord) => !["written_off", "voided"].includes(String(row.status))
+    && !(collections.source_batch_id && row.reported_source_batch_id === collections.source_batch_id)
+    && Boolean(reportedAt && (!row.reported_at || reportedAt >= String(row.reported_at)));
   let updated = 0;
   let cleared = 0;
   let skipped = 0;
@@ -1171,7 +1194,7 @@ async function syncFactoReportedBalances(
     const receivable = source ? receivableBySourceId.get(String(source.id)) : null;
     const reportedBalance = numeric(detail.observed_amount);
     const original = numeric(receivable?.original_amount_clp);
-    if (!receivable || reportedBalance < 0 || original <= 0 || reportedBalance > original + 0.5) {
+    if (!receivable || !canUpdate(receivable) || reportedBalance < 0 || original <= 0 || reportedBalance > original + 0.5) {
       skipped += 1;
       continue;
     }
@@ -1179,6 +1202,7 @@ async function syncFactoReportedBalances(
       reported_paid_amount_clp: Math.max(0, original - reportedBalance),
       reported_balance_clp: reportedBalance,
       reported_at: reportedAt,
+      reported_source_batch_id: collections.source_batch_id || null,
       updated_at: new Date().toISOString(),
     });
     matchedReceivableIds.add(String(receivable.id));
@@ -1189,7 +1213,7 @@ async function syncFactoReportedBalances(
     const now = new Date().toISOString();
     for (const source of sources) {
       const receivable = receivableBySourceId.get(String(source.id));
-      if (!receivable || matchedReceivableIds.has(String(receivable.id))) continue;
+      if (!receivable || !canUpdate(receivable) || matchedReceivableIds.has(String(receivable.id))) continue;
       if (!["sales_invoice", "sales_receipt"].includes(String(source.document_type || ""))) continue;
       const original = numeric(receivable.original_amount_clp);
       if (original <= 0) continue;
@@ -1197,6 +1221,7 @@ async function syncFactoReportedBalances(
         reported_paid_amount_clp: original,
         reported_balance_clp: 0,
         reported_at: reportedAt,
+        reported_source_batch_id: collections.source_batch_id || null,
         updated_at: now,
       });
       cleared += 1;
@@ -1501,6 +1526,58 @@ function meaningfulBankReference(value: unknown) {
   return normalized && !/^0+$/.test(normalized) ? normalized : "";
 }
 
+async function getFactoExcelPreview(rest: RestClient, batchId: string) {
+  const batch = (await selectRows(rest, `accounting_import_batches?select=*&id=eq.${requiredUuid(batchId)}&limit=1`))[0];
+  if (!batch || !["CHECKS", "COLLECTIONS", "PAYMENTS"].includes(String(batch.source_type))) throw new HttpError(404, "Archivo Facto no encontrado.");
+  if (!["previewed", "partial"].includes(String(batch.status))) throw new HttpError(409, "Este archivo ya fue aplicado. Actualiza la pantalla.");
+  const rows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batch.id}&order=row_number.asc`);
+  if (rows.length !== Number(batch.row_count)) throw new HttpError(409, "El respaldo quedó incompleto. No se puede aplicar.");
+  const summary = { ...asObject(batch.summary) };
+  if (batch.source_type === "CHECKS") {
+    const checks = await selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${batch.entity_id}`);
+    const groups = new Map(rows.filter(row => row.status !== "invalid").map(row => [physicalCheckBusinessKey(asObject(row.normalized_data)), asObject(row.normalized_data)]));
+    const updates = [...groups.values()].filter(data => findExistingFactoCheck(checks, data)).length;
+    Object.assign(summary, { checks_total: groups.size, checks_new: groups.size - updates, checks_update: updates });
+  }
+  return {
+    batch, profile: batch.import_profile, warnings: Array.isArray(summary.warnings) ? summary.warnings : [],
+    summary: { ...summary, total: rows.length, new: rows.filter(row => (batch.source_type === "CHECKS" ? ["new", "imported", "duplicate"] : ["new", "imported"]).includes(String(row.status))).length, duplicates: Number(batch.duplicate_count), errors: Number(batch.error_count) },
+    rows: rows.slice(0, 500).map(row => ({ row_number: row.row_number, fingerprint: row.fingerprint, errors: row.validation_errors || [], kind: asObject(row.normalized_data).kind, data: row.normalized_data })),
+  };
+}
+
+async function latestAppliedReceivablesBatch(rest: RestClient, entityId: string) {
+  const batches = await selectAllRows(rest, `accounting_import_batches?select=id,created_at,summary&entity_id=eq.${entityId}&source_type=eq.COLLECTIONS&status=in.(imported,partial)&error_count=eq.0&order=created_at.desc,id.desc`);
+  return batches.filter(batch => asObject(batch.summary).confirmed_at && asObject(batch.summary).receivables_complete !== false && numeric(asObject(batch.summary).receivables_documents) > 0)
+    .sort((a, b) => String(asObject(b.summary).coverage_to || "").localeCompare(String(asObject(a.summary).coverage_to || "")) || String(b.created_at).localeCompare(String(a.created_at)))[0] || null;
+}
+
+async function assertFactoPortfolioIsCurrent(rest: RestClient, batch: JsonRecord) {
+  const incoming = asObject(batch.summary);
+  const applied = await selectAllRows(rest, `accounting_import_batches?select=id,created_at,summary&entity_id=eq.${batch.entity_id}&source_type=eq.COLLECTIONS&status=in.(imported,partial)&error_count=eq.0&order=created_at.desc,id.desc`);
+  for (const previous of applied) {
+    if (previous.id === batch.id) continue;
+    const summary = asObject(previous.summary);
+    if (!summary.confirmed_at) continue;
+    const sharesScope = ["receivables", "payables"].some(kind => numeric(incoming[`${kind}_documents`]) > 0 && numeric(summary[`${kind}_documents`]) > 0);
+    const overlaps = String(incoming.coverage_from || "") <= String(summary.coverage_to || "") && String(summary.coverage_from || "") <= String(incoming.coverage_to || "");
+    const newer = String(summary.coverage_to || "") > String(incoming.coverage_to || "") || (summary.coverage_to === incoming.coverage_to && String(previous.created_at) > String(batch.created_at));
+    if (sharesScope && overlaps && newer) throw new HttpError(409, "Ya hay un Excel más reciente aplicado para esta cartera. El archivo anterior no reemplazará sus saldos.");
+  }
+}
+
+function isFactoSnapshotCurrent(collections: JsonRecord, batch: JsonRecord | null) {
+  if (!batch) return true;
+  if (collections.source_batch_id === batch.id) return true;
+  // Updating the integration record does not make the underlying report newer.
+  const cutoff = String(asObject(batch.summary).coverage_to || "");
+  const asOf = String(collections.as_of || "");
+  if (!asOf || asOf < cutoff) return false;
+  if (collections.mode === "facto_excel") return false;
+  const observed = dateTimeValue(collections.evidence_observed_at || collections.observed_at);
+  return asOf > cutoff || Boolean(observed && observed > String(batch.created_at));
+}
+
 async function previewFactoExcel(rest: RestClient, profile: Profile, payload: JsonRecord) {
   const entityId = requiredUuid(payload.entityId);
   const storagePath = requiredText(payload.storagePath, 800);
@@ -1543,11 +1620,28 @@ async function previewFactoExcel(rest: RestClient, profile: Profile, payload: Js
     if (!payableRows.length) preview.warnings.push("El archivo no contiene cuentas por pagar: las obligaciones existentes se conservan.");
   }
   const existingBatch = await selectRows(rest,
-    `accounting_import_batches?select=id,status,created_at&entity_id=eq.${entityId}&source_type=eq.${preview.source_type}&file_hash=eq.${fileHash}&limit=1`,
+    `accounting_import_batches?select=*&entity_id=eq.${entityId}&source_type=eq.${preview.source_type}&file_hash=eq.${fileHash}&limit=1`,
   );
+  const saved = existingBatch[0];
+  if (preview.source_type === "CHECKS" && saved?.status === "previewed" && asObject(saved.summary).checks_total !== undefined) {
+    const rows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${saved.id}&order=row_number.asc`);
+    if (rows.length !== Number(saved.row_count)) throw new HttpError(409, "El respaldo anterior quedó incompleto y requiere revisión.");
+    return {
+      batch: saved, profile: preview.profile, warnings: preview.warnings,
+      summary: { total: saved.row_count, new: saved.new_count, duplicates: saved.duplicate_count, errors: saved.error_count, ...asObject(saved.summary) },
+      rows: rows.slice(0, 500).map((row) => ({ row_number: row.row_number, kind: "check", fingerprint: row.fingerprint, errors: row.validation_errors || [], data: row.normalized_data })),
+    };
+  }
   if (existingBatch.length) throw new HttpError(409, "Este respaldo Facto ya fue cargado. El original anterior permanece guardado y no se duplicó.");
 
   const duplicateSet = await existingFactoExcelDuplicates(rest, entityId, preview);
+  if (preview.source_type === "CHECKS") {
+    const checks = await selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}`);
+    const groups = new Map(preview.rows.filter((row) => !row.errors.length).map((row) => [physicalCheckBusinessKey(row.data), row.data]));
+    let updates = 0;
+    for (const data of groups.values()) if (findExistingFactoCheck(checks, data)) updates += 1;
+    portfolioSummary = { checks_total: groups.size, checks_new: groups.size - updates, checks_update: updates };
+  }
   const valid = preview.rows.filter((row) => !row.errors.length && !duplicateSet.has(row.fingerprint));
   const invalid = preview.rows.filter((row) => row.errors.length);
   const duplicates = preview.rows.filter((row) => !row.errors.length && duplicateSet.has(row.fingerprint));
@@ -1596,9 +1690,12 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
 
   const entityId = String(batch.entity_id);
   const collection = String(batch.source_type) === "COLLECTIONS";
-  if (collection && Number(batch.error_count || 0) > 0) throw new HttpError(409, "El Excel contiene errores. No se actualizará ninguna cuenta hasta corregirlos.");
+  const checks = String(batch.source_type) === "CHECKS";
+  if ((collection || checks) && Number(batch.error_count || 0) > 0) throw new HttpError(409, "El Excel contiene errores. No se actualizará ningún registro hasta corregirlos.");
+  if (collection) await assertFactoPortfolioIsCurrent(rest, batch);
   // A retry needs the complete portfolio, including rows already applied before a network interruption.
-  const importRows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&status=${collection ? "in.(new,imported)" : "eq.new"}&order=row_number.asc`);
+  const importRows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&status=${checks ? "in.(new,imported,duplicate)" : collection ? "in.(new,imported)" : "eq.new"}&order=row_number.asc`);
+  if (checks && (!importRows.length || importRows.length !== Number(batch.row_count))) throw new HttpError(409, "El respaldo no contiene todas las filas de cheques. Vuelve a cargar el archivo completo.");
   const sourceDocuments = await selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO`);
   const receivables = await selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}`);
   const payables = await selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}`);
@@ -1681,7 +1778,7 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
       processedImportRowIds.push(String(row.id));
     }
   } else if (String(batch.source_type) === "CHECKS") {
-    const result = await consolidateFactoCheckRows(rest, entityId, batchId, importRows, sourceDocuments, receivables);
+    const result = await consolidateFactoCheckRows(rest, entityId, batchId, importRows, sourceDocuments, receivables, String(batch.created_at || ""));
     imported = result.checks;
     linked = result.linkedAllocations;
     unmatched = result.unmatchedAllocations;
@@ -1908,6 +2005,7 @@ async function publishFactoExcelReceivablesSnapshot(
     payments_by_month: [],
     documents_detail: details,
     source_batch_id: batch.id,
+    evidence_observed_at: batch.created_at,
     source_file_sha256: summary.evidence_sha256 || batch.file_hash,
     disclaimer: "Cartera completa respaldada por Excel Facto; no representa conciliación bancaria ni asiento contable.",
   };
@@ -1958,8 +2056,8 @@ async function consolidateFactoCheckRows(
   importRows: JsonRecord[],
   sourceDocuments: JsonRecord[],
   receivables: JsonRecord[],
+  reportedAt?: string,
 ) {
-  const settlementAccount = await expectedBankAccount(rest, entityId, "BancoEstado");
   const receivableBySource = new Map(receivables.map((row) => [String(row.source_document_id), row]));
   const grouped = new Map<string, JsonRecord[]>();
   for (const row of importRows) {
@@ -1969,7 +2067,29 @@ async function consolidateFactoCheckRows(
     grouped.set(key, [...(grouped.get(key) || []), row]);
   }
   const existingChecks = await selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}`);
+  // Validate the whole workbook before changing a cheque, including retry/stale-report conflicts.
+  const matchedChecks = new Map<string, JsonRecord | undefined>();
   const usedCheckIds = new Set<string>();
+  const reportedIdentities = new Set<string>();
+  for (const [key, rows] of grouped) {
+    const data = asObject(rows[0].normalized_data);
+    const identity = physicalCheckBusinessKey({ ...data, due_on: null, facto_collected_on: null });
+    if (reportedIdentities.has(identity)) throw new HttpError(409, `El cheque ${data.check_number} tiene fechas de cobro contradictorias en el archivo.`);
+    reportedIdentities.add(identity);
+    const check = findExistingFactoCheck(existingChecks, data);
+    const amount = rows.reduce((sum, row) => sum + numeric(asObject(row.normalized_data).amount_clp), 0);
+    if (check && usedCheckIds.has(String(check.id))) throw new HttpError(409, `El cheque ${data.check_number} aparece con identidades o fechas contradictorias.`);
+    if (new Set(rows.map((row) => normalizeText(asObject(row.normalized_data).source_status))).size > 1) throw new HttpError(409, `El cheque ${data.check_number} tiene estados contradictorios en el archivo.`);
+    if (check && (check.bank_evidence_status === "matched" || ["collected", "voided", "protested"].includes(String(check.status))) && Math.abs(numeric(check.amount_clp) - amount) > 0.5) {
+      throw new HttpError(409, `El cheque ${data.check_number} tiene un monto distinto al confirmado en el CRM. Requiere revisión antes de importar.`);
+    }
+    if (check && reportedAt && check.import_batch_id !== batchId && String(asObject(check.metadata).facto_reported_at || "") > reportedAt) {
+      throw new HttpError(409, "Hay cheques actualizados después de esta previsualización. Carga un reporte actualizado.");
+    }
+    matchedChecks.set(key, check);
+    if (check) usedCheckIds.add(String(check.id));
+  }
+  const settlementAccount = await expectedBankAccount(rest, entityId, "BancoEstado");
   let linkedAllocations = 0;
   let unmatchedAllocations = 0;
   let consolidatedChecks = 0;
@@ -2003,36 +2123,28 @@ async function consolidateFactoCheckRows(
     if (!receivedOn) continue;
     const collectedOn = dateValue(firstData.due_on);
     const factoCollected = normalizeText(firstData.source_status).includes("inactivo") && Boolean(collectedOn);
-    const legacyKey = checkBusinessKey(firstData.issuer_bank, firstData.check_number);
-    let check = existingChecks.find((row) => String(row.source_business_key || "") === sourceBusinessKey);
-    if (!check) {
-      check = existingChecks.find((row) => sourceRowIds.includes(String(row.source_row_id || "")) && !usedCheckIds.has(String(row.id)));
-    }
-    if (!check) {
-      check = existingChecks.find((row) =>
-        checkBusinessKey(row.bank_name, row.check_number) === legacyKey && !usedCheckIds.has(String(row.id))
-      );
-    }
+    let check = matchedChecks.get(sourceBusinessKey);
     const previousMetadata = asObject(check?.metadata);
+    const protectedState = check && ["collected", "protested", "voided"].includes(String(check.status));
     const checkPayload = {
       entity_id: entityId,
-      receivable_id: allocations.find((allocation) => allocation.receivable_id)?.receivable_id || null,
+      receivable_id: check?.receivable_id || allocations.find((allocation) => allocation.receivable_id)?.receivable_id || null,
       customer_name: String(firstData.customer_name || firstData.issuer_name || "Cliente sin identificar"),
       bank_name: String(firstData.issuer_bank || "Banco emisor no informado"),
       check_number: String(firstData.check_number || ""),
       amount_clp: amountClp,
       received_on: receivedOn,
       due_on: collectedOn,
-      status: check?.bank_evidence_status === "matched" ? "collected" : factoCollected ? "deposited" : "portfolio",
+      status: check?.bank_evidence_status === "matched" ? "collected" : protectedState ? check.status : factoCollected || check?.status === "deposited" ? "deposited" : "portfolio",
       import_batch_id: batchId,
       source_row_id: firstRow.id,
       source_business_key: sourceBusinessKey,
-      facto_collected_on: collectedOn,
-      settlement_bank_account_id: settlementAccount?.id || null,
+      facto_collected_on: factoCollected ? collectedOn : null,
+      settlement_bank_account_id: check?.settlement_bank_account_id || settlementAccount?.id || null,
       source_status: firstData.source_status || null,
       bank_evidence_status: check?.bank_evidence_status || "pending",
-      notes: check?.bank_evidence_status === "matched"
-        ? "Cobro Facto confirmado por deposito exacto en cartola BancoEstado."
+      notes: check?.notes
+        ? String(check.notes)
         : factoCollected
         ? "Cobrado/inactivo en Facto; pendiente de confirmar el deposito en cartola BancoEstado."
         : "Cheque informado por Facto; pendiente de cobro y cartola BancoEstado.",
@@ -2044,7 +2156,8 @@ async function consolidateFactoCheckRows(
         detail: firstData.detail || null,
         source_row_ids: sourceRowIds,
         allocations,
-        physical_check_rule: "bank+number+received_on+collected_on+customer_tax_id",
+        physical_check_rule: "bank+number+received_on+collected_on+customer_identity",
+        ...(reportedAt ? { facto_reported_at: reportedAt } : {}),
       },
       updated_at: new Date().toISOString(),
     };
@@ -2185,7 +2298,10 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
   if (!batch) throw new HttpError(404, "Importación no encontrada.");
   if (batch.status === "imported") return { imported: Number(batch.new_count || 0), existing: true };
   const entityId = String(batch.entity_id);
-  const rows = await selectRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&status=eq.new&order=row_number.asc&limit=5000`);
+  if (Number(batch.error_count || 0) > 0) throw new HttpError(409, "La cartola tiene errores. Corrígelos antes de aplicar sus movimientos y saldo.");
+  const completeRows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&order=row_number.asc`);
+  if (!completeRows.length || completeRows.length !== Number(batch.row_count)) throw new HttpError(409, "La cartola no contiene todas sus filas. No se actualizarán movimientos ni saldos.");
+  const rows = completeRows.filter(row => row.status === "new");
   const summary = asObject(batch.summary);
   const batchCurrency = String(summary.currency || "CLP").toUpperCase();
   const requestedRate = numeric(payload.exchangeRate);
@@ -2238,12 +2354,22 @@ async function confirmImport(rest: RestClient, profile: Profile, payload: JsonRe
     };
   }), "bank_account_id,fingerprint", true);
   const duplicateCount = numeric(batch.duplicate_count) + duplicateImportRowIds.length + Math.max(acceptedRows.length - created.length, 0);
+  const statementBalance = completeRows.map((row): JsonRecord => ({ ...asObject(row.normalized_data), row_number: row.row_number }))
+    .filter(row => row.balance !== null && row.balance !== undefined && Number.isFinite(Number(row.balance)))
+    .sort((a, b) => String(b.transaction_date).localeCompare(String(a.transaction_date)) || numeric(b.row_number) - numeric(a.row_number))[0];
+  const confirmedAt = new Date().toISOString();
   await patchRows(rest, "accounting_import_batches", `id=eq.${batchId}`, {
     status: "imported",
     new_count: created.length,
     duplicate_count: duplicateCount,
-    summary: { ...summary, confirmed_new_count: created.length, confirmed_duplicate_count: duplicateCount },
-    updated_at: new Date().toISOString(),
+    summary: { ...summary, confirmed_new_count: created.length, confirmed_duplicate_count: duplicateCount,
+      confirmed_at: confirmedAt, bank_account_id: bankAccount.id,
+      ...(statementBalance ? { statement_balance: {
+        transaction_date: statementBalance.transaction_date, balance: Number(statementBalance.balance), row_number: statementBalance.row_number,
+        currency: batchCurrency, exchange_rate: batchCurrency === "CLP" ? 1 : requestedRate,
+      } } : {}),
+    },
+    updated_at: confirmedAt,
   });
   if (acceptedRows.length) {
     await patchRows(rest, "accounting_import_rows", `batch_id=eq.${batchId}&status=eq.new`, { status: "imported" });
@@ -4730,18 +4856,26 @@ async function existingFactoExcelDuplicates(
     for (const row of preview.rows) {
       if (fingerprints.has(row.fingerprint)) duplicateFingerprints.add(row.fingerprint);
     }
-  } else if (preview.source_type === "CHECKS") {
-    const existing = await selectAllRows(rest,
-      `accounting_checks?select=bank_name,check_number,source_business_key&entity_id=eq.${entityId}`,
-    );
-    const keys = new Set(existing.map((row) => String(row.source_business_key || "")));
-    for (const row of preview.rows) {
-      if (keys.has(physicalCheckBusinessKey(row.data))) {
-        duplicateFingerprints.add(row.fingerprint);
-      }
-    }
   }
+  // Cheques are snapshots to upsert, not immutable payment events to skip.
   return duplicateFingerprints;
+}
+
+function findExistingFactoCheck(checks: JsonRecord[], data: JsonRecord): JsonRecord | undefined {
+  const key = physicalCheckBusinessKey(data);
+  const exact = checks.filter((row) => row.source_business_key === key);
+  if (exact.length > 1) throw new HttpError(409, `Hay más de un cheque ${data.check_number} con la misma identidad. Revisa la cartera.`);
+  if (exact[0]) return exact[0];
+  const taxId = normalizeTaxForMatch(data.customer_tax_id);
+  const matches = checks.filter((row) => {
+    if (checkBusinessKey(row.bank_name, row.check_number) !== checkBusinessKey(data.issuer_bank, data.check_number)) return false;
+    if (dateValue(row.received_on) !== dateValue(data.received_on)) return false;
+    const metadata = asObject(row.metadata);
+    const existingTaxId = normalizeTaxForMatch(metadata.customer_tax_id);
+    return taxId && existingTaxId ? taxId === existingTaxId : normalizeText(row.customer_name) === normalizeText(data.customer_name);
+  });
+  if (matches.length > 1) throw new HttpError(409, `No se puede identificar de forma única el cheque ${data.check_number}. Revisa sus fechas y titular.`);
+  return matches[0];
 }
 
 function checkBusinessKey(bankName: unknown, checkNumber: unknown) {
@@ -4753,9 +4887,9 @@ function physicalCheckBusinessKey(data: JsonRecord) {
   const number = normalizeDocumentNumber(data.check_number);
   const receivedOn = dateValue(data.received_on);
   const collectedOn = dateValue(data.due_on || data.facto_collected_on);
-  const customerTaxId = normalizeTaxForMatch(data.customer_tax_id || data.issuer_tax_id);
+  const customerTaxId = normalizeTaxForMatch(data.customer_tax_id);
   if (!bank || !number || !receivedOn) return "";
-  return [bank, number, receivedOn, collectedOn || "pending", customerTaxId || "unknown"].join("|");
+  return [bank, number, receivedOn, collectedOn || "pending", customerTaxId || normalizeText(data.customer_name) || "unknown"].join("|");
 }
 
 function normalizeDocumentNumber(value: unknown) {

@@ -1417,6 +1417,22 @@
 }
 
 .accounting-file-drop input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.accounting-file-drop:focus-within { outline: 2px solid #087d8a; outline-offset: 3px; }
+.accounting-import-status { border-block: 1px solid var(--accounting-line); padding-block: 14px; }
+.accounting-import-status h2 { font-size: 16px; margin: 0 0 10px; }
+.accounting-import-status-row { display: flex; align-items: center; gap: 12px; padding-block: 10px; }
+.accounting-import-status-row > div { display: grid; gap: 3px; min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.accounting-import-status-row small { color: var(--accounting-muted); }
+.accounting-import-status-row > svg { flex-shrink: 0; color: var(--accounting-teal); }
+@media (max-width: 640px) {
+  .accounting-import-status-row { display: grid; grid-template-columns: 20px minmax(0, 1fr); }
+  .accounting-import-status-row > .accounting-status, .accounting-import-status-row > button { grid-column: 2; white-space: normal; }
+}
+.accounting-file-drop strong { max-width: 100%; overflow-wrap: anywhere; }
+.accounting-facto-support-grid .accounting-panel-heading > div:only-child { display: block; }
+.accounting-facto-excel-preview .accounting-modal-heading { display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: start; }
+.accounting-facto-excel-preview .accounting-modal-heading .icon-button { display: grid; place-items: center; width: 40px; height: 40px; padding: 0; border: 1px solid var(--accounting-line); border-radius: 6px; background: #fff; color: var(--accounting-ink); cursor: pointer; }
+.accounting-facto-excel-preview .accounting-preview-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 .accounting-preview-kpis {
   display: grid;

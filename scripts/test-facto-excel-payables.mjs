@@ -100,6 +100,7 @@ const context = {
   requiredUuid: x => x, asObject: x => x || {}, numeric: x => Number(x || 0), requestIdToUuid: x => x,
   selectRows: async () => [batch],
   selectAllRows: async (_, query) => {
+    if (query.startsWith('accounting_import_batches?')) return [];
     if (query.startsWith('accounting_import_rows?')) { assert.match(query, /in\.\(new,imported\)/); return importRows; }
     if (query.startsWith('accounting_source_documents?')) return documents;
     if (query.startsWith('accounting_receivables?')) return ar;
@@ -123,7 +124,7 @@ const context = {
   },
   publishFactoExcelReceivablesSnapshot: async () => ({ published: true }),
 };
-const handler = loadFunctions(edgeSource, context, ['confirmFactoExcel', 'factoOpenBalanceKind']);
+const handler = loadFunctions(edgeSource, context, ['confirmFactoExcel', 'factoOpenBalanceKind', 'assertFactoPortfolioIsCurrent']);
 const result = await handler.confirmFactoExcel({}, { id: 'admin' }, 'request', { batchId: batch.id });
 assert.equal(result.portfolioSnapshot.payables_total_clp, 200000);
 assert.equal(ap[0].reported_balance_clp, 200000);
