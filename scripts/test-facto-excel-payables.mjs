@@ -99,6 +99,7 @@ const context = {
   HttpError, ...helpers,
   requiredUuid: x => x, asObject: x => x || {}, numeric: x => Number(x || 0), requestIdToUuid: x => x,
   selectRows: async () => [batch],
+  readSourceDocumentSummaries: async () => documents.map(row => ({ ...row, source_type: 'FACTO' })),
   selectAllRows: async (_, query) => {
     if (query.startsWith('accounting_import_batches?')) return [];
     if (query.startsWith('accounting_import_rows?')) { assert.match(query, /in\.\(new,imported\)/); return importRows; }

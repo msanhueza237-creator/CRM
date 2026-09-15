@@ -16,6 +16,12 @@ function load(names, context = {}) {
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const base = { HttpError, asObject: x => x || {}, numeric: x => Number(x || 0), requiredUuid: x => x };
 const helpers = load(['dateTimeValue', 'normalizeText', 'bankRealitySequence', 'isFactoSnapshotCurrent'], base);
+test('Excel confirmation uses bounded document pages instead of loading all electronic attachments', () => {
+  const tree = ts.createSourceFile('test.ts', source, ts.ScriptTarget.Latest, true);
+  const handler = tree.statements.find(n => ts.isFunctionDeclaration(n) && n.name?.text === 'confirmFactoExcel').getText(tree);
+  assert.match(handler, /readSourceDocumentSummaries\(\(path\) => selectRows\(rest, path\), entityId\)/);
+  assert.doesNotMatch(handler, /selectAllRows\(rest, `accounting_source_documents\?select=\*/);
+});
 function deferred() { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
 
 test('post-import refresh discards the in-flight old read and waits for a fresh read', async () => {

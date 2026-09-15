@@ -145,6 +145,7 @@ await assert.rejects(previewFactoExcel({}, {}, { entityId: 'entity', storagePath
 const confirmWrites = [];
 batch = { ...batch, status: 'previewed', created_at: '2026-09-14T17:00:00Z', summary: {}, error_count: 0 };
 const completeContext = { ...confirmContext, requestIdToUuid: x => x, consolidateFactoCheckRows,
+  readSourceDocumentSummaries: async () => [],
   selectAllRows: async (_, query) => {
     if (query.startsWith('accounting_import_rows?')) { assert.match(query, /status=in\.\(new,imported,duplicate\)/); return changed; }
     if (/^accounting_(source_documents|receivables|payables)\?/.test(query)) return [];

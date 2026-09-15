@@ -1696,7 +1696,8 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
   // A retry needs the complete portfolio, including rows already applied before a network interruption.
   const importRows = await selectAllRows(rest, `accounting_import_rows?select=*&batch_id=eq.${batchId}&status=${checks ? "in.(new,imported,duplicate)" : collection ? "in.(new,imported)" : "eq.new"}&order=row_number.asc`);
   if (checks && (!importRows.length || importRows.length !== Number(batch.row_count))) throw new HttpError(409, "El respaldo no contiene todas las filas de cheques. Vuelve a cargar el archivo completo.");
-  const sourceDocuments = await selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO`);
+  const sourceDocuments = (await readSourceDocumentSummaries((path) => selectRows(rest, path), entityId))
+    .filter((row) => row.source_type === "FACTO");
   const receivables = await selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}`);
   const payables = await selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}`);
   const batchSummary = asObject(batch.summary);
