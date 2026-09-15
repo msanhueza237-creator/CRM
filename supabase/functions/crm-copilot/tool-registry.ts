@@ -20,6 +20,7 @@ import { findProducts, resolveProducts, inventoryCatalogFields } from "./product
 import { clientPriceRows, factoCurrencies, productPrices } from "./product-prices.ts";
 import { productSales } from "./product-sales.ts";
 import { productProfitability } from "./product-profitability.ts";
+import { inventoryValuation, inventorySummaryText } from "./inventory-valuation.ts";
 import { agentReport, agentSectionRows } from "./agent-reports.ts";
 import { prospectingReport } from "./prospecting-report.ts";
 
@@ -368,6 +369,7 @@ export class ToolRegistry {
       {},
       async () => {
         const plan: Array<[string, Domain, Row]> = [
+          ["get_inventory_valuation", "products", { limit: 10 }],
           [
             "search_products",
             "products",
@@ -487,6 +489,41 @@ export class ToolRegistry {
           result.coverage.complete = false;
           result.status = data.length ? "partial" : "unavailable";
         }
+        return result;
+      },
+    );
+    this.add(
+      "get_inventory_valuation",
+      "products",
+      "Totales actuales de inventario guardado: unidades, stock por SKU, costo y valor potencial de venta neto. Usa para stock total, capital en inventario, total a costo o filtros del agente logistico. Calcula TODAS las coincidencias antes de paginar. Conserva query, brand y stock_filter. Costos solo para Finanzas/Administrador; importes por moneda, costo referencial separado del confirmado. No usa compras ni saldo contable como stock.",
+      { ...paging, brand: string, list_id: string, stock_filter: choice("all", "available", "zero", "unknown", "low", "without_movement", "without_cost"), threshold: integer(0, 1000000), sort: choice("name", "units") },
+      async (args) => {
+        const finance = canReadDomain(this.source.actor.role, "finance");
+        if (!finance && args.stock_filter === "without_cost") throw new CopilotDataError("Tu perfil no autoriza consultar costos.", "FORBIDDEN");
+        const snapshots = await this.source.records("inventory_snapshots");
+        const details = await this.source.records("product_details");
+        const catalog = await this.source.all(`content_products?select=${inventoryCatalogFields}&order=id.asc`);
+        let confirmations: Row = {};
+        if (finance) {
+          const entity = await this.source.entity();
+          const settings = await this.source.select(`accounting_entities?select=confirmations:settings->copilot_cost_currency_confirmations&id=eq.${entity}`);
+          confirmations = object(settings[0]?.confirmations);
+        }
+        const computed = inventoryValuation(snapshots, details, catalog, args,
+          factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined), confirmations, finance);
+        const pathParams = new URLSearchParams();
+        for (const key of ["query", "brand", "stock_filter", "list_id", "threshold"]) if (args[key] != null) pathParams.set(`inventory_${key}`, String(args[key]));
+        const path = finance ? `/dashboard${pathParams.size ? `?${pathParams}` : ""}#inventario` : "/contenido?view=library";
+        const result = tableResult("get_inventory_valuation", finance ? "finance" : "products", "Inventario y valorizacion", computed.records,
+          columns("sku:SKU", "name:Producto", "brand:Marca", "stock:Unidades", "net_price:Precio neto unitario", "price_currency:Moneda venta", "net_sale_value:Valor venta neto",
+            ...(finance ? ["unit_cost:Costo unitario", "cost_currency:Moneda costo confirmada", "assumed_cost_currency:Moneda supuesta", "cost_value:Costo total confirmado", "conditional_cost_value:Costo total condicional"] : []),
+            "stock_updated_at:Fecha stock", "price_updated_at:Fecha precio", ...(finance ? ["cost_updated_at:Fecha costo"] : [])), path, args,
+          [...computed.warnings, "No se suman fuentes ni listas de precios. Stock positivo por SKU; moneda desconocida y datos faltantes no equivalen a cero. El inventario no se agrega al resultado operativo ni al efectivo disponible."]);
+        const { records: _records, warnings: _warnings, complete, ...summary } = computed;
+        result.data = { ...object(result.data), ...summary };
+        result.summary = inventorySummaryText(object(result.data));
+        result.coverage.complete = complete;
+        if (!complete) result.status = "partial";
         return result;
       },
     );

@@ -186,7 +186,7 @@ export function flattenResults(
   });
 }
 export function safeSourcePath(path: string) {
-  return /^\/(?:empresas|contenido|campanas|finanzas-contabilidad|comercio-exterior|agentes|integraciones|administracion|informes|prospeccion)(?:[/?]|$)/.test(
+  return /^\/(?:dashboard|empresas|contenido|campanas|finanzas-contabilidad|comercio-exterior|agentes|integraciones|administracion|informes|prospeccion)(?:[/?#]|$)/.test(
     path,
   ) && !path.includes("\\")
     ? path

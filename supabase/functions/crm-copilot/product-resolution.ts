@@ -9,7 +9,7 @@ function catalogVariants(catalog: Row[]): Row[] {
     const variants = rows(row.variants);
     if (!variants.length) return [{ ...row, catalog_stock: numeric(row.stock) }];
     const keyed = variants.filter((variant) => skuKey(variant.sku));
-    const expanded = keyed.map((variant) => ({
+    const expanded: Row[] = keyed.map((variant) => ({
       ...row, sku: variant.sku,
       catalog_stock: variant.stock_management === true ? numeric(variant.stock) : null,
     }));

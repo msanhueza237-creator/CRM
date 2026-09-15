@@ -32,8 +32,15 @@ export async function centralHandler(
   const json = (data: unknown, status = 200) =>
     new Response(JSON.stringify(data), {
       status,
-      headers: { ...cors, "Content-Type": "application/json" },
+      headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
+  if (route === "inventory") {
+    if (req.method !== "GET") return json({ error: "Metodo no permitido." }, 405);
+    const args: Row = {};
+    for (const [key, value] of url.searchParams) args[key] = ["offset", "limit", "threshold"].includes(key) ? Number(value) : value;
+    const result = await new ToolRegistry(source).execute("get_inventory_valuation", args);
+    return json(result, result.status === "forbidden" ? 403 : result.status === "unavailable" ? 503 : result.status === "needs_clarification" ? 400 : 200);
+  }
   async function conversation(id: string) {
     if (!uuid(id)) throw new CopilotDataError("Conversacion invalida.");
     const result = await source.select(

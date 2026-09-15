@@ -44,6 +44,7 @@ const labels: Record<string, string> = {
   get_bank_movements: "Bancos y conciliacion",
   get_checks: "Cheques",
   search_products: "Productos y stock",
+  get_inventory_valuation: "Inventario: cantidades, costo y venta",
   get_price_list: "Precios",
   search_customers: "Clientes",
   get_financial_summary: "Finanzas",
@@ -103,6 +104,8 @@ function CentralConversationPage() {
   const [conversationId, setConversationId] = useState<string>();
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   const [draft, setDraft] = useState(() => {
+    const inventory = params.get("inventory_query");
+    if (inventory) return inventory.slice(0, 1000);
     const run = params.get("prospecting_run");
     return run && /^[a-f0-9-]{36}$/i.test(run) ? `Analiza la ejecución de prospección ${run}: uso de DeepSeek, progreso, candidatos y evidencia pendiente.` : "";
   });

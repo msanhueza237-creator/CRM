@@ -32,6 +32,11 @@ const result = {
       path: "/finanzas-contabilidad?view=receivables",
       entityType: "finance",
     },
+    {
+      label: "Inventario filtrado",
+      path: "/dashboard?inventory_query=ST-1&inventory_stock_filter=low&inventory_threshold=7#inventario",
+      entityType: "products",
+    },
   ],
   table: {
     title: "Documentos pendientes",
@@ -218,6 +223,11 @@ const page = await context.newPage(),
   errors = [];
 page.on("pageerror", (error) => errors.push(error.message));
 try {
+  const inventoryDraft = "Consulta el inventario de ST-1: unidades, costo y venta neta. Filtro low, umbral 7.";
+  await page.goto(`${base}/copiloto?inventory_query=${encodeURIComponent(inventoryDraft)}`);
+  await page.getByRole("heading", { name: "Copiloto central" }).waitFor();
+  assert.equal(await page.getByRole("textbox", { name: "Consulta al Copiloto" }).inputValue(), inventoryDraft);
+  assert.equal(postRequests, 0, "Abrir inventario no debe enviar una consulta IA automaticamente");
   await page.goto(`${base}/copiloto`);
   await page.getByRole("heading", { name: "Copiloto central" }).waitFor();
   await page
@@ -227,6 +237,7 @@ try {
     .getByRole("button", { name: "Enviar consulta", exact: true })
     .click();
   await page.getByRole("heading", { name: "Cartera vigente" }).waitFor();
+  assert.equal(await page.getByRole("link", { name: "Inventario filtrado", exact: true }).first().getAttribute("href"), result.evidence[1].path);
   assert.equal(await page.locator('a[href="https://evil.invalid"]').count(), 0);
   assert.equal(await page.locator(".cc-markdown script").count(), 0);
   assert.equal(

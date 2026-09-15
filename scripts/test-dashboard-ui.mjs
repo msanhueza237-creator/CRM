@@ -79,7 +79,12 @@ try {
     const payload = Buffer.from(JSON.stringify({ sub: user.id, role: "authenticated", exp: Math.floor(Date.now() / 1000) + 86400 })).toString("base64url");
     await context.addInitScript(({ key, user, payload }) => localStorage.setItem(key, JSON.stringify({ access_token: `eyJhbGciOiJIUzI1NiJ9.${payload}.fixture`, refresh_token: "fixture", expires_at: Math.floor(Date.now() / 1000) + 86400, expires_in: 86400, token_type: "bearer", user })), { key: `sb-${new URL(url).hostname.split(".")[0]}-auth-token`, user, payload });
     let failed = false, suppressed = false, financeRequests = 0, tradeRequests = 0, fixtureMode = "complete", marginOverride = null;
-    const financeWrites = [];
+    const financeWrites = [], inventoryReads = [];
+    let inventoryFailed = false;
+    const inventoryRows = Array.from({ length: 52 }, (_, i) => ({ sku: `ST-${i + 1}`, name: `Bomba de vacío profesional de doble etapa ${i + 1}`, brand: i < 26 ? "Super Stars" : "Otra",
+      stock: 2, unit_cost: 100, cost_currency: i === 0 ? null : "CLP", assumed_cost_currency: i === 0 ? "CLP" : null,
+      cost_reference_value: 200, net_price: 250, price_currency: "CLP", net_sale_value: 500,
+      stock_updated_at: "2026-09-15T12:00:00Z", price_updated_at: "2026-09-14T12:00:00Z", cost_updated_at: "2026-09-13T12:00:00Z" }));
     const fixtureTotals = value => {
       const fixture = { ...value };
       if (fixtureMode === "legacy") optionalFields.forEach(key => delete fixture[key]);
@@ -97,6 +102,18 @@ try {
       let body = [];
       if (u.pathname.includes("/profiles")) body = { id: user.id, role, full_name: "Prueba", active: true };
       if (u.pathname.includes("/auth/v1/user")) body = user;
+      if (u.pathname.endsWith("/crm-copilot/inventory")) {
+        inventoryReads.push(u);
+        assert.equal(route.request().method(), "GET");
+        if (inventoryFailed) return route.fulfill({ status: 503, headers, body: '{"summary":"Inventario temporalmente no disponible"}' });
+        const matches = inventoryRows.filter(r => (!u.searchParams.get("query") || r.sku === u.searchParams.get("query")) && (!u.searchParams.get("brand") || r.brand === u.searchParams.get("brand")));
+        const offset = Number(u.searchParams.get("offset") || 0), records = matches.slice(offset, offset + 25), conditional = matches.some(r => r.assumed_cost_currency) ? 1 : 0;
+        body = { toolName: "get_inventory_valuation", domain: "finance", status: conditional ? "partial" : matches.length ? "ok" : "empty", summary: "Inventario", warnings: ["Costo referencial con moneda pendiente."],
+          coverage: { complete: !conditional, totalMatched: matches.length, returned: records.length, ...(offset + records.length < matches.length ? { nextOffset: offset + records.length } : {}) },
+          data: { records, totals: { matched_products: matches.length, available_products: matches.length, available_units: matches.length * 2, unknown_stock_products: 0, missing_cost_products: 0, missing_price_products: 0,
+            by_currency: [{ currency: "CLP", cost_verified: (matches.length - conditional) * 200, cost_conditional: conditional * 200, cost_reference: matches.length * 200, conditional_cost_products: conditional, net_sale_value: matches.length * 500 }] },
+            available_brands: ["Super Stars", "Otra"], available_lists: ["1"], source_dates: { oldest: "2026-09-13T12:00:00Z", newest: "2026-09-15T12:00:00Z" } } };
+      }
       if (u.pathname.endsWith("/summary")) {
         financeRequests++;
         if (failed) return route.fulfill({ status: 503, headers, body: '{"error":"Unavailable"}' });
@@ -129,6 +146,9 @@ try {
       const bad = await page.locator(".overview-page a").evaluateAll(links => links.filter(a => !a.getAttribute("href") || a.getAttribute("href") === "#").length);
       assert.equal(bad, 0);
       if (role !== "vendedor") {
+        await page.locator('.inventory-overview[aria-busy="false"]').waitFor();
+        assert.match(await page.locator(".inventory-totals").innerText(), /10\.400/);
+        assert.match(await page.locator(".inventory-totals").innerText(), /104/);
         assert.match(await page.locator(".overview-kpis").innerText(), /11\.287\.934/);
         await assertValue(page, "Ventas netas", totals.sales);
         await assertValue(page, "Costo de ventas", totals.costs);
@@ -282,6 +302,51 @@ try {
         }
       }
       marginOverride = null;
+      for (const width of [1440, 390, 320]) {
+        await page.setViewportSize({ width, height: 950 });
+        const inventory = page.getByRole("region", { name: "Inventario actual", exact: true });
+        await inventory.locator('.inventory-detail summary').click();
+        await page.locator('.inventory-overview[aria-busy="false"]').waitFor();
+        assert.equal(await inventory.locator("tbody tr").count(), 25);
+        await page.getByRole("button", { name: "Página siguiente del inventario" }).click();
+        await page.locator('.inventory-overview[aria-busy="false"]').waitFor();
+        assert.equal(await inventory.locator("tbody tr").count(), 25);
+        assert.match(await inventory.locator(".inventory-totals").innerText(), /10\.400/);
+        await page.getByRole("combobox", { name: "Marca del inventario" }).selectOption("Super Stars");
+        await page.locator('.inventory-overview[aria-busy="false"]').waitFor();
+        assert.match(await inventory.locator(".inventory-pagination").innerText(), /1–25 de 26/);
+        assert.match(await inventory.locator(".inventory-totals").innerText(), /5\.200/);
+        await page.getByRole("combobox", { name: "Período financiero" }).selectOption("2026-09");
+        assert.equal(new URL(page.url()).searchParams.get("inventory_brand"), "Super Stars");
+        assert.match(await inventory.locator(".inventory-totals").innerText(), /5\.200/);
+        await page.getByRole("textbox", { name: "Producto o SKU del inventario" }).fill("ST-1");
+        await page.getByRole("button", { name: "Buscar inventario", exact: true }).click();
+        await page.locator('.inventory-overview[aria-busy="false"]').waitFor();
+        assert.equal(await inventory.locator("tbody tr").count(), 1);
+        assert.match(await inventory.locator(".inventory-totals").innerText(), /referencial/);
+        const copilotLink = new URL(await inventory.getByRole("link", { name: "Consultar inventario en Copiloto" }).getAttribute("href"), base);
+        assert.match(copilotLink.searchParams.get("inventory_query"), /ST-1/);
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2), false, `inventory overflow ${width}`);
+        await inventory.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: `outputs/dashboard/inventory-${width}.png` });
+        await page.getByRole("combobox", { name: "Estado del inventario" }).selectOption("low");
+        await page.getByRole("spinbutton", { name: "Umbral de stock bajo" }).fill("7");
+        const lowLink = new URL(await inventory.getByRole("link", { name: "Consultar inventario en Copiloto" }).getAttribute("href"), base);
+        assert.match(lowLink.searchParams.get("inventory_query"), /menos de 7 unidades/);
+        await page.getByRole("combobox", { name: "Estado del inventario" }).selectOption("all");
+        await page.getByRole("textbox", { name: "Producto o SKU del inventario" }).fill("inexistente");
+        await page.getByRole("button", { name: "Buscar inventario", exact: true }).click();
+        await page.locator('.inventory-overview[aria-busy="false"]').waitFor();
+        assert.match(await inventory.innerText(), /Sin productos para estos filtros/);
+        await page.getByRole("button", { name: "Quitar filtros de inventario" }).click();
+        await page.locator('.inventory-overview[aria-busy="false"]').waitFor();
+      }
+      inventoryFailed = true;
+      await page.getByRole("button", { name: "Actualizar panorama" }).click();
+      await page.getByRole("alert").filter({ hasText: "Inventario temporalmente" }).waitFor();
+      assert.doesNotMatch(await page.locator(".inventory-totals").innerText(), /10\.400/);
+      assert.match(await page.locator(".inventory-totals").innerText(), /No disponible/);
+      inventoryFailed = false;
       for (const mode of ["legacy", "net-only", "partial", "split-only", "empty"]) {
         fixtureMode = mode;
         await page.getByRole("button", { name: "Actualizar panorama" }).click();
@@ -319,6 +384,7 @@ try {
     }
     assert.deepEqual(errors, []);
     assert.deepEqual(financeWrites, [], "Reading and updating the margin never posts accounting changes");
+    if (role === "vendedor") { assert.equal(inventoryReads.length, 0); assert.equal(await page.locator(".inventory-overview").count(), 0); }
     console.log(`PASS ${role}: responsive layout, purchases stacks, credit notes, period documents, source links, unchanged results, optional fields and access`);
     await context.close();
   }

@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import { incomeReportLink } from "../accounting/reportNavigation";
 import { dashboardDetailLink, exactDocumentLink, type DashboardMetric } from "../accounting/dashboardNavigation";
 import { stages, useDashboardOverview } from "./useDashboardOverview";
+import { InventoryOverview } from "./InventoryOverview";
 import "./dashboard.css";
 
 const financial = (view: string) => `/finanzas-contabilidad?view=${view}`;
@@ -26,7 +27,7 @@ export function DashboardPage() {
   const { data, loading, refresh } = useDashboardOverview(user?.role, user?.id);
   const [params, setParams] = useSearchParams();
   const period = params.get("period") || "year";
-  const setPeriod = (value: string) => setParams({ period: value });
+  const setPeriod = (value: string) => setParams(current => { const next = new URLSearchParams(current); next.set("period", value); return next; });
   const admin = user?.role === "administrador", financeAccess = admin || user?.role === "finanzas";
   const f = financeAccess ? data.finance : null;
   const analytics = f?.dashboard?.available ? f.dashboard : null;
@@ -83,6 +84,7 @@ export function DashboardPage() {
       {f?.bankReality?.asOf && <Link className="overview-chart-link" to={financial("banks")}>Último respaldo bancario: {date(f.bankReality.asOf)} · revisar fecha de cada cuenta <ArrowUpRight size={16} /></Link>}
       {f?.factoFreshness?.stale && <Link className="overview-inline-alert" to={financial("facto")}><AlertTriangle size={16} /> Hay información de Facto pendiente de consolidar <ArrowRight size={16} /></Link>}
     </section>}
+    {financeAccess && <InventoryOverview refreshedAt={data.readAt} userId={user?.id || ""} />}
     {financeAccess && <section className="overview-section" aria-label="Rendimiento financiero">
       <div className="overview-heading"><div><h2>Rendimiento financiero</h2><p>{analytics ? `${date(selected?.from || analytics.from)} al ${date(selected?.to || analytics.to)} · CLP` : "Información financiera no disponible"}</p></div><label className="overview-period">Período<select aria-label="Período financiero" value={selected ? period : "year"} onChange={event => setPeriod(event.target.value)}><option value="year">{analytics?.year || new Date().getFullYear()} acumulado</option>{analytics?.monthly.map(month => <option key={month.period} value={month.period}>{month.label} {analytics.year}</option>)}</select></label></div>
       <div className="overview-performance">
