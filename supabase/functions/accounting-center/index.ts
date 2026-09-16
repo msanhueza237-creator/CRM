@@ -19,6 +19,7 @@ import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPo
 import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
 import { normalizeFactoDocument } from "./facto-document-normalization.ts";
 import { confirmedCostSourceIds, assertExistingFactoCost } from "./facto-cost-evidence.ts";
+import { creditNoteCostReview, creditNoteCostPeriod } from "./credit-note-costs.ts";
 import { readStatementClosings, statementClosingBalance, validatedBankBalance } from "./bank-statement-balance.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -654,6 +655,9 @@ async function buildDashboardAnalytics(
 
   const salesEvidence = dashboardSalesEvidence(financialDocuments, ledgerLines,
     new Set(accounts.filter(account => account.account_type === "income").map(account => String(account.id))), asOf);
+  const creditCostReview = creditNoteCostReview(sources, ledgerLines, accounts, asOf);
+  const creditCostTotals = creditNoteCostPeriod(creditCostReview, yearStart, asOf);
+  if (creditCostTotals.creditNoteCostPending) warnings.push(`${creditCostTotals.creditNoteCostPending} notas de credito requieren verificar su costo o reversa en Facto. El costo neto incluye solo las reversas ya contabilizadas; el resultado permanece provisional hasta conciliar estas notas.`);
   const currentSalesDocuments = salesEvidence.filter(source => source.issuedOn >= yearStart);
   const recognizedSalesDocuments = salesEvidence.filter(source => source.recognizedOn >= yearStart);
   const salesAdjustments = recognizedSalesDocuments.filter(source => source.creditNote && source.posted && source.recognizedOn !== source.issuedOn);
@@ -685,6 +689,7 @@ async function buildDashboardAnalytics(
     salesPending: pendingSales.filter(document => document.issuedOn.slice(0, 7) === month.period).reduce((sum, document) => sum + document.netClp, 0),
     salesPendingDocuments: pendingSales.filter(document => document.issuedOn.slice(0, 7) === month.period).length,
     ...dashboardSalesPeriodBridge(salesEvidence, month.from, month.to, monthTotals.get(month.period)?.sales || 0, exactCostSourceIds),
+    ...creditNoteCostPeriod(creditCostReview, month.from, month.to),
   }));
   const current = finalizeDashboardTotals(monthly.reduce((accumulator, month) => ({
     sales: accumulator.sales + month.sales,
@@ -734,7 +739,9 @@ async function buildDashboardAnalytics(
     monthly,
     purchaseDocuments,
     salesAdjustments,
+    creditCostReview,
     current: { ...current,
+      ...creditCostTotals,
       ...dashboardSalesPeriodBridge(salesEvidence, yearStart, asOf, current.sales, exactCostSourceIds),
       ...dashboardDocumentTotals(purchaseDocuments, recognizedSalesDocuments),
       salesLedger: monthly.reduce((sum, month) => sum + month.salesLedger, 0),

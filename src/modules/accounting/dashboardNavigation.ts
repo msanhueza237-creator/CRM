@@ -4,6 +4,8 @@ export const dashboardMetrics = {
   "sales-pending": "Documentos con asiento pendiente en CRM",
   "cost-missing": "Ventas con costo pendiente en CRM",
   "cost-confirmed": "Ventas con costo confirmado",
+  "credit-cost-review": "Notas de credito con costo o reversa por verificar",
+  "credit-prior-invoices": "Notas sobre facturas de periodos anteriores",
   "sales-issued": "Ventas emitidas",
   "sales-issued-credit": "Notas de credito emitidas",
   "sales-period-net": "Ventas netas por fecha de emision",
@@ -33,12 +35,24 @@ export function exactDocumentLink(id: string, issuedOn?: string) {
   if (issuedOn) { params.set("from", issuedOn); params.set("to", issuedOn); }
   return `/finanzas-contabilidad?${params}`;
 }
-export type DetailRow = { key: string; sourceId?: string; date: string; issuedOn?: string; label: string; counterpart: string; status: string; amount: number };
+export type DetailRow = { key: string; sourceId?: string; date: string; issuedOn?: string; label: string; counterpart: string; status: string; amount: number | null };
 
 // Membership comes from the same ledger/document evidence as the dashboard,
 // never from a text search or the presence of an unrelated payment/cost entry.
 export function dashboardDetailRows(analytics: AccountingDashboardAnalytics, metric: DashboardMetric, from: string, to: string): DetailRow[] | null {
   const detail = analytics.detail;
+  if (metric === "credit-prior-invoices") return !detail?.ledgerAvailable || !analytics.creditCostReview || from > to ? null
+    : analytics.creditCostReview.filter(row => row.recognizedOn >= from && row.recognizedOn <= to && row.invoiceIssuedOn && row.invoiceIssuedOn < from).map(row => ({
+      key: `credit-prior:${row.id}`, sourceId: row.id, date: row.recognizedOn, issuedOn: row.issuedOn,
+      label: `Nota de credito ${row.folio} / Factura ${row.invoiceFolio}`,
+      counterpart: row.counterpart, status: `Factura emitida el ${row.invoiceIssuedOn}; nota ya incluida en ventas netas`, amount: row.netClp,
+    }));
+  if (metric === "credit-cost-review") return !detail?.ledgerAvailable || !analytics.creditCostReview || from > to ? null
+    : analytics.creditCostReview.filter(row => row.pending && row.recognizedOn >= from && row.recognizedOn <= to).map(row => ({
+      key: `credit-cost:${row.id}`, sourceId: row.id, date: row.recognizedOn, issuedOn: row.issuedOn,
+      label: `Nota de credito ${row.folio}${row.invoiceFolio ? ` / Factura ${row.invoiceFolio}` : ""}`,
+      counterpart: row.counterpart, status: row.detail, amount: row.reversedCost,
+    }));
   if (!detail || from > to) return null;
   if (!detail.ledgerAvailable && ["sales-pending", "cost-missing", "cost-confirmed", "sales-credit", "prior-credit"].includes(metric)) return null;
   const inPeriod = (date: string) => Boolean(date) && date >= from && date <= to;

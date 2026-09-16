@@ -6,6 +6,7 @@ import { accountingToday, dashboardDocumentSales, dashboardSalesEvidence, dashbo
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "../supabase/functions/accounting-center/dashboard-purchases.ts";
 import { isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 import { confirmedCostSourceIds } from "../supabase/functions/accounting-center/facto-cost-evidence.ts";
+import { creditNoteCostReview, creditNoteCostPeriod } from "../supabase/functions/accounting-center/credit-note-costs.ts";
 import { dashboardDetailRows } from "../src/modules/accounting/dashboardNavigation.ts";
 
 // Exercise the actual edge calculation with read-only REST fixtures, without starting Deno.
@@ -31,8 +32,8 @@ async function build(documents, lines, { failLedger = false, asOf = "2026-09-09"
     }
     throw new Error(`Unexpected query: ${path}`);
   };
-  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", "confirmedCostSourceIds", `${javascript}\nreturn buildDashboardAnalytics;`)(
-    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge, confirmedCostSourceIds);
+  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", "confirmedCostSourceIds", "creditNoteCostReview", "creditNoteCostPeriod", `${javascript}\nreturn buildDashboardAnalytics;`)(
+    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge, confirmedCostSourceIds, creditNoteCostReview, creditNoteCostPeriod);
   return run({}, "entity", asOf, documents, accounts, includeDetails);
 }
 
@@ -80,6 +81,31 @@ test("September includes an unposted invoice even with booked sales in previous 
   assert.equal(posted.current.sales, result.current.sales);
   assert.equal(posted.current.salesPendingDocuments, 0);
   assert.equal(posted.basis, "ledger");
+});
+
+test("Credit-note cost control reconciles dashboard, detail and posted net cost", async () => {
+  const identity = { entity_id: "entity", source_type: "FACTO", counterpart_tax_id: "12345678-9" };
+  const invoice = doc("invoice", 1000, "2026-08-01", { ...identity, external_id: "100", folio: "10" });
+  const credit = doc("credit", 200, "2026-08-20", { ...identity, folio: "80", document_type: "sales_credit_note", raw_payload: { references: [
+    { document_id: 100, reference_number: 10, reference_date: "2026-08-01", reference_type: 3, document_type_taxbureau: 33 },
+  ] } });
+  const cost = line(invoice.id, 600, invoice.issued_on, "cost");
+  const lines = [cost, inventoryLine(cost)];
+  const options = { asOf: "2026-08-31", includeDetails: true };
+  const before = await build([invoice, credit], lines, options);
+  assert.equal(before.current.creditNoteCostPending, 1);
+  const rows = dashboardDetailRows(before, "credit-cost-review", before.from, before.to);
+  assert.equal(rows.length, before.current.creditNoteCostPending);
+  assert.equal(rows[0].amount, null);
+  assert.ok(before.warnings.some(w => w.includes("notas de credito")));
+  const reversal = line(credit.id, -120, credit.issued_on, "cost");
+  const after = await build([invoice, credit], [...lines, reversal, inventoryLine(reversal)], options);
+  assert.equal(after.current.costs, 480);
+  assert.equal(after.monthly.at(-1).costs, 480);
+  assert.equal(after.current.costCreditNotes, 120);
+  assert.equal(after.current.creditNoteCostPending, 0);
+  assert.deepEqual(dashboardDetailRows(after, "credit-cost-review", after.from, after.to), []);
+  assert.equal(after.current.operatingProfit, before.current.operatingProfit + 120);
 });
 
 test("September journal refresh incorporates four exact costs without doubling invoices or losing the credit note", async () => {

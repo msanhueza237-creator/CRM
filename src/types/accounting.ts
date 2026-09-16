@@ -434,6 +434,10 @@ export interface AccountingDashboardTotals {
   salesPriorCreditAdjustments?: number;
   salesOtherAdjustments?: number;
   salesCostMissingDocuments?: number;
+  creditNoteCostPending?: number;
+  costCreditNotes?: number;
+  salesCreditPriorInvoices?: number;
+  salesCreditPriorInvoiceDocuments?: number;
   purchasesDomestic?: number;
   // Merchandise only; landed costs invoiced domestically are already in purchasesDomestic.
   purchasesInternational?: number;
@@ -458,6 +462,10 @@ export interface AccountingDashboardMonth extends AccountingDashboardTotals {
 }
 
 export interface AccountingDashboardAnalytics {
+  creditCostReview?: Array<{ id: string; folio: string; issuedOn: string; recognizedOn: string; counterpart: string; netClp: number;
+    invoiceId: string | null; invoiceFolio: string | null; invoiceIssuedOn: string | null; kind: "cancellation" | "partial" | "text" | "unresolved";
+    originalCost: number | null; reversedCost: number | null; pending: boolean; detail: string;
+    reversals: Array<{ id: string; date: string; amount: number }> }>;
   detail?: {
     ledgerAvailable: boolean;
     sales: Array<{ id: string; folio: string; issuedOn: string; recognizedOn: string; netClp: number; posted: boolean; creditNote: boolean; exactCost: boolean; counterpart: string }>;

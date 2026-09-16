@@ -4,6 +4,7 @@ import {
   dashboardSalesPeriodBridge,
 } from "../accounting-center/dashboard-sales.ts";
 import { confirmedCostSourceIds } from "../accounting-center/facto-cost-evidence.ts";
+import { creditNoteCostReview, creditNoteCostPeriod, creditNoteReferences } from "../accounting-center/credit-note-costs.ts";
 import {
   CopilotDataError,
   decimalSum,
@@ -11,7 +12,6 @@ import {
   numeric,
   object,
   observedAt,
-  readResult,
   tableResult,
   type Row,
   type ReadResult,
@@ -41,7 +41,7 @@ const flagPaths = [
   "totals->",
 ];
 const docFields =
-  "id,external_id,source_type,document_type,folio,counterpart_tax_id,counterpart_name,issued_on,currency,exchange_rate,net_amount,exempt_amount,tax_amount,total_clp,status,data_quality,updated_at," +
+  "id,entity_id,external_id,source_type,document_type,folio,counterpart_tax_id,counterpart_name,issued_on,currency,exchange_rate,net_amount,exempt_amount,tax_amount,total_clp,status,data_quality,updated_at,credit_references:raw_payload->references," +
   flagPaths
     .map((path, i) => `direction_${i}:raw_payload->${path}received_issued_flag`)
     .join(",");
@@ -54,9 +54,8 @@ export function projectedSalesDocument(row: Row): Row {
   const received = flags.some((flag) => flag === 0 || flag === "0");
   return {
     ...row,
-    raw_payload: received
-      ? { received_issued_flag: 0 }
-      : object(row.raw_payload),
+    raw_payload: { ...object(row.raw_payload), ...(Array.isArray(row.credit_references) ? { references: row.credit_references } : {}),
+      ...(received ? { received_issued_flag: 0 } : {}) },
   };
 }
 
@@ -123,6 +122,7 @@ export function aggregateFinancialPeriod(
     coverage,
   );
   const grossProfit = money(sales - costs);
+  const creditCosts = creditNoteCostPeriod(creditNoteCostReview(documents, linkedLines, accounts, asOf), range.from, range.to);
   return {
     ...range,
     sales,
@@ -136,6 +136,7 @@ export function aggregateFinancialPeriod(
     operatingProfit: money(grossProfit - expenses + otherResults),
     grossMargin: sales > 0 ? (grossProfit / sales) * 100 : null,
     ...bridge,
+    ...creditCosts,
     excludedDocuments: documents.filter(
       (d) =>
         String(d.issued_on) >= range.from &&
@@ -192,6 +193,14 @@ export async function financialPeriod(
         )
       ).map(projectedSalesDocument),
     );
+  }
+  // Resolve only explicitly referenced invoices, including those issued in a prior month.
+  const referencedIds = [...new Set(docs.filter(d => d.document_type === "sales_credit_note")
+    .flatMap(d => creditNoteReferences(d).map(r => String(r.document_id || ""))).filter(id => /^\d+$/.test(id)))];
+  const knownExternalIds = new Set(docs.map(d => String(d.external_id)));
+  const missingReferences = referencedIds.filter(id => !knownExternalIds.has(id));
+  for (let i = 0; i < missingReferences.length; i += 100) {
+    docs.push(...(await source.all(`accounting_source_documents?select=${docFields}&entity_id=eq.${entity}&source_type=eq.FACTO&document_type=like.sales_*&external_id=in.(${missingReferences.slice(i, i + 100).join(",")})&order=id.asc`, 100)).map(projectedSalesDocument));
   }
   // Include earlier postings of issued documents so a prior posting cannot be added again.
   const linked: Row[] = [];
@@ -255,6 +264,10 @@ export async function financialPeriod(
     warnings.push(
       `${totals.salesCostMissingDocuments} documentos tienen costo pendiente en CRM; la utilidad puede estar sobreestimada.`,
     );
+  if (totals.creditNoteCostPending)
+    warnings.push(`${totals.creditNoteCostPending} notas de credito tienen costo/reversa por verificar. No afirmar que todos los costos estan completos. El resultado ya descuenta las reversas contabilizadas; no restar el importe de venta ni el costo de otra factura.`);
+  if (totals.salesCreditPriorInvoiceDocuments)
+    warnings.push(`${totals.salesCreditPriorInvoiceDocuments} notas incluidas en ventas netas corresponden a facturas emitidas antes del periodo: ${totals.salesCreditPriorInvoices} CLP netos. Explicar este efecto temporal; no cambiar fechas ni excluir el costo de facturas vigentes.`);
   if (totals.excludedDocuments)
     warnings.push(
       `${totals.excludedDocuments} documentos no son contabilizables o tienen importes pendientes y se excluyeron.`,
@@ -283,6 +296,7 @@ export async function financialPeriod(
     basis: "ledger_plus_unposted_validated_documents",
     currency: "CLP",
     provisional: true,
+    creditNoteCosts: creditNoteCostReview(docs, linked, accounts, asOf).filter(r => r.recognizedOn >= range.from && r.recognizedOn <= range.to),
   };
   result.status = "partial";
   result.coverage = { ...result.coverage, ...range };
