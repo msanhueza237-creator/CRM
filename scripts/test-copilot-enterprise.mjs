@@ -11,7 +11,7 @@ import {
   redactSecrets,
   sessionExpires,
 } from "../supabase/functions/crm-copilot/safety.ts";
-import { modelPreview, redactArguments } from "../supabase/functions/crm-copilot/orchestrator.ts";
+import { modelPreview, redactArguments, runOrchestrator } from "../supabase/functions/crm-copilot/orchestrator.ts";
 import { CopilotSources } from "../supabase/functions/crm-copilot/sources.ts";
 import { dateRange } from "../supabase/functions/crm-copilot/dates.ts";
 import { ToolRegistry } from "../supabase/functions/crm-copilot/tool-registry.ts";
@@ -256,6 +256,20 @@ test("Prestamos exigen entidad y no presentan saldos con movimientos reversados 
   assert.equal(records[1].outstanding_principal_clp,null);
   assert.equal(records[2].received_clp,null);
   assert.equal(records[2].outstanding_principal_clp,null);
+});
+
+test("Saldo agotado y limite temporal de OpenAI se distinguen sin exponer el error privado", async () => {
+  for (const [code, type, expected] of [
+    ["credit_balance_exhausted","insufficient_quota","AI_QUOTA_EXHAUSTED"],
+    ["insufficient_quota","insufficient_quota","AI_QUOTA_EXHAUSTED"],
+    ["rate_limit_exceeded","requests","AI_RATE_LIMITED"],
+  ]) {
+    await assert.rejects(() => runOrchestrator({
+      registry:{list:()=>[]},model:"configured-model",apiKey:"mock-secret",message:"Ventas del mes",history:[],signal:new AbortController().signal,
+      onTrace:async()=>assert.fail("No debe consultar fuentes sin respuesta del modelo"),
+      fetcher:async()=>new Response(JSON.stringify({error:{code,type,message:"private-provider-detail"}}),{status:429}),
+    }), error=>error.code === expected && !error.message.includes("private-provider-detail"));
+  }
 });
 
 test("Endpoint central conserva auditoria, permisos y contexto sin escribir datos del negocio", async () => {

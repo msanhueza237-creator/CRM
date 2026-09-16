@@ -44,9 +44,10 @@ Seguimiento real probado: "Cuanto vendimos este mes?" -> "Y el mes pasado?" ->
 ## Pruebas automatizadas y visuales
 
 - 57 pruebas existentes del copiloto conservadas.
-- 12 pruebas nuevas: configuracion, fechas, notas, deduplicacion, importes
+- 13 pruebas nuevas: configuracion, fechas, notas, deduplicacion, importes
   desconocidos, proyeccion de direccion, secretos, timeout, permisos, ranking y
-  prestamos por entidad y endpoint con auditoria/sesion en mocks.
+  prestamos por entidad, errores de saldo/limite del proveedor y endpoint con
+  auditoria/sesion en mocks.
 - 19 regresiones del dashboard contable.
 - Lecturas adicionales de ficha de cliente y prestamos contrastadas con sus
   servicios reales. Prestamos conserva el saldo por revisar ante reversas o
@@ -94,3 +95,17 @@ Seguimiento real probado: "Cuanto vendimos este mes?" -> "Y el mes pasado?" ->
   a 60 s. No se modifica el runtime global; cualquier aumento por variable de
   entorno debe coordinarse con ese limite. El resultado del despliegue se
   verifica por separado, no se presupone en este documento.
+
+## Comprobacion posterior a la publicacion
+
+- Revision inicial `47805ce`: Dokploy termino correctamente; HTML, JS, CSS y
+  bundle del Copiloto responden 200. Backend autenticado de conversaciones e
+  inventario responde 200; acceso anonimo rechazado. Contabilidad sin cambios.
+- La consulta real posterior devolvio 429 de OpenAI: `credit_balance_exhausted`
+  / `insufficient_quota`. La cuenta API ya no tenia creditos, aunque el modelo
+  seguia accesible. No se compro saldo ni se cambio de modelo para ocultarlo.
+- Se agrego un mensaje explicito y prueba mock que distingue falta de saldo
+  de limite temporal. Las pruebas previas con respuestas reales siguen siendo
+  evidencia anterior, no una certificacion de disponibilidad sin saldo.
+- Queda pendiente repetir la consulta completa en produccion cuando el titular
+  recargue la cuenta API. No se deben compartir claves por chat para hacerlo.

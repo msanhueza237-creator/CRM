@@ -1,4 +1,5 @@
 import {
+  CopilotDataError,
   object,
   readResult,
   rows,
@@ -146,10 +147,24 @@ export async function runOrchestrator(options: OrchestratorOptions) {
         }),
       },
     );
-    if (!response.ok)
-      throw new Error(
+    if (!response.ok) {
+      const provider = object(object(await response.json().catch(() => ({}))).error);
+      const quotaCodes = ["insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"];
+      if (quotaCodes.includes(String(provider.code)) || provider.type === "insufficient_quota")
+        throw new CopilotDataError(
+          "OpenAI no tiene saldo o cuota disponible en la cuenta API. El administrador debe revisar la facturacion de OpenAI y volver a consultar cuando haya saldo. Los datos del CRM no se modificaron.",
+          "AI_QUOTA_EXHAUSTED",
+        );
+      if (response.status === 429)
+        throw new CopilotDataError(
+          "OpenAI alcanzo su limite temporal de solicitudes. Espera un momento y vuelve a consultar. Los datos del CRM no se modificaron.",
+          "AI_RATE_LIMITED",
+        );
+      throw new CopilotDataError(
         `El servicio de IA no pudo responder (${response.status}). Las fuentes no se han modificado.`,
+        "AI_PROVIDER_ERROR",
       );
+    }
     const payload = object(await response.json()),
       output = rows(payload.output),
       usage = object(payload.usage);
