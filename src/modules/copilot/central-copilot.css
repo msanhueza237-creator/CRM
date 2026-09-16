@@ -646,3 +646,20 @@
     animation: none;
   }
 }
+
+.cc-chart { margin: 20px 0; min-width: 0; }
+.cc-chart figcaption { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; margin-bottom: 12px; font-size: 14px; }
+.cc-chart figcaption small, .cc-business-kpis small { color: #60747b; font-size: 11px; }
+.cc-chart-canvas { position: relative; height: 300px; width: 100%; min-width: 0; }
+.cc-business-kpis { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+.cc-business-kpis dd { font-size: 23px; overflow-wrap: anywhere; }
+.cc-composer .cc-voice-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.cc-icon[aria-pressed="true"] { background: #fceae5; color: #a13324; }
+.cc-technical { margin-top: 14px; color: #60747b; font-size: 12px; }
+.cc-technical dl { display: grid; gap: 4px; }
+.cc-technical dl > div { display: flex; justify-content: space-between; gap: 16px; }
+.cc-technical dd { margin: 0; }
+@media (max-width: 600px) {
+  .cc-chart-canvas { height: 260px; }
+  .cc-business-kpis dd { font-size: 21px; }
+}

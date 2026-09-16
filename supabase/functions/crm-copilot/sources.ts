@@ -9,23 +9,48 @@ import {
 
 export class CopilotSources {
   private cache = new Map<string, Promise<unknown>>();
+  readonly metrics = { databaseMs: 0, serviceMs: 0, requests: 0, cacheHits: 0 };
   constructor(
     public config: RestConfig,
     public actor: CopilotActor,
     public signal?: AbortSignal,
     private fetcher: typeof fetch = fetch,
+    private timeoutMs = 20000,
   ) {}
 
   memo<T>(key: string, load: () => Promise<T>): Promise<T> {
     if (!this.cache.has(key)) this.cache.set(key, load());
+    else this.metrics.cacheHits++;
     return this.cache.get(key) as Promise<T>;
+  }
+  private async fetch(path: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController(), started = Date.now();
+    const abort = () => controller.abort();
+    if (this.signal?.aborted) abort();
+    this.signal?.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(abort, this.timeoutMs);
+    this.metrics.requests++;
+    try {
+      const response = await this.fetcher(`${this.config.url}/${path}`, { ...init, signal: controller.signal });
+      // Read the body while the deadline is active, not only the response headers.
+      const body = await response.text();
+      return new Response([204, 205, 304].includes(response.status) ? null : body, { status: response.status, headers: response.headers });
+    } catch (error) {
+      if (controller.signal.aborted && !this.signal?.aborted)
+        throw new CopilotDataError("La fuente excedio el tiempo de lectura. Acota el periodo o vuelve a intentar.", "SOURCE_TIMEOUT");
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      this.signal?.removeEventListener("abort", abort);
+      this.metrics[path.startsWith("rest/") ? "databaseMs" : "serviceMs"] += Date.now() - started;
+    }
   }
   async request(
     path: string,
     init: RequestInit = {},
     user = false,
   ): Promise<unknown> {
-    const response = await this.fetcher(`${this.config.url}/${path}`, {
+    const response = await this.fetch(path, {
       ...init,
       signal: this.signal,
       headers: {
@@ -53,8 +78,8 @@ export class CopilotSources {
     return this.memo(`all:${path}:${max}`, async () => {
       const result: Row[] = [];
       for (let offset = 0; offset <= max;) {
-        const response = await this.fetcher(
-          `${this.config.url}/rest/v1/${path}&limit=500&offset=${offset}`,
+        const response = await this.fetch(
+          `rest/v1/${path}&limit=500&offset=${offset}`,
           {
             signal: this.signal,
             headers: {

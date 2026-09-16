@@ -48,7 +48,11 @@ export interface ReadResult {
   freshness: { fetchedAt: string; sourceObservedAt: string | null };
   table?: ResultTable;
   continuation?: { toolName: string; args: Row };
+  components?: BusinessComponent[];
 }
+export type BusinessComponent =
+  | { type: "kpi"; title: string; value: number | null; unit: string; classification: "fact" | "calculation" | "estimate" }
+  | { type: "chart"; chartType: "line" | "bar"; title: string; labels: string[]; series: Array<{ name: string; values: Array<number | null> }>; unit: string; classification: "fact" | "calculation" | "estimate" };
 export interface ToolDefinition {
   name: string;
   description: string;

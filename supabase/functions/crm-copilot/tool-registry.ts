@@ -23,6 +23,8 @@ import { productProfitability } from "./product-profitability.ts";
 import { inventoryValuation, inventorySummaryText } from "./inventory-valuation.ts";
 import { agentReport, agentSectionRows } from "./agent-reports.ts";
 import { prospectingReport } from "./prospecting-report.ts";
+import { financialPeriod, comparePeriods, customerAnalytics } from "./business-analytics.ts";
+import { safeData } from "./safety.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -45,11 +47,16 @@ const paging = {
 const period = {
   period: choice(
     "today",
+    "yesterday",
     "this_week",
     "last_week",
+    "calendar_week",
     "this_month",
     "last_month",
     "this_year",
+    "last_year",
+    "last_30_days",
+    "last_12_months",
     "custom",
     "all",
   ),
@@ -153,9 +160,9 @@ export class ToolRegistry {
       );
     try {
       const args = validateArguments(definition.parameters, input);
-      const result = await definition.execute(args);
+      const result = safeData(await definition.execute(args)) as ReadResult;
       // Complete commercial exports are bounded separately from model previews and document evidence.
-      const fullExport = name === "get_price_list" || (name === "get_top_products" && args.detail_level !== "evidence");
+      const fullExport = name === "get_price_list" || name === "generate_business_report" || (name === "get_top_products" && args.detail_level !== "evidence");
       const maxSize = fullExport ? 900000 : 180000;
       if (JSON.stringify(result).length > maxSize)
         throw new CopilotDataError(
@@ -221,6 +228,15 @@ export class ToolRegistry {
     });
   }
   private registerTools() {
+    this.add("get_sales_summary", "finance",
+      "Ventas netas, costos, gastos, utilidad, margen y serie mensual para el periodo solicitado. Reutiliza las reglas del dashboard, notas de credito y asientos; no suma de nuevo ventas contabilizadas. Para ventas del mes, utilidad, informe financiero y grafico de ultimos 12 meses. Retorna KPI y graficos estructurados calculados, no generados por IA.",
+      {...period,chart:choice("line","bar")}, args=>financialPeriod(this.source,args));
+    this.add("compare_sales_periods", "finance",
+      "Compara ventas, costos, utilidad y variacion entre dos periodos, con fuentes del dashboard. period es el periodo principal; compare_period el de comparacion. Para agosto vs septiembre usar custom y fechas explicitas. No confundir mes parcial con completo.",
+      {...period,compare_period:period.period,compare_from:string,compare_to:string}, args=>comparePeriods(this.source,args));
+    this.add("get_customer_sales", "sales",
+      "Ranking real de facturacion neta por cliente, historial mensual, segmento y ultima compra desde documentos validados, descontando notas de credito. Usa limit=10 para los 10 mejores. Para clientes importantes inactivos usa inactive_days=60 y un periodo amplio, this_year o last_12_months. Conserva nombres/RUT/segmentos solicitados. No usa snapshots comerciales para totales actuales.",
+      {...paging,...period,category:string,inactive_days:integer(1,3650)}, args=>customerAnalytics(this.source,args));
     this.add("get_prospecting_report", "customers",
       "Campañas, ejecuciones, uso real de DeepSeek, progreso y candidatos con evidencia activa del modulo Prospeccion. Solo lectura, no busca nuevos candidatos en la web. Consulta view=runs primero; view=candidates requiere run_id. query filtra campaña/terminos en runs y empresa/rubro en candidates.",
       { ...paging, view: choice("runs", "candidates"), campaign_id: string, run_id: string },
@@ -366,8 +382,8 @@ export class ToolRegistry {
       "generate_business_report",
       "customers",
       "Informe transversal obligatorio para 'como esta el negocio' o informe ejecutivo. Recopila stock, clientes, finanzas, importaciones, campanas, contenido y agentes segun permisos. No ocultar secciones faltantes.",
-      {},
-      async () => {
+      { ...period, focus: choice("executive", "financial") },
+      async (reportArgs) => {
         const plan: Array<[string, Domain, Row]> = [
           ["get_inventory_valuation", "products", { limit: 10 }],
           [
@@ -375,21 +391,32 @@ export class ToolRegistry {
             "products",
             { stock_filter: "low", threshold: 10, limit: 10 },
           ],
-          ["search_customers", "customers", { inactive_days: 60, limit: 10 }],
+          ["get_customer_sales", "sales", { period: "last_12_months", inactive_days: 60, limit: 10 }],
+          ["get_sales_summary", "finance", { ...reportArgs, focus: undefined }],
+          ["get_accounts_receivable", "finance", { state: "pending", limit: 10 }],
+          ["get_accounts_payable", "finance", { state: "pending", limit: 10 }],
+          ["get_customer_sales", "sales", { ...reportArgs, focus: undefined, limit: 10 }],
+          ["get_top_products", "sales", { ...reportArgs, focus: undefined, limit: 10, detail_level: "summary" }],
           ["get_financial_summary", "finance", {}],
           ["get_imports", "foreign_trade", { state: "upcoming", limit: 10 }],
           ["get_campaigns", "campaigns", { limit: 10 }],
           [
             "get_content",
             "content",
-            { view: "pending", period: "all", limit: 10 },
+            { view: "scheduled", period: "calendar_week", limit: 10 },
           ],
           ["get_agent_activity", "agents", { limit: 7 }],
         ];
         const sections: ReadResult[] = [];
-        for (const [name, domain, args] of plan)
-          if (canReadDomain(this.source.actor.role, domain))
-            sections.push(await this.execute(name, args));
+        const permitted = plan.filter(([,domain])=>canReadDomain(this.source.actor.role,domain)
+          && (reportArgs.focus !== "financial" || domain === "finance"));
+        for (let i=0;i<permitted.length;i+=3) {
+          const batch = permitted.slice(i,i+3).map(async ([name,,args]) => {
+            const clean = Object.fromEntries(Object.entries(args).filter(([key,value])=>key!=="focus" && value!==undefined));
+            return this.execute(name,clean);
+          });
+          sections.push(...await Promise.all(batch));
+        }
         return readResult(
           "generate_business_report",
           "customers",
@@ -605,20 +632,35 @@ export class ToolRegistry {
     this.add(
       "get_product_profitability",
       "finance",
-      "Precio, costo unitario, margen bruto sobre venta, recargo sobre costo y simulacion de descuentos para cualquier SKU o producto. Lee costo directamente de Facto, no de snapshots antiguos. No autoriza descuentos. Moneda faltante se marca condicional; limites no incluyen gastos no registrados. minimum_margin_percent es un objetivo solicitado, nunca una politica inventada.",
-      { ...paging, list_id: string, discount_percent: { type: ["number", "null"], minimum: 0, maximum: 100 }, minimum_margin_percent: { type: ["number", "null"], minimum: 0, maximum: 99.999999 } },
+      "Precio, costo unitario y margen sobre venta. Para mejores margenes usa sort_by=margin_desc y limit=10; menor margen margin_asc. Paginas de hasta 25. Moneda faltante se marca condicional; no equivale a rentabilidad realizada. Descuentos solo simulados. minimum_margin_percent es objetivo solicitado, nunca politica inventada.",
+      { ...paging, list_id: string, sort_by: choice("name", "margin_desc", "margin_asc"), discount_percent: { type: ["number", "null"], minimum: 0, maximum: 100 }, minimum_margin_percent: { type: ["number", "null"], minimum: 0, maximum: 99.999999 } },
       async (args) => {
         const details = await this.source.records("product_details");
         const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
         const entity = await this.source.entity();
         const settings = await this.source.select(`accounting_entities?select=confirmations:settings->copilot_cost_currency_confirmations&id=eq.${entity}`);
         const computed = productProfitability(details, catalog, args, factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined), object(settings[0]?.confirmations));
+        if (args.sort_by === "margin_desc" || args.sort_by === "margin_asc") computed.records.sort((a,b) => {
+          if (a.gross_margin_percent == null) return b.gross_margin_percent == null ? 0 : 1;
+          if (b.gross_margin_percent == null) return -1;
+          return (Number(a.gross_margin_percent) - Number(b.gross_margin_percent)) * (args.sort_by === "margin_desc" ? -1 : 1);
+        });
         if (!args.list_id && computed.availableLists.length > 1) return readResult("get_product_profitability", "finance", "Hay varias listas de precios. Indica la lista para calcular un margen comparable.", { available_lists: computed.availableLists }, [], { status: "needs_clarification" });
-        const result = tableResult("get_product_profitability", "finance", "Precio, costo y margen unitario", computed.records, columns("sku:SKU", "name:Producto", "net_price:Precio neto", "recorded_unit_cost:Costo registrado", "currency:Moneda precio", "cost_currency:Moneda costo", "unit_gross_profit:Diferencia bruta", "gross_margin_percent:Margen sobre venta %", "recorded_cost_floor:Piso por costo registrado", "net_price_for_requested_margin:Precio para margen solicitado", "calculation_status:Validacion"), "/agentes/logistics/dashboard", args, ["Calculo unitario sobre precio neto y costo registrado. No garantiza utilidad final: no incluye comisiones, flete, gastos operativos u otros costos no registrados.", "El piso por costo registrado no es un precio comercial autorizado. No existe un tope de descuento autorizado en esta consulta. Los escenarios son simulaciones, no recomendaciones ni cambios de precios.", "Si falta moneda del costo, los numeros son condicionales a que coincida con la del precio. Monedas distintas no se convierten sin tipo de cambio verificado. Costo cero o ausente no acredita un producto gratuito."]);
+        const result = tableResult("get_product_profitability", "finance", "Precio, costo y margen unitario", computed.records, columns("sku:SKU", "name:Producto", "net_price:Precio neto", "recorded_unit_cost:Costo registrado", "currency:Moneda precio", "cost_currency:Moneda costo", "unit_gross_profit:Diferencia bruta", "gross_margin_percent:Margen sobre venta %", "recorded_cost_floor:Piso por costo registrado", "net_price_for_requested_margin:Precio para margen solicitado", "calculation_status:Validacion"), "/agentes/logistics/dashboard", {...args,limit:Math.min(Number(args.limit || 25),25)}, ["Calculo unitario sobre precio neto y costo registrado. No garantiza utilidad final: no incluye comisiones, flete, gastos operativos u otros costos no registrados.", "El piso por costo registrado no es un precio comercial autorizado. No existe un tope de descuento autorizado en esta consulta. Los escenarios son simulaciones, no recomendaciones ni cambios de precios.", "Si falta moneda del costo, los numeros son condicionales a que coincida con la del precio. Monedas distintas no se convierten sin tipo de cambio verificado. Costo cero o ausente no acredita un producto gratuito."]);
         if (computed.records.some((r) => r.calculation_status === "conditional_currency" || r.calculation_status === "unavailable")) { result.status = "partial"; result.coverage.complete = false; }
         return result;
       },
     );
+    this.add("get_customer_profile", "customers", "Ficha de una empresa identificada por ID: contactos comerciales, actividad e interacciones registradas. No envia mensajes. Para facturacion/deuda consultar las herramientas de ventas/cobranza con su RUT, segun permisos.",
+      { company_id: string }, async (args) => {
+        const id = String(args.company_id || "");
+        if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(id)) throw new CopilotDataError("Selecciona una empresa identificada en search_customers.", "INVALID_ARGUMENTS");
+        const company = await this.source.select(`companies?select=id,name,legal_name,rut,type,priority,city,region,description,status,updated_at&id=eq.${id}&limit=1`);
+        if (!company.length) return readResult("get_customer_profile", "customers", "Empresa no encontrada.", null, [], {status:"empty"});
+        const contacts = await this.source.all(`contacts?select=id,full_name,role,email,phone,whatsapp,is_primary,updated_at&company_id=eq.${id}&order=is_primary.desc,id.asc`,500);
+        const interactions = await this.source.select(`interactions?select=id,type,description,result,next_action,occurred_at&company_id=eq.${id}&order=occurred_at.desc,id.desc&limit=20`);
+        return readResult("get_customer_profile", "customers", "Ficha y ultimas 20 interacciones registradas", {company:company[0],contacts,interactions}, [{label:"Empresa",path:"/empresas",entityType:"company"}], {warnings:["Historial de interacciones limitado a las ultimas 20. Los datos de contacto no acreditan consentimiento para envios."]});
+      });
     this.add(
       "search_customers",
       "customers",
@@ -719,7 +761,7 @@ export class ToolRegistry {
       {},
       async () => {
         const data = await this.source.api("accounting-center", "summary");
-        const summary = object(data.summary),
+        const summary = pick(object(data.summary), ["as_of","bank_clp","bank_usd_clp","payables","receivables","checks_portfolio","open_controls","unmatched_bank","pending_entries","payables_overdue","receivables_overdue","payment_events_pending","bank_balance_basis","receivables_data_quality","receivables_suppressed","provisional"]),
           dashboard = object(data.dashboard);
         const warnings = Array.isArray(dashboard.warnings)
           ? dashboard.warnings.map(String)
@@ -745,12 +787,15 @@ export class ToolRegistry {
           "get_financial_summary",
           "finance",
           "Posicion financiera actual y resultado contable del ejercicio.",
-          { ...data, summary, dashboard },
+          { entity: data.entity, summary, dashboard, factoFreshness: data.factoFreshness,
+            bankReality: { ...pick(object(data.bankReality), ["asOf","basis","availableClp","availableUsdClp","ledgerClp","varianceClp"]),
+              accounts: rows(object(data.bankReality).accounts).map(a=>pick(a,["institution","accountName","currency","exchangeRate","balanceWarning","ledgerBalanceClp","statementBalance","statementBalanceClp","statementDate","verifiedBalance","verifiedBalanceClp","verifiedAt","basis","differenceClp"])) },
+            basis_notes: "Se usan saldos operativos vigentes y saldos bancarios verificados. Los antiguos totales confirmed de control no representan la cartera vigente y se excluyen. Los montos no se suman entre bases distintas." },
           [
             {
               label: "Dashboard financiero",
               entityType: "finance",
-              path: "/finanzas-contabilidad?view=dashboard",
+              path: "/dashboard",
               observedAt:
                 String(
                   object(data.factoFreshness).integrationUpdatedAt || "",
@@ -761,6 +806,22 @@ export class ToolRegistry {
         );
       },
     );
+    this.add("get_loans", "finance", "Prestamos registrados, vencimientos y capital recibido/devuelto con asientos vigentes. No confundir principal pactado con ingreso, aporte de capital o utilidad. No registra movimientos.",
+      {...paging}, async args => {
+        const entity = await this.source.entity();
+        const data = await this.source.api("accounting-center",`loans?entityId=${entity}`);
+        const records = rows(data.loans).filter(l=>matches(args.query,l.lender_name,l.invoice_reference,l.purpose)).map(l=>{
+          const allMovements = rows(l.accounting_loan_movements);
+          const movements = allMovements.filter(m=>object(m.accounting_journal_entries).status === "posted");
+          const received = numeric(decimalSum(movements.filter(m=>m.kind==="received").map(m=>m.amount_clp)));
+          const repaid = numeric(decimalSum(movements.filter(m=>m.kind==="repayment").map(m=>m.amount_clp)));
+          const review = movements.length !== allMovements.length || received === null || repaid === null;
+          return {...pick(l,["id","lender_name","principal_clp","received_on","due_on","interest_terms","terms_notes","purpose","invoice_reference","updated_at"]),received_clp:received,repaid_clp:repaid,outstanding_principal_clp:review ? null : Number(decimalSum([received, -repaid])),status:review ? "review" : !movements.length ? "draft" : received === repaid ? "paid" : "open"};
+        });
+        const result = tableResult("get_loans","finance","Prestamos y capital pendiente",records,columns("lender_name:Prestamista","principal_clp:Principal pactado CLP","received_clp:Recibido CLP","repaid_clp:Devuelto CLP","outstanding_principal_clp:Capital pendiente CLP","due_on:Vencimiento","status:Estado"),"/finanzas-contabilidad?view=loans",args,["Capital de prestamos separado del resultado operativo. Intereses no calculados sin condiciones y registro verificables. Si existen movimientos reversados o importes desconocidos, el saldo queda por revisar como en el modulo de prestamos."]);
+        if (records.some(r=>r.status === "review")) result.status = "partial";
+        return result;
+      });
     this.add(
       "get_accounting_report",
       "finance",
@@ -800,14 +861,14 @@ export class ToolRegistry {
       "get_accounts_receivable",
       "finance",
       "Cartera de cobro y documentos impagos. Separa saldo informado por Facto de saldo conciliado, pagos parciales y vencimiento desconocido. Consulta completa paginada.",
-      { ...paging, state: choice("pending", "overdue", "all") },
+      { ...paging, state: choice("pending", "overdue", "all"), due_from: string, due_to: string },
       (args) => this.obligations(args, false),
     );
     this.add(
       "get_accounts_payable",
       "finance",
       "Obligaciones a proveedores y pagos pendientes, por nombre o RUT.",
-      { ...paging, state: choice("pending", "overdue", "all") },
+      { ...paging, state: choice("pending", "overdue", "all"), due_from: string, due_to: string },
       (args) => this.obligations(args, true),
     );
     this.add(
@@ -1065,7 +1126,7 @@ export class ToolRegistry {
     this.add(
       "get_content",
       "content",
-      "Publicaciones reales Instagram/Facebook. view published, pending o scheduled; calendario por Chile. Esta semana es lunes a hoy, no ultimos 7 dias. all no limita fecha.",
+      "Publicaciones reales Instagram/Facebook. view published, pending o scheduled; para que publicaremos esta semana usa calendar_week (lunes a domingo). all incluye programacion futura. No envia ni publica.",
       {
         ...paging,
         ...period,
@@ -1074,6 +1135,7 @@ export class ToolRegistry {
       },
       async (args) => {
         const range = dateRange({ ...args, period: args.period || "all" });
+        if (!args.period || args.period === "all") range.to = "9999-12-31";
         const publications = await this.publications(args.channel);
         const filtered = publications
           .filter((p) =>
@@ -1375,6 +1437,7 @@ export class ToolRegistry {
       `${table}?select=*&entity_id=eq.${entity}&order=id.asc`,
     );
     const current = todayChile();
+    const dueRange = args.due_from || args.due_to ? dateRange({period:"custom",from:args.due_from || "2000-01-01",to:args.due_to || "9999-12-31"}) : null;
     const records = data
       .map((d) => ({
         id: d.id,
@@ -1400,7 +1463,7 @@ export class ToolRegistry {
       .filter(
         (d) =>
           args.state !== "overdue" || (d.due_on && String(d.due_on) < current),
-      );
+      ).filter(d=>!dueRange || (d.due_on && String(d.due_on)>=dueRange.from && String(d.due_on)<=dueRange.to));
     const result = tableResult(
       name,
       "finance",

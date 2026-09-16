@@ -1,4 +1,8 @@
 import { getSupabaseFunctionUrl, supabase } from "./supabase";
+export type CopilotComponent =
+  | { type: "kpi"; title: string; value: number | null; unit: string; classification: "fact" | "calculation" | "estimate" }
+  | { type: "chart"; chartType: "line" | "bar"; title: string; labels: string[]; series: Array<{ name: string; values: Array<number | null> }>; unit: string; classification: "fact" | "calculation" | "estimate" };
+export interface CopilotTimings { modelMs: number; databaseMs: number; serviceMs: number; totalMs: number; requests: number; cacheHits: number }
 
 export interface CopilotReadResult {
   toolName: string;
@@ -28,12 +32,13 @@ export interface CopilotReadResult {
     rows: Record<string, unknown>[];
   };
   continuation?: { toolName: string; args: Record<string, unknown> };
+  components?: CopilotComponent[];
 }
 export interface CentralMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  metadata?: { results?: CopilotReadResult[]; traceId?: string; inReplyTo?: string };
+  metadata?: { results?: CopilotReadResult[]; traceId?: string; inReplyTo?: string; timings?: CopilotTimings };
   created_at?: string;
 }
 export interface CentralConversation {
@@ -53,6 +58,7 @@ export interface CentralEvent {
   results?: CopilotReadResult[];
   error?: string;
   traceId?: string;
+  timings?: CopilotTimings;
 }
 export class CopilotConnectionError extends Error {
   constructor(public requestStarted: boolean) {

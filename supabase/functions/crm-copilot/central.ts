@@ -9,6 +9,8 @@ import {
 import { CopilotSources } from "./sources.ts";
 import { ToolRegistry } from "./tool-registry.ts";
 import { centralPromptVersion, runOrchestrator } from "./orchestrator.ts";
+import { copilotConfig } from "./config.ts";
+import { redactSecrets, safeData, sessionExpires } from "./safety.ts";
 
 const uuid = (value: unknown) =>
   /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(
@@ -26,11 +28,12 @@ export async function centralHandler(
   traceId: string,
   cors: Record<string, string>,
 ): Promise<Response> {
+  const settings = copilotConfig(name => typeof Deno !== "undefined" ? Deno.env.get(name) : undefined);
   const url = new URL(req.url),
     route = url.pathname.split("/").at(-1),
-    source = new CopilotSources(config, actor, req.signal);
+    source = new CopilotSources(config, actor, req.signal, fetch, settings.sourceTimeoutMs);
   const json = (data: unknown, status = 200) =>
-    new Response(JSON.stringify(data), {
+    new Response(JSON.stringify(safeData(data)), {
       status,
       headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
@@ -44,7 +47,7 @@ export async function centralHandler(
   async function conversation(id: string) {
     if (!uuid(id)) throw new CopilotDataError("Conversacion invalida.");
     const result = await source.select(
-      `copilot_conversations?select=id,title,metadata&user_id=eq.${actor.id}&id=eq.${id}&limit=1`,
+      `copilot_conversations?select=id,title,metadata,created_at&user_id=eq.${actor.id}&id=eq.${id}&limit=1`,
     );
     if (
       !result.length ||
@@ -110,29 +113,31 @@ export async function centralHandler(
       { error: "Escribe una consulta de hasta 6000 caracteres." },
       400,
     );
-  const apiKey = Deno.env.get("OPENAI_API_KEY") || "";
+  const apiKey = settings.apiKey;
   if (!apiKey)
     return json({ error: "Falta configurar OpenAI en el servidor." }, 503);
   try { await source.select("copilot_messages?select=metadata&limit=0"); }
   catch { return json({ error: "No se pudo validar el respaldo del Copiloto. Revisa la migracion copilot_central.sql y la conexion del servidor." }, 503); }
   let current: Row;
-  if (payload.conversationId)
+  if (payload.conversationId) {
     current = await conversation(String(payload.conversationId));
-  else
+    if (Date.parse(sessionExpires(object(current.metadata), current.created_at, settings.sessionDays)) <= Date.now())
+      return json({ error: "Esta sesion termino su periodo de contexto. Conservas el historial; inicia una nueva conversacion." }, 409);
+  } else
     current = rows(
       await source.request("rest/v1/copilot_conversations", {
         method: "POST",
         headers: { Prefer: "return=representation" },
         body: JSON.stringify({
           user_id: actor.id,
-          title: message.slice(0, 90),
-          metadata: { engine: "central", role: actor.role },
+          title: redactSecrets(message).slice(0, 90),
+          metadata: { engine: "central", role: actor.role, expiresAt: new Date(Date.now() + settings.sessionDays * 86400000).toISOString(), contextVersion: 1 },
         }),
       }),
     )[0];
   const id = String(current.id);
   const history = await source.select(
-    `copilot_messages?select=role,content&user_id=eq.${actor.id}&conversation_id=eq.${id}&role=in.(user,assistant)&order=created_at.desc,id.desc&limit=16`,
+    `copilot_messages?select=role,content&user_id=eq.${actor.id}&conversation_id=eq.${id}&role=in.(user,assistant)&order=created_at.desc,id.desc&limit=${settings.historyMessages}`,
   );
   const userMessage = rows(
     await source.request("rest/v1/copilot_messages", {
@@ -142,7 +147,7 @@ export async function centralHandler(
         conversation_id: id,
         user_id: actor.id,
         role: "user",
-        content: message,
+        content: redactSecrets(message),
         prompt_version: centralPromptVersion,
       }),
     }),
@@ -150,19 +155,17 @@ export async function centralHandler(
   const controller = new AbortController();
   const abort = () => controller.abort();
   req.signal.addEventListener("abort", abort, { once: true });
-  const timeout = setTimeout(abort, 150000);
+  const timeout = setTimeout(abort, settings.timeoutMs);
   async function run(emit: (event: Row) => void) {
     emit({ type: "conversation", conversationId: id, userMessageId: userMessage.id });
     const start = Date.now();
+    const readSource = new CopilotSources(config, actor, controller.signal, fetch, settings.sourceTimeoutMs);
     try {
       const output = await runOrchestrator({
-        registry: new ToolRegistry(
-          new CopilotSources(config, actor, controller.signal),
-        ),
-        model:
-          Deno.env.get("OPENAI_COPILOT_MODEL") ||
-          Deno.env.get("OPENAI_TEXT_MODEL") ||
-          "gpt-4.1-mini",
+        registry: new ToolRegistry(readSource),
+        model: settings.model,
+        reasoningEffort: settings.reasoningEffort,
+        maxOutputTokens: settings.maxOutputTokens,
         apiKey,
         message,
         history: history.reverse(),
@@ -212,6 +215,7 @@ export async function centralHandler(
         inReplyTo: userMessage.id,
         traceId,
         role: actor.role,
+        timings: { ...readSource.metrics, modelMs: output.modelMs, totalMs: Date.now() - start },
         results: output.results,
         tools: output.traces.map((t) => ({
           name: t.toolName,
@@ -227,13 +231,13 @@ export async function centralHandler(
             conversation_id: id,
             user_id: actor.id,
             role: "assistant",
-            content: output.message,
+            content: redactSecrets(output.message),
             model: output.model,
             prompt_version: centralPromptVersion,
             tokens_input: output.tokensInput,
             tokens_output: output.tokensOutput,
             latency_ms: Date.now() - start,
-            metadata,
+            metadata: safeData(metadata),
           }),
         }),
       )[0];
@@ -263,15 +267,16 @@ export async function centralHandler(
           latency_ms: Date.now() - start,
           tokens_input: output.tokensInput,
           tokens_output: output.tokensOutput,
-          metadata_redacted: { tools: output.traces.length },
+          metadata_redacted: { tools: output.traces.length, timings: metadata.timings, questionMessageId: userMessage.id },
         }),
       });
       const response = {
         conversationId: id,
         messageId: stored.id,
-        message: output.message,
+        message: redactSecrets(output.message),
         model: output.model,
         traceId,
+        timings: metadata.timings,
         results: output.results,
         tools: output.traces.map((t) => ({
           ok: ["ok", "empty", "partial"].includes(t.status),
@@ -284,6 +289,15 @@ export async function centralHandler(
       };
       emit({ type: "complete", ...response });
       return response;
+    } catch (error) {
+      await source.request("rest/v1/copilot_audit_events", {
+        method: "POST", headers: { Prefer: "return=representation" },
+        body: JSON.stringify({ user_id: actor.id, conversation_id: id, request_id: traceId, trace_id: traceId,
+          event_type: "central_read_error", model: settings.model, prompt_version: centralPromptVersion,
+          permission_decision: "role_scoped_read", result: "error", risk_level: "read", affected_count: 0,
+          latency_ms: Date.now() - start, metadata_redacted: { questionMessageId: userMessage.id, code: error instanceof CopilotDataError ? error.code : controller.signal.aborted ? "ABORTED" : "TURN_FAILED", timings: readSource.metrics } }),
+      }).catch(() => console.error("[copilot-central] audit unavailable", { traceId }));
+      throw error;
     } finally {
       clearTimeout(timeout);
       req.signal.removeEventListener("abort", abort);

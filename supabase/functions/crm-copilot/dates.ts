@@ -19,13 +19,17 @@ export function dateRange(
   const [year, month, day] = today.split("-").map(Number);
   let from = today,
     to = today;
-  const period = String(args.period || "this_month");
+  const period = args.from != null || args.to != null ? "custom" : String(args.period || "this_month");
   if (period === "this_month") from = `${today.slice(0, 7)}-01`;
   else if (period === "last_month") {
     from = iso(new Date(Date.UTC(year, month - 2, 1)));
     to = iso(new Date(Date.UTC(year, month - 1, 0)));
   } else if (period === "this_year") from = `${year}-01-01`;
-  else if (period === "this_week" || period === "last_week") {
+  else if (period === "last_year") { from = `${year - 1}-01-01`; to = `${year - 1}-12-31`; }
+  else if (period === "yesterday") from = to = iso(new Date(Date.UTC(year, month - 1, day - 1)));
+  else if (period === "last_30_days") from = iso(new Date(Date.UTC(year, month - 1, day - 29)));
+  else if (period === "last_12_months") from = iso(new Date(Date.UTC(year, month - 12, 1)));
+  else if (period === "this_week" || period === "last_week" || period === "calendar_week") {
     const date = new Date(Date.UTC(year, month - 1, day));
     const mondayOffset = (date.getUTCDay() + 6) % 7;
     from = iso(
@@ -39,6 +43,7 @@ export function dateRange(
     );
     if (period === "last_week")
       to = iso(new Date(Date.UTC(year, month - 1, day - mondayOffset - 1)));
+    if (period === "calendar_week") to = iso(new Date(Date.UTC(year, month - 1, day - mondayOffset + 6)));
   } else if (period === "custom") {
     from = String(args.from || "");
     to = String(args.to || "");

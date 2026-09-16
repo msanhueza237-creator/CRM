@@ -12,6 +12,8 @@
     "test:foreign-trade": "node --experimental-strip-types scripts/test-foreign-trade-center.mjs",
     "test:accounting": "node --experimental-strip-types scripts/test-accounting-center.mjs",
     "test:copilot": "node --experimental-transform-types --test scripts/test-copilot.mjs",
+    "test:copilot:enterprise": "node --experimental-transform-types --test scripts/test-copilot-enterprise.mjs",
+    "typecheck:copilot": "node scripts/typecheck-copilot.mjs",
     "test:facto-connector": "node --experimental-transform-types --test services/facto-connector/tests/*.test.ts",
     "typecheck:facto-connector": "tsc -p services/facto-connector/tsconfig.json",
     "facto:receivables:once": "node --experimental-transform-types services/facto-connector/src/worker.ts",
@@ -24,6 +26,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
+    "chart.js": "^4.5.1",
     "decimal.js": "^10.6.0",
     "exceljs": "^4.4.0",
     "jspdf": "^4.2.1",

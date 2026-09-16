@@ -15,6 +15,10 @@ import {
   History,
   Loader2,
   MessageSquare,
+  Mic,
+  MicOff,
+  Volume2,
+  VolumeX,
   Plus,
   Search,
   ShieldCheck,
@@ -37,8 +41,16 @@ import { exportCentralMessage, exportCustomerPriceList } from "../../lib/copilot
 import { useAuth } from "../auth/AuthContext";
 import { CopilotPage as LegacyCopilotPage } from "./CopilotPage";
 import "./central-copilot.css";
+import { BusinessVisuals } from "./BusinessVisuals";
+import { useCopilotVoice } from "./useCopilotVoice";
 
 const labels: Record<string, string> = {
+  get_sales_summary: "Ventas y resultado",
+  compare_sales_periods: "Comparacion de periodos",
+  get_customer_sales: "Facturacion por cliente",
+  get_customer_profile: "Ficha de empresa",
+  get_loans: "Prestamos",
+  get_product_profitability: "Margen por producto",
   search_prospects: "Prospeccion",
   get_prospecting_report: "Campañas y búsquedas de prospectos",
   get_bank_movements: "Bancos y conciliacion",
@@ -93,7 +105,7 @@ export function CentralCopilotPage() {
       <LegacyCopilotPage />
     </>
   ) : (
-    <CentralConversationPage />
+    <CentralConversationPage key={`${user?.id}:${user?.role}`} />
   );
 }
 function CentralConversationPage() {
@@ -114,6 +126,7 @@ function CentralConversationPage() {
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [error, setError] = useState("");
+  const voice = useCopilotVoice(setDraft, setError);
   const [progress, setProgress] = useState<
     Array<{ id: string; name: string; status: string }>
   >([]);
@@ -136,6 +149,7 @@ function CentralConversationPage() {
   }, [messages.length, progress.length]);
   async function selectConversation(id: string, offset = 0) {
     if (busy) return;
+    voice.stop();
     historyAbort.current?.abort();
     const controller = new AbortController();
     historyAbort.current = controller;
@@ -164,6 +178,7 @@ function CentralConversationPage() {
     }
   }
   function newConversation() {
+    voice.stop();
     if (busy) return;
     historyAbort.current?.abort();
     selected.current = undefined;
@@ -180,6 +195,7 @@ function CentralConversationPage() {
     event?.preventDefault();
     const text = (prompt || draft).trim();
     if (!text || busy || historyBusy) return;
+    voice.stop();
     const controller = new AbortController();
     const localId = crypto.randomUUID();
     let acceptedConversation: string | undefined, acceptedMessage: string | undefined;
@@ -222,7 +238,7 @@ function CentralConversationPage() {
                 id: event.messageId || crypto.randomUUID(),
                 role: "assistant",
                 content: event.message || "",
-                metadata: { results: event.results, traceId: event.traceId },
+                metadata: { results: event.results, traceId: event.traceId, timings: event.timings },
               },
             ]);
         },
@@ -258,12 +274,13 @@ function CentralConversationPage() {
   }
   const finance = user?.role === "administrador" || user?.role === "finanzas";
   const starters = [
-    "Genera la lista de precios Excel de TODO el catalogo con stock disponible, sin filtros de productos anteriores. Incluye SKU, nombre, precio neto y stock.",
-    "Que productos tienen menos de 10 unidades?",
-    "Que clientes llevan mas de 60 dias sin comprar?",
     ...(finance
-      ? ["Dame un informe completo del negocio."]
-      : ["Que publicamos esta semana en Instagram?"]),
+      ? ["Como va el negocio hoy?", "Muestrame las ventas del mes.", "Compara este mes con el anterior.", "Cuanto tenemos pendiente por cobrar?", "Cuales son nuestros mejores clientes?", "Que clientes dejaron de comprar?"]
+      : []),
+    "Que productos tienen stock critico?",
+    ...(finance ? ["Que productos tienen mejor margen?", "Genera el informe ejecutivo del mes."] : []),
+    ...(user?.role === "administrador" ? ["Que mercaderia viene en camino?", "Como va la proxima importacion?"] : []),
+    ...(user?.role !== "finanzas" ? ["Que tenemos programado en el centro de contenido?"] : []),
   ];
   return (
     <section className="central-copilot" aria-label="Copiloto central">
@@ -401,6 +418,7 @@ function CentralConversationPage() {
                   if (result.continuation) void send(undefined, `Continua la consulta de ${labels[result.toolName] || result.toolName}. Usa estos filtros de la pagina anterior: ${JSON.stringify(result.continuation)}`);
                 }}
                 busy={busy || historyBusy}
+                onSpeak={voice.speak}
               />
             ))}
             {busy && (
@@ -466,8 +484,11 @@ function CentralConversationPage() {
               />
               <div>
                 <span>
-                  {draft.length ? `${draft.length} / 6000` : "CLIMACTIVA"}
+                  {voice.listening ? "Escuchando..." : draft.length ? `${draft.length} / 6000` : "CLIMACTIVA"}
                 </span>
+                <div className="cc-voice-controls">
+                  <button type="button" className="cc-icon" disabled={busy || historyBusy || !voice.canListen} aria-pressed={voice.listening} title={voice.canListen ? "Dictar con el servicio de voz del navegador" : "Dictado no disponible en este navegador"} aria-label={voice.listening ? "Detener dictado" : "Dictar consulta"} onClick={voice.listening ? voice.stop : voice.listen}>{voice.listening ? <MicOff size={20} /> : <Mic size={20} />}</button>
+                  {voice.speaking && <button type="button" className="cc-icon" title="Detener audio" aria-label="Detener audio" onClick={voice.stop}><VolumeX size={20} /></button>}
                 {busy ? (
                   <button
                     type="button"
@@ -489,6 +510,7 @@ function CentralConversationPage() {
                     <ArrowUp size={20} />
                   </button>
                 )}
+                </div>
               </div>
             </form>
           </div>
@@ -503,12 +525,14 @@ function ConversationMessage({
   onError,
   onContinue,
   busy,
+  onSpeak,
 }: {
   message: CentralMessage;
   conversationId?: string;
   onError: (error: string) => void;
   onContinue: (result: CopilotReadResult) => void;
   busy: boolean;
+  onSpeak: (text: string) => void;
 }) {
   const [exporting, setExporting] = useState<string>();
   const results = flattenResults(message.metadata?.results || []);
@@ -540,6 +564,7 @@ function ConversationMessage({
         ) : (
           <>
             <Bot size={17} /> Copiloto
+            <button className="cc-icon" title="Escuchar respuesta" aria-label="Escuchar respuesta" onClick={() => onSpeak(message.content)}><Volume2 size={17} /></button>
           </>
         )}
       </div>
@@ -613,6 +638,10 @@ function ConversationMessage({
                 </small>
               </footer>
             )}
+            {message.metadata?.timings && <details className="cc-technical"><summary>Detalle tecnico</summary><dl>
+              {Object.entries({ "Respuesta total": message.metadata.timings.totalMs, "Modelo": message.metadata.timings.modelMs, "Lecturas de datos (acumulado)": message.metadata.timings.databaseMs, "Servicios (acumulado)": message.metadata.timings.serviceMs }).map(([label,ms]) => <div key={label}><dt>{label}</dt><dd>{(ms / 1000).toFixed(1)} s</dd></div>)}
+              <div><dt>Lecturas reutilizadas</dt><dd>{message.metadata.timings.cacheHits}</dd></div>
+            </dl></details>}
           </>
         )}
       </div>
@@ -641,6 +670,7 @@ function SourceResult({ result, onContinue, busy }: { result: CopilotReadResult;
           {statuses[result.status] || result.status}
         </span>
       </div>
+      {!!result.components?.length && <BusinessVisuals components={result.components} />}
       {!!kpis.length && (
         <dl className="cc-kpis">
           {kpis.map(([label, amount]) => (
