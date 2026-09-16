@@ -21,7 +21,7 @@ export function DashboardDetailView({ data }: { data: AccountingBootstrap }) {
   const change = (key: string, value: string) => { const next = new URLSearchParams(params); next.set(key, value); setParams(next); };
   const countOnly = metric === "cost-missing" || metric === "cost-confirmed";
   const creditCost = metric === "credit-cost-review";
-  const amountLabel = creditCost ? "Reversa registrada CLP" : countOnly ? "Venta neta CLP" : "Importe CLP";
+  const amountLabel = creditCost ? "Reversa CLP" : countOnly ? "Venta neta CLP" : "Importe CLP";
   return <section className="accounting-dashboard-detail">
     <Link className="overview-chart-link" to={`/dashboard?period=${from.slice(0, 7) === to.slice(0, 7) ? from.slice(0, 7) : "year"}`}><ArrowLeft size={17} /> Volver al dashboard</Link>
     <div className="accounting-panel-heading"><div><p>Detalle del indicador · CLP</p><h2>{valid ? dashboardMetrics[metric] : "Indicador no disponible"}</h2><span>{from} al {to}</span></div><strong>{rows ? `${filtered.length} de ${rows.length}` : "No disponible"}</strong></div>
