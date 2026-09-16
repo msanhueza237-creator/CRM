@@ -1,8 +1,8 @@
 import type { AccountingDashboardAnalytics } from "../../types/accounting";
 
 export const dashboardMetrics = {
-  "sales-pending": "Ventas sin asiento de ingreso",
-  "cost-missing": "Ventas sin costo confirmado",
+  "sales-pending": "Documentos con asiento pendiente en CRM",
+  "cost-missing": "Ventas con costo pendiente en CRM",
   "cost-confirmed": "Ventas con costo confirmado",
   "sales-issued": "Ventas emitidas",
   "sales-issued-credit": "Notas de credito emitidas",
@@ -46,7 +46,7 @@ export function dashboardDetailRows(analytics: AccountingDashboardAnalytics, met
   const documentRow = (row: typeof detail.sales[number], recognized = false): DetailRow => ({
     key: `source:${row.id}`, sourceId: row.id, date: recognized ? row.recognizedOn : row.issuedOn, issuedOn: row.issuedOn,
     label: `${row.creditNote ? "Nota de credito" : "Documento"} ${row.folio}`, counterpart: row.counterpart,
-    status: row.posted ? "Contabilizado" : "Sin asiento de ingreso", amount: row.netClp,
+    status: row.posted ? "Contabilizado en CRM" : "Asiento pendiente en CRM", amount: row.netClp,
   });
   const ledger = (types: string[]) => detail.ledger.filter(row => inPeriod(row.date) && types.includes(row.accountType)).map(row => ({
     key: `line:${row.id}`, sourceId: row.sourceId || undefined, date: row.date, issuedOn: row.issuedOn || undefined,
@@ -55,7 +55,7 @@ export function dashboardDetailRows(analytics: AccountingDashboardAnalytics, met
   }));
   const pending = issued.filter(row => !row.posted).map(row => documentRow(row));
   if (metric === "sales-pending") return pending;
-  if (metric === "cost-missing" || metric === "cost-confirmed") return issued.filter(row => !row.creditNote && row.exactCost === (metric === "cost-confirmed")).map(row => ({ ...documentRow(row), status: row.exactCost ? "Costo confirmado" : "Costo pendiente" }));
+  if (metric === "cost-missing" || metric === "cost-confirmed") return issued.filter(row => !row.creditNote && row.exactCost === (metric === "cost-confirmed")).map(row => ({ ...documentRow(row), status: row.exactCost ? "Costo confirmado en CRM" : "Costo pendiente en CRM" }));
   if (metric === "sales-issued") return issued.filter(row => !row.creditNote).map(row => documentRow(row));
   if (metric === "sales-issued-credit") return issued.filter(row => row.creditNote).map(row => documentRow(row));
   if (metric === "sales-period-net") return issued.map(row => documentRow(row));

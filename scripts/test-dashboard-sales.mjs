@@ -5,6 +5,7 @@ import ts from "typescript";
 import { accountingToday, dashboardDocumentSales, dashboardSalesEvidence, dashboardSalesPeriodBridge } from "../supabase/functions/accounting-center/dashboard-sales.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "../supabase/functions/accounting-center/dashboard-purchases.ts";
 import { isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
+import { confirmedCostSourceIds } from "../supabase/functions/accounting-center/facto-cost-evidence.ts";
 import { dashboardDetailRows } from "../src/modules/accounting/dashboardNavigation.ts";
 
 // Exercise the actual edge calculation with read-only REST fixtures, without starting Deno.
@@ -12,13 +13,14 @@ const source = await readFile(new URL("../supabase/functions/accounting-center/i
 const calculation = source.slice(source.indexOf("type DashboardResultTotals ="), source.indexOf("async function createAccount("));
 assert.ok(calculation.includes("async function buildDashboardAnalytics("));
 const javascript = ts.transpileModule(calculation, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-const accounts = [{ id: "income", account_type: "income" }, { id: "cost", account_type: "cost" }, { id: "expense", account_type: "expense" }, { id: "result", account_type: "result" }];
+const accounts = [{ id: "income", account_type: "income" }, { id: "cost", account_type: "cost", classification: "cost_of_sales" }, { id: "inventory", account_type: "asset", classification: "inventory" }, { id: "expense", account_type: "expense" }, { id: "result", account_type: "result" }];
 const doc = (id, net = 149421, date = "2026-09-08", extra = {}) => ({ id, folio: id, issued_on: date,
   currency: "CLP", net_amount: net, exempt_amount: 0, tax_amount: Math.round(net * .19), total_clp: Math.round(net * 1.19),
   document_type: "sales_invoice", status: "validated", data_quality: "validated", ...extra });
 const line = (id, amount, date = "2026-09-08", account = "income", status = "posted") => ({ account_id: account,
   debit_clp: account === "income" ? 0 : amount, credit_clp: account === "income" ? amount : 0,
-  accounting_journal_entries: { source_document_id: id, entry_date: date, status, idempotency_key: `${account}:${id}` } });
+  accounting_journal_entries: { id: `${account}:${id}`, source_document_id: id, entry_date: date, status, idempotency_key: `${account}:${id}` } });
+const inventoryLine = cost => ({ ...cost, account_id: "inventory", debit_clp: cost.credit_clp, credit_clp: cost.debit_clp });
 
 async function build(documents, lines, { failLedger = false, asOf = "2026-09-09", includeDetails = false } = {}) {
   const selectAllRows = async (_rest, path) => {
@@ -29,8 +31,8 @@ async function build(documents, lines, { failLedger = false, asOf = "2026-09-09"
     }
     throw new Error(`Unexpected query: ${path}`);
   };
-  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", `${javascript}\nreturn buildDashboardAnalytics;`)(
-    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge);
+  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", "confirmedCostSourceIds", `${javascript}\nreturn buildDashboardAnalytics;`)(
+    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge, confirmedCostSourceIds);
   return run({}, "entity", asOf, documents, accounts, includeDetails);
 }
 
@@ -41,7 +43,7 @@ test("Full bootstrap drill-downs exactly reconcile with the actual dashboard cal
   for (let i = 50; i < 162; i++) {
     const cost = line(`sale-${i}`, 450, "2026-08-18", "cost");
     cost.accounting_journal_entries.idempotency_key = `facto-cost:sale-${i}`;
-    lines.push(cost);
+    lines.push(cost, inventoryLine(cost));
   }
   lines.push(line(null, 10), line(null, 50, "2026-09-09", "expense"), line(null, -70, "2026-09-09", "result"));
   lines.forEach((row, i) => { row.id = `line-${i}`; row.accounting_journal_entries.entry_number = i; });
@@ -80,6 +82,47 @@ test("September includes an unposted invoice even with booked sales in previous 
   assert.equal(posted.basis, "ledger");
 });
 
+test("September journal refresh incorporates four exact costs without doubling invoices or losing the credit note", async () => {
+  const docs = [["1557", 149421], ["1558", 22009], ["1559", 16330], ["1560", 34476], ["1561", 448272], ["1562", 5031969], ["1563", 1101413]]
+    .map(([id, net]) => doc(id, net));
+  docs.push(doc("85", 223465, "2026-09-08", { document_type: "sales_credit_note" }));
+  const lines = [line("1557", 149421), line(null, 450000, "2026-09-08", "expense")];
+  const before = (await build(docs, lines)).monthly.at(-1);
+  assert.equal(before.salesPendingDocuments, 7);
+  assert.equal(before.salesCostMissingDocuments, 7);
+  assert.equal(before.sales, 6580425);
+  for (const [id, amount] of [["1557", 91328], ["1561", 286050], ["1562", 2419866], ["1563", 894270]]) {
+    if (id !== "1557") lines.push(line(id, docs.find(row => row.id === id).net_amount));
+    const cost = line(id, amount, "2026-09-08", "cost");
+    lines.push(cost, inventoryLine(cost));
+  }
+  const after = (await build(docs, lines)).monthly.at(-1);
+  assert.equal(after.sales, before.sales);
+  assert.equal(after.salesIssuedCreditNotes, 223465);
+  assert.equal(after.salesPendingDocuments, 4);
+  assert.equal(after.salesCostMissingDocuments, 3);
+  assert.equal(after.costs, 3691514);
+  assert.equal(after.operatingProfit, 2438911);
+});
+
+test("Six verified missing costs update September once without reposting sales or collections", async () => {
+  const values = [["1558", 22009, 11432], ["1559", 16330, 10206], ["1560", 34476, 15022],
+    ["1564", 27477, 9021], ["1565", 86246, 44800], ["1566", 166407, 97628]];
+  const docs = values.map(([id, net]) => doc(id, net));
+  const before = (await build(docs, [])).monthly.at(-1);
+  const lines = values.flatMap(([id, , amount]) => {
+    const cost = line(id, amount, "2026-09-08", "cost");
+    return [cost, inventoryLine(cost)];
+  });
+  const after = (await build(docs, lines)).monthly.at(-1);
+  assert.equal(after.sales, before.sales);
+  assert.equal(after.salesPendingDocuments, 6, "Cost imports must not falsely confirm income entries");
+  assert.equal(after.salesCostMissingDocuments, 0);
+  assert.equal(after.costs, 188109);
+  assert.equal(after.operatingProfit, before.operatingProfit - 188109);
+  assert.deepEqual((await build(docs, lines)).monthly.at(-1), after, "Repeated reads must not accumulate cost");
+});
+
 test("September separates its single invoice from January notes and a corrective reversal", async () => {
   const docs = [doc("1557"), ...[1211750, 415915, 310640].map((amount, i) =>
     doc(`note-${i}`, amount, `2026-01-${10 + i}`, { document_type: "sales_credit_note" }))];
@@ -102,7 +145,7 @@ test("September separates its single invoice from January notes and a corrective
   assert.equal(result.current.salesPriorCreditAdjustments, 0, "January and September belong to the same annual period");
   const costLine = line("1557", 50000, "2026-09-08", "cost");
   costLine.accounting_journal_entries.idempotency_key = "facto-cost:1557";
-  const withCost = await build(docs, [...lines, costLine]);
+  const withCost = await build(docs, [...lines, costLine, inventoryLine(costLine)]);
   assert.equal(withCost.monthly.at(-1).salesCostMissingDocuments, 0);
 });
 

@@ -1,4 +1,3 @@
-import { readStatementClosings, statementClosingBalance, validatedBankBalance } from "./bank-statement-balance.ts";
 import { parseBankWorkbook } from "./bank-parsers.ts";
 import { parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-parsers.ts";
 import {
@@ -19,6 +18,8 @@ import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "./dashboard-
 import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "./facto-document-policy.ts";
 import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
 import { normalizeFactoDocument } from "./facto-document-normalization.ts";
+import { confirmedCostSourceIds, assertExistingFactoCost } from "./facto-cost-evidence.ts";
+import { readStatementClosings, statementClosingBalance, validatedBankBalance } from "./bank-statement-balance.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
@@ -608,7 +609,7 @@ async function buildDashboardAnalytics(
 
   try {
     ledgerLines = await selectAllRows(rest,
-      `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(entry_date,entry_number,description,idempotency_key,source_document_id,status)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${asOf}&order=id.asc`,
+      `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(id,entry_date,entry_number,description,idempotency_key,source_document_id,status)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${asOf}&order=id.asc`,
     );
   } catch (error) {
     ledgerReadFailed = true;
@@ -620,7 +621,7 @@ async function buildDashboardAnalytics(
   }
 
   let relevantLedgerLines = 0;
-  const exactCostSourceIds = new Set<string>();
+  const exactCostSourceIds = confirmedCostSourceIds(ledgerLines, accounts, asOf);
   for (const line of ledgerLines) {
     const entry = asObject(line.accounting_journal_entries);
     const entryDate = String(entry.entry_date || "");
@@ -630,10 +631,6 @@ async function buildDashboardAnalytics(
     const credit = numeric(line.credit_clp);
     if (!debit && !credit) continue;
     if (entryDate >= `${priorYear}-01-01`) relevantLedgerLines += 1;
-    if (String(entry.idempotency_key || "").startsWith("facto-cost:")) {
-      const sourceDocumentId = String(entry.source_document_id || "");
-      if (sourceDocumentId) exactCostSourceIds.add(sourceDocumentId);
-    }
     if (entryDate >= yearStart && entryDate <= asOf) {
       const total = monthTotals.get(entryDate.slice(0, 7));
       if (total) addLedgerLineToDashboard(total, accountType, debit, credit);
@@ -674,7 +671,7 @@ async function buildDashboardAnalytics(
   }
   const usedDocumentarySales = pendingSales.length > 0;
   if (usedDocumentarySales) {
-    warnings.push("Ventas recuperadas desde documentos Facto validados sin asiento de ingreso al corte. No se duplican las contabilizadas; el resultado es provisional y puede diferir del estado de resultados contable.");
+    warnings.push("Hay documentos Facto cuyo asiento de ingreso aun no esta incorporado al CRM. Esto no confirma que falte en Facto. Las ventas no se duplican; el resultado permanece provisional hasta incorporar los asientos y costos del Libro Diario.");
   }
   for (const document of salesEvidence) {
     if (!document.posted && document.issuedOn >= `${priorYear}-01-01` && document.issuedOn <= priorAsOf) previousYear.sales += document.netClp;
@@ -704,6 +701,7 @@ async function buildDashboardAnalytics(
   const costDocuments = currentSalesDocuments.filter(document => !document.creditNote);
   const salesWithExactCost = costDocuments.filter((document) => exactCostSourceIds.has(String(document.id))).length;
   const missingSalesCost = Math.max(0, costDocuments.length - salesWithExactCost);
+  if (missingSalesCost > 0) warnings.push("La sincronizacion API de documentos no incluye el Libro Diario. Los costos pendientes en el CRM no equivalen a costo cero en Facto.");
   if (current.sales > 0 && current.costs <= 0) warnings.push("Hay ventas registradas, pero todavía no existe costo de ventas contabilizado para el período.");
 
   const available = relevantLedgerLines > 0 || currentSalesDocuments.length > 0;
@@ -3410,8 +3408,8 @@ async function postFactoCostEntry(
 ) {
   const entityId = requiredUuid(payload.entityId);
   const sourceDocumentId = requiredUuid(payload.sourceDocumentId);
-  const amountClp = Math.round(Math.abs(numeric(payload.amountClp)) * 10000) / 10000;
-  if (amountClp <= 0) throw new HttpError(400, "El costo de venta Facto debe ser mayor que cero.");
+  const amountClp = Math.round(Number(payload.amountClp) * 10000) / 10000;
+  if (!Number.isFinite(amountClp) || amountClp <= 0) throw new HttpError(400, "El costo de venta Facto debe ser mayor que cero.");
 
   const document = (await selectRows(
     rest,
@@ -3419,7 +3417,7 @@ async function postFactoCostEntry(
   ))[0];
   if (!document) throw new HttpError(404, "No se encontró el documento Facto asociado al asiento.");
   const documentType = String(document.document_type || "");
-  if (!documentType.startsWith("sales_")) {
+  if (!documentType.startsWith("sales_") || !isPostableFactoDocument(document)) {
     throw new HttpError(409, "El costo de venta solo puede asociarse a un documento de venta Facto.");
   }
 
@@ -3432,22 +3430,35 @@ async function postFactoCostEntry(
   );
   const issuedOn = requiredDate(document.issued_on);
   const creditNote = documentType.includes("credit_note");
-  const evidence = optionalText(payload.evidence, 500) || "Asiento contable Facto verificado por administración";
+  const evidence = optionalText(payload.evidence, 500);
+  if (!evidence || evidence.length < 20) throw new HttpError(400, "Indica la evidencia del Libro Diario Facto que respalda este costo.");
   const idempotencyKey = `facto-cost:${sourceDocumentId}`;
   const existingEntry = (await selectRows(
     rest,
     `accounting_journal_entries?select=id,status&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(idempotencyKey)}&limit=1`,
   ))[0];
   if (existingEntry) {
+    const existingLines = await selectRows(rest, `accounting_journal_lines?select=account_id,debit_clp,credit_clp&entry_id=eq.${existingEntry.id}&order=line_number.asc`);
+    let actualAmount: number;
+    try {
+      actualAmount = assertExistingFactoCost(existingEntry, existingLines,
+        postingAccount(accountByClassification, "cost_of_sales"), postingAccount(accountByClassification, "inventory"), amountClp, creditNote);
+    } catch (error) {
+      throw new HttpError(409, error instanceof Error ? error.message : "El costo existente requiere revision.");
+    }
     return {
       entryId: existingEntry.id,
       sourceDocumentId,
       folio: document.folio,
-      amountClp,
+      amountClp: actualAmount,
       status: existingEntry.status,
       existing: true,
     };
   }
+  const linkedCosts = await selectRows(rest,
+    `accounting_journal_lines?select=id,accounting_journal_entries!inner(entity_id,source_document_id,status)&account_id=eq.${postingAccount(accountByClassification, "cost_of_sales")}&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.source_document_id=eq.${sourceDocumentId}&accounting_journal_entries.status=in.(posted,reversed)&limit=1`,
+  );
+  if (linkedCosts.length) throw new HttpError(409, "Este documento ya tiene un asiento de costo asociado. Revisa el existente para evitar duplicarlo.");
   const lines = creditNote
     ? [
       {
@@ -3483,6 +3494,15 @@ async function postFactoCostEntry(
     exchangeRate: 1,
     lines,
   });
+  // Another request may have won the idempotency key after the initial read.
+  const savedEntry = (await selectRows(rest, `accounting_journal_entries?select=id,status&id=eq.${entry.id}&entity_id=eq.${entityId}&limit=1`))[0];
+  const savedLines = await selectRows(rest, `accounting_journal_lines?select=account_id,debit_clp,credit_clp&entry_id=eq.${entry.id}&order=line_number.asc`);
+  try {
+    assertExistingFactoCost(savedEntry || {}, savedLines,
+      postingAccount(accountByClassification, "cost_of_sales"), postingAccount(accountByClassification, "inventory"), amountClp, creditNote);
+  } catch (error) {
+    throw new HttpError(409, error instanceof Error ? error.message : "El costo guardado requiere revision.");
+  }
   await insertRows(rest, "accounting_audit_events", [{
     entity_id: entityId,
     actor_id: profile.id,

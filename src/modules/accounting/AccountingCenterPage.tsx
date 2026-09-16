@@ -1,9 +1,9 @@
-import { bankControlValue, parseBankControlNumber } from "./bankBalanceInput";
 import { Component, FormEvent, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { reportPeriod } from "./reportNavigation";
 import { DashboardDetailView } from "./DashboardDetailView";
 import { LoansView } from "./LoansView";
+import { bankControlValue, parseBankControlNumber } from "./bankBalanceInput";
 import {
   AlertTriangle,
   ArrowRight,
@@ -649,7 +649,7 @@ function FactoView({ data, busy, runAction, excelOnly = false, excelProfile }: A
       const response = await syncAccountingFacto({ fromDate, toDate });
       setResult(response);
       return response;
-    }, "Carga histórica Facto terminada y respaldada en Finanzas.");
+    }, "Documentos Facto actualizados. Esta sincronización no incluye asientos ni costos del Libro Diario.");
   }
 
   async function loadReceivablesPreview(runId: string) {

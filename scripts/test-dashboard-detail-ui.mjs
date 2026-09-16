@@ -72,7 +72,7 @@ try {
     await page.goto(`${base}/dashboard`);
     await page.locator('.overview-sales-breakdown a[href*="sales-pending"]').waitFor();
     await page.locator('.overview-sales-breakdown a[href*="sales-pending"]').click();
-    await detail.getByRole("heading", { name: "Ventas sin asiento de ingreso" }).waitFor();
+    await detail.getByRole("heading", { name: "Documentos con asiento pendiente en CRM" }).waitFor();
     assert.equal(await detail.locator("tbody tr").count(), 3);
     assert.match(await detail.innerText(), /3 de 3/);
     await detail.getByPlaceholder("Documento, cliente o cuenta").fill("Cliente 1");
@@ -85,7 +85,7 @@ try {
     await page.goBack();
     await detail.getByRole("link", { name: "Volver al dashboard" }).click();
     await page.locator('.overview-result-row[href*="cost-missing"]').click();
-    await detail.getByRole("heading", { name: "Ventas sin costo confirmado" }).waitFor();
+    await detail.getByRole("heading", { name: "Ventas con costo pendiente en CRM" }).waitFor();
     assert.equal(await detail.locator("tbody tr").count(), 50);
     assert.match(await detail.innerText(), /50 de 50/);
     await detail.scrollIntoViewIfNeeded();
