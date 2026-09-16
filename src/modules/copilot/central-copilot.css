@@ -663,3 +663,28 @@
   .cc-chart-canvas { height: 260px; }
   .cc-business-kpis dd { font-size: 21px; }
 }
+.cc-mode { display:flex; align-items:center; justify-content:center; gap:6px; min-height:40px; padding:8px 12px; border:1px solid #cadce0; border-radius:6px; background:#fff; color:#126d7b; font-weight:700; }
+.cc-mode.is-active { background:#e3f3ef; border-color:#398575; }
+.cc-live { border-bottom:1px solid #d5e2e6; padding:14px 20px; background:#f6fafb; flex-shrink:0; }
+.cc-live-top { display:flex; align-items:center; gap:12px; }
+.cc-live-top > div:nth-child(2) { flex:1; min-width:0; }
+.cc-live-top strong { display:block; font-size:16px; }
+.cc-live-top small { color:#59717a; display:block; margin-top:3px; }
+.cc-live-level { display:grid; place-items:center; width:44px; height:44px; flex-shrink:0; color:#137d8e; }
+.cc-live-level.is-speaking svg, .cc-live-level.is-listening svg { animation:cc-live-pulse 1.2s ease-in-out infinite; }
+.cc-live-level.is-searching,.cc-live-level.is-analyzing {color:#885f18;}
+.cc-live-captions { max-height:132px; overflow:auto; margin:10px 0; font-size:13px; overscroll-behavior:contain; }
+.cc-live-captions p { margin:8px 0; overflow-wrap:anywhere; }
+.cc-live-captions strong { font-size:11px; margin-right:8px; color:#587079; }
+.cc-live-actions { display:flex; gap:14px; justify-content:center; }
+.central-copilot .cc-live-actions .cc-icon { width:48px; height:48px; flex-basis:48px; border-radius:6px; }
+.cc-live-actions .cc-live-end { color:#aa363d; background:#fff0f0; border-color:#ebc2c4; }
+.cc-live-actions [aria-pressed=true] { color:#805400; background:#fff4dc; }
+.cc-live-error { font-size:13px; color:#973d39; margin:8px 0; }
+.cc-usage { margin:10px 0; color:#56717c; font-size:12px; }
+.cc-usage summary { cursor:pointer; }
+.cc-compose-area[hidden] { display:none; }
+@keyframes cc-live-pulse { 50% { opacity:.45; transform:scaleY(.8); } }
+@media(prefers-reduced-motion:reduce){.cc-live-level svg {animation:none!important;}}
+@media(max-width:600px){.cc-live{padding:10px 12px;}.cc-live-captions{max-height:90px;}.cc-heading-actions{gap:5px;}.cc-mode{padding:6px 8px;}.cc-live-top strong{font-size:15px;}}
+@media(max-width:800px){.central-copilot.is-voice .cc-workspace{min-height:360px;}.central-copilot.is-voice .cc-empty{margin:16px 7px;}.central-copilot.is-voice .cc-empty h2{font-size:20px;}}

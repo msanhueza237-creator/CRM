@@ -13,6 +13,7 @@
     "test:accounting": "node --experimental-strip-types scripts/test-accounting-center.mjs",
     "test:copilot": "node --experimental-transform-types --test scripts/test-copilot.mjs",
     "test:copilot:enterprise": "node --experimental-transform-types --test scripts/test-copilot-enterprise.mjs",
+    "test:copilot:live": "node --experimental-transform-types --test scripts/test-copilot-live.mjs",
     "typecheck:copilot": "node scripts/typecheck-copilot.mjs",
     "test:facto-connector": "node --experimental-transform-types --test services/facto-connector/tests/*.test.ts",
     "typecheck:facto-connector": "tsc -p services/facto-connector/tsconfig.json",

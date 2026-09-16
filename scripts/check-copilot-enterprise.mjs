@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { CopilotSources } from "../supabase/functions/crm-copilot/sources.ts";
 import { ToolRegistry } from "../supabase/functions/crm-copilot/tool-registry.ts";
 import { runOrchestrator } from "../supabase/functions/crm-copilot/orchestrator.ts";
-import { copilotConfig } from "../supabase/functions/crm-copilot/config.ts";
+import { copilotConfig, reasoningFor } from "../supabase/functions/crm-copilot/config.ts";
 import { todayChile } from "../supabase/functions/crm-copilot/dates.ts";
 
 // Private server-side stdin only. Never place credentials in arguments or output files.
@@ -72,7 +72,7 @@ for (let index=0;index<cases.length;index++) {
   const [question,tool,args]=cases[index], started=Date.now();
   const local = make(AbortSignal.timeout(config.timeoutMs)), tools = new ToolRegistry(local);
   try {
-    const output = settings.useModel ? await runOrchestrator({registry:tools,model:config.model,apiKey:config.apiKey,reasoningEffort:config.reasoningEffort,maxOutputTokens:config.maxOutputTokens,message:question,history:[],signal:local.signal,onTrace:async()=>{}}) : {results:[await tools.execute(tool,args)]};
+    const output = settings.useModel ? await runOrchestrator({registry:tools,model:config.model,apiKey:config.apiKey,reasoningEffort:reasoningFor(question,config.reasoningEffort),maxOutputTokens:config.maxOutputTokens,message:question,history:[],signal:local.signal,onTrace:async()=>{}}) : {results:[await tools.execute(tool,args)]};
     console.log(JSON.stringify({type:"case",number:index+1,question,elapsedMs:Date.now()-started,metrics:local.metrics,...output}));
   } catch(error) { console.log(JSON.stringify({type:"case_error",number:index+1,error:error.name === "AbortError" ? "TIMEOUT" : String(error.message).slice(0,800)})); }
 }
@@ -80,7 +80,7 @@ if (settings.contextTest) {
  const history=[];
  for(const question of ["Cuanto vendimos este mes?","Y el mes pasado?","Comparalos."]) {
   const local=make(AbortSignal.timeout(config.timeoutMs));
-  const output=await runOrchestrator({registry:new ToolRegistry(local),model:config.model,apiKey:config.apiKey,reasoningEffort:config.reasoningEffort,maxOutputTokens:config.maxOutputTokens,message:question,history,signal:local.signal,onTrace:async()=>{}});
+  const output=await runOrchestrator({registry:new ToolRegistry(local),model:config.model,apiKey:config.apiKey,reasoningEffort:reasoningFor(question,config.reasoningEffort),maxOutputTokens:config.maxOutputTokens,message:question,history,signal:local.signal,onTrace:async()=>{}});
   console.log(JSON.stringify({type:"context",question,...output}));
   history.push({role:"user",content:question},{role:"assistant",content:output.message});
  }

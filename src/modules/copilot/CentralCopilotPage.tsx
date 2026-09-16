@@ -36,6 +36,8 @@ import {
   type CentralConversation,
   type CentralMessage,
   type CopilotReadResult,
+  type CentralEvent,
+  copilotVoiceRequest,
 } from "../../lib/copilotCentralApi";
 import { exportCentralMessage, exportCustomerPriceList } from "../../lib/copilotCentralExport";
 import { useAuth } from "../auth/AuthContext";
@@ -43,6 +45,8 @@ import { CopilotPage as LegacyCopilotPage } from "./CopilotPage";
 import "./central-copilot.css";
 import { BusinessVisuals } from "./BusinessVisuals";
 import { useCopilotVoice } from "./useCopilotVoice";
+import { useCopilotLive } from "./useCopilotLive";
+import { CopilotLivePanel } from "./CopilotLivePanel";
 
 const labels: Record<string, string> = {
   get_sales_summary: "Ventas y resultado",
@@ -135,6 +139,24 @@ function CentralConversationPage() {
   const endRef = useRef<HTMLDivElement>(null);
   const selected = useRef<string>();
   const campaignId = params.get("campaign");
+  const [voiceMode,setVoiceMode]=useState(false);
+  const voiceModeRef=useRef(voiceMode); voiceModeRef.current=voiceMode;
+  const [usage,setUsage]=useState<Record<string,unknown>>();
+  const live=useCopilotLive(conversationId,{
+    onEvent:acceptEvent,
+    onQuestion:text=>{setMessages(m=>[...m,{id:crypto.randomUUID(),role:"user",content:text}]);setProgress([]);setError("");},
+    onBusy:value=>{if(voiceModeRef.current)setBusy(value);},onError:setError,
+  });
+  function acceptEvent(event:CentralEvent) {
+    if(event.type==="conversation"){setConversationId(event.conversationId);selected.current=event.conversationId;}
+    if(event.type==="tool_start")setProgress(p=>[...p,{id:event.callId!,name:event.toolName!,status:"running"}]);
+    if(event.type==="tool_end")setProgress(p=>p.map(t=>t.id===event.callId?{...t,status:event.status!}:t));
+    if(event.type==="complete"){
+      setMessages(m=>m.some(row=>row.id===event.messageId)?m:[...m,{id:event.messageId||crypto.randomUUID(),role:"assistant",content:event.message||"",metadata:{results:event.results,traceId:event.traceId,timings:event.timings}}]);
+      void loadList().catch(()=>{});
+    }
+  }
+  function returnToText(){if(voiceModeRef.current)setBusy(false);voiceModeRef.current=false;void live.stop();setVoiceMode(false);}
   const loadList = () =>
     centralHistory().then((data) => setConversations(data.conversations || []));
   useEffect(() => {
@@ -149,6 +171,7 @@ function CentralConversationPage() {
   }, [messages.length, progress.length]);
   async function selectConversation(id: string, offset = 0) {
     if (busy) return;
+    returnToText();
     voice.stop();
     historyAbort.current?.abort();
     const controller = new AbortController();
@@ -178,6 +201,7 @@ function CentralConversationPage() {
     }
   }
   function newConversation() {
+    returnToText();
     voice.stop();
     if (busy) return;
     historyAbort.current?.abort();
@@ -195,6 +219,7 @@ function CentralConversationPage() {
     event?.preventDefault();
     const text = (prompt || draft).trim();
     if (!text || busy || historyBusy) return;
+    if(live.active){returnToText();}
     voice.stop();
     const controller = new AbortController();
     const localId = crypto.randomUUID();
@@ -220,27 +245,7 @@ function CentralConversationPage() {
             setConversationId(event.conversationId);
             selected.current = event.conversationId;
           }
-          if (event.type === "tool_start")
-            setProgress((current) => [
-              ...current,
-              { id: event.callId!, name: event.toolName!, status: "running" },
-            ]);
-          if (event.type === "tool_end")
-            setProgress((current) =>
-              current.map((p) =>
-                p.id === event.callId ? { ...p, status: event.status! } : p,
-              ),
-            );
-          if (event.type === "complete")
-            setMessages((current) => [
-              ...current,
-              {
-                id: event.messageId || crypto.randomUUID(),
-                role: "assistant",
-                content: event.message || "",
-                metadata: { results: event.results, traceId: event.traceId, timings: event.timings },
-              },
-            ]);
+          acceptEvent(event);
         },
       );
       await loadList().catch(() => setError("La respuesta esta guardada, pero no se pudo actualizar la lista de conversaciones."));
@@ -283,7 +288,7 @@ function CentralConversationPage() {
     ...(user?.role !== "finanzas" ? ["Que tenemos programado en el centro de contenido?"] : []),
   ];
   return (
-    <section className="central-copilot" aria-label="Copiloto central">
+    <section className={`central-copilot${voiceMode ? " is-voice" : ""}`} aria-label="Copiloto central">
       <header className="cc-heading">
         <div className="cc-heading-title">
           <Bot size={25} />
@@ -293,6 +298,7 @@ function CentralConversationPage() {
           </div>
         </div>
         <div className="cc-heading-actions">
+          <button className={`cc-mode ${voiceMode?"is-active":""}`} aria-pressed={voiceMode} disabled={!voiceMode&&(busy||historyBusy)} onClick={()=>{if(voiceMode)returnToText();else {voice.stop();setVoiceMode(true);setHistoryOpen(false);void live.start();}}}><Mic size={18}/> Voz</button>
           <span className="cc-read-only">
             <ShieldCheck size={15} /> Solo lectura
           </span>
@@ -374,6 +380,7 @@ function CentralConversationPage() {
           </div>
         </aside>
         <main className="cc-main">
+          {voiceMode&&<CopilotLivePanel live={live} onText={returnToText}/>}
           <div className="cc-conversation" aria-busy={busy || historyBusy}>
             {historyBusy && (
               <div className="cc-loading">
@@ -418,7 +425,7 @@ function CentralConversationPage() {
                   if (result.continuation) void send(undefined, `Continua la consulta de ${labels[result.toolName] || result.toolName}. Usa estos filtros de la pagina anterior: ${JSON.stringify(result.continuation)}`);
                 }}
                 busy={busy || historyBusy}
-                onSpeak={voice.speak}
+                onSpeak={(text)=>{returnToText();voice.speak(text);}}
               />
             ))}
             {busy && (
@@ -449,7 +456,7 @@ function CentralConversationPage() {
             )}
             <div ref={endRef} />
           </div>
-          <div className="cc-compose-area">
+          <div className="cc-compose-area" hidden={voiceMode}>
             {error && (
               <div className="cc-error" role="alert">
                 <TriangleAlert size={18} />
@@ -516,6 +523,7 @@ function CentralConversationPage() {
           </div>
         </main>
       </div>
+      {user?.role==="administrador"&&<details className="cc-usage"><summary onClick={()=>{if(!usage)void copilotVoiceRequest("voice-stats").then(setUsage).catch(e=>setError(e.message));}}>Uso del Copiloto</summary>{usage&&<><p>{String(usage.modelCalls)} llamadas de razonamiento · {Math.ceil(Number(usage.seconds)/60)} minutos de voz · USD {Number(usage.estimatedUsd).toFixed(3)} estimados</p><small>{String(usage.scope)}. {String(usage.estimateNote)} {usage.partial?"Cobertura parcial.":""}</small></>}</details>}
     </section>
   );
 }

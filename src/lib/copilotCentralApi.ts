@@ -117,6 +117,7 @@ export async function streamCentralMessage(
   conversationId: string | undefined,
   signal: AbortSignal,
   onEvent: (event: CentralEvent) => void,
+  voice?: { voiceSessionId: string; delegationId: string },
 ) {
   let requestStarted = false;
   try {
@@ -132,7 +133,7 @@ export async function streamCentralMessage(
     {
       method: "POST",
       headers: { ...authorization, Accept: "application/x-ndjson" },
-      body: JSON.stringify({ message, conversationId }),
+      body: JSON.stringify({ message, conversationId, ...(voice ? {channel:"voice", ...voice} : {}) }),
       signal,
     },
   );
@@ -179,6 +180,16 @@ export async function streamCentralMessage(
     if (!signal.aborted && error instanceof TypeError) throw new CopilotConnectionError(requestStarted);
     throw error;
   }
+}
+export async function copilotVoiceRequest<T = Record<string, unknown>>(route: string, body?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+  const deadline = AbortSignal.timeout(35000);
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", route), {
+    method: body ? "POST" : "GET", headers: await headers(), cache: "no-store",
+    ...(body ? {body:JSON.stringify(body)} : {}), signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(result.error || "No se pudo conectar la voz. Puedes continuar por texto.");
+  return result as T;
 }
 export function flattenResults(
   results: CopilotReadResult[],

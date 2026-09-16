@@ -9,6 +9,7 @@ import {
 import { todayChile } from "./dates.ts";
 import { ToolRegistry } from "./tool-registry.ts";
 import { redactSecrets } from "./safety.ts";
+import { requireOpenAI } from "./provider-errors.ts";
 
 export const centralPromptVersion = "enterprise-read-tools-v1";
 export interface ToolTrace {
@@ -83,7 +84,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
   const cache = new Map<string, Promise<ReadResult>>();
   let tokensInput = 0,
     tokensOutput = 0,
-    calls = 0, modelMs = 0;
+    calls = 0, modelMs = 0, modelCalls = 0;
   const instructions = [
     "Eres el Copiloto central de Latin Chile / CLIMACTIVA. Responde en espanol claro, Markdown y con decisiones accionables.",
     "Se ejecutivo: consultas puntuales hasta 180 palabras; informes completos hasta 700 palabras, con secciones breves para todos los modulos consultados. Los detalles ya estan en tablas y graficos descargables. Evita emojis, repetir cifras en varias secciones y tablas duplicadas. Una recomendacion nunca es una accion ejecutada.",
@@ -119,6 +120,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     if (signal.aborted)
       throw new DOMException("Consulta cancelada", "AbortError");
     const modelStarted = Date.now();
+    modelCalls++;
     const response = await (options.fetcher || fetch)(
       "https://api.openai.com/v1/responses",
       {
@@ -147,24 +149,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
         }),
       },
     );
-    if (!response.ok) {
-      const provider = object(object(await response.json().catch(() => ({}))).error);
-      const quotaCodes = ["insufficient_quota", "credit_balance_exhausted", "billing_hard_limit_reached"];
-      if (quotaCodes.includes(String(provider.code)) || provider.type === "insufficient_quota")
-        throw new CopilotDataError(
-          "OpenAI no tiene saldo o cuota disponible en la cuenta API. El administrador debe revisar la facturacion de OpenAI y volver a consultar cuando haya saldo. Los datos del CRM no se modificaron.",
-          "AI_QUOTA_EXHAUSTED",
-        );
-      if (response.status === 429)
-        throw new CopilotDataError(
-          "OpenAI alcanzo su limite temporal de solicitudes. Espera un momento y vuelve a consultar. Los datos del CRM no se modificaron.",
-          "AI_RATE_LIMITED",
-        );
-      throw new CopilotDataError(
-        `El servicio de IA no pudo responder (${response.status}). Las fuentes no se han modificado.`,
-        "AI_PROVIDER_ERROR",
-      );
-    }
+    await requireOpenAI(response);
     const payload = object(await response.json()),
       output = rows(payload.output),
       usage = object(payload.usage);
@@ -272,6 +257,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
         tokensOutput,
         model: options.model,
         modelMs,
+        modelCalls,
       };
     }
     async function executeCall(call: Row) {
@@ -378,5 +364,6 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     tokensOutput,
     model: options.model,
     modelMs,
+    modelCalls,
   };
 }
