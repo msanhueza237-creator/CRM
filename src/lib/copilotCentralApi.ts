@@ -3,6 +3,7 @@ export type CopilotComponent =
   | { type: "kpi"; title: string; value: number | null; unit: string; classification: "fact" | "calculation" | "estimate" }
   | { type: "chart"; chartType: "line" | "bar"; title: string; labels: string[]; series: Array<{ name: string; values: Array<number | null> }>; unit: string; classification: "fact" | "calculation" | "estimate" };
 export interface CopilotTimings { modelMs: number; databaseMs: number; serviceMs: number; totalMs: number; requests: number; cacheHits: number }
+export interface CopilotAgentRun { agent: string; status: string; durationMs: number; modelCalls: number; tokensInput: number; tokensOutput: number; tools: string[] }
 
 export interface CopilotReadResult {
   toolName: string;
@@ -38,7 +39,7 @@ export interface CentralMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  metadata?: { results?: CopilotReadResult[]; traceId?: string; inReplyTo?: string; timings?: CopilotTimings };
+  metadata?: { results?: CopilotReadResult[]; traceId?: string; inReplyTo?: string; timings?: CopilotTimings; agents?: CopilotAgentRun[] };
   created_at?: string;
 }
 export interface CentralConversation {
@@ -59,6 +60,7 @@ export interface CentralEvent {
   error?: string;
   traceId?: string;
   timings?: CopilotTimings;
+  agents?: CopilotAgentRun[];
 }
 export class CopilotConnectionError extends Error {
   constructor(public requestStarted: boolean) {
@@ -77,6 +79,16 @@ async function headers() {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
   };
+}
+export interface AgentUsage {
+  enabled: boolean; since: string; partial: boolean; sampledRuns: number; estimateNote: string;
+  agents: Array<{ agent: string; label: string; runs: number; failed: number; partial: number; durationMs: number; modelCalls: number; tokensInput: number; tokensOutput: number; estimatedUsd: number; lastAt: string | null }>;
+}
+export async function getAgentUsage(signal?: AbortSignal): Promise<AgentUsage> {
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "agent-observability"), { headers: await headers(), signal, cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "No se pudo cargar el registro de agentes.");
+  return result;
 }
 export async function centralHistory(
   conversationId?: string,

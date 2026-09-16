@@ -160,6 +160,12 @@ export class ToolRegistry {
       );
     try {
       const args = validateArguments(definition.parameters, input);
+      if (definition.domain === "content" || definition.domain === "foreign_trade") {
+        const content = definition.domain === "content";
+        const permission = content ? (name === "get_content_metrics" ? "content.metrics.view" : "content.view") : "foreign_trade.view";
+        const granted = await this.source.rpc(content ? "content_has_permission" : "foreign_trade_has_permission", { p_permission: permission });
+        if (granted !== true) throw new CopilotDataError("El permiso del modulo no autoriza esta consulta.", "FORBIDDEN");
+      }
       const result = safeData(await definition.execute(args)) as ReadResult;
       // Complete commercial exports are bounded separately from model previews and document evidence.
       const fullExport = name === "get_price_list" || name === "generate_business_report" || (name === "get_top_products" && args.detail_level !== "evidence");

@@ -361,6 +361,7 @@ function fixture(role = "administrador") {
         };
   };
   source.rpc = async (name, args) => {
+    if (name === "content_has_permission" || name === "foreign_trade_has_permission") return true;
     accesses.push(`${name}:${args.p_operation_id}`);
     return {
       operation: {

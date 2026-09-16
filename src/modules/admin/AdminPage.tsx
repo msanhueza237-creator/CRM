@@ -15,6 +15,7 @@ import {
   sendGmailTest as apiSendGmailTest,
 } from "../../lib/gmailApi";
 import { getWhatsAppConnectionStatus, type WhatsAppConnectionStatus } from "../../lib/whatsappApi";
+import { AgentDiagnostics } from "./AgentDiagnostics";
 
 interface WhatsAppSettingsForm {
   id?: string;
@@ -411,6 +412,7 @@ export function AdminPage() {
         </div>
       </div>
 
+      <AgentDiagnostics />
       <div className="admin-grid">
         <article className="panel admin-card">
           <Users size={24} />

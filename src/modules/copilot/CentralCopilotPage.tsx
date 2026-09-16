@@ -49,6 +49,12 @@ import { useCopilotLive } from "./useCopilotLive";
 import { CopilotLivePanel } from "./CopilotLivePanel";
 
 const labels: Record<string, string> = {
+  consult_commercial: "Comercial",
+  consult_finance: "Finanzas",
+  consult_collections: "Cobranza",
+  consult_marketing: "Marketing",
+  consult_logistics: "Logistica",
+  consult_foreign_trade: "Comercio Exterior",
   get_sales_summary: "Ventas y resultado",
   compare_sales_periods: "Comparacion de periodos",
   get_customer_sales: "Facturacion por cliente",
@@ -152,7 +158,7 @@ function CentralConversationPage() {
     if(event.type==="tool_start")setProgress(p=>[...p,{id:event.callId!,name:event.toolName!,status:"running"}]);
     if(event.type==="tool_end")setProgress(p=>p.map(t=>t.id===event.callId?{...t,status:event.status!}:t));
     if(event.type==="complete"){
-      setMessages(m=>m.some(row=>row.id===event.messageId)?m:[...m,{id:event.messageId||crypto.randomUUID(),role:"assistant",content:event.message||"",metadata:{results:event.results,traceId:event.traceId,timings:event.timings}}]);
+      setMessages(m=>m.some(row=>row.id===event.messageId)?m:[...m,{id:event.messageId||crypto.randomUUID(),role:"assistant",content:event.message||"",metadata:{results:event.results,traceId:event.traceId,timings:event.timings,agents:event.agents}}]);
       void loadList().catch(()=>{});
     }
   }
@@ -293,7 +299,7 @@ function CentralConversationPage() {
         <div className="cc-heading-title">
           <Bot size={25} />
           <div>
-            <h1>Copiloto central</h1>
+            <h1>Copiloto · Gerente</h1>
             <span>LATIN CHILE</span>
           </div>
         </div>
@@ -649,6 +655,7 @@ function ConversationMessage({
             {message.metadata?.timings && <details className="cc-technical"><summary>Detalle tecnico</summary><dl>
               {Object.entries({ "Respuesta total": message.metadata.timings.totalMs, "Modelo": message.metadata.timings.modelMs, "Lecturas de datos (acumulado)": message.metadata.timings.databaseMs, "Servicios (acumulado)": message.metadata.timings.serviceMs }).map(([label,ms]) => <div key={label}><dt>{label}</dt><dd>{(ms / 1000).toFixed(1)} s</dd></div>)}
               <div><dt>Lecturas reutilizadas</dt><dd>{message.metadata.timings.cacheHits}</dd></div>
+              {message.metadata.agents?.map((agent, index) => <div key={`${agent.agent}-${index}`}><dt>{agent.agent === "executive" ? "Gerente" : labels[`consult_${agent.agent}`] || agent.agent}</dt><dd>{statuses[agent.status] || agent.status} · {(agent.durationMs / 1000).toFixed(1)} s · {agent.modelCalls} llamadas</dd></div>)}
             </dl></details>}
           </>
         )}

@@ -1,0 +1,9 @@
+.agent-diagnostics { min-width: 0; border-block: 1px solid var(--border, #d5e2e6); padding-block: 24px; }
+.agent-diagnostics header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.agent-diagnostics h2 { font-size: 20px; margin: 0 0 8px; }
+.agent-diagnostics p { font-size: 14px; overflow-wrap: anywhere; }
+.agent-diagnostics-scroll { overflow-x: auto; max-width: 100%; }
+.agent-diagnostics table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.agent-diagnostics th, .agent-diagnostics td { text-align: right; padding: 12px; border-bottom: 1px solid var(--border, #d5e2e6); white-space: nowrap; }
+.agent-diagnostics th:first-child { text-align: left; }
+.agent-diagnostics header button { flex: 0 0 44px; width: 44px; height: 44px; padding: 0; }

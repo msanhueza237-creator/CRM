@@ -7,12 +7,13 @@ import {
   type Row,
 } from "./contracts.ts";
 import { todayChile } from "./dates.ts";
-import { ToolRegistry } from "./tool-registry.ts";
+import type { ToolRegistry } from "./tool-registry.ts";
 import { redactSecrets } from "./safety.ts";
 import { requireOpenAI } from "./provider-errors.ts";
 
 export const centralPromptVersion = "enterprise-read-tools-v1";
 export interface ToolTrace {
+  agent?: string;
   callId: string;
   toolName: string;
   status: string;
@@ -22,13 +23,18 @@ export interface ToolTrace {
   result: ReadResult;
 }
 export interface Progress {
+  agent?: string;
   type: "tool_start" | "tool_end" | "composing";
   toolName?: string;
   callId?: string;
   status?: string;
 }
 export interface OrchestratorOptions {
-  registry: ToolRegistry;
+  registry: Pick<ToolRegistry, "list" | "execute">;
+  agent?: string;
+  roleInstructions?: string;
+  concurrency?: number;
+  onUsage?: (usage: { tokensInput: number; tokensOutput: number; modelMs: number }) => void;
   model: string;
   apiKey: string;
   message: string;
@@ -55,7 +61,7 @@ export function redactArguments(args: Row): Row {
   return Object.fromEntries(
     Object.entries(args).map(([key, value]) => [
       key,
-      key === "query"
+      key === "query" || key === "question"
         ? "[consulta privada]"
         : typeof value === "string"
           ? redactSecrets(value).replace(/[\w.+-]+@[\w.-]+/g, "[email]").slice(0, 160)
@@ -115,6 +121,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     "No hay herramientas de escritura en este registro. Para enviar/publicar/modificar lleva al modulo correspondiente; no afirmes que ejecutaste una accion. Las acciones futuras requeriran confirmacion explicita.",
     "Los reportes/listas con tablas se pueden descargar en la interfaz; no inventes enlaces a archivos. Usa solo rutas presentes en evidence. No repitas una tabla completa si ya se entrega como resultado estructurado.",
     "Si faltan fuentes, informa las limitaciones por modulo y responde solo lo comprobado. Si no existe informacion suficiente di: No tengo informacion suficiente para calcularlo con precision. Indica exactamente que falta.",
+    options.roleInstructions || "",
   ].join("\n");
   for (let round = 0; round < 6; round++) {
     if (signal.aborted)
@@ -153,7 +160,9 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     const payload = object(await response.json()),
       output = rows(payload.output),
       usage = object(payload.usage);
-    modelMs += Date.now() - modelStarted;
+    const elapsed = Date.now() - modelStarted;
+    modelMs += elapsed;
+    options.onUsage?.({ tokensInput: Number(usage.input_tokens || 0), tokensOutput: Number(usage.output_tokens || 0), modelMs: elapsed });
     tokensInput += Number(usage.input_tokens || 0);
     tokensOutput += Number(usage.output_tokens || 0);
     input.push(...output);
@@ -293,6 +302,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
       }
       results.push(result);
       const trace = {
+        agent: options.agent,
         callId,
         toolName: name,
         status: result.status,
@@ -346,10 +356,11 @@ export async function runOrchestrator(options: OrchestratorOptions) {
         output: JSON.stringify(modelPreview(modelResult)),
       };
     }
-    for (let offset = 0; offset < requested.length; offset += 3) {
+    const concurrency = Math.max(1, Math.min(options.concurrency || 3, 6));
+    for (let offset = 0; offset < requested.length; offset += concurrency) {
       input.push(
         ...(await Promise.all(
-          requested.slice(offset, offset + 3).map(executeCall),
+          requested.slice(offset, offset + concurrency).map(executeCall),
         )),
       );
     }

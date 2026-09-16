@@ -8,7 +8,10 @@ import {
 } from "./contracts.ts";
 import { CopilotSources } from "./sources.ts";
 import { ToolRegistry } from "./tool-registry.ts";
-import { centralPromptVersion, runOrchestrator } from "./orchestrator.ts";
+import { centralPromptVersion, runOrchestrator, type OrchestratorOptions } from "./orchestrator.ts";
+import { runAgentManager, type AgentRun } from "./agent-manager.ts";
+import { agentObservability } from "./agent-observability.ts";
+import { permittedDomains } from "./permissions.ts";
 import { copilotConfig, reasoningFor } from "./config.ts";
 import { redactSecrets, safeData, sessionExpires } from "./safety.ts";
 import { createConversation, ownedConversation } from "./sessions.ts";
@@ -39,6 +42,10 @@ export async function centralHandler(
       status,
       headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
+  if (route === "agent-observability") {
+    if (actor.role !== "administrador") return json({ error: "Solo administracion puede consultar este registro." }, 403);
+    return json(await agentObservability(source, settings));
+  }
   if (route === "inventory") {
     if (req.method !== "GET") return json({ error: "Metodo no permitido." }, 405);
     const args: Row = {};
@@ -145,13 +152,13 @@ export async function centralHandler(
   const controller = new AbortController();
   const abort = () => controller.abort();
   req.signal.addEventListener("abort", abort, { once: true });
-  const timeout = setTimeout(abort, settings.timeoutMs);
+  const timeout = setTimeout(abort, settings.agentManagerEnabled ? settings.managerTimeoutMs : settings.timeoutMs);
   async function run(emit: (event: Row) => void) {
     emit({ type: "conversation", conversationId: id, userMessageId: userMessage.id });
     const start = Date.now();
     const readSource = new CopilotSources(config, actor, controller.signal, fetch, settings.sourceTimeoutMs);
     try {
-      const output = await runOrchestrator({
+      const options: OrchestratorOptions = {
         registry: new ToolRegistry(readSource),
         model: settings.model,
         reasoningEffort: effort,
@@ -181,6 +188,7 @@ export async function centralHandler(
               arguments_redacted: {
                 ...trace.argumentsRedacted,
                 call_id: trace.callId,
+                agent: trace.agent || "executive",
                 version: 1,
                 started_at: trace.startedAt,
                 result_hash: resultHash,
@@ -199,7 +207,25 @@ export async function centralHandler(
             }),
           });
         },
-      });
+      };
+      const output = settings.agentManagerEnabled ? await runAgentManager({
+        ...options,
+        context: { userId: actor.id, companyId: await readSource.entity().catch(() => null), sessionId: id, requestId: traceId, timestamp: new Date().toISOString(), role: actor.role, permissions: permittedDomains(actor.role), intent: String(userMessage.id) },
+        specialistTimeoutMs: settings.specialistTimeoutMs,
+        authorizeSpecialist: async agent => {
+          if (agent !== "foreign_trade") return true;
+          const permissions = await readSource.select("foreign_trade_agent_permissions?select=allowed&agent_type=eq.foreign_trade&permission=eq.foreign_trade.read&limit=1");
+          return permissions[0]?.allowed === true;
+        },
+        onAgentRun: async run => {
+          await source.request("rest/v1/copilot_audit_events", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({
+            user_id: actor.id, conversation_id: id, request_id: traceId, trace_id: traceId,
+            event_type: "agent_read_run", channel, model: settings.model, prompt_version: centralPromptVersion,
+            permission_decision: "role_scoped_read", result: run.status, risk_level: "read", affected_count: 0,
+            latency_ms: run.durationMs, tokens_input: run.tokensInput, tokens_output: run.tokensOutput, metadata_redacted: run,
+          }) });
+        },
+      }) : { ...await runOrchestrator(options), agentRuns: [] as AgentRun[], agentContext: null };
       const metadata = {
         engine: "central",
         inReplyTo: userMessage.id,
@@ -208,12 +234,15 @@ export async function centralHandler(
         channel,
         ...(channel === "voice" ? {voiceSessionId:payload.voiceSessionId,delegationId:payload.delegationId} : {}),
         reasoningEffort: effort,
+        agents: output.agentRuns,
+        agentContext: output.agentContext,
         timings: { ...readSource.metrics, modelMs: output.modelMs, totalMs: Date.now() - start },
         results: output.results,
         tools: output.traces.map((t) => ({
           name: t.toolName,
           status: t.status,
           durationMs: t.durationMs,
+          agent: t.agent,
         })),
       };
       const stored = rows(
@@ -271,6 +300,7 @@ export async function centralHandler(
         model: output.model,
         traceId,
         timings: metadata.timings,
+        agents: output.agentRuns,
         results: output.results,
         tools: output.traces.map((t) => ({
           ok: ["ok", "empty", "partial"].includes(t.status),

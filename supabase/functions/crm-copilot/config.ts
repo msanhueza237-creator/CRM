@@ -37,6 +37,9 @@ export function copilotConfig(env: Env) {
       ? effort
       : "auto",
     timeoutMs: integer("COPILOT_TIMEOUT_MS", 50000, 15000, 180000),
+    agentManagerEnabled: env("COPILOT_AGENT_MANAGER_ENABLED") !== "false",
+    managerTimeoutMs: integer("COPILOT_MANAGER_TIMEOUT_MS", 150000, 30000, 180000),
+    specialistTimeoutMs: integer("COPILOT_SPECIALIST_TIMEOUT_MS", 75000, 1000, 120000),
     sourceTimeoutMs: integer("COPILOT_SOURCE_TIMEOUT_MS", 20000, 1000, 45000),
     maxOutputTokens: integer("COPILOT_MAX_OUTPUT_TOKENS", 5000, 1000, 12000),
     sessionDays: integer("COPILOT_SESSION_DAYS", 30, 1, 90),

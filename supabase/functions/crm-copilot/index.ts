@@ -297,7 +297,7 @@ Deno.serve(async (req) => {
       return json({ ok: true, service: "crm-copilot", engine: "central", contractVersion: 1 });
     }
 
-    if (!(["message", "campaign-draft", "report", "legacy-message", "voice-session", "voice-result", "voice-interrupt", "voice-end", "voice-usage"].includes(route) && req.method === "POST") && !(["conversations", "history", "export", "inventory", "voice-stats"].includes(route) && req.method === "GET")) {
+    if (!(["message", "campaign-draft", "report", "legacy-message", "voice-session", "voice-result", "voice-interrupt", "voice-end", "voice-usage"].includes(route) && req.method === "POST") && !(["conversations", "history", "export", "inventory", "voice-stats", "agent-observability"].includes(route) && req.method === "GET")) {
       return json({ error: "Ruta no encontrada" }, 404);
     }
 
@@ -312,7 +312,7 @@ Deno.serve(async (req) => {
       return json({ error: "Usuario sin permiso para usar el copiloto." }, 403);
     }
 
-    if (["message", "conversations", "history", "export", "inventory", "voice-session", "voice-result", "voice-interrupt", "voice-end", "voice-usage", "voice-stats"].includes(route)) {
+    if (["message", "conversations", "history", "export", "inventory", "voice-session", "voice-result", "voice-interrupt", "voice-end", "voice-usage", "voice-stats", "agent-observability"].includes(route)) {
       return await centralHandler(req, rest, { id: auth.id, role: profile.role, accessToken: auth.token }, traceId, corsHeaders);
     }
     // The legacy report path contains financial aggregates; never expose it to sales/viewer roles.
