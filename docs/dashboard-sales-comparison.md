@@ -30,12 +30,16 @@ node --experimental-strip-types --test scripts/test-dashboard-sales.mjs
 node --experimental-strip-types scripts/test-dashboard-navigation.mjs
 $env:DASHBOARD_UI_URL='http://127.0.0.1:5183'
 node --experimental-strip-types scripts/test-dashboard-ui.mjs
+node --experimental-strip-types scripts/test-dashboard-detail-ui.mjs
 npm run build
 ```
 
 UI fixtures cover administrator, finance and vendor access; desktop and mobile;
 rendered chart pixels; partial-month links; missing/old backend responses; and
-existing financial results. Real-data totals were separately checked against
+existing financial results. The prior-year sales drill-down explicitly extends
+only the documentary sales date coverage; other metrics retain their original
+coverage. End-to-end tests open the prior-year total and check its documents,
+credit notes and unsupported date boundaries. Real-data totals were separately checked against
 read-only source-document queries. Private verification files are not committed.
 
 Release requires the frontend and `accounting-center` function together, including

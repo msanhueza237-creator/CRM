@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
+import { dashboardSalesComparison } from "../supabase/functions/accounting-center/dashboard-sales-comparison.ts";
 
 const base = process.env.DASHBOARD_UI_URL || "http://localhost:5183";
 const env = await readFile(new URL("../.env.local", import.meta.url), "utf8");
@@ -9,12 +10,16 @@ const origin = new URL(url).origin;
 const browser = await chromium.launch({ headless: true, channel: "chrome" });
 const user = { id: "22222222-2222-4222-8222-222222222222", email: "qa@example.invalid", aud: "authenticated", role: "authenticated", user_metadata: { full_name: "Prueba", role: "administrador" } };
 const sales = Array.from({ length: 162 }, (_, i) => ({ id: `sale-${i}`, folio: `${1400 + i}`, issuedOn: i < 3 ? "2026-09-11" : "2026-08-18", recognizedOn: i < 3 ? "2026-09-11" : "2026-08-18", posted: i >= 3, netClp: 1000, creditNote: false, exactCost: i >= 50, counterpart: `Cliente ${i}` }));
+sales.push(...[["prior-jan", "2025-01-02", 1000], ["prior-sep", "2025-09-05", 3000], ["prior-credit", "2025-09-06", -500]].map(([id, date, netClp]) => ({
+  id, folio: id, issuedOn: date, recognizedOn: date, posted: false, netClp, creditNote: netClp < 0, exactCost: false, counterpart: "Cliente anterior",
+})));
 const totals = { sales: 162000, costs: 100, expenses: 50, otherResults: 0, grossProfit: 161900, operatingProfit: 161850, grossMargin: 99,
   salesLedger: 159000, salesPending: 3000, salesPendingDocuments: 3, salesCostMissingDocuments: 50, purchasesNet: 0, purchasesDomestic: 0, purchasesInternational: 0 };
 const dashboard = { available: true, year: 2026, from: "2026-01-01", to: "2026-09-11", basis: "mixed", warnings: [], current: totals, monthly: [
   { ...totals, period: "2026-08", from: "2026-08-01", to: "2026-08-31", label: "Ago", salesPendingDocuments: 0, salesPending: 0, salesCostMissingDocuments: 47 },
   { ...totals, period: "2026-09", from: "2026-09-01", to: "2026-09-11", label: "Sep", salesCostMissingDocuments: 3 },
 ], purchaseDocuments: [], latestSales: [], costCoverage: { salesWithExactCost: 112, totalSalesDocuments: 162 }, detail: { ledgerAvailable: true, sales, ledger: [] } };
+dashboard.salesComparison = dashboardSalesComparison(sales, dashboard.to);
 const summary = { bank_clp: 8000, bank_usd_clp: 0, checks_portfolio: 150, payables: 100, receivables: 150, unmatched_bank: 1, as_of: "2026-09-11" };
 const balance = { id: "outstanding", document_number: "42", issued_on: "2025-12-01", due_on: null, original_amount_clp: 150, paid_amount_clp: 0, balance_clp: 150, status: "open", customer_name: "Cliente anterior", supplier_name: "Proveedor anterior" };
 const bootstrap = { entity: { id: "entity", name: "Prueba" }, profile: { role: "administrador", permissions: [] }, accounts: [], periods: [], bankAccounts: [], bankTransactions: [], bankBalanceSnapshots: [], entries: [], receivables: [balance], payables: [balance], checks: [], paymentEvents: [], controls: [], batches: [], factoSyncRuns: [], factoReceivableSyncRuns: [], summary, dashboard, factoFreshness: { stale: false }, sources: sales.map(row => ({ id: row.id, source_type: "FACTO", document_type: "sales_invoice", folio: row.folio, issued_on: row.issuedOn, counterpart_name: row.counterpart, total_clp: row.netClp * 1.19, currency: "CLP", status: "validated", data_quality: "validated" })) };
@@ -70,6 +75,16 @@ try {
   for (const width of [1440, 390, 320]) {
     await page.setViewportSize({ width, height: 950 });
     await page.goto(`${base}/dashboard`);
+    await page.getByRole("link", { name: /^Total 2025:/ }).click();
+    await detail.locator("tbody tr").first().waitFor();
+    assert.equal(await detail.locator("tbody tr").count(), 3);
+    assert.match(await detail.locator(".accounting-detail-total").innerText(), /\$3\.500/);
+    assert.match(await detail.innerText(), /2025-01-01 al 2025-12-31/);
+    await detail.getByLabel("Desde", { exact: true }).fill("2024-12-31");
+    await detail.getByRole("alert").filter({ hasText: "cubre del 2025-01-01" }).waitFor();
+    await page.goto(`${base}/finanzas-contabilidad?view=detail&metric=cost-missing&from=2025-01-01&to=2025-12-31`);
+    await detail.getByRole("alert").filter({ hasText: "cubre del 2026-01-01" }).waitFor();
+    await page.goto(`${base}/dashboard`);
     await page.locator('.overview-sales-breakdown a[href*="sales-pending"]').waitFor();
     await page.locator('.overview-sales-breakdown a[href*="sales-pending"]').click();
     await detail.getByRole("heading", { name: "Documentos con asiento pendiente en CRM" }).waitFor();
@@ -115,7 +130,7 @@ try {
     assert.equal(await detail.locator("tbody tr").count(), 0);
     await detail.getByLabel("Desde", { exact: true }).fill("2026-03-01");
     await detail.getByRole("alert").filter({ hasText: "Revisa las fechas" }).waitFor();
-    console.log(`PASS detail ${width}: 3 pending, 50 missing costs, exact source, date filter, back/reload and empty/error states`);
+    console.log(`PASS detail ${width}: prior-year sales and credit note drilldown, coverage boundaries, 3 pending, 50 missing costs, exact source, date filter, back/reload and empty/error states`);
   }
   for (const [view, name] of [["receivables", "Cliente anterior"], ["payables", "Proveedor anterior"]]) {
     await page.goto(`${base}/finanzas-contabilidad?view=${view}&scope=outstanding`);

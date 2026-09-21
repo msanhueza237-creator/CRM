@@ -14,7 +14,9 @@ export function DashboardDetailView({ data }: { data: AccountingBootstrap }) {
   const from = params.get("from") ?? data.dashboard.from, to = params.get("to") ?? data.dashboard.to;
   const period = reportPeriod(new URLSearchParams({ from, to }), "", "");
   const validPeriod = Boolean(period.from && period.to);
-  const coveredPeriod = from >= data.dashboard.from && to <= data.dashboard.to;
+  const coverageFrom = metric === "sales-period-net" && data.dashboard.salesComparison
+    ? data.dashboard.salesComparison.previousAnnual.from : data.dashboard.from;
+  const coveredPeriod = from >= coverageFrom && to <= data.dashboard.to;
   const rows = valid && validPeriod && coveredPeriod ? dashboardDetailRows(data.dashboard, metric, from, to) : null;
   const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   const filtered = rows?.filter(row => normalize(`${row.label} ${row.counterpart}`).includes(normalize(search))) || [];
@@ -26,7 +28,7 @@ export function DashboardDetailView({ data }: { data: AccountingBootstrap }) {
     <Link className="overview-chart-link" to={`/dashboard?period=${from.slice(0, 7) === to.slice(0, 7) ? from.slice(0, 7) : "year"}`}><ArrowLeft size={17} /> Volver al dashboard</Link>
     <div className="accounting-panel-heading"><div><p>Detalle del indicador · CLP</p><h2>{valid ? dashboardMetrics[metric] : "Indicador no disponible"}</h2><span>{from} al {to}</span></div><strong>{rows ? `${filtered.length} de ${rows.length}` : "No disponible"}</strong></div>
     <div className="accounting-filter-grid"><label>Desde<input aria-label="Desde" type="date" value={from} onChange={event => change("from", event.target.value)} /></label><label>Hasta<input aria-label="Hasta" type="date" value={to} onChange={event => change("to", event.target.value)} /></label><label>Buscar<input value={search} placeholder="Documento, cliente o cuenta" onChange={event => setSearch(event.target.value)} /></label></div>
-    {rows === null ? <p role="alert">{!validPeriod ? "Revisa las fechas: el inicio debe ser anterior o igual al fin del período." : !coveredPeriod ? `El detalle disponible cubre del ${data.dashboard.from} al ${data.dashboard.to}.` : "No se pudo obtener el detalle verificado de este indicador."}</p> : <>
+    {rows === null ? <p role="alert">{!validPeriod ? "Revisa las fechas: el inicio debe ser anterior o igual al fin del período." : !coveredPeriod ? `El detalle disponible cubre del ${coverageFrom} al ${data.dashboard.to}.` : "No se pudo obtener el detalle verificado de este indicador."}</p> : <>
       <p className="accounting-detail-total">{creditCost ? "Costos de notas pendientes de conciliar con Facto. No se sustituyen importes desconocidos por cero ni se elimina el costo completo de una nota parcial." : <><strong>{money(filtered.reduce((sum, row) => sum + (row.amount ?? 0), 0))}</strong> {countOnly ? "Venta neta de los documentos seleccionados" : "Total del detalle"}</>}</p>
       <div className="table-scroll"><table><thead><tr>{["Fecha", "Documento / asiento", "Cliente / detalle", "Estado", amountLabel, "Fuente"].map(label => <th key={label}>{label}</th>)}</tr></thead><tbody>{filtered.map(row => <tr key={row.key}>
         <td data-label="Fecha">{row.date}</td><td data-label="Documento / asiento"><strong>{row.label}</strong></td><td data-label="Cliente / detalle">{row.counterpart || "Sin identificar"}</td><td data-label="Estado">{row.status}</td><td data-label={amountLabel} className="accounting-detail-money">{money(row.amount)}</td><td data-label="Fuente">{row.sourceId ? <Link to={exactDocumentLink(row.sourceId, row.issuedOn)} title="Abrir este documento"><ExternalLink size={16} /> Documento</Link> : "Asiento manual"}</td>
