@@ -462,6 +462,7 @@ export interface AccountingDashboardMonth extends AccountingDashboardTotals {
 }
 
 export interface AccountingDashboardAnalytics {
+  salesComparison?: AccountingSalesComparison;
   creditCostReview?: Array<{ id: string; folio: string; issuedOn: string; recognizedOn: string; counterpart: string; netClp: number;
     invoiceId: string | null; invoiceFolio: string | null; invoiceIssuedOn: string | null; kind: "cancellation" | "partial" | "text" | "unresolved";
     originalCost: number | null; reversedCost: number | null; pending: boolean; detail: string;
@@ -512,6 +513,37 @@ export interface AccountingDashboardAnalytics {
     missingSalesCost: number;
     percentage: number;
   };
+}
+
+export interface AccountingSalesPeriod {
+  from: string;
+  to: string;
+  netClp: number | null;
+  documents: number;
+  creditNotes: number;
+}
+
+export interface AccountingSalesComparison {
+  basis: "documentary_issue_date";
+  year: number;
+  previousYear: number;
+  asOf: string;
+  current: AccountingSalesPeriod;
+  previous: AccountingSalesPeriod;
+  previousAnnual: AccountingSalesPeriod;
+  difference: number | null;
+  growth: number | null;
+  monthly: Array<{
+    label: string;
+    period: string;
+    elapsed: boolean;
+    partial: boolean;
+    current: AccountingSalesPeriod | null;
+    previous: AccountingSalesPeriod;
+    previousFull: AccountingSalesPeriod;
+    difference: number | null;
+    growth: number | null;
+  }>;
 }
 
 export interface AccountingBootstrap {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, mkdir } from "node:fs/promises";
 import { chromium } from "playwright";
+import { dashboardSalesComparison } from "../supabase/functions/accounting-center/dashboard-sales-comparison.ts";
 
 const base = process.env.DASHBOARD_UI_URL || "http://localhost:5183";
 const env = await readFile(new URL("../.env.local", import.meta.url), "utf8");
@@ -12,6 +13,11 @@ await mkdir("outputs/dashboard", { recursive: true });
 const totals = { sales: 136494301, costs: 79339554, expenses: 17000000, grossProfit: 57154747, operatingProfit: 40154747, grossMargin: 41.87,
   purchasesDomestic: 120000000, purchasesInternational: 200000000, purchasesNet: 320000000, salesCreditNotes: 2500000, purchaseCreditNotes: 1100000 };
 const summary = { bank_clp: 8209372, bank_usd_clp: 792, checks_portfolio: 1169981, payables: 12925234, receivables: 11287934, unmatched_bank: 183, as_of: "2026-09-08", bank_balance_basis: "verified_control", receivables_data_quality: "verified_full_snapshot" };
+const comparison = process.env.DASHBOARD_SALES_COMPARISON_FILE ? JSON.parse(await readFile(process.env.DASHBOARD_SALES_COMPARISON_FILE, "utf8")) : dashboardSalesComparison([
+  ...Array.from({ length: 12 }, (_, i) => ({ issuedOn: `2025-${String(i + 1).padStart(2, "0")}-01`, netClp: 10000000 + i * 1000000 })),
+  ...Array.from({ length: 9 }, (_, i) => ({ issuedOn: `2026-${String(i + 1).padStart(2, "0")}-01`, netClp: 12000000 + i * 1500000 })),
+  { issuedOn: "2025-09-30", netClp: 5000000 },
+], "2026-09-09");
 const monthly = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago"].map((label, i) => ({ ...totals, label, period: `2026-${String(i + 1).padStart(2, "0")}`,
   from: `2026-${String(i + 1).padStart(2, "0")}-01`, to: new Date(Date.UTC(2026, i + 1, 0)).toISOString().slice(0, 10),
   sales: 10000000 + i * 3000000, costs: 6000000 + i * 1000000, expenses: 1000000, operatingProfit: 3000000 + i * 2000000,
@@ -57,7 +63,7 @@ async function assertLayout(page, label) {
     const problems = [];
     if (document.documentElement.scrollWidth > innerWidth + 2) problems.push("page overflow");
     const intersect = (a, b) => a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
-    for (const selector of [".overview-chart-legend", ".overview-bar-group", ".overview-result-row", ".overview-result-total", ".overview-purchase-documents[open] li > a"]) {
+    for (const selector of [".sales-comparison-totals", ".sales-comparison-totals > div", ".overview-chart-legend", ".overview-bar-group", ".overview-result-row", ".overview-result-total", ".overview-purchase-documents[open] li > a"]) {
       document.querySelectorAll(selector).forEach(parent => {
         const rectangles = [...parent.children].map(child => child.getBoundingClientRect()).filter(rect => rect.width && rect.height);
         rectangles.forEach((rect, index) => rectangles.slice(index + 1).forEach(other => {
@@ -65,7 +71,7 @@ async function assertLayout(page, label) {
         }));
       });
     }
-    document.querySelectorAll(".overview-purchase-documents[open] li strong, .overview-purchase-documents[open] li small, .overview-result-row > span, .overview-result-row > strong").forEach(el => {
+    document.querySelectorAll(".sales-comparison-totals strong, .sales-comparison-totals small, .overview-purchase-documents[open] li strong, .overview-purchase-documents[open] li small, .overview-result-row > span, .overview-result-row > strong").forEach(el => {
       if (el.scrollWidth > el.clientWidth + 2) problems.push(`text overflow ${el.textContent}`);
     });
     return problems;
@@ -119,6 +125,7 @@ try {
         if (failed) return route.fulfill({ status: 503, headers, body: '{"error":"Unavailable"}' });
         body = { summary: { ...summary, receivables_suppressed: suppressed }, dashboard: { available: true, year: 2026, from: "2026-01-01", to: "2026-09-09", basis: "mixed", warnings: [], current: fixtureTotals({ ...totals, salesLedger: totals.sales - 149421, salesPending: 149421, salesPendingDocuments: 1 }), monthly: monthly.map(fixtureTotals), purchaseDocuments: fixtureMode === "legacy" ? undefined : fixtureMode === "empty" ? [] : purchaseDocuments, latestSales: [{ id: "1557", folio: "1557", issuedOn: "2026-09-08", netClp: 149421, posted: false }], costCoverage: { salesWithExactCost: 112, totalSalesDocuments: 163 } }, factoFreshness: { stale: false } };
         if (fixtureMode === "complete") body.dashboard.salesAdjustments = [{ id: "nc72", folio: "72", issuedOn: "2026-01-20", recognizedOn: "2026-09-09", netClp: -310640 }];
+        if (fixtureMode !== "legacy") body.dashboard.salesComparison = comparison;
         if (marginOverride) Object.assign(body.dashboard.current, marginOverride);
         if (fixtureMode === "september-adjustments") {
           Object.assign(body.dashboard.monthly[8], { sales: -1782466, salesLedger: -1782466, salesPending: 0, salesPendingDocuments: 0,
@@ -141,6 +148,28 @@ try {
       await page.getByRole("button", { name: "Actualizar panorama" }).waitFor();
       await page.waitForFunction(() => !document.querySelector('[aria-label="Actualizar panorama"]')?.disabled);
       assert.equal(await page.locator(".overview-page h1").innerText(), "Panorama del negocio");
+      if (role !== "vendedor") {
+        const sales = page.getByRole("region", { name: "Comparación anual de ventas", exact: true });
+        assert.match(await sales.innerText(), /Ventas 2026 vs 2025/);
+        assert.ok((await sales.locator(".sales-comparison-totals").innerText()).includes(clp(comparison.previousAnnual.netClp)));
+        await assertDetailLink(sales.getByRole("link", { name: /^Total 2025:/ }), "2025-01-01", "2025-12-31", "sales-period-net");
+        assert.equal(await sales.locator("canvas").evaluate(canvas => {
+          const rgba = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+          let colored = 0;
+          for (let i = 0; i < rgba.length; i += 4) if (rgba[i + 3] > 200 && Math.abs(rgba[i] - rgba[i + 1]) > 30) colored++;
+          return colored > 1000;
+        }), true, "Comparison canvas must render actual bars");
+        await sales.locator("summary").click();
+        assert.equal(await sales.locator("tbody tr").count(), 12);
+        assert.ok((await sales.locator("tbody tr").nth(8).innerText()).includes(`Al día ${Number(comparison.asOf.slice(8))}`));
+        assert.match(await sales.locator("tbody tr").nth(9).innerText(), /No transcurrido/);
+        await assertDetailLink(sales.getByRole("link", { name: /^Sep 2025:/ }), "2025-09-01", comparison.previous.to, "sales-period-net");
+        await assertDetailLink(sales.getByRole("link", { name: /^Sep 2025 completo:/ }), "2025-09-01", "2025-09-30", "sales-period-net");
+        await sales.scrollIntoViewIfNeeded();
+        await page.screenshot({ path: `outputs/dashboard/sales-comparison-${role}-${width}.png` });
+        await sales.screenshot({ path: `outputs/dashboard/sales-comparison-section-${role}-${width}.png` });
+        await sales.locator("summary").click();
+      } else assert.equal(await page.locator(".sales-comparison").count(), 0);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 2);
       assert.equal(overflow, false, `overflow ${width} ${role}`);
       const bad = await page.locator(".overview-page a").evaluateAll(links => links.filter(a => !a.getAttribute("href") || a.getAttribute("href") === "#").length);
@@ -359,6 +388,8 @@ try {
           assert.equal(await page.locator(".overview-bars .purchases.unavailable").count(), 12);
         } else await assertValue(page, "Compras netas", totals.purchasesNet, ".overview-purchases");
         if (mode === "legacy") {
+          assert.match(await page.locator(".sales-comparison").innerText(), /Comparación anual no disponible/);
+          assert.equal(await page.locator(".sales-comparison canvas").count(), 0);
           assert.equal(await financialRow(page, "Notas de crédito de venta").locator("strong").innerText(), "No disponible");
           assert.match(await page.locator(".overview-purchase-documents").innerText(), /Detalle de documentos de compras no disponible/);
         }
@@ -376,6 +407,7 @@ try {
       await page.getByText("En revisión", { exact: true }).waitFor();
       failed = true; await page.getByRole("button", { name: "Actualizar panorama" }).click();
       await page.getByText("Lectura parcial", { exact: true }).waitFor();
+      assert.match(await page.locator(".sales-comparison").innerText(), /Comparación anual no disponible/);
       assert.doesNotMatch(await page.locator(".overview-kpis").innerText(), /11\.287\.934/);
       assert.match(await page.locator(".overview-kpis").innerText(), /No disponible/);
       assert.equal(await financialRow(page, "Margen bruto").locator("strong").innerText(), "No disponible");

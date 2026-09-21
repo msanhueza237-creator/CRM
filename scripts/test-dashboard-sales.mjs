@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import ts from "typescript";
 import { accountingToday, dashboardDocumentSales, dashboardSalesEvidence, dashboardSalesPeriodBridge } from "../supabase/functions/accounting-center/dashboard-sales.ts";
+import { dashboardSalesComparison, previousSalesCutoff } from "../supabase/functions/accounting-center/dashboard-sales-comparison.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "../supabase/functions/accounting-center/dashboard-purchases.ts";
 import { isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 import { confirmedCostSourceIds } from "../supabase/functions/accounting-center/facto-cost-evidence.ts";
@@ -32,8 +33,8 @@ async function build(documents, lines, { failLedger = false, asOf = "2026-09-09"
     }
     throw new Error(`Unexpected query: ${path}`);
   };
-  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", "confirmedCostSourceIds", "creditNoteCostReview", "creditNoteCostPeriod", `${javascript}\nreturn buildDashboardAnalytics;`)(
-    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge, confirmedCostSourceIds, creditNoteCostReview, creditNoteCostPeriod);
+  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", "confirmedCostSourceIds", "creditNoteCostReview", "creditNoteCostPeriod", "dashboardSalesComparison", "previousSalesCutoff", `${javascript}\nreturn buildDashboardAnalytics;`)(
+    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge, confirmedCostSourceIds, creditNoteCostReview, creditNoteCostPeriod, dashboardSalesComparison, previousSalesCutoff);
   return run({}, "entity", asOf, documents, accounts, includeDetails);
 }
 
@@ -231,6 +232,75 @@ test("Net sales include exempt amounts, exclude VAT and require a known exchange
 test("Comparative prior-year sales also use document coverage, not a zero balance", async () => {
   const result = await build([doc("booked", 600, "2025-09-01"), doc("pending", 200, "2025-09-08")], [line("booked", 600, "2025-09-01")]);
   assert.equal(result.previousYear.sales, 800);
+});
+
+test("Annual comparison includes all prior months, compares like-for-like and never counts journal adjustments twice", async () => {
+  const documents = [doc("prior-jan", 1000, "2025-01-01"), doc("prior-sep", 200, "2025-09-09"),
+    doc("prior-later", 700, "2025-09-10"), doc("prior-dec", 300, "2025-12-31"),
+    doc("current-jan", 1200, "2026-01-02"), doc("current-sep", 600),
+    doc("note", 100, "2026-09-09", { document_type: "sales_credit_note" }),
+    doc("void", 9999, "2025-01-01", { status: "voided" }), doc("future", 100, "2026-09-10")];
+  const result = await build(documents, [line("prior-jan", 1000, "2025-01-01"), line("current-sep", 600), line(null, 2)]);
+  const c = result.salesComparison;
+  assert.equal(c.previousAnnual.netClp, 2200);
+  assert.equal(c.previous.netClp, 1200);
+  assert.equal(c.current.netClp, 1700);
+  assert.equal(c.difference, 500);
+  assert.equal(c.growth, 500 / 1200 * 100);
+  assert.equal(result.current.sales, 1702, "The income report remains unchanged");
+  assert.equal(c.monthly.length, 12);
+  assert.equal(c.monthly[8].partial, true);
+  assert.equal(c.monthly[8].previous.netClp, 200);
+  assert.equal(c.monthly[8].previousFull.netClp, 900);
+  assert.equal(c.monthly[8].current.netClp, 500);
+  assert.equal(c.monthly[8].growth, 150);
+  assert.equal(c.monthly[11].current, null);
+  assert.equal(c.monthly[11].growth, null);
+  assert.equal(c.monthly[11].previous.netClp, 300);
+  assert.equal(c.monthly[11].elapsed, false);
+  const detailed = await build(documents, [], { includeDetails: true });
+  for (const period of [c.current, c.previous, c.previousAnnual, ...c.monthly.flatMap(m => [m.current, m.previous, m.previousFull]).filter(Boolean)]) {
+    const rows = dashboardDetailRows(detailed, "sales-period-net", period.from, period.to);
+    assert.equal(rows.reduce((sum, row) => sum + row.amount, 0), period.netClp ?? 0);
+    assert.equal(rows.length, period.documents);
+  }
+  assert.equal((await build(documents, [], { failLedger: true })).salesComparison.current.netClp, 1700);
+});
+
+test("Zero, negative, absent and incomplete-year comparison bases are explicit", async () => {
+  const c = (await build([doc("zero-sale", 100, "2025-01-01"),
+    doc("zero-note", 100, "2025-01-02", { document_type: "sales_credit_note" }),
+    doc("negative", 50, "2025-02-01", { document_type: "sales_credit_note" }),
+    doc("current", 100, "2026-01-01"), doc("feb", 100, "2026-02-01")], [])).salesComparison;
+  assert.equal(c.monthly[0].previous.netClp, 0);
+  assert.equal(c.monthly[0].growth, null);
+  assert.equal(c.monthly[0].difference, 100);
+  assert.equal(c.monthly[1].previous.netClp, -50);
+  assert.equal(c.monthly[1].growth, null);
+  assert.equal(c.monthly[2].current.netClp, null);
+  const empty = (await build([], [])).salesComparison;
+  assert.equal(empty.previousAnnual.netClp, null);
+  assert.equal(empty.growth, null);
+  assert.equal(empty.current.netClp, null);
+});
+
+test("Year-end, leap February, current partial February and year rollover use valid comparable cutoffs", async () => {
+  assert.equal(previousSalesCutoff("2024-02-29"), "2023-02-28");
+  assert.equal(previousSalesCutoff("2025-02-28"), "2024-02-29");
+  assert.equal(previousSalesCutoff("2024-02-28"), "2023-02-28");
+  assert.equal(previousSalesCutoff("2026-09-20"), "2025-09-20");
+  const leap = (await build([doc("leap", 100, "2024-02-29")], [], { asOf: "2025-02-28" })).salesComparison;
+  assert.equal(leap.previous.netClp, 100);
+  assert.equal(leap.monthly[1].partial, false);
+  const full = (await build([doc("prior", 100, "2025-12-31"), doc("current", 200, "2026-12-31")], [], { asOf: "2026-12-31" })).salesComparison;
+  assert.deepEqual(full.previous, full.previousAnnual);
+  assert.equal(full.growth, 100);
+  assert.ok(full.monthly.every(m => m.elapsed && !m.partial));
+  const rollover = (await build([doc("prior", 200, "2026-12-31")], [], { asOf: "2027-01-01" })).salesComparison;
+  assert.equal(rollover.previousYear, 2026);
+  assert.equal(rollover.previousAnnual.netClp, 200);
+  assert.equal(rollover.previous.netClp, null);
+  assert.equal(rollover.monthly.filter(m => m.elapsed).length, 1);
 });
 
 test("Read failures retain documentary evidence and clearly warn about provisional results", async () => {

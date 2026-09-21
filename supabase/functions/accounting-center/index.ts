@@ -14,6 +14,7 @@ import {
 import { identifyPayrollEmployee, protectedPayrollClassification } from "./payroll-employees.ts";
 import { buildAccountingAgentReport, hasAccountingTaskLease } from "./agent-report.ts";
 import { accountingToday, dashboardSalesEvidence, dashboardSalesPeriodBridge } from "./dashboard-sales.ts";
+import { dashboardSalesComparison, previousSalesCutoff } from "./dashboard-sales-comparison.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "./dashboard-purchases.ts";
 import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "./facto-document-policy.ts";
 import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
@@ -588,7 +589,7 @@ async function buildDashboardAnalytics(
   const currentMonth = Number(asOf.slice(5, 7));
   const yearStart = `${year}-01-01`;
   const priorYear = year - 1;
-  const priorAsOf = `${priorYear}${asOf.slice(4)}`;
+  const priorAsOf = previousSalesCutoff(asOf);
   const monthRanges = Array.from({ length: currentMonth }, (_, index) => {
     const month = index + 1;
     const monthText = String(month).padStart(2, "0");
@@ -737,6 +738,7 @@ async function buildDashboardAnalytics(
     from: yearStart,
     to: asOf,
     monthly,
+    salesComparison: dashboardSalesComparison(salesEvidence, asOf),
     purchaseDocuments,
     salesAdjustments,
     creditCostReview,

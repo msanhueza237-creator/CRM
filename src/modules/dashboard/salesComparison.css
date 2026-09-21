@@ -1,0 +1,41 @@
+.sales-comparison h2 { font-size: 19px; }
+.sales-comparison-totals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-block: 1px solid #d7e3e4; }
+.sales-comparison-totals > div { padding: 16px 14px; border-right: 1px solid #d7e3e4; display: grid; gap: 9px; align-content: start; }
+.sales-comparison-totals > div:first-child { padding-left: 0; }
+.sales-comparison-totals > div:last-child { border-right: 0; }
+.sales-comparison-totals span { font-size: 12px; }
+.sales-comparison-totals strong { font-size: 22px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sales-comparison-totals a { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.sales-comparison-totals small { color: #61767a; font-size: 11px; line-height: 1.5; }
+.sales-comparison-chart-scroll { overflow-x: auto; }
+.sales-comparison .sales-comparison-chart { position: relative; height: 300px; min-width: 520px; margin-block: 18px 8px; }
+.sales-comparison-legend { display: flex; gap: 16px; justify-content: center; list-style: none; padding: 0; margin: 4px 0 14px; font-size: 12px; color: #61767a; }
+.sales-comparison-legend li { display: flex; align-items: center; gap: 6px; }
+.sales-comparison-legend i { display: block; width: 12px; height: 12px; }
+.sales-comparison-legend .prior { background: #ad694f; }
+.sales-comparison-legend .current { background: #138c96; }
+.sales-comparison-note { font-size: 12px; line-height: 1.5; color: #61767a; margin-top: 10px !important; }
+.sales-comparison-detail { margin-top: 16px; border-block: 1px solid #d7e3e4; }
+.sales-comparison-detail summary { cursor: pointer; display: flex; justify-content: space-between; gap: 12px; align-items: center; padding-block: 14px; font-size: 13px; font-weight: 700; list-style: none; }
+.sales-comparison-detail summary::-webkit-details-marker { display: none; }
+.sales-comparison-detail[open] summary > svg { transform: rotate(180deg); }
+.sales-comparison-table-scroll { overflow-x: auto; }
+.sales-comparison table { width: 100%; min-width: 650px; border-collapse: collapse; font-size: 12px; }
+.sales-comparison th, .sales-comparison td { padding: 12px 10px; text-align: right; border-bottom: 1px solid #e1e9e9; font-variant-numeric: tabular-nums; }
+.sales-comparison th:first-child { text-align: left; }
+.sales-comparison tbody th { text-transform: none; }
+.sales-comparison thead { background: #edf3f4; }
+.sales-comparison td a { display: inline-flex; align-items: center; gap: 4px; }
+.sales-comparison td small, .sales-comparison th small { display: block; font-size: 10px; color: #61767a; font-weight: 400; margin-top: 5px; }
+.sales-comparison .positive { color: #26745d; }
+.sales-comparison .negative { color: #a14837; }
+@media (max-width: 1050px) {
+  .sales-comparison-totals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sales-comparison-totals > div:nth-child(2) { border-right: 0; }
+  .sales-comparison-totals > div:nth-child(n+3) { border-top: 1px solid #d7e3e4; }
+  .sales-comparison-totals > div:nth-child(3) { padding-left: 0; }
+}
+@media (max-width: 480px) {
+  .sales-comparison-totals strong { font-size: 19px; }
+  .sales-comparison-totals > div { padding: 14px 8px; }
+}
