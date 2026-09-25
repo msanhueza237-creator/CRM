@@ -5,6 +5,7 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as icons from "lucide-react";
 import { reportPeriod } from "../src/modules/accounting/reportNavigation.ts";
+import { reportedChecks, checkInstrumentDate, checkInvoiceNumbers } from "../src/modules/accounting/checkPortfolio.ts";
 
 const source = await readFile("src/modules/accounting/AccountingCenterPage.tsx", "utf8");
 const tree = ts.createSourceFile("page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -19,7 +20,7 @@ let params = new URLSearchParams();
 const context = {
   React, ...Object.fromEntries(["Upload", "Search", "FileSpreadsheet", "Download", "AlertTriangle", "ShieldCheck", "X", "ScanSearch", "RefreshCw", "Plus", "FileCheck2"].map((name) => [name, icons[name]])), useState: React.useState, useEffect: React.useEffect,
   today: () => "2026-09-09", normalize: (text) => String(text).toLowerCase(),
-  useSearchParams: () => [params], reportPeriod,
+  useSearchParams: () => [params], reportPeriod, reportedChecks, checkInstrumentDate, checkInvoiceNumbers,
   number: (value) => Number(value || 0), clp: (value) => `$${Number(value).toLocaleString("es-CL")}`,
   date: label, shortDate: label, dateTime: label, factoProfileLabel: label, humanize: label,
   Empty: ({ text }) => React.createElement("p", null, text),

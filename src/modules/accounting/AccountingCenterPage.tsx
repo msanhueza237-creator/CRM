@@ -4,6 +4,7 @@ import { reportPeriod } from "./reportNavigation";
 import { DashboardDetailView } from "./DashboardDetailView";
 import { LoansView } from "./LoansView";
 import { bankControlValue, parseBankControlNumber } from "./bankBalanceInput";
+import { reportedChecks, checkInstrumentDate, checkInvoiceNumbers } from "./checkPortfolio";
 import {
   AlertTriangle,
   ArrowRight,
@@ -271,10 +272,10 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
   const expenses = dashboard.expenseBreakdown;
   const factoReceivables = data.factoReceivables;
   const available = number(summary.bank_clp) + number(summary.bank_usd_clp);
-  const portfolioChecks = data.checks.filter((check) => check.status === "portfolio");
+  const portfolioChecks = reportedChecks(data).filter((check) => check.status === "portfolio");
   const checksPortfolio = portfolioChecks.reduce((total, check) => total + number(check.amount_clp), 0);
   const receivablesSuppressed = summary.receivables_suppressed === true;
-  const position = receivablesSuppressed ? null : available + number(summary.receivables) + checksPortfolio - number(summary.payables);
+  const position = receivablesSuppressed || data.checkPortfolio?.issue ? null : available + number(summary.receivables) + checksPortfolio - number(summary.payables);
   const factoReceivablesDetail = receivablesSuppressed
     ? "Lectura parcial anterior aislada · requiere corte Facto completo"
     : factoReceivables?.authoritative
@@ -376,7 +377,7 @@ function DashboardView({ data, navigate }: { data: AccountingBootstrap; navigate
           <div className="accounting-panel-heading"><div><p>Estructura financiera</p><h2>Activos líquidos y compromisos</h2><span>Comparación operativa, no reemplaza el balance general.</span></div><ArrowRight size={19} /></div>
           <FinancialPositionRow label="Disponible" value={available} maximum={workingCapitalBase} tone="available" />
           <FinancialPositionRow label="Cuentas por cobrar" value={receivablesSuppressed ? null : number(summary.receivables)} maximum={workingCapitalBase} tone="receivable" />
-          <FinancialPositionRow label={`Cheques en cartera (${portfolioChecks.length})`} value={checksPortfolio} maximum={workingCapitalBase} tone="checks" />
+          <FinancialPositionRow label={data.checkPortfolio?.issue ? "Cheques por revisar" : `Cheques en cartera (${portfolioChecks.length})${data.checkPortfolio?.verified ? " · Informe Facto" : ""}`} value={data.checkPortfolio?.issue ? null : checksPortfolio} maximum={workingCapitalBase} tone="checks" />
           <FinancialPositionRow label="Cuentas por pagar" value={number(summary.payables)} maximum={workingCapitalBase} tone="payable" />
         </button>
 
@@ -1286,11 +1287,43 @@ function ChecksView({ data, busy, runAction }: ActionViewProps) {
   const [showExcel, setShowExcel] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [query, setQuery] = useState("");
-  const [from, setFrom] = useState(params.has("status") ? "" : "2026-01-01");
-  const [to, setTo] = useState(params.has("status") ? "" : today());
-  const [status, setStatus] = useState(params.get("status") || "all");
-  const filtered = data.checks.filter((row) => (!query || normalize(`${row.customer_name} ${row.bank_name} ${row.check_number}`).includes(normalize(query))) && (!from || row.received_on >= from) && (!to || row.received_on <= to) && (status === "all" || row.status === status));
-  return <div className="accounting-view-stack"><div className="accounting-source-actions"><button className="primary-button" type="button" aria-expanded={showExcel} aria-controls="checks-excel" onClick={() => setShowExcel(!showExcel)}><Upload size={17} />{showExcel ? "Cerrar carga de cheques" : "Actualizar cheques desde Excel Facto"}</button></div><div id="checks-excel" hidden={!showExcel}>{showExcel ? <FactoView data={data} busy={busy} runAction={runAction} excelOnly excelProfile="facto_checks_banco_estado" /> : null}</div><section className="panel"><div className="accounting-panel-heading"><div><p>Documentos por cobrar</p><h2>Cheques en cartera</h2><span>Banco emisor identifica el cheque; BancoEstado es la cuenta esperada de cobro. Solo la cartola confirmará disponibilidad.</span></div><div className="accounting-source-actions"><strong>{clp(filtered.filter((row) => row.status === "portfolio").reduce((sum, row) => sum + number(row.amount_clp), 0))}</strong><button className="primary-button" type="button" onClick={() => setShowForm(true)}><Plus size={17} /> Registrar cheque</button></div></div><div className="accounting-filter-grid"><SearchField value={query} onChange={setQuery} placeholder="Cliente, banco o número" /><label>Recepción desde<input type="date" value={from} onChange={(event) => setFrom(event.target.value)} /></label><label>Recepción hasta<input type="date" value={to} onChange={(event) => setTo(event.target.value)} /></label><label>Estado<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="all">Todos</option><option value="portfolio">En cartera</option><option value="deposited">Depositado</option><option value="collected">Cobrado</option><option value="protested">Protestado</option><option value="voided">Anulado</option></select></label></div>{filtered.length ? <Table headers={["Cliente", "Banco emisor", "Cobro esperado", "N.º cheque", "Recepción", "Vencimiento", "Monto", "Estado"]}>{filtered.map((row) => { const settlement = data.bankAccounts.find((account) => account.id === row.settlement_bank_account_id); return <tr key={row.id}><td data-label="Cliente"><strong>{row.customer_name}</strong></td><td data-label="Banco emisor">{row.bank_name}</td><td data-label="Cobro esperado">{settlement?.institution || (row.import_batch_id ? "BancoEstado" : "Sin asignar")}<small>{settlement?.account_name || "Pendiente de cartola"}</small></td><td data-label="N.º cheque">{row.check_number}</td><td data-label="Recepción">{date(row.received_on)}</td><td data-label="Vencimiento">{date(row.due_on)}</td><td data-label="Monto">{clp(row.amount_clp)}</td><td data-label="Estado"><Status value={row.source_status ? `${humanize(row.status)} · Facto ${row.source_status}` : humanize(row.status)} tone={row.status === "collected" ? "success" : row.status === "protested" ? "danger" : "review"} /></td></tr>; })}</Table> : <Empty icon={FileCheck2} text="No hay cheques que coincidan con los filtros." />}</section>{showForm ? <CheckDialog data={data} busy={busy} close={() => setShowForm(false)} runAction={runAction} /> : null}</div>;
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [status, setStatus] = useState(params.get("status") || "portfolio");
+  const [scope, setScope] = useState("report");
+  const report = data.checkPortfolio;
+  const selected = scope === "report" ? reportedChecks(data) : data.checks;
+  const filtered = selected.filter((row) => (!query || normalize(`${row.customer_name} ${row.bank_name} ${row.check_number} ${checkInvoiceNumbers(row)}`).includes(normalize(query))) && (!from || checkInstrumentDate(row) >= from) && (!to || checkInstrumentDate(row) <= to) && (status === "all" || row.status === status));
+  const total = filtered.filter(row => row.status === "portfolio").reduce((sum, row) => sum + number(row.amount_clp), 0);
+  return <div className="accounting-view-stack">
+    <div className="accounting-source-actions"><button className="primary-button" type="button" aria-expanded={showExcel} aria-controls="checks-excel" onClick={() => setShowExcel(!showExcel)}><Upload size={17} />{showExcel ? "Cerrar carga de cheques" : "Actualizar cheques desde Excel Facto"}</button></div>
+    <div id="checks-excel" hidden={!showExcel}>{showExcel ? <FactoView data={data} busy={busy} runAction={runAction} excelOnly excelProfile="facto_checks_banco_estado" /> : null}</div>
+    <section className="panel">
+      <div className="accounting-panel-heading">
+        <div><p>Documentos por cobrar</p><h2>Cheques en cartera</h2><span>{scope === "report" && report?.verified ? `${report.fileName} · ${date(report.reportedAt || "")} · ${filtered.length} cheques` : "Registros CRM · pendientes de validar contra un informe completo"}</span></div>
+        <div className="accounting-source-actions"><strong>{scope === "report" && report?.issue ? "Por revisar" : scope === "records" && report?.batchId ? "Historial sin consolidar" : clp(total)}</strong><button className="primary-button" type="button" onClick={() => setShowForm(true)}><Plus size={17} /> Registrar cheque</button></div>
+      </div>
+      {report?.issue ? <p role="alert" className="accounting-inline-warning">{report.issue}</p> : null}
+      <div className="accounting-filter-grid">
+        <label>Origen<select value={scope} onChange={event => setScope(event.target.value)}><option value="report">Último informe confirmado Facto</option><option value="records">Todos los registros CRM</option></select></label>
+        <SearchField value={query} onChange={setQuery} placeholder="Cliente, banco, cheque o factura" />
+        <label>Fecha cheque desde<input type="date" value={from} onChange={event => setFrom(event.target.value)} /></label>
+        <label>Fecha cheque hasta<input type="date" value={to} onChange={event => setTo(event.target.value)} /></label>
+        <label>Estado<select value={status} onChange={event => setStatus(event.target.value)}><option value="all">Todos</option><option value="portfolio">En cartera</option><option value="deposited">Depositado</option><option value="collected">Cobrado</option><option value="protested">Protestado</option><option value="voided">Anulado</option></select></label>
+      </div>
+      {filtered.length ? <Table headers={["Cliente", "Banco emisor", "N.º cheque", "Factura", "Fecha cheque", "Cobro Facto", "Monto", "Estado"]}>{filtered.map(row => <tr key={row.id}>
+        <td data-label="Cliente"><strong>{row.customer_name}</strong></td>
+        <td data-label="Banco emisor">{row.bank_name}</td>
+        <td data-label="N.º cheque">{row.check_number}</td>
+        <td data-label="Factura">{checkInvoiceNumbers(row) || "Sin vincular"}</td>
+        <td data-label="Fecha cheque">{date(checkInstrumentDate(row))}</td>
+        <td data-label="Cobro Facto">{row.import_batch_id ? date(row.due_on) : "—"}</td>
+        <td data-label="Monto">{clp(row.amount_clp)}</td>
+        <td data-label="Estado"><Status value={row.source_status ? `${humanize(row.status)} · Facto ${row.source_status}` : humanize(row.status)} tone={row.status === "collected" ? "success" : row.status === "protested" ? "danger" : "review"} /></td>
+      </tr>)}</Table> : <Empty icon={FileCheck2} text="No hay cheques que coincidan con los filtros." />}
+    </section>
+    {showForm ? <CheckDialog data={data} busy={busy} close={() => setShowForm(false)} runAction={runAction} /> : null}
+  </div>;
 }
 
 function CheckDialog({ data, busy, close, runAction }: ActionViewProps & { close: () => void }) {
@@ -1397,7 +1430,7 @@ function factoPreviewColumns(profile: AccountingFactoExcelProfile): { headers: s
     values: (data) => [data.balance_kind === "payable" ? "Por pagar" : data.balance_kind === "receivable" ? "Por cobrar" : data.balance_kind === "informational" ? "Informativo · sin deuda" : "Ajuste documental", `${data.document_type_label || "—"} · ${data.document_number || "—"}`, date(String(data.issued_on || "")), `${data.counterpart_name || "—"} ${data.counterpart_tax_id || ""}`, clp(data.total_clp), clp(data.reported_paid_clp), clp(data.reported_balance_clp)],
   };
   if (profile === "facto_checks_banco_estado") return {
-    headers: ["Cliente", "Banco emisor", "N.º cheque", "Documento", "Recepción", "Cobro", "Monto", "Estado Facto"],
+    headers: ["Cliente", "Banco emisor", "N.º cheque", "Documento", "Fecha cheque", "Cobro Facto", "Monto", "Estado Facto"],
     values: (data) => [String(data.customer_name || "—"), String(data.issuer_bank || "—"), String(data.check_number || "—"), String(data.source_document_number || "—"), date(String(data.received_on || "")), date(String(data.due_on || "")), clp(data.amount_clp), String(data.source_status || "Sin informar")],
   };
   return {

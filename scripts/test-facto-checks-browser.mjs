@@ -17,6 +17,7 @@ import React, { useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Upload, Search, FileSpreadsheet, Download, AlertTriangle, ShieldCheck, X, ScanSearch, RefreshCw, Plus, FileCheck2 } from 'lucide-react';
 import { reportPeriod } from '/src/modules/accounting/reportNavigation.ts';
+import { reportedChecks, checkInstrumentDate, checkInvoiceNumbers } from '/src/modules/accounting/checkPortfolio.ts';
 import '/src/styles.css';
 import '/src/modules/accounting/accountingCenter.css';
 const useSearchParams = () => [new URLSearchParams()];
@@ -24,6 +25,9 @@ const data = { sources: [], profile: { permissions: ['import'] }, batches: [
  { id: 'pending', source_type: 'CHECKS', import_profile: 'facto_checks_banco_estado', file_name: 'cheques-actualizados.xlsx', status: 'previewed', created_at: '2026-09-15T10:00:00Z', summary: {} },
  { id: 'old', source_type: 'CHECKS', import_profile: 'facto_checks_banco_estado', file_name: 'cheques-anteriores.xlsx', status: 'imported', created_at: '2026-09-09T10:00:00Z', summary: { confirmed_at: '2026-09-09T10:01:00Z' } },
 ], entity: { id: 'test' }, receivables: [], payables: [], checks: [], bankAccounts: [] };
+data.checks = Array.from({ length: 6 }, (_, i) => ({ id: 'check-' + i, customer_name: 'Cliente prueba ' + (i + 1), bank_name: 'Banco prueba', check_number: String(100 + i), amount_clp: 100000, received_on: '2026-11-14', due_on: null, status: 'portfolio', import_batch_id: 'old', metadata: { allocations: [{ source_document_number: String(900 + i) }] } }));
+data.checkPortfolio = { batchId: 'old', fileName: 'cheques-anteriores.xlsx', reportedAt: '2026-09-09', verified: true, checkIds: data.checks.map(row => row.id), amountClp: 600000, count: 6, issue: null };
+data.checks.push({ ...data.checks[0], id: 'manual', import_batch_id: null, received_on: '2026-08-28', due_on: '2026-11-14' });
 const sample = ${JSON.stringify(sample)};
 let confirmations = 0;
 const uploadAccountingEvidence = async () => 'test/cheques.xlsx';
@@ -48,6 +52,7 @@ await writeFile('tmp/facto-checks-browser.html', '<!doctype html><html lang="es"
 const book = XLSX.utils.book_new();
 XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([['Nombre Titular', 'Banco', 'Numero Documento', 'Numero', 'Fecha', 'Fecha Cobro', 'Monto'], ['Cliente de prueba', 'Santander', '1557', '000232', '14-09-2026', '30-09-2026', 100000]]), 'Cheques');
 const file = XLSX.write(book, { type: 'buffer', bookType: 'xlsx' });
+if (process.argv.includes('--prepare-only')) process.exit(0);
 const browser = await chromium.launch({ headless: true, channel: process.env.PLAYWRIGHT_CHANNEL || 'chrome' });
 try {
   for (const width of [390, 1440]) {

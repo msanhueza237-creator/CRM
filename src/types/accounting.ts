@@ -410,7 +410,8 @@ export interface AccountingSummary {
   payables: number;
   payables_confirmed: number;
   payables_overdue: number;
-  checks_portfolio: number;
+  checks_portfolio: number | null;
+  checks_portfolio_basis?: "facto_applied_report" | "requires_review" | "crm_records";
   payment_events_pending: number;
   unmatched_bank: number;
   open_controls: number;
@@ -559,6 +560,16 @@ export interface AccountingBootstrap {
   receivables: AccountingReceivable[];
   payables: AccountingPayable[];
   checks: AccountingCheck[];
+  checkPortfolio?: {
+    batchId: string | null;
+    fileName: string | null;
+    reportedAt: string | null;
+    verified: boolean;
+    checkIds: string[];
+    amountClp: number | null;
+    count: number;
+    issue: string | null;
+  };
   paymentEvents: AccountingPaymentEvent[];
   controls: AccountingControlFinding[];
   batches: AccountingImportBatch[];

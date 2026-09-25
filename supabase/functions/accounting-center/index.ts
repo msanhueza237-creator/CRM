@@ -1,4 +1,5 @@
 import { parseBankWorkbook } from "./bank-parsers.ts";
+import { buildCheckPortfolio } from "./check-portfolio.ts";
 import { isFactoDispatchGuide, parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-parsers.ts";
 import {
   buildSuggestedAllocationPlan,
@@ -268,7 +269,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     detail(`accounting_journal_entries?select=*&entity_id=eq.${entityId}&order=entry_date.desc,entry_number.desc&limit=250`),
     selectAllRows(rest, `accounting_receivables?select=*&entity_id=eq.${entityId}&order=id.asc`),
     summaryOnly ? Promise.resolve([]) : selectAllRows(rest, `accounting_payables?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast,id.asc`),
-    summaryOnly ? Promise.resolve([]) : selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast,id.asc`),
+    selectAllRows(rest, `accounting_checks?select=*&entity_id=eq.${entityId}&order=due_on.asc.nullslast,id.asc`),
     detail(`accounting_payment_events?select=*&entity_id=eq.${entityId}&order=event_date.desc,event_time.desc.nullslast&limit=2000`),
     detail(`accounting_control_findings?select=*&entity_id=eq.${entityId}&status=eq.open&order=severity.asc,detected_at.desc&limit=250`),
     detail(`accounting_import_batches?select=*&entity_id=eq.${entityId}&order=created_at.desc&limit=100`),
@@ -278,6 +279,12 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     selectRows(rest, "integration_records?select=id,payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
   ]);
   const asOf = accountingToday();
+  const checkBatches = await selectRows(rest, `accounting_import_batches?select=id,file_name,created_at,status,row_count,error_count&entity_id=eq.${entityId}&source_type=eq.CHECKS&import_profile=eq.facto_checks_banco_estado&status=in.(imported,partial)&order=created_at.desc,id.desc&limit=1`);
+  const checkBatch = checkBatches[0] || null;
+  const checkImportRows = checkBatch
+    ? await selectAllRows(rest, `accounting_import_rows?select=id,status,validation_errors,normalized_data&batch_id=eq.${checkBatch.id}&order=row_number.asc,id.asc`)
+    : [];
+  const checkPortfolio = buildCheckPortfolio(checkBatch, checkImportRows, checks);
   const [rawSummary, dashboard] = await Promise.all([
     rpc(rest, "accounting_dashboard_summary", { p_entity_id: entityId, p_as_of: asOf }),
     buildDashboardAnalytics(rest, entityId, asOf, sources, accounts, !summaryOnly),
@@ -295,6 +302,8 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     && rowsStampedByLatestSnapshot > latestFactoCollections.details.length;
   const summary = {
     ...asObject(rawSummary),
+    checks_portfolio: checkPortfolio.batchId ? checkPortfolio.amountClp : asObject(rawSummary).checks_portfolio,
+    checks_portfolio_basis: checkPortfolio.verified ? "facto_applied_report" : checkPortfolio.batchId ? "requires_review" : "crm_records",
     bank_clp: bankReality.availableClp,
     bank_usd_clp: bankReality.availableUsdClp,
     bank_balance_basis: bankReality.basis,
@@ -318,7 +327,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     stale: Boolean(integrationUpdatedAt && (!accountingSyncedAt || integrationUpdatedAt > accountingSyncedAt)),
   };
   if (summaryOnly) return {
-    entity: { id: entity.id, name: entity.name }, summary, dashboard, bankReality, factoFreshness,
+    entity: { id: entity.id, name: entity.name }, summary, dashboard, bankReality, factoFreshness, checkPortfolio,
     ...(forAgent ? { receivables, sources, factoReceivables: latestFactoCollections } : {}),
   };
   const documentEntries = await selectAllRows(rest, `accounting_journal_entries?select=id,source_document_id,idempotency_key,status&entity_id=eq.${entity.id}&status=in.(posted,reversed)&idempotency_key=like.facto-document:*&order=id.asc`);
@@ -330,7 +339,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
   }
   return {
     entity, accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, bankReality, sources, entries,
-    receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, summary, dashboard, factoFreshness,
+    receivables, payables, checks, checkPortfolio, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, summary, dashboard, factoFreshness,
     factoReceivables: latestFactoCollections,
     profile: { role: profile.role, permissions: [...rolePermissions[profile.role]] },
   };
