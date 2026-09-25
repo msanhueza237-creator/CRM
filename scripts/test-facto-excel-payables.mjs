@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
 import * as XLSX from 'xlsx';
 import { bankMoney, bankIsoDate } from '../supabase/functions/accounting-center/bank-normalizers.ts';
+import { isPostableFactoDocument } from '../supabase/functions/accounting-center/facto-document-policy.ts';
 
 function loadFunctions(source, context, names) {
   const tree = ts.createSourceFile('test.ts', source, ts.ScriptTarget.Latest, true);
@@ -35,6 +36,28 @@ const repeated = await parser.parseFactoExcelWorkbook(workbook({ Datos: [header,
 assert.equal(repeated.summary.payables_documents, 1);
 assert.equal(repeated.summary.adjustment_documents, 1);
 assert.equal(repeated.rows.flatMap(r => r.errors).length, 0);
+const issuedGuide = ['Guía de despacho electrónica emitida', ...sale.slice(1)];
+const receivedGuide = ['Guía de despacho electrónica recibida', ...purchase.slice(1)];
+const withGuides = await parser.parseFactoExcelWorkbook(workbook({ Datos: [header, sale, purchase, issuedGuide, receivedGuide, credit] }));
+assert.equal(withGuides.rows.length, 5);
+assert.deepEqual(withGuides.rows.flatMap(r => r.errors), []);
+assert.equal(withGuides.rows[2].data.document_type, 'sales_dispatch_guide');
+assert.equal(withGuides.rows[3].data.document_type, 'purchase_dispatch_guide');
+assert.equal(withGuides.summary.receivables_documents, 1);
+assert.equal(withGuides.summary.payables_documents, 1);
+assert.equal(withGuides.summary.receivables_total_clp, 100000);
+assert.equal(withGuides.summary.payables_total_clp, 200000);
+assert.equal(withGuides.summary.informational_documents, 2);
+assert.equal(withGuides.summary.adjustment_documents, 1);
+for (const row of withGuides.rows.slice(2, 4)) {
+  assert.equal(isPostableFactoDocument({ document_type: row.data.document_type, status: 'validated', data_quality: 'validated' }), false);
+  assert.equal(isPostableFactoDocument({ document_type: `${row.data.direction === 'sale' ? 'sales' : 'purchase'}_document`, status: 'validated', data_quality: 'validated', raw_payload: { evidence: 'Facto Excel complementario', normalized_data: row.data } }), false);
+}
+const guideOnly = await parser.parseFactoExcelWorkbook(workbook({ Datos: [header, receivedGuide] }));
+assert.equal(guideOnly.summary.payables_documents, 0);
+assert.equal(guideOnly.summary.payables_total_clp, 0);
+const zeroGuide = [...receivedGuide]; zeroGuide.splice(5, 3, 0, 0, 0);
+assert.deepEqual((await parser.parseFactoExcelWorkbook(workbook({ Datos: [header, zeroGuide] }))).rows[0].errors, []);
 const duplicate = await parser.parseFactoExcelWorkbook(workbook({ Una: [header, purchase], Otra: [header, purchase] }));
 assert.match(duplicate.rows[1].errors.join(' '), /repetido/);
 const missing = [...purchase]; missing[7] = '';
@@ -67,7 +90,7 @@ assert.equal(helpers.findFactoSourceDocument([foreignSource], { direction: 'purc
 
 const createdSources = new Map();
 const createdTargets = new Map();
-const createHelpers = loadFunctions(edgeSource, { ...helpers, numeric: x => Number(x || 0),
+const createHelpers = loadFunctions(edgeSource, { ...helpers, HttpError, isFactoDispatchGuide: parser.isFactoDispatchGuide, numeric: x => Number(x || 0),
   sha256Text: async text => text,
   upsertRowsSelected: async (_, table, rows) => {
     const map = table === 'accounting_source_documents' ? createdSources : createdTargets;
@@ -81,6 +104,10 @@ const createHelpers = loadFunctions(edgeSource, { ...helpers, numeric: x => Numb
 const created = await createHelpers.ensureFactoWorkbookDocument({}, 'entity', { id: 'batch' }, { id: 'row1' }, mixed.rows[1].data);
 await createHelpers.ensureFactoWorkbookDocument({}, 'entity', { id: 'batch2' }, { id: 'row2' }, { ...mixed.rows[1].data, reported_paid_clp: 100000 });
 assert.equal(createdSources.size, 1);
+
+const createdBeforeGuide = [createdSources.size, createdTargets.size];
+await assert.rejects(createHelpers.ensureFactoWorkbookDocument({}, 'entity', { id: 'batch' }, { id: 'guide' }, withGuides.rows[3].data), /guía de despacho no genera/);
+assert.deepEqual([createdSources.size, createdTargets.size], createdBeforeGuide);
 assert.equal(createdTargets.size, 1);
 assert.equal(created.target.paid_amount_clp, 0);
 const existing = await createHelpers.ensureFactoWorkbookDocument({}, 'entity', { id: 'batch' }, { id: 'row3' }, mixed.rows[1].data, { ...documents[1], id: 'existing-source' });
@@ -96,7 +123,7 @@ const ap = [{ id: 'ap', source_document_id: 'purchase', original_amount_clp: 238
 const writes = [];
 const patches = [];
 const context = {
-  HttpError, ...helpers,
+  HttpError, ...helpers, isFactoDispatchGuide: parser.isFactoDispatchGuide,
   requiredUuid: x => x, asObject: x => x || {}, numeric: x => Number(x || 0), requestIdToUuid: x => x,
   selectRows: async () => [batch],
   readSourceDocumentSummaries: async () => documents.map(row => ({ ...row, source_type: 'FACTO' })),
@@ -141,6 +168,25 @@ const before = patches.length;
 batch.error_count = 1;
 await assert.rejects(handler.confirmFactoExcel({}, { id: 'admin' }, 'invalid', { batchId: batch.id }), /contiene errores/);
 assert.equal(patches.length, before);
+batch.error_count = 0;
+const legacyGuide = { ...withGuides.rows[3].data, document_type: 'purchase_document', balance_kind: 'payable' };
+assert.equal(handler.factoOpenBalanceKind(legacyGuide), null);
+assert.equal(handler.factoOpenBalanceKind({ ...legacyGuide, direction: 'sale', document_type: 'sales_document', balance_kind: 'receivable', document_type_label: issuedGuide[0] }), null);
+assert.equal(handler.factoOpenBalanceKind({ document_type: 'sales_dispatch_guide', direction: 'sale', balance_kind: 'receivable' }), null);
+importRows.push({ id: 'legacy-guide', normalized_data: legacyGuide, status: 'new' });
+batch.row_count = importRows.length;
+await assert.rejects(handler.confirmFactoExcel({}, { id: 'admin' }, 'legacy', { batchId: batch.id }), /previsualización antigua/);
+assert.equal(patches.length, before, 'Stale previews must fail before any portfolio writes');
+importRows.pop();
+importRows.push(...withGuides.rows.slice(2).map((row, i) => ({ id: `evidence-${i}`, normalized_data: row.data, status: 'new' })));
+batch.row_count = importRows.length;
+const guideResult = await handler.confirmFactoExcel({}, { id: 'admin' }, 'guides', { batchId: batch.id });
+assert.equal(guideResult.summary.informational_documents, 2);
+assert.equal(guideResult.summary.adjustment_documents, 1);
+assert.equal(guideResult.summary.linked, 2);
+assert.equal(ar.length, 1);
+assert.equal(ap.length, 1);
+assert.ok(!writes.some(w => /journal|bank|payment/.test(w)));
 
 if (process.argv[2]) {
   const actual = await parser.parseFactoExcelWorkbook(await readFile(process.argv[2]));

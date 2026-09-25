@@ -1,5 +1,5 @@
 import { parseBankWorkbook } from "./bank-parsers.ts";
-import { parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-parsers.ts";
+import { isFactoDispatchGuide, parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-parsers.ts";
 import {
   buildSuggestedAllocationPlan,
   rankReconciliationCandidates,
@@ -1735,6 +1735,7 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
   let unmatched = 0;
   let duplicates = 0;
   let adjustmentDocuments = 0;
+  let informationalDocuments = 0;
   const duplicateImportRowIds: string[] = [];
   const processedImportRowIds: string[] = [];
   const outstandingReceivableIds = new Set<string>();
@@ -1742,6 +1743,11 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
 
   if (String(batch.source_type) === "COLLECTIONS") {
     if (importRows.length !== Number(batch.row_count)) throw new HttpError(409, "El respaldo no contiene todas las filas del Excel. No se actualizarán los saldos.");
+    // Old previews may include guide amounts in their approved debt totals.
+    if (importRows.some((row) => {
+      const data = asObject(row.normalized_data);
+      return isFactoDispatchGuide(data.document_type, data.document_type_label) && data.balance_kind !== "informational";
+    })) throw new HttpError(409, "Esta previsualización antigua incluye guías de despacho como deuda. Carga un nuevo reporte Facto para excluirlas antes de confirmar.");
     for (const row of importRows) {
       const data = asObject(row.normalized_data);
       const kind = factoOpenBalanceKind(data);
@@ -1757,7 +1763,8 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
       const data = asObject(row.normalized_data);
       const balanceKind = factoOpenBalanceKind(data);
       if (!balanceKind) {
-        adjustmentDocuments += 1;
+        if (data.balance_kind === "adjustment" || String(data.document_type || "").endsWith("_credit_note")) adjustmentDocuments += 1;
+        else informationalDocuments += 1;
         imported += 1;
         processedImportRowIds.push(String(row.id));
         continue;
@@ -1907,6 +1914,7 @@ async function confirmFactoExcel(rest: RestClient, profile: Profile, requestId: 
     unmatched,
     duplicates,
     adjustment_documents: adjustmentDocuments,
+    informational_documents: informationalDocuments,
     portfolio_snapshot: portfolioSnapshot,
     confirmed_at: new Date().toISOString(),
   };
@@ -4805,6 +4813,7 @@ function findFactoSourceDocument(documents: JsonRecord[], data: JsonRecord) {
 }
 
 function factoOpenBalanceKind(data: JsonRecord): "receivable" | "payable" | null {
+  if (isFactoDispatchGuide(data.document_type, data.document_type_label)) return null;
   const declared = String(data.balance_kind || "");
   if (declared === "receivable" || declared === "payable") return declared;
   if (declared === "adjustment" || declared === "informational") return null;
@@ -4824,6 +4833,9 @@ async function ensureFactoWorkbookDocument(
   data: JsonRecord,
   existingSource: JsonRecord | null = null,
 ) {
+  if (isFactoDispatchGuide(data.document_type, data.document_type_label)) {
+    throw new HttpError(409, "Una guía de despacho no genera cuentas por cobrar ni por pagar; utiliza la factura relacionada.");
+  }
   const direction = String(data.direction || "");
   const documentType = String(data.document_type || "");
   const documentNumber = String(data.document_number || "").trim();

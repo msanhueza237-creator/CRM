@@ -8,7 +8,7 @@ import { reportPeriod } from "../src/modules/accounting/reportNavigation.ts";
 
 const source = await readFile("src/modules/accounting/AccountingCenterPage.tsx", "utf8");
 const tree = ts.createSourceFile("page.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const names = ["FactoView", "ReceivablesView", "PayablesView", "ChecksView", "FactoExcelPreviewDialog", "documentTypeLabel"];
+const names = ["FactoView", "ReceivablesView", "PayablesView", "ChecksView", "FactoExcelPreviewDialog", "documentTypeLabel", "factoPreviewColumns"];
 const pieces = tree.statements.filter((node) => names.includes(node.name?.text)
   || (ts.isVariableStatement(node) && node.declarationList.declarations.some((d) => d.name.getText(tree) === "factoExcelProfiles")));
 const code = ts.transpileModule(pieces.map((node) => node.getText(tree)).join("\n"), {
@@ -29,6 +29,10 @@ const context = {
   factoPreviewColumns: () => ({ headers: [], values: () => [] }),
 };
 const components = new Function(...Object.keys(context), `${code};return {${names.join(",")}};`)(...Object.values(context));
+const balanceColumns = components.factoPreviewColumns('facto_unpaid_documents');
+assert.equal(balanceColumns.values({ balance_kind: 'informational', document_type_label: 'Guia de despacho electronica recibida' })[0], 'Informativo · sin deuda');
+assert.equal(balanceColumns.values({ balance_kind: 'payable' })[0], 'Por pagar');
+assert.equal(balanceColumns.values({ balance_kind: 'receivable' })[0], 'Por cobrar');
 const data = { sources: [], batches: [], entity: { id: "test" }, receivables: [], payables: [], checks: [], bankAccounts: [], summary: { as_of: "2026-09-09" } };
 const props = { data, busy: "", runAction: async () => true };
 const upload = renderToStaticMarkup(React.createElement(components.FactoView, { ...props, excelOnly: true }));

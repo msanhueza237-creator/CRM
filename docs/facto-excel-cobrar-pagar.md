@@ -1,5 +1,21 @@
 # Excel Facto: por cobrar y por pagar
 
+## Guias de despacho
+
+Las guias emitidas y recibidas permanecen en el respaldo y en las filas de
+importacion como `informational`, sin crear documentos contables, cuentas por
+cobrar/pagar ni asientos. La deuda se obtiene exclusivamente de las facturas
+correspondientes; no se crea una factura a partir de la guia.
+
+La previsualizacion las identifica como "Informativo - sin deuda" y conserva
+sus importes originales para auditar el archivo, fuera de los subtotales de
+cartera. La confirmacion revalida el tipo/etiqueta y bloquea previews antiguos
+que habian clasificado guias como deuda antes de escribir saldos. Un archivo
+con solo guias no acredita una cartera vacia de facturas.
+
+Esto no elimina ni revierte datos historicos: si existieran guias ya aplicadas
+como obligaciones, identificarlas y revisar su evidencia antes de corregirlas.
+
 El mismo respaldo de documentos impagos se carga desde Finanzas > Fuentes,
 Por cobrar o Por pagar. Antes de confirmar, la vista separa documentos emitidos,
 documentos recibidos, abonos y saldos en CLP. Las notas de credito se conservan

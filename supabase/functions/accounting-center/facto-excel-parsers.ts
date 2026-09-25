@@ -128,7 +128,7 @@ function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExce
     if (money(raw.pagado) < 0 || money(raw.impago) < 0) errors.push("Pagado e impago no pueden ser negativos.");
     if (!issuedOn) errors.push("Fecha inválida.");
     if (!direction) errors.push("No se reconoció si el documento es emitido o recibido.");
-    if (total <= 0 && !normalizeText(documentTypeLabel).includes("nota de credito")) errors.push("Total inválido.");
+    if (total <= 0 && !normalizeText(documentTypeLabel).includes("nota de credito") && !isFactoDispatchGuide(documentType)) errors.push("Total inválido.");
     if (total > 0 && Math.abs(total - paid - reportedBalance) > 2) errors.push("Pagado más impago no coincide con el total.");
     parsed.push({
       row_number: index + 1,
@@ -167,6 +167,7 @@ function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExce
     warnings: [
       "Los saldos se registran como informados por Facto; la cartola bancaria confirmará los pagos.",
       "Las notas de crédito permanecen como evidencia documental y nunca se convierten en una cuenta por cobrar o pagar positiva.",
+      "Las guías de despacho se conservan solo como respaldo informativo; la deuda corresponde a la factura relacionada.",
     ],
     summary: {
       total_clp: sum(parsed, "total_clp"),
@@ -177,6 +178,7 @@ function parseBalances(rows: unknown[][], profile: FactoExcelProfile): FactoExce
       payables_documents: parsed.filter((row) => row.data.balance_kind === "payable").length,
       payables_total_clp: parsed.filter((row) => row.data.balance_kind === "payable").reduce((total, row) => total + Number(row.data.reported_balance_clp || 0), 0),
       adjustment_documents: parsed.filter((row) => row.data.balance_kind === "adjustment").length,
+      informational_documents: parsed.filter((row) => row.data.balance_kind === "informational").length,
     },
   };
 }
@@ -364,6 +366,7 @@ function paymentDirection(label: string, amount: number) {
 function normalizedDocumentType(label: string) {
   const value = normalizeText(label);
   const direction = value.includes("emitida") ? "sales" : value.includes("recibida") || value.includes("extranjera") ? "purchase" : "other";
+  if (isFactoDispatchGuide("", label)) return `${direction}_dispatch_guide`;
   if (value.includes("nota de credito")) return `${direction}_credit_note`;
   if (value.includes("nota de debito")) return `${direction}_debit_note`;
   if (value.includes("boleta") && value.includes("exenta")) return `${direction}_exempt_receipt`;
@@ -374,11 +377,17 @@ function normalizedDocumentType(label: string) {
 }
 
 function openBalanceKind(direction: string | null, documentType: string) {
+  if (isFactoDispatchGuide(documentType)) return "informational";
   if (documentType.endsWith("_credit_note")) return "adjustment";
   if (documentType.endsWith("_receipt") || documentType.endsWith("_exempt_receipt")) return "informational";
   if (direction === "sale") return "receivable";
   if (direction === "purchase") return "payable";
   return "informational";
+}
+
+export function isFactoDispatchGuide(documentType: unknown, label: unknown = "") {
+  return String(documentType || "").endsWith("_dispatch_guide")
+    || normalizeText(`${documentType || ""} ${label || ""}`).includes("guia de despacho");
 }
 
 function sheetRows(workbook: XLSX.WorkBook, maxRows?: number, sheetName = workbook.SheetNames[0], raw = false): unknown[][] {

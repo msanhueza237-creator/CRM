@@ -1394,7 +1394,7 @@ function factoProfileLabel(value: string) { return factoExcelProfiles.find((item
 function factoPreviewColumns(profile: AccountingFactoExcelProfile): { headers: string[]; values: (data: Record<string, unknown>) => React.ReactNode[] } {
   if (profile === "facto_unpaid_documents") return {
     headers: ["Destino", "Documento", "Emisión", "Contraparte", "Total", "Pagado Facto", "Impago Facto"],
-    values: (data) => [data.balance_kind === "payable" ? "Por pagar" : data.balance_kind === "receivable" ? "Por cobrar" : "Ajuste documental", `${data.document_type_label || "—"} · ${data.document_number || "—"}`, date(String(data.issued_on || "")), `${data.counterpart_name || "—"} ${data.counterpart_tax_id || ""}`, clp(data.total_clp), clp(data.reported_paid_clp), clp(data.reported_balance_clp)],
+    values: (data) => [data.balance_kind === "payable" ? "Por pagar" : data.balance_kind === "receivable" ? "Por cobrar" : data.balance_kind === "informational" ? "Informativo · sin deuda" : "Ajuste documental", `${data.document_type_label || "—"} · ${data.document_number || "—"}`, date(String(data.issued_on || "")), `${data.counterpart_name || "—"} ${data.counterpart_tax_id || ""}`, clp(data.total_clp), clp(data.reported_paid_clp), clp(data.reported_balance_clp)],
   };
   if (profile === "facto_checks_banco_estado") return {
     headers: ["Cliente", "Banco emisor", "N.º cheque", "Documento", "Recepción", "Cobro", "Monto", "Estado Facto"],
