@@ -419,6 +419,7 @@ export async function deleteForeignTradeOperationLine(lineId: string) {
 export async function upsertForeignTradeCostLine(input: UpsertForeignTradeCostLineInput) {
   requireSupabase();
   const payload = {
+    ...(input.expectedUpdatedAt ? { expected_updated_at: input.expectedUpdatedAt } : {}),
     id: input.id || null,
     operation_id: input.operationId,
     scenario_id: input.scenarioId || null,
@@ -446,6 +447,16 @@ export async function deleteForeignTradeCostLine(costId: string) {
   requireSupabase();
   const { error } = await supabase!.rpc("delete_foreign_trade_cost_line", { p_cost_id: costId });
   if (error) throw error;
+}
+
+export async function simulateForeignTradeCosts(operationId: string, costs: ForeignTradeCostLine[]) {
+  requireSupabase();
+  const { data, error } = await supabase!.rpc("simulate_foreign_trade_costs", {
+    p_operation_id: operationId,
+    p_expected_versions: Object.fromEntries(costs.map((cost) => [cost.id, cost.updated_at])),
+  });
+  if (error) throw error;
+  return data as { converted_costs: number };
 }
 
 export async function saveForeignTradeCostingScenario(input: SaveForeignTradeCostingScenarioInput) {

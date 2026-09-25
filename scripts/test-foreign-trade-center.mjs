@@ -2622,4 +2622,7 @@ assert.equal(
   "la eliminación debe conservar una auditoría sin secretos",
 );
 
+const { testForeignTradeCostReferences } = await import("./fixtures/foreign-trade-cost-references.mjs");
+await testForeignTradeCostReferences(db);
+await db.close();
 console.log("Centro de Comercio Exterior: migracion, permisos, RPC y auditoria OK");

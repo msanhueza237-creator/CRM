@@ -81,6 +81,7 @@ export interface ForeignTradeOperation {
   order_date: string | null;
   estimated_departure: string | null;
   estimated_arrival: string | null;
+  warehouse_receipt_date?: string | null;
   inventory_mode: ForeignTradeInventoryMode;
   notes: string | null;
   created_at: string;
@@ -1068,6 +1069,7 @@ export interface UpsertForeignTradeOperationLineInput {
 }
 
 export interface UpsertForeignTradeCostLineInput {
+  expectedUpdatedAt?: string;
   id?: string;
   operationId: string;
   scenarioId?: string;

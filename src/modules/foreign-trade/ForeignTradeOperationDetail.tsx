@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleDollarSign,
   Container,
+  FlaskConical,
   Edit3,
   Link2,
   LoaderCircle,
@@ -23,6 +24,7 @@ import {
   deleteForeignTradeOperationLine,
   repairForeignTradeOperationProductIdentities,
   searchForeignTradeCatalog,
+  simulateForeignTradeCosts,
   updateForeignTradeOperation,
   upsertForeignTradeCostLine,
   upsertForeignTradeOperationLine,
@@ -47,6 +49,7 @@ import { ForeignTradeCostingPanel } from "./ForeignTradeCostingPanel";
 import { ForeignTradeExpenseReconciliationPanel } from "./ForeignTradeExpenseReconciliationPanel";
 import { ForeignTradeIntelligencePanel } from "./ForeignTradeIntelligencePanel";
 import { formatForeignTradeProductIdentity, getForeignTradeProductIdentity } from "./foreignTradeProductIdentity";
+import { referenceCostEditValues } from "./foreignTradeCostReferences";
 
 type DetailTab = "summary" | "products" | "costs" | "reconciliation" | "costing" | "intelligence" | "documents";
 
@@ -91,6 +94,9 @@ export function ForeignTradeOperationDetail({
   const [notice, setNotice] = useState("");
   const [identityRepairError, setIdentityRepairError] = useState("");
   const [repairingIdentities, setRepairingIdentities] = useState(false);
+  const [convertingCosts, setConvertingCosts] = useState(false);
+  const [confirmingSimulation, setConfirmingSimulation] = useState(false);
+  const [costError, setCostError] = useState("");
 
   async function changed(message: string) {
     setNotice(message);
@@ -106,6 +112,25 @@ export function ForeignTradeOperationDetail({
   const taxRecords = detail.costs.filter((cost) => cost.category === "duties" || cost.category === "taxes");
   const operatingCosts = detail.costs.filter((cost) => cost.category !== "duties" && cost.category !== "taxes");
   const recognizedProductCount = detail.lines.filter((line) => getForeignTradeProductIdentity(line).value).length;
+  const canSimulate = !["received", "closed", "cancelled"].includes(operation.status)
+    && !operation.warehouse_receipt_date
+    && detail.costs.some((cost) => !cost.metadata?.excluded_from_costing && cost.source_type !== "simulated");
+
+  async function convertCostsToSimulation() {
+    if (!detail || convertingCosts) return;
+    setConvertingCosts(true);
+    setCostError("");
+    try {
+      const result = await simulateForeignTradeCosts(operationId, detail.costs);
+      setConfirmingSimulation(false);
+      await changed(`${result.converted_costs} costos conservados como simulación. Documentos sin cambios.`);
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setCostError(message.includes("costs_changed_refresh") ? "Los costos cambiaron. Actualiza la operación antes de continuar."
+        : message.includes("simulate_foreign_trade_costs") ? "La función de simulación aún no está instalada en el servidor."
+        : message);
+    } finally { setConvertingCosts(false); }
+  }
 
   async function repairProductIdentities() {
     setRepairingIdentities(true);
@@ -192,9 +217,10 @@ export function ForeignTradeOperationDetail({
 
       {tab === "costs" ? (
         <section className="panel foreign-trade-detail-panel">
-          <div className="foreign-trade-detail-panel-heading"><div><h2>Gastos operativos</h2><p>Registra montos netos o brutos. El IVA recuperable se separa del costo económico.</p></div><button className="primary-button" type="button" onClick={() => setCostDialog("new")}><Plus size={17} /> Agregar registro</button></div>
+          <div className="foreign-trade-detail-panel-heading"><div><h2>Gastos operativos</h2><p>Registra montos netos o brutos. El IVA recuperable se separa del costo económico.</p></div><div className="foreign-trade-row-actions">{canSimulate ? <button className="ghost-button" type="button" disabled={convertingCosts || loading} onClick={() => { setCostError(""); setConfirmingSimulation(true); }}><FlaskConical size={17} /> Usar como simulación</button> : null}<button className="primary-button" type="button" onClick={() => setCostDialog("new")}><Plus size={17} /> Agregar registro</button></div></div>
+          {costError ? <div className="notice-banner error" role="alert">{costError}</div> : null}
           {operatingCosts.length ? <CostTable costs={operatingCosts} onEdit={setCostDialog} onChanged={changed} /> : <EmptyDetail title="No hay gastos operativos" detail="Agrega flete, seguro, costos en origen o Chile sin mezclar monedas." />}
-          {taxRecords.length ? <div className="foreign-trade-tax-records"><div><strong>Tributos documentados</strong><span>No se tratan como gastos: sirven para conciliar el cálculo desde CIF.</span></div><CostTable costs={taxRecords} onEdit={setCostDialog} onChanged={changed} /></div> : null}
+          {taxRecords.length ? <div className="foreign-trade-tax-records"><div><strong>Tributos y referencias</strong><span>No se tratan como gastos: sirven para conciliar el cálculo desde CIF.</span></div><CostTable costs={taxRecords} onEdit={setCostDialog} onChanged={changed} /></div> : null}
         </section>
       ) : null}
 
@@ -205,6 +231,16 @@ export function ForeignTradeOperationDetail({
       {tab === "intelligence" ? <ForeignTradeIntelligencePanel operationId={operationId} /> : null}
 
       {tab === "documents" ? <ForeignTradeDocumentsPanel operationId={operationId} supplierId={operation.supplier_id} suppliers={suppliers} onChanged={changed} /> : null}
+
+      {confirmingSimulation ? <div className="foreign-trade-modal-backdrop" role="presentation">
+        <form className="foreign-trade-operation-dialog" role="dialog" aria-modal="true" aria-labelledby="simulate-costs-title" onSubmit={(event) => { event.preventDefault(); void convertCostsToSimulation(); }} onKeyDown={(event) => { if (event.key === "Escape" && !convertingCosts) setConfirmingSimulation(false); }}>
+          <div className="foreign-trade-dialog-heading"><h2 id="simulate-costs-title">Convertir costos a simulación</h2><button className="icon-button" type="button" title="Cerrar" disabled={convertingCosts} onClick={() => setConfirmingSimulation(false)}><X size={18} /></button></div>
+          <p>{operation.title}</p>
+          <p>Se conservarán conceptos, montos, monedas y distribución. Los documentos no se eliminarán y la conciliación anterior quedará como referencia histórica. No se modificará la contabilidad.</p>
+          {costError ? <div className="notice-banner error" role="alert">{costError}</div> : null}
+          <div className="foreign-trade-dialog-actions"><button autoFocus className="ghost-button" type="button" disabled={convertingCosts} onClick={() => setConfirmingSimulation(false)}>Cancelar</button><button className="primary-button" type="submit" disabled={convertingCosts}>{convertingCosts ? <LoaderCircle className="spin" size={17} /> : <FlaskConical size={17} />} {convertingCosts ? "Convirtiendo..." : "Confirmar simulación"}</button></div>
+        </form>
+      </div> : null}
 
       {lineDialog ? <OperationLineDialog operationId={operationId} supplierAvailable={Boolean(operation.supplier_id)} line={lineDialog === "new" ? null : lineDialog} onClose={() => setLineDialog(null)} onSaved={async () => { setLineDialog(null); await changed("Producto guardado con trazabilidad."); }} /> : null}
       {costDialog ? <CostLineDialog operationId={operationId} defaultRate={operation.exchange_rate_clp} cost={costDialog === "new" ? null : costDialog} lines={detail.lines} onClose={() => setCostDialog(null)} onSaved={async () => { setCostDialog(null); await changed("Gasto guardado en su moneda original."); }} /> : null}
@@ -407,8 +443,10 @@ function OperationLineDialog({ operationId, supplierAvailable, line, onClose, on
 }
 
 function CostLineDialog({ operationId, defaultRate, cost, lines, onClose, onSaved }: { operationId: string; defaultRate: number | null; cost: ForeignTradeCostLine | null; lines: ForeignTradeOperationLine[]; onClose: () => void; onSaved: () => Promise<void> }) {
+  const editValues = referenceCostEditValues(cost, defaultRate);
   const [form, setForm] = useState<UpsertForeignTradeCostLineInput>({
     id: cost?.id,
+    expectedUpdatedAt: cost?.updated_at,
     operationId,
     scenarioId: cost?.scenario_id || "",
     operationLineId: cost?.operation_line_id || "",
@@ -416,12 +454,12 @@ function CostLineDialog({ operationId, defaultRate, cost, lines, onClose, onSave
     name: cost?.name || "",
     amountOriginal: valueString(cost?.amount_original, "0"),
     currency: cost?.currency || "USD",
-    exchangeRateClp: valueString(cost?.exchange_rate_clp ?? defaultRate),
+    exchangeRateClp: valueString(editValues.exchangeRateClp),
     allocationMethod: cost?.allocation_method || "operation",
     sourceType: cost?.source_type || "configured",
     recoverableTax: cost?.recoverable_tax ?? false,
-    amountBasis: cost?.metadata?.amount_basis || "net",
-    vatRatePercent: valueString(cost?.metadata?.vat_rate_percent as number | undefined, "0"),
+    amountBasis: editValues.amountBasis,
+    vatRatePercent: valueString(editValues.vatRatePercent, "0"),
     notes: cost?.notes || "",
   });
   const [busy, setBusy] = useState(false);
@@ -530,7 +568,7 @@ function DetailKpi({ icon, label, value, detail }: { icon: React.ReactNode; labe
 function Fact({ label, value }: { label: string; value: string }) { return <div><dt>{label}</dt><dd>{value}</dd></div>; }
 function EmptyDetail({ title, detail }: { title: string; detail: string }) { return <div className="empty-state"><PackageSearch size={27} /><strong>{title}</strong><span>{detail}</span></div>; }
 function SourceSelect({ value, onChange }: { value: ForeignTradeDataSource; onChange: (value: ForeignTradeDataSource) => void }) { return <select value={value} onChange={(event) => onChange(event.target.value as ForeignTradeDataSource)}><option value="real">Real confirmado</option><option value="document">Extraído de documento</option><option value="configured">Configurado</option><option value="estimated">Estimado</option><option value="simulated">Simulado</option></select>; }
-function SourceBadge({ source }: { source: ForeignTradeDataSource }) { return <span className={`foreign-trade-source-badge ${source}`}>{({ real: "Real", document: "Documento", configured: "Configurado", estimated: "Estimado", simulated: "Simulado" })[source]}</span>; }
+function SourceBadge({ source }: { source: ForeignTradeDataSource }) { return <span className={`foreign-trade-source-badge ${source}`}>{({ real: "Real", document: "Documento", configured: "Configurado", estimated: "Estimado", simulated: "Simulación" })[source]}</span>; }
 
 function getMissingInputs(lines: ForeignTradeOperationLine[], costs: ForeignTradeCostLine[], rate: number | null) {
   const missing: string[] = [];
@@ -565,7 +603,7 @@ const clpFormatter = new Intl.NumberFormat("es-CL", { style: "currency", currenc
 function formatDecimal(value: number) { return decimalFormatter.format(Number(value || 0)); }
 function formatClp(value: number) { return clpFormatter.format(Number(value || 0)); }
 function formatMoney(value: number, currency: string) { try { return new Intl.NumberFormat("es-CL", { style: "currency", currency: currency || "USD", maximumFractionDigits: 4 }).format(Number(value || 0)); } catch { return `${formatDecimal(value)} ${currency}`; } }
-function formatDate(value: string | null) { return value ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium" }).format(new Date(value)) : "Sin fecha"; }
+function formatDate(value: string | null) { return value ? new Intl.DateTimeFormat("es-CL", { dateStyle: "medium" }).format(new Date(value.length === 10 ? `${value}T12:00:00` : value)) : "Sin fecha"; }
 function operationTypeLabel(value: ForeignTradeOperation["operation_type"]) { return ({ simulation: "Simulación", quotation: "Cotización", proforma: "Proforma", purchase_order: "Orden de compra", shipment: "Importación" })[value]; }
 function transportTypeLabel(value: string) { return ({ sea: "Marítimo", air: "Aéreo", land: "Terrestre", multimodal: "Multimodal" } as Record<string, string>)[value] || value; }
 function inventoryModeLabel(value: ForeignTradeOperation["inventory_mode"] | undefined) { return ({ current: "Inventario actual", future: "Entrada futura confirmada", historical: "Solo histórico" } as Record<string, string>)[value || "historical"]; }

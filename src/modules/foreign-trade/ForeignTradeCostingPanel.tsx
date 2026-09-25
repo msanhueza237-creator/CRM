@@ -13,6 +13,7 @@ import {
   type ForeignTradePricingMethod,
 } from "./foreignTradeCostEngine";
 import { exportForeignTradeCostingExcel } from "./foreignTradeCostingExport";
+import { hasSimulatedCosts } from "./foreignTradeCostReferences";
 
 function costingIdentity(line: { sku: string | null; supplierCode: string | null; supplierModel: string | null }) {
   if (line.sku) return `SKU CRM: ${line.sku}`;
@@ -156,6 +157,7 @@ export function ForeignTradeCostingPanel({
         <div className="foreign-trade-detail-panel-heading">
           <div>
             <h2>Costeo puesto en bodega y precio de venta</h2>
+            {hasSimulatedCosts(detail.costs) ? <span className="foreign-trade-source-badge simulated">Proyección con costos simulados</span> : null}
             <p>Los tributos se calculan desde el CIF y se muestran separados de los gastos operativos.</p>
           </div>
           <Calculator size={22} />
@@ -316,7 +318,7 @@ function initialForm(
     : null;
   return {
     exchangeRateClp: valueString(scenario?.exchange_rate_clp ?? detail.operation.exchange_rate_clp),
-    cifTotalOriginal: valueString(saved.cif_total_original ?? explicitCif),
+    cifTotalOriginal: hasSimulatedCosts(detail.costs) ? "" : valueString(saved.cif_total_original ?? explicitCif),
     generalDutyPercent: valueString(saved.general_duty_percent ?? parameterValue(parameters, "cl_general_ad_valorem")),
     importVatPercent: valueString(saved.import_vat_percent ?? parameterValue(parameters, "cl_import_vat")),
     salesVatPercent: valueString(saved.sales_vat_percent ?? parameterValue(parameters, "cl_sales_vat")),

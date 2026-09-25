@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import { hasSimulatedCosts } from "./foreignTradeCostReferences.ts";
 import type { ForeignTradeCostLine, ForeignTradeOperationLine } from "../../types/foreignTrade";
 
 export type ForeignTradePricingMethod = "markup_on_cost" | "margin_on_sale";
@@ -165,7 +166,7 @@ export function calculateForeignTradeCosting(
   }
 
   const merchandiseTotal = sumDecimals(merchandiseBases);
-  const allLinesHaveCif = lines.length > 0 && lines.every((line) => positive(line.cif_total).gt(0));
+  const allLinesHaveCif = !hasSimulatedCosts(activeCosts) && lines.length > 0 && lines.every((line) => positive(line.cif_total).gt(0));
   const lineCifValues = lines.map((line) => convertToClp(line.cif_total, line.currency, exchangeRate));
   const allLineCifsRespectInvoice = allLinesHaveCif
     && lineCifValues.every((cif, index) => cif.gte(merchandiseBases[index] || ZERO));
@@ -188,8 +189,9 @@ export function calculateForeignTradeCosting(
     missingInputs.push("Hay CIF individuales menores que su valor de factura; se protegió el costo invoice y se redistribuyó solo el incremento CIF.");
   }
 
-  const documentedDuty = sumCostCategory(activeCosts, "duties");
-  const documentedImportVat = sumCostCategory(activeCosts, "taxes");
+  const documentedCosts = activeCosts.filter((cost) => ["real", "document"].includes(cost.source_type));
+  const documentedDuty = sumCostCategory(documentedCosts, "duties");
+  const documentedImportVat = sumCostCategory(documentedCosts, "taxes");
   const operatingCosts = activeCosts.filter((cost) => !NON_EXPENSE_CATEGORIES.has(cost.category));
   const operatingBreakdowns = operatingCosts.map(costBreakdown);
   const operatingNet = sumDecimals(operatingBreakdowns.map((item) => item.net));

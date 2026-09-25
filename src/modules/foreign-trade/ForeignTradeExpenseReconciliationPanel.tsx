@@ -81,6 +81,7 @@ export function ForeignTradeExpenseReconciliationPanel({
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const automaticSyncAttempt = useRef("");
+  const referenceOnly = reconciliations.find((item) => item.id === selectedId)?.metadata?.reference_only === true;
 
   const load = useCallback(async (preferredId?: string) => {
     setLoading(true);
@@ -126,6 +127,7 @@ export function ForeignTradeExpenseReconciliationPanel({
       : sum + (calculation.lineConversions[index]?.actualAppliedTotalClp || 0)
   ), 0), [calculation.lineConversions, draft.lines]);
   const directOperationCosts = useMemo(() => costs
+    .filter((cost) => cost.source_type === "real" || cost.source_type === "document")
     .filter((cost) => !cost.metadata?.excluded_from_costing)
     .filter((cost) => !isIncludedInForeignTradeAgencyReconciliation({ notes: cost.notes, metadata: cost.metadata }))
     .reduce((sum, cost) => sum + Number(cost.amount_clp || 0), 0), [costs]);
@@ -243,6 +245,7 @@ export function ForeignTradeExpenseReconciliationPanel({
   }
 
   async function persist() {
+    if (referenceOnly) throw new Error("Esta conciliación es una referencia histórica. Crea una nueva para los documentos reales.");
     validate();
     const id = await saveForeignTradeExpenseReconciliation({ ...draft, status: "reviewed" });
     setSelectedId(id);
@@ -308,7 +311,7 @@ export function ForeignTradeExpenseReconciliationPanel({
       <div>
         {reconciliations.map((item) => <button className={selectedId === item.id ? "active" : ""} type="button" key={item.id} onClick={() => selectReconciliation(item)}>
           <span><strong>{item.title}</strong><small>{item.agency_invoice_number ? `Factura ${item.agency_invoice_number}` : "Sin factura final"}</small></span>
-          <em className={`foreign-trade-reconciliation-status ${item.status}`}>{statusLabel(item.status)}</em>
+          <em className={`foreign-trade-reconciliation-status ${item.status}`}>{item.metadata?.reference_only ? "Referencia histórica" : statusLabel(item.status)}</em>
           <b>{formatReconciliationListTotal(item, costs)}</b>
         </button>)}
         {!reconciliations.length ? <p>Aún no hay rendiciones. Crea una para comparar el depósito con los documentos finales.</p> : null}
@@ -316,6 +319,7 @@ export function ForeignTradeExpenseReconciliationPanel({
     </aside>
 
     <section className="foreign-trade-reconciliation-main">
+      {referenceOnly ? <div className="notice-banner warning"><AlertTriangle size={18} /> Referencia histórica. Sus importes no constituyen costos reales de esta operación.</div> : null}
       <article className="panel foreign-trade-reconciliation-header">
         <div className="foreign-trade-detail-panel-heading"><div><h2>Provisión versus rendición final</h2><p>Los gastos operativos y los tributos se concilian por separado.</p></div><div><button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void synchronizeDocuments()}>{busy === "sync" ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} Actualizar desde documentos</button><span className="foreign-trade-private-badge"><FileCheck2 size={15} /> Auditable</span></div></div>
         <div className="foreign-trade-reconciliation-form">
@@ -389,14 +393,14 @@ export function ForeignTradeExpenseReconciliationPanel({
             />
             <td data-label="Diferencia" className={calculation.lineDifferences[index] < 0 ? "negative" : "positive"}><strong>{formatClp(calculation.lineDifferences[index] || 0)}</strong><small>{calculation.lineDifferences[index] < 0 ? "Mayor gasto real" : "Saldo favorable"}</small></td>
             <td data-label="Costeo"><label className="foreign-trade-mini-check"><input type="checkbox" checked={line.include_in_costing} onChange={(event) => updateLine(index, { include_in_costing: event.target.checked })} /> Incluir en costo</label><label className="foreign-trade-mini-check"><input type="checkbox" checked={isIncludedInForeignTradeAgencyReconciliation(line)} onChange={(event) => updateLinePaymentScope(index, event.target.checked)} /> En rendición agencia</label>{!isIncludedInForeignTradeAgencyReconciliation(line) ? <small>Pago directo a proveedor</small> : !isTax(line.line_type) ? <label className="foreign-trade-mini-check"><input type="checkbox" checked={line.recoverable_tax} onChange={(event) => updateLine(index, { recoverable_tax: event.target.checked })} /> IVA recuperable</label> : <small>Tributo separado</small>}</td>
-            <td data-label="Acciones"><button className="icon-button danger" type="button" title="Eliminar fila" aria-label={`Eliminar ${line.concept || "fila"}`} onClick={() => removeLine(index)}><Trash2 size={15} /></button></td>
+            <td data-label="Acciones"><label><span>Simulación que reemplaza</span><select aria-label={`Simulación que reemplaza ${line.concept}`} value={line.provision_cost_line_id || ""} onChange={(event) => updateLine(index, { provision_cost_line_id: event.target.value || null })}><option value="">Ninguna</option>{costs.filter((cost) => cost.category === line.cost_category && ["simulated", "estimated", "configured"].includes(cost.source_type) && (!cost.metadata?.excluded_from_costing || cost.id === line.provision_cost_line_id)).map((cost) => <option key={cost.id} value={cost.id}>{cost.name}</option>)}</select></label><button className="icon-button danger" type="button" title="Eliminar fila" aria-label={`Eliminar ${line.concept || "fila"}`} onClick={() => removeLine(index)}><Trash2 size={15} /></button></td>
           </tr>)}
         </tbody></table></div>
         {!draft.lines.length ? <div className="empty-state"><ReceiptText size={26} /><strong>Sin detalle</strong><span>Agrega los gastos y tributos indicados en la rendición.</span></div> : null}
         <footer className="foreign-trade-reconciliation-actions">
           <div><strong>Total rendido por agencia: {formatClp(calculation.actualTotalClp)}</strong><span>Gastos {formatClp(calculation.actualExpensesClp)} · tributos {formatClp(calculation.actualTaxesClp)}{directPaymentTotal > 0 ? ` · pago directo fuera de rendición ${formatClp(directPaymentTotal)}` : ""}</span></div>
-          <button className="ghost-button" type="button" disabled={Boolean(busy)} onClick={() => void save()}>{busy === "save" ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Guardar revisión</button>
-          <button className="primary-button" type="button" disabled={Boolean(busy)} onClick={() => void applyActualValues()}>{busy === "apply" ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />} Aplicar valores reales</button>
+          <button className="ghost-button" type="button" disabled={Boolean(busy) || referenceOnly} onClick={() => void save()}>{busy === "save" ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />} Guardar revisión</button>
+          <button className="primary-button" type="button" disabled={Boolean(busy) || referenceOnly} onClick={() => void applyActualValues()}>{busy === "apply" ? <LoaderCircle className="spin" size={16} /> : <FileCheck2 size={16} />} Aplicar valores reales</button>
         </footer>
         {message ? <div className="notice-banner success"><CheckCircle2 size={17} /> {message}</div> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={17} /> {error}</div> : null}

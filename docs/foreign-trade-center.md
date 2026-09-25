@@ -94,6 +94,34 @@ datos sensibles, `foreign_trade_agent_context` valida tipo de agente, worker, le
 Una tarea `commercial` no puede obtener este contexto ni leer costos, proformas, márgenes o
 proyecciones privadas.
 
+## Referencias De Costos
+
+La Fase 20 (`foreign_trade_center_phase20_cost_references.sql`) permite convertir los
+costos activos de una operación no recibida a simulación mediante una acción explícita.
+Conserva conceptos, montos, monedas, conversiones y distribución; guarda la fila original
+en `metadata.simulation_reference` y reutiliza la auditoría existente. No borra documentos
+ni crea movimientos contables. La conciliación anterior queda como referencia histórica
+y no puede reaplicarse automáticamente. El borrado posterior del documento no elimina
+estas referencias independientes.
+
+Las ediciones usan el RPC de costos existente, con control de versión y conservación del
+antecedente. El motor de precios recalcula las simulaciones desde mercadería, flete y seguro,
+sin imponer el CIF histórico. Se invalidan los totales guardados del escenario base cuando
+cambian los gastos; `Costeo y precio` calcula los valores vigentes y permite guardar el escenario.
+La conciliación nueva puede seleccionar qué simulación reemplaza cada gasto real: excluye
+el estimado, conserva su historial y evita doble contabilización en el costeo.
+
+Al crear una operación se heredan solo gastos operativos, como simulación, de la última
+operación recibida/cerrada del mismo transporte, con conciliación aplicada o liquidada y
+documento final confirmado, sin rendiciones pendientes ni costos estimados activos.
+No se heredan IVA, derechos, documentos, pagos, conciliaciones ni vínculos a productos.
+Si no hay una operación elegible, no se inventan referencias. La migración no convierte
+operaciones existentes automáticamente.
+
+Instalación: aplicar Fase 20 después de Fase 19 y publicar el frontend. No requiere nuevas
+variables de entorno ni desplegar Edge Functions. Verificación: `npm run test:foreign-trade`
+y `npm run build`. Los casos nuevos se ejecutan en PGlite, sin datos de producción.
+
 ## Modelo privado
 
 La migración `supabase/foreign_trade_center.sql` amplía las entidades existentes y agrega:
