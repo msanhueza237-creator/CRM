@@ -18,10 +18,10 @@ begin
   end if;
 end $$;
 
-revoke all on function public.upsert_foreign_trade_cost_line_v19(jsonb) from public, authenticated, service_role;
-revoke all on function public.create_foreign_trade_operation_v19(jsonb) from public, authenticated, service_role;
-revoke all on function public.apply_foreign_trade_expense_reconciliation_v19(uuid) from public, authenticated, service_role;
-revoke all on function public.auto_finalize_foreign_trade_expense_reconciliation_v19(uuid,boolean) from public, authenticated, service_role;
+revoke all on function public.upsert_foreign_trade_cost_line_v19(jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.create_foreign_trade_operation_v19(jsonb) from public, anon, authenticated, service_role;
+revoke all on function public.apply_foreign_trade_expense_reconciliation_v19(uuid) from public, anon, authenticated, service_role;
+revoke all on function public.auto_finalize_foreign_trade_expense_reconciliation_v19(uuid,boolean) from public, anon, authenticated, service_role;
 
 create or replace function public.auto_finalize_foreign_trade_expense_reconciliation(p_reconciliation_id uuid, p_apply_costs boolean default true)
 returns jsonb language plpgsql security definer set search_path = public, pg_temp as $$
@@ -255,15 +255,15 @@ begin
   return v_id;
 end $$;
 
-revoke all on function public.simulate_foreign_trade_costs(uuid,jsonb) from public;
-revoke all on function public.upsert_foreign_trade_cost_line(jsonb) from public;
-revoke all on function public.apply_foreign_trade_expense_reconciliation(uuid) from public;
-revoke all on function public.create_foreign_trade_operation(jsonb) from public;
-revoke all on function public.auto_finalize_foreign_trade_expense_reconciliation(uuid,boolean) from public;
+revoke all on function public.simulate_foreign_trade_costs(uuid,jsonb) from public, anon;
+revoke all on function public.upsert_foreign_trade_cost_line(jsonb) from public, anon;
+revoke all on function public.apply_foreign_trade_expense_reconciliation(uuid) from public, anon;
+revoke all on function public.create_foreign_trade_operation(jsonb) from public, anon;
+revoke all on function public.auto_finalize_foreign_trade_expense_reconciliation(uuid,boolean) from public, anon;
 grant execute on function public.auto_finalize_foreign_trade_expense_reconciliation(uuid,boolean) to authenticated, service_role;
 grant execute on function public.simulate_foreign_trade_costs(uuid,jsonb), public.upsert_foreign_trade_cost_line(jsonb),
   public.apply_foreign_trade_expense_reconciliation(uuid), public.create_foreign_trade_operation(jsonb) to authenticated, service_role;
-revoke all on function public.foreign_trade_keep_reference_history(), public.foreign_trade_detach_reference_costs() from public;
-revoke all on function public.foreign_trade_invalidate_cost_projection() from public;
+revoke all on function public.foreign_trade_keep_reference_history(), public.foreign_trade_detach_reference_costs() from public, anon;
+revoke all on function public.foreign_trade_invalidate_cost_projection() from public, anon;
 notify pgrst, 'reload schema';
 commit;

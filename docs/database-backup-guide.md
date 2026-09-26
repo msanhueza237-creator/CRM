@@ -8,9 +8,17 @@ El script [scripts/backup-database.sh](../scripts/backup-database.sh) corre `pg_
 
 El script:
 
-1. Genera un dump comprimido (`pg_dump -Fc`) con timestamp: `climactiva-crm-YYYYMMDD-HHMMSS.dump`.
-2. Si el dump falla o queda vacio, borra el archivo parcial y termina con error (para que cron lo detecte).
-3. Elimina automaticamente los backups mas viejos que `RETENTION_DAYS` (14 dias por defecto).
+1. Adquiere un bloqueo `flock` para impedir ejecuciones superpuestas.
+2. Comprueba espacio para 1,5 veces la mayor copia existente mas una reserva de 15 GB decimales. Sin espacio, no crea ni elimina respaldos.
+3. Genera el dump comprimido (`pg_dump -Fc`) como `.dump.partial`. Vigila el disco cada cinco segundos; al alcanzar la reserva cancela exclusivamente la conexion de su propio dump.
+4. Si falla o queda vacio/corrupto, elimina solo su parcial y conserva todas las copias completas existentes.
+5. Decodifica el archivo completo con `pg_restore --file=/dev/null`, sin conectarlo a una base de datos, calcula SHA-256 y lo publica con nombre final y archivo `.sha256`.
+6. Si `PRUNE_BACKUPS=true`, valida tambien las copias que conservara y elimina solo los dumps anteriores con nombre exacto reconocido. Mantiene `RETENTION_COUNT` copias, nunca menos de dos. No elimina archivos ajenos, enlaces simbolicos ni parciales de otra ejecucion.
+
+La decodificacion y el checksum no sustituyen un ensayo de restauracion aislado.
+Las fechas futuras, los cambios concurrentes o una copia retenida que no se pueda
+validar bloquean la limpieza. No se borra primero para intentar hacer espacio:
+si no cabe la siguiente copia, se necesita una intervencion controlada.
 
 ## Setup en el VPS (una sola vez)
 
@@ -22,16 +30,39 @@ El script:
      ```
    - `POSTGRES_USER`, `POSTGRES_DB`: credenciales/nombre de la base (normalmente `postgres`/`postgres` en el stack self-hosted de Supabase).
    - `BACKUP_DIR`: carpeta del VPS donde se guardan los `.dump` (ej. `/var/backups/climactiva-crm/db`).
-   - `RETENTION_DAYS`: dias de retencion (default 14).
+   - `RETENTION_COUNT`: copias completas verificadas a conservar (default 2, minimo 2).
+   - `MIN_FREE_GB`: reserva minima, en GB decimales (default 15).
+   - `CHECK_INTERVAL_SECONDS`: intervalo del control de espacio (default 5, maximo 30).
+   - `PRUNE_BACKUPS`: `false` por defecto. Activar `true` solo despues de autorizar expresamente el borrado de historicos. `RETENTION_DAYS` ya no se utiliza.
 3. Dar permiso de ejecucion:
    ```bash
    chmod +x scripts/backup-database.sh
    ```
-4. Probar manualmente una vez:
+4. Revisar primero el plan de solo lectura, que no genera copias, bloqueos ni borrados:
+
+   ```bash
+   scripts/backup-database.sh --plan
+   ```
+
+5. Tras confirmar la configuracion y su autorizacion, ejecutar una vez:
    ```bash
    scripts/backup-database.sh
    ```
-   Confirmar que aparece un archivo `.dump` con tamano mayor a 0 en `BACKUP_DIR`.
+   Confirmar el mensaje `Backup verified`, su `.sha256` y, si corresponde,
+   `Retention complete`. Comprobar el espacio y las copias conservadas.
+
+La actualizacion del frontend en Dokploy NO instala este script del sistema.
+Instalarlo por separado en la ruta del cron existente, con respaldo de script y
+configuracion, sin cambiar contenedor, base, usuario ni horario. La primera
+ejecucion con la nueva politica puede retirar historicos de esa carpeta; debe
+estar cubierta por la autorizacion de retencion. No incluye otras carpetas de
+respaldos, bases de datos, logs de Supabase ni snapshots del proveedor.
+
+Pruebas aisladas (Docker, espacio y bloqueo simulados; sin datos reales):
+
+```bash
+node --test scripts/test-backup-database.mjs
+```
 
 ## Programar con cron
 

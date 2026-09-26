@@ -5,8 +5,25 @@ import { referenceCostEditValues } from "../../src/modules/foreign-trade/foreign
 
 export async function testForeignTradeCostReferences(db) {
   const migration = await readFile(new URL("../../supabase/foreign_trade_center_phase20_cost_references.sql", import.meta.url), "utf8");
+  // Supabase can grant anon EXECUTE through the owner's default privileges.
+  await db.exec(`alter default privileges in schema public grant execute on functions to anon;
+    grant execute on function public.upsert_foreign_trade_cost_line(jsonb),
+      public.create_foreign_trade_operation(jsonb), public.apply_foreign_trade_expense_reconciliation(uuid),
+      public.auto_finalize_foreign_trade_expense_reconciliation(uuid,boolean) to anon`);
   await db.exec(migration);
   await db.exec(migration);
+  for (const signature of [
+    'simulate_foreign_trade_costs(uuid,jsonb)', 'upsert_foreign_trade_cost_line(jsonb)',
+    'create_foreign_trade_operation(jsonb)', 'apply_foreign_trade_expense_reconciliation(uuid)',
+    'auto_finalize_foreign_trade_expense_reconciliation(uuid,boolean)',
+    'upsert_foreign_trade_cost_line_v19(jsonb)', 'create_foreign_trade_operation_v19(jsonb)',
+    'apply_foreign_trade_expense_reconciliation_v19(uuid)', 'auto_finalize_foreign_trade_expense_reconciliation_v19(uuid,boolean)',
+    'foreign_trade_keep_reference_history()', 'foreign_trade_detach_reference_costs()',
+    'foreign_trade_invalidate_cost_projection()',
+  ]) {
+    assert.equal((await db.query("select has_function_privilege('anon',$1,'execute') as allowed", [`public.${signature}`])).rows[0].allowed, false, signature);
+  }
+  await db.exec('alter default privileges in schema public revoke execute on functions from anon');
   await db.exec("select set_config('app.test_role','administrador',false), set_config('app.test_auth_role','authenticated',false)");
   const rpc = async (name, payload) => (await db.query(`select public.${name}($1::jsonb) as value`, [JSON.stringify(payload)])).rows[0].value;
   const operation = () => rpc("create_foreign_trade_operation", { title: "Referencia editable prueba", status: "production", exchange_rate_clp: 1000 });
