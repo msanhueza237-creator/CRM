@@ -64,7 +64,7 @@ export function getAccountingOverview() {
 }
 
 export function syncAccountingFacto(input: { fromDate: string; toDate: string }) {
-  return accountingRequest<AccountingFactoSyncResult>("facto/sync", { method: "POST", body: input });
+  return accountingRequest<AccountingFactoSyncResult>("facto/sync", { method: "POST", body: { ...input, triggerType: "manual" } });
 }
 
 export function requestAccountingFactoReceivablesPreview(input: { fromDate: string; toDate: string; triggerType?: "manual" | "copilot" | "development" }) {

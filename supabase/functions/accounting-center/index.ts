@@ -891,6 +891,10 @@ async function applyFactoReceivablesPreview(
 }
 
 async function syncFacto(rest: RestClient, profile: Profile, requestId: string, payload: JsonRecord) {
+  // Older open tabs start this mutation on focus/timers without user intent.
+  if (payload.triggerType !== "manual") {
+    throw new HttpError(409, "Actualiza la pantalla. La sincronización de documentos requiere la acción Actualizar ahora; consultar Finanzas no modifica datos.");
+  }
   const entity = (await selectRows(rest, "accounting_entities?select=id&active=eq.true&order=created_at.asc&limit=1"))[0];
   if (!entity) throw new HttpError(409, "Falta aplicar la migración contable.");
   const entityId = String(entity.id);

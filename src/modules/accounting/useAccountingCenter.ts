@@ -1,17 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { getAccountingBootstrap, syncAccountingFacto } from "../../lib/accountingApi";
+import { getAccountingBootstrap } from "../../lib/accountingApi";
 import type { AccountingBootstrap } from "../../types/accounting";
 import { LatestReadQueue } from "./latestReadQueue";
 
 const AUTOMATIC_REFRESH_MS = 2 * 60 * 1000;
-const FACTO_HISTORY_START = "2026-01-01";
 
 export function useAccountingCenter() {
   const [data, setData] = useState<AccountingBootstrap | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const queue = useRef(new LatestReadQueue<AccountingBootstrap>());
-  const synchronizedMarkerRef = useRef("");
 
   const load = useCallback(async (background = false) => {
     if (!background) {
@@ -19,24 +17,8 @@ export function useAccountingCenter() {
       setError("");
     }
     try {
-      await queue.current.request(async () => {
-        let next = await getAccountingBootstrap();
-        const marker = next.factoFreshness.integrationUpdatedAt || "";
-        const canSynchronize = next.profile.permissions.includes("import");
-        if (canSynchronize && next.factoFreshness.stale && marker && marker !== synchronizedMarkerRef.current) {
-          synchronizedMarkerRef.current = marker;
-          try {
-            await syncAccountingFacto({
-              fromDate: FACTO_HISTORY_START,
-              toDate: new Date().toISOString().slice(0, 10),
-            });
-            next = await getAccountingBootstrap();
-          } catch {
-            synchronizedMarkerRef.current = "";
-          }
-        }
-        return next;
-      }, setData, !background);
+      // Reading/focusing Finance must never start writes over an Excel import.
+      await queue.current.request(getAccountingBootstrap, setData, !background);
     } catch (caught) {
       if (!background) setError(caught instanceof Error ? caught.message : "No se pudo cargar el centro financiero.");
       if (!background) throw caught;
