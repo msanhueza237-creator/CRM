@@ -3,9 +3,9 @@ import type { ContentCreativeLayout, ContentProduct, ContentPublication, Content
 export const creativeStyles = [
   { id: "technical", label: "Ficha técnica", accent: "#087e87" },
   { id: "editorial", label: "Protagonista", accent: "#164c43" },
-  { id: "industrial", label: "Industrial", accent: "#c64531" },
+  { id: "industrial", label: "Industrial", accent: "#c33f2d" },
   { id: "laboratory", label: "Laboratorio", accent: "#ddc272" },
-  { id: "promotion", label: "Oferta", accent: "#c64531" },
+  { id: "promotion", label: "Oferta", accent: "#c33f2d" },
 ] as const;
 const SIZE = 1080, INK = "#182b30", TEAL = "#087e87", MUTED = "#50676c", PAPER = "#ffffff";
 const DISPLAY = '"Arial Black", "Arial", sans-serif', BODY = '"Arial", sans-serif', MONO = '"Consolas", "Courier New", monospace';
@@ -69,7 +69,7 @@ function fill(ctx: Context, color: string, x = 0, y = 0, w = SIZE, h = SIZE) {
 }
 function text(ctx: Context, value: string, box: Box, size = 30, color = INK, weight = 500, family = BODY) {
   const clean = cleanCreativeText(value);
-  if (!clean) return;
+  if (!clean) return 0;
   let fontSize = size;
   let lines: string[] = [];
   // Fit the entire text region instead of cutting product names off with an ellipsis.
@@ -77,7 +77,7 @@ function text(ctx: Context, value: string, box: Box, size = 30, color = INK, wei
     ctx.font = `${weight} ${fontSize}px ${family}`;
     if (fontSize > 12 && clean.split(/\s+/).some((word) => ctx.measureText(word).width > box.w)) { fontSize -= 1; continue; }
     lines = wrap(ctx, clean, box.w);
-    if (lines.length * fontSize * 1.16 <= box.h) break;
+    if (lines.length * fontSize * 1.16 <= box.h || fontSize === 12) break;
     fontSize -= 1;
   }
   ctx.save();
@@ -85,6 +85,7 @@ function text(ctx: Context, value: string, box: Box, size = 30, color = INK, wei
   ctx.fillStyle = color;
   lines.forEach((line, i) => ctx.fillText(line, box.x, box.y + i * fontSize * 1.16));
   ctx.restore();
+  return lines.length * fontSize * 1.16;
 }
 function wrap(ctx: Context, value: string, width: number) {
   const lines: string[] = []; let line = "";
@@ -105,9 +106,9 @@ function label(ctx: Context, value: string, x: number, y: number, w = 700, color
   text(ctx, value.toUpperCase(), { x, y, w, h: 32 }, 23, color, 700, MONO);
 }
 function brand(ctx: Context, x = 56, y = 42, color = INK, accent = TEAL) {
-  rule(ctx, x, y + 2, 8, accent, 51);
-  text(ctx, "CLIMACTIVA", { x: x + 22, y, w: 335, h: 39 }, 34, color, 900, DISPLAY);
-  text(ctx, "CLIMATIZACIÓN PROFESIONAL", { x: x + 23, y: y + 39, w: 350, h: 24 }, 16, color, 700);
+  rule(ctx, x, y + 3, 8, accent, 62);
+  text(ctx, "CLIMACTIVA", { x: x + 24, y, w: 390, h: 49 }, 42, color, 900, DISPLAY);
+  text(ctx, "CLIMATIZACIÓN PROFESIONAL", { x: x + 25, y: y + 49, w: 390, h: 24 }, 18, color, 700);
 }
 function photo({ ctx, image, imageBounds }: Drawing, box: Box) {
   fill(ctx, PAPER, box.x, box.y, box.w, box.h);
@@ -140,12 +141,12 @@ function productPhotoBounds(image: HTMLImageElement): Box {
     h: (Math.min(canvas.height, bottom + padding + 1) - y) * full.h / canvas.height };
 }
 function title(d: Drawing, box: Box, size = 68, color = INK) {
-  text(d.ctx, d.layout.headline || d.product.name, box, size, color, 900, DISPLAY);
+  return text(d.ctx, d.layout.headline || d.product.name, box, size, color, 900, DISPLAY);
 }
-function footer(ctx: Context, y = 1005, color = INK, lineColor = "#ccd8d9") {
-  rule(ctx, 56, y - 20, 968, lineColor, 2);
-  text(ctx, "ASESORÍA Y EQUIPAMIENTO", { x: 56, y, w: 550, h: 37 }, 23, color, 700);
-  text(ctx, "climactiva.cl", { x: 750, y: y - 4, w: 274, h: 44 }, 32, color, 800);
+function footer(ctx: Context, y = 1013, color = INK, lineColor = "#ccd8d9") {
+  rule(ctx, 56, y - 19, 968, lineColor, 2);
+  text(ctx, "ASESORÍA Y EQUIPAMIENTO", { x: 56, y, w: 570, h: 36 }, 23, color, 700);
+  text(ctx, "climactiva.cl", { x: 766, y: y - 4, w: 258, h: 44 }, 33, color, 800);
 }
 export function getCreativeFacts(product: ContentProduct) {
   const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
@@ -163,80 +164,100 @@ export function getCreativeFacts(product: ContentProduct) {
 }
 function factColumn(d: Drawing, x: number, y: number, w: number, color = INK, accent = TEAL, gap = 143) {
   getCreativeFacts(d.product).forEach((fact, i) => {
-    label(d.ctx, fact.name, x, y + i * gap, w, accent);
-    text(d.ctx, fact.value, { x, y: y + 36 + i * gap, w, h: gap - 51 }, 33, color, 700);
-  });
-}
-function factStrip(d: Drawing, y: number, color = INK, accent = TEAL) {
-  const items = getCreativeFacts(d.product); const width = 968 / Math.max(1, items.length);
-  items.forEach((fact, i) => {
-    const x = 56 + i * width;
-    label(d.ctx, fact.name, x, y, width - 28, accent);
-    text(d.ctx, fact.value, { x, y: y + 37, w: width - 28, h: 82 }, 30, color, 700);
+    rule(d.ctx, x, y + i * gap, 32, accent, 4);
+    label(d.ctx, fact.name, x, y + 17 + i * gap, w, accent);
+    text(d.ctx, fact.value, { x, y: y + 53 + i * gap, w, h: gap - 65 }, 36, color, 700);
   });
 }
 function technical(d: Drawing) {
   const { ctx, layout } = d;
-  fill(ctx, PAPER); brand(ctx); label(ctx, layout.badge || "FICHA TÉCNICA", 684, 62, 340);
-  rule(ctx, 56, 127, 968);
-  title(d, { x: 56, y: 154, w: 968, h: 191 }, 65);
-  photo(d, { x: 56, y: 365, w: 605, h: 473 });
-  fill(ctx, "#eff4f3", 688, 365, 336, 473);
-  factColumn(d, 712, 391, 282, INK, TEAL, 145);
-  rule(ctx, 56, 862, 72, TEAL, 6);
-  text(ctx, layout.supporting_text, { x: 56, y: 888, w: 968, h: 89 }, 31, MUTED);
+  fill(ctx, PAPER); fill(ctx, TEAL, 0, 0, SIZE, 140);
+  brand(ctx, 56, 34, PAPER, "#bde5d8");
+  text(ctx, layout.badge || "FICHA TÉCNICA", { x: 708, y: 51, w: 316, h: 58 }, 29, PAPER, 700, MONO);
+  const headlineHeight = title(d, { x: 56, y: 179, w: 968, h: 203 }, 76);
+  const photoTop = Math.max(300, 179 + headlineHeight + 34), photoHeight = 887 - photoTop;
+  photo(d, { x: 42, y: photoTop, w: 650, h: photoHeight });
+  fill(ctx, "#eff5f3", 728, photoTop, 352, photoHeight);
+  rule(ctx, 728, photoTop, 352, TEAL, 7);
+  factColumn(d, 756, photoTop + 28, 268, INK, TEAL, Math.min(175, (photoHeight - 28) / 3));
+  rule(ctx, 56, 909, 94, "#c33f2d", 7);
+  text(ctx, layout.supporting_text, { x: 174, y: 904, w: 850, h: 77 }, 31, MUTED);
   footer(ctx);
 }
 function editorial(d: Drawing) {
   const { ctx, layout } = d;
-  fill(ctx, PAPER); brand(ctx, 56, 42, INK, "#164c43");
-  label(ctx, cleanCreativeText(d.product.brand) || "EQUIPAMIENTO", 668, 60, 356, "#164c43");
-  photo(d, { x: 104, y: 138, w: 872, h: 527 });
-  fill(ctx, "#164c43", 0, 690, 1080, 390);
-  label(ctx, layout.badge || d.product.sku || "CLIMACTIVA", 56, 724, 968, "#cfe4d5");
-  title(d, { x: 56, y: 772, w: 968, h: 172 }, 65, PAPER);
-  text(ctx, layout.supporting_text, { x: 56, y: 960, w: 656, h: 82 }, 27, "#dfebe4");
-  text(ctx, "climactiva.cl", { x: 754, y: 998, w: 270, h: 46 }, 31, PAPER, 800);
+  const green = "#164c43", lime = "#dceda0";
+  fill(ctx, PAPER); brand(ctx, 56, 34, INK, green);
+  text(ctx, cleanCreativeText(d.product.brand) || "EQUIPAMIENTO", { x: 733, y: 49, w: 291, h: 54 }, 26, green, 700, MONO);
+  photo(d, { x: 65, y: 126, w: 950, h: 546 });
+  rule(ctx, 0, 170, 16, green, 450);
+  fill(ctx, green, 0, 698, SIZE, 382);
+  fill(ctx, lime, 56, 675, 116, 10);
+  text(ctx, layout.badge || d.product.sku || "CLIMACTIVA", { x: 56, y: 724, w: 968, h: 36 }, 25, lime, 700, MONO);
+  title(d, { x: 56, y: 771, w: 968, h: 158 }, 74, PAPER);
+  text(ctx, layout.supporting_text, { x: 56, y: 946, w: 968, h: 65 }, 29, "#e1ece6");
+  text(ctx, "climactiva.cl", { x: 766, y: 1029, w: 258, h: 39 }, 31, PAPER, 800);
+  rule(ctx, 56, 1045, 112, lime, 5);
 }
 function industrial(d: Drawing) {
   const { ctx, layout } = d;
-  fill(ctx, PAPER); fill(ctx, "#c64531", 734, 0, 346, 1080);
-  brand(ctx, 56, 42); label(ctx, "EQUIPO PROFESIONAL", 56, 148, 624);
-  title(d, { x: 56, y: 204, w: 616, h: 220 }, 60);
-  photo(d, { x: 35, y: 437, w: 672, h: 528 });
-  label(ctx, "REFERENCIA", 771, 60, 274, PAPER);
-  text(ctx, layout.badge || d.product.sku || "CLIMACTIVA", { x: 771, y: 110, w: 257, h: 192 }, 65, PAPER, 900, DISPLAY);
-  rule(ctx, 771, 330, 253, "#e69a8e", 3);
-  text(ctx, layout.supporting_text, { x: 771, y: 368, w: 253, h: 353 }, 33, PAPER);
-  if (d.product.brand) { label(ctx, "MARCA", 771, 766, 253, "#fff0e9"); text(ctx, d.product.brand, { x: 771, y: 806, w: 253, h: 116 }, 38, PAPER, 800); }
-  text(ctx, "climactiva.cl", { x: 56, y: 1005, w: 616, h: 46 }, 34, INK, 800);
-  rule(ctx, 771, 1012, 253, PAPER, 5);
+  const red = "#c33f2d", charcoal = "#242827";
+  fill(ctx, PAPER); fill(ctx, red, 0, 0, SIZE, 385);
+  brand(ctx, 56, 34, PAPER, "#ffbdac");
+  label(ctx, "EQUIPO PROFESIONAL", 676, 58, 348, PAPER);
+  title(d, { x: 56, y: 155, w: 968, h: 205 }, 76, PAPER);
+  photo(d, { x: 56, y: 411, w: 968, h: 463 });
+  rule(ctx, 0, 423, 16, red, 404);
+  fill(ctx, charcoal, 0, 906, SIZE, 174);
+  label(ctx, "REFERENCIA", 56, 925, 324, "#ffb5a6");
+  text(ctx, layout.badge || d.product.sku || "CLIMACTIVA", { x: 56, y: 967, w: 324, h: 71 }, 51, PAPER, 900, DISPLAY);
+  rule(ctx, 407, 933, 3, "#747b76", 103);
+  text(ctx, layout.supporting_text, { x: 442, y: 933, w: 582, h: 86 }, 29, PAPER);
+  text(ctx, "climactiva.cl", { x: 766, y: 1034, w: 258, h: 38 }, 30, PAPER, 800);
+  rule(ctx, 56, 887, 130, red, 7);
 }
 function laboratory(d: Drawing) {
   const { ctx, layout } = d;
   const gold = "#ddc272";
   fill(ctx, "#202927");
-  ctx.strokeStyle = "#35413b"; ctx.lineWidth = 1;
-  for (let i = 24; i < SIZE; i += 48) { ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, SIZE); ctx.moveTo(0, i); ctx.lineTo(SIZE, i); ctx.stroke(); }
-  brand(ctx, 56, 42, PAPER, gold); label(ctx, layout.badge || "CATÁLOGO TÉCNICO", 658, 62, 366, gold);
-  title(d, { x: 56, y: 166, w: 450, h: 496 }, 63, PAPER);
-  photo(d, { x: 540, y: 178, w: 484, h: 484 });
-  rule(ctx, 540, 164, 484, gold, 4); rule(ctx, 540, 673, 484, gold, 4);
-  fill(ctx, "#29342f", 40, 711, 1000, 150); factStrip(d, 727, PAPER, gold);
-  text(ctx, layout.supporting_text, { x: 56, y: 885, w: 968, h: 91 }, 30, "#e0e5da");
-  footer(ctx, 1014, PAPER, "#687260");
+  ctx.strokeStyle = "#2d3833"; ctx.lineWidth = 1;
+  for (let i = 24; i < SIZE; i += 48) { ctx.beginPath(); ctx.moveTo(i, 140); ctx.lineTo(i, 886); ctx.moveTo(0, i); ctx.lineTo(SIZE, i); ctx.stroke(); }
+  fill(ctx, "#202927", 0, 0, SIZE, 135);
+  brand(ctx, 56, 34, PAPER, gold);
+  text(ctx, layout.badge || "CATÁLOGO TÉCNICO", { x: 686, y: 49, w: 338, h: 55 }, 29, gold, 700, MONO);
+  rule(ctx, 56, 133, 968, "#52604e", 2);
+  const headlineHeight = title(d, { x: 56, y: 166, w: 968, h: 204 }, 74, PAPER);
+  const photoTop = Math.max(304, 166 + headlineHeight + 40), photoHeight = 848 - photoTop;
+  factColumn(d, 56, photoTop, 285, PAPER, gold, Math.min(175, photoHeight / 3));
+  photo(d, { x: 392, y: photoTop, w: 616, h: photoHeight });
+  // Registration corners frame the real photo without drawing over the product.
+  for (const [x, y, dx, dy] of [[380, photoTop - 12, 1, 1], [1020, photoTop - 12, -1, 1], [380, 860, 1, -1], [1020, 860, -1, -1]]) {
+    ctx.strokeStyle = gold; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(x, y + dy * 36); ctx.lineTo(x, y); ctx.lineTo(x + dx * 36, y); ctx.stroke();
+  }
+  fill(ctx, "#202927", 0, 894, SIZE, 186);
+  rule(ctx, 56, 901, 72, gold, 5);
+  text(ctx, layout.supporting_text, { x: 152, y: 895, w: 872, h: 86 }, 31, "#e0e5da");
+  footer(ctx, 1013, PAPER, "#52604e");
 }
 function promotion(d: Drawing) {
   const { ctx, layout } = d;
-  fill(ctx, PAPER); brand(ctx); rule(ctx, 56, 128, 968, "#c64531", 6);
-  title(d, { x: 56, y: 162, w: 585, h: 237 }, 59);
-  fill(ctx, "#c64531", 681, 159, 343, 241);
-  label(ctx, /^\$/.test(layout.badge.trim()) ? "PRECIO PUBLICADO" : "DATO DESTACADO", 705, 183, 294, PAPER);
-  text(ctx, layout.badge || d.product.sku || "CLIMACTIVA", { x: 705, y: 236, w: 294, h: 128 }, 65, PAPER, 900, DISPLAY);
-  photo(d, { x: 118, y: 417, w: 844, h: 340 });
-  text(ctx, layout.supporting_text, { x: 56, y: 773, w: 968, h: 53 }, 27, MUTED);
-  fill(ctx, "#eff4f3", 0, 838, 1080, 147); factStrip(d, 858);
-  footer(ctx, 1013);
+  const red = "#c33f2d";
+  fill(ctx, PAPER); brand(ctx, 56, 34);
+  rule(ctx, 756, 61, 324, red, 12);
+  const headlineHeight = title(d, { x: 56, y: 170, w: 968, h: 203 }, 76);
+  const photoTop = Math.max(294, 170 + headlineHeight + 34), priceTop = photoTop + 36;
+  photo(d, { x: 42, y: photoTop, w: 623, h: 882 - photoTop });
+  fill(ctx, red, 693, priceTop, 387, 274);
+  label(ctx, /^\$/.test(layout.badge.trim()) ? "PRECIO PUBLICADO" : "DATO DESTACADO", 723, priceTop + 30, 301, PAPER);
+  text(ctx, layout.badge || d.product.sku || "CLIMACTIVA", { x: 723, y: priceTop + 88, w: 301, h: 149 }, 78, PAPER, 900, DISPLAY);
+  if (d.product.sku) {
+    label(ctx, "MODELO / SKU", 723, priceTop + 312, 301, TEAL);
+    text(ctx, d.product.sku, { x: 723, y: priceTop + 354, w: 301, h: 89 }, 39, INK, 800);
+  }
+  fill(ctx, "#eff5f3", 0, 909, SIZE, 82);
+  text(ctx, layout.supporting_text, { x: 56, y: 920, w: 968, h: 60 }, 29, MUTED);
+  footer(ctx, 1015);
 }
 function loadImage(blob: Blob) {
   return new Promise<HTMLImageElement>((resolve, reject) => {

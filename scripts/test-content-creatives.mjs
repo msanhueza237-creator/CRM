@@ -152,6 +152,14 @@ try {
     const difference=frames[a].reduce((sum,value,i)=>sum+Math.abs(value-frames[b][i]),0)/frames[a].length;
     assert.ok(difference>12, 'Layouts must differ visibly, not merely change a small accent: '+difference);
   }
+  await page.getByRole('button',{name:'Diseño Original',exact:true}).click(); await ready();
+  const originalUnchanged=await preview.evaluate(async img=>{
+    const source=await (await fetch('/qa-image/'+window.products.find(p=>p.id===document.querySelector('[aria-label="Producto"]').value).id)).arrayBuffer();
+    const displayed=await (await fetch(img.src)).arrayBuffer();
+    return source.byteLength===displayed.byteLength && new Uint8Array(source).every((byte,index)=>byte===new Uint8Array(displayed)[index]);
+  });
+  assert.equal(originalUnchanged,true,'Original must preserve the exact source file');
+  await page.getByRole('button',{name:'Diseño Ficha técnica',exact:true}).click(); await ready();
   const facts = await page.evaluate(async()=>{const module=await import('/src/modules/content/contentCreative.ts');return module.getCreativeFacts(window.products.find(p=>p.sku==='ST-R806A')||window.products[0]);});
   assert.ok(facts.some(f=>/45/.test(f.value)));
   const defaultCopy=await page.evaluate(async()=>{const module=await import('/src/modules/content/contentCreative.ts');return module.defaultCreativeLayout(window.products.find(p=>p.sku==='ST-R806A')||window.products[0]);});
@@ -207,6 +215,58 @@ try {
   assert.ok(crops[0][0]<64&&crops[0][1]<64&&crops[0][0]+crops[0][2]>192&&crops[0][1]+crops[0][3]>192,'Keep the entire object with safety margin');
   assert.ok(crops[0][2]<256,'Use empty surround for a larger product');
   assert.deepEqual(crops[1],[0,0,256,256],'Keep the full context when the image reaches the border');
+  const typography = await page.evaluate(async()=>{
+    const {renderContentCreative,defaultCreativeLayout,creativeStyles}=await import('/src/modules/content/contentCreative.ts');
+    const canvas=document.createElement('canvas');canvas.width=320;canvas.height=320;
+    const c=canvas.getContext('2d');c.fillStyle='white';c.fillRect(0,0,320,320);c.fillStyle='#c33f2d';c.fillRect(96,40,128,240);
+    const imageBlob=await new Promise(resolve=>canvas.toBlob(resolve));
+    const source={...window.products[0],sku:'MODELO-'+('X'.repeat(73)),brand:'Marca '+('profesional '.repeat(7)),description_text:'',category:'Herramientas de refrigeracion y climatizacion'};
+    const headline='Limpiador de evaporador y condensador con pistola de descarga y tanque presurizador 200psi - CF-6044';
+    const supporting=('Descripcion verificada del producto para operaciones de mantenimiento. ').repeat(4).slice(0,240);
+    const prototype=CanvasRenderingContext2D.prototype,drawText=prototype.fillText,drawRect=prototype.rect,drawImage=prototype.drawImage;
+    const boxes=new WeakMap(),results=[];let record;
+    prototype.rect=function(x,y,w,h){boxes.set(this,{x,y,w,h});return drawRect.apply(this,arguments)};
+    prototype.drawImage=function(...args){
+      if(this.canvas.width===1080 && args.length===9) record.photos.push({x:args[5],y:args[6],w:args[7],h:args[8]});
+      return drawImage.apply(this,args);
+    };
+    prototype.fillText=function(value,x,y){
+      if(this.canvas.width===1080){
+        const box=boxes.get(this),metrics=this.measureText(value);
+        record.lines.push(value);
+        record.textRegions.push({x:x-metrics.actualBoundingBoxLeft,y:y-metrics.actualBoundingBoxAscent,w:metrics.actualBoundingBoxLeft+metrics.actualBoundingBoxRight,h:metrics.actualBoundingBoxAscent+metrics.actualBoundingBoxDescent});
+        if(!box || x<box.x || y<box.y || x+metrics.width>box.x+box.w+.5 || y+metrics.actualBoundingBoxDescent>box.y+box.h+.5) record.overflow.push({value,box,font:this.font});
+        record.fonts.push(Number(this.font.match(/([\d.]+)px/)[1]));
+      }
+      return drawText.apply(this,arguments);
+    };
+    try {
+      for(const style of creativeStyles){
+        record={style:style.id,lines:[],overflow:[],fonts:[],photos:[],textRegions:[]};
+        const layout={...defaultCreativeLayout(source,style.id),headline,supporting_text:supporting,badge:style.id==='promotion'?'$123.456.789':source.sku};
+        await renderContentCreative({imageBlob,layout,product:source});
+        results.push({...record,expected:[headline,supporting,layout.badge]});
+      }
+      for(const style of creativeStyles){
+        record={style:style.id+'-minimal',lines:[],overflow:[],fonts:[],photos:[],textRegions:[]};
+        const minimal={...source,name:'Producto sin precio',sku:null,price:null,promotional_price:null,brand:null,category:null};
+        await renderContentCreative({imageBlob,product:minimal,layout:defaultCreativeLayout(minimal,style.id)});
+        results.push({...record,expected:['Producto sin precio'],noPrice:true});
+      }
+    }finally{prototype.fillText=drawText;prototype.rect=drawRect;prototype.drawImage=drawImage;}
+    return results;
+  });
+  for(const result of typography){
+    assert.deepEqual(result.overflow,[],`All text must fit its reserved region: ${result.style}`);
+    const text=result.lines.join(' ').replace(/\s/g,'');
+    for(const expected of result.expected) assert.ok(text.includes(expected.replace(/\s/g,'')),`Do not lose copy in ${result.style}: ${expected}`);
+    assert.ok(result.fonts.every(size=>size>=12),'Do not render clipped or illegible fallback text');
+    for(const photo of result.photos) for(const box of result.textRegions) {
+      assert.ok(photo.x+photo.w<=box.x || box.x+box.w<=photo.x || photo.y+photo.h<=box.y || box.y+box.h<=photo.y,`No text over the product photo: ${result.style}`);
+    }
+    if(result.noPrice) assert.doesNotMatch(result.lines.join(' '),/PRECIO PUBLICADO|\$|DESCUENTO/,'Missing price must not become an invented offer');
+  }
+  console.log('Long headline, 240-character copy, long SKU, missing data and all five text-safe layouts passed.');
   if(realProducts && await readFile(output+'/index.html').catch(()=>null)) {
     await page.goto(base+'/'+output+'/index.html');
     for(const width of [1440,390]) {
