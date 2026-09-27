@@ -1,5 +1,5 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CalendarClock, CheckCircle2, ClipboardCheck, Facebook, FileText, Hash, Instagram, LayoutTemplate, RefreshCw, RotateCcw, Send, ShieldCheck, Sparkles, XCircle } from "lucide-react";
+import { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { AlertTriangle, CalendarClock, CheckCircle2, ClipboardCheck, Facebook, FileText, Hash, Instagram, LayoutTemplate, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Sparkles, X, XCircle } from "lucide-react";
 import {
   approveContentPublication,
   attachContentCreatives,
@@ -35,6 +35,9 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const [objective, setObjective] = useState("Presentar el producto y generar interés comercial");
   const [cta, setCta] = useState("Conoce más en https://climactiva.cl");
   const [context, setContext] = useState("");
+  const [productSearch, setProductSearch] = useState("");
+  const productSearchStatusId = useId();
+  const productSearchRef = useRef<HTMLInputElement>(null);
   const [variants, setVariants] = useState(1);
   const [useHashtags, setUseHashtags] = useState(true);
   const [operationMode, setOperationMode] = useState<"manual" | "approval">("approval");
@@ -55,7 +58,16 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const defaultedProductId = useRef<string>();
 
   const availableProducts = useMemo(() => data.products.filter((item) => item.source_status === "active" && item.sync_status === "synced" && !item.paused), [data.products]);
+  const filteredProducts = useMemo(() => {
+    const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("es-CL");
+    const terms = normalize(productSearch).trim().split(/\s+/).filter(Boolean);
+    return availableProducts.filter(product => {
+      const text = normalize(`${product.name} ${product.sku || ""} ${product.brand || ""}`);
+      return terms.every(term => text.includes(term));
+    });
+  }, [availableProducts, productSearch]);
   const selectedProduct = data.products.find((item) => item.id === selectedProductId);
+  const selectedOutsideSearch = availableProducts.find(product => product.id === selectedProductId && !filteredProducts.some(match => match.id === product.id));
   const reviewableGenerated = generated.filter((item) => ["draft", "pending_approval"].includes(item.status));
   const hasCommittedGenerated = generated.some((item) => !["draft", "pending_approval", "cancelled"].includes(item.status));
   const canTryAnotherProduct = availableProducts.length > 1 && reviewableGenerated.length > 0 && !hasCommittedGenerated;
@@ -301,7 +313,12 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
 
         <section className="content-generator-section">
           <div className="content-generator-section-heading"><strong>Producto y canales</strong><span>{availableProducts.length} productos disponibles</span></div>
-          <label className="content-generator-field content-product-selector"><span>Producto</span><select aria-label="Producto" required value={selectedProductId} onChange={(event) => onProductChange(event.target.value)}><option value="">Selecciona un producto</option>{availableProducts.map((product) => <option value={product.id} key={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ""}</option>)}</select></label>
+          <div className="content-product-search">
+            <label className="search-field"><Search size={18} aria-hidden="true" /><input ref={productSearchRef} type="search" aria-label="Buscar productos" aria-describedby={productSearchStatusId} placeholder="Nombre, SKU o marca" value={productSearch} disabled={Boolean(busy)} autoComplete="off" onChange={event => setProductSearch(event.target.value)} onKeyDown={event => { if (event.key === "Enter") event.preventDefault(); if (event.key === "Escape") setProductSearch(""); }} /></label>
+            <button className="icon-button" type="button" title="Limpiar búsqueda de productos" aria-label="Limpiar búsqueda de productos" disabled={!productSearch || Boolean(busy)} onClick={() => { setProductSearch(""); productSearchRef.current?.focus(); }}><X size={18} /></button>
+          </div>
+          <span className="content-product-search-status" id={productSearchStatusId} role="status">{productSearch.trim() ? filteredProducts.length ? `${filteredProducts.length} coincidencia${filteredProducts.length === 1 ? "" : "s"}` : "Sin productos que coincidan" : `${availableProducts.length} productos`}</span>
+          <label className="content-generator-field content-product-selector"><span>Producto</span><select aria-label="Producto" required value={selectedProductId} disabled={Boolean(busy)} onChange={(event) => onProductChange(event.target.value)}><option value="">Selecciona un producto</option>{selectedOutsideSearch ? <optgroup label="Selección actual"><option value={selectedOutsideSearch.id}>{selectedOutsideSearch.name}{selectedOutsideSearch.sku ? ` · ${selectedOutsideSearch.sku}` : ""}</option></optgroup> : null}<optgroup label={productSearch.trim() ? "Coincidencias" : "Productos"}>{filteredProducts.map((product) => <option value={product.id} key={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ""}</option>)}</optgroup></select></label>
           <fieldset className="content-channel-picker"><legend>Redes sociales</legend><button className={channels.includes("instagram") ? "active" : ""} type="button" aria-pressed={channels.includes("instagram")} onClick={() => toggleChannel("instagram")}><Instagram size={19} /> Instagram</button><button className={channels.includes("facebook") ? "active" : ""} type="button" aria-pressed={channels.includes("facebook")} onClick={() => toggleChannel("facebook")}><Facebook size={19} /> Facebook</button></fieldset>
         </section>
 
