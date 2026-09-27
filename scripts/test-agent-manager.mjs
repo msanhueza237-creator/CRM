@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { runAgentManager, specialists, specialistEvidence } from "../supabase/functions/crm-copilot/agent-manager.ts";
+import { runAgentManager as runCoreManager, specialists, specialistEvidence } from "../supabase/functions/crm-copilot/agent-manager.ts";
+import { offlineRouter, mockCostRpc } from "./fixtures/offline-model-router.mjs";
+import { OPENAI_MODELS } from "../supabase/functions/_shared/openai-cost-policy.ts";
+const runAgentManager = options => runCoreManager({ ...options, modelRouter: offlineRouter(options) });
 import { aggregateAgentUsage, agentObservability } from "../supabase/functions/crm-copilot/agent-observability.ts";
 import { readResult } from "../supabase/functions/crm-copilot/contracts.ts";
 import { ToolRegistry } from "../supabase/functions/crm-copilot/tool-registry.ts";
@@ -68,7 +71,7 @@ for (const [question, selected] of acceptance) test(`Contrato de delegacion y co
   assert.ok(result.results.every(r => r.components?.[0].value === 123));
   assert.ok(result.agentRuns.every(r => r.status === "ok" && r.modelCalls === 2));
   assert.equal(result.tokensInput, 20 * (selected.length + 1));
-  assert.ok(f.models.every(m => m === "modelo-configurado"));
+  assert.ok(f.models.every(m => m === OPENAI_MODELS.default));
   assert.ok(f.traces.every(t => t.agent));
   if (selected.length > 1) assert.ok(f.peak() > 1);
 });
@@ -150,6 +153,7 @@ test("Endpoint de texto y delegacion de voz comparten Gerente, auditoria y sesio
   globalThis.Deno = { env: { get: key => key === "OPENAI_API_KEY" ? "private-test-key" : undefined } };
   globalThis.fetch = async (url, init = {}) => {
     const u = new URL(url), payload = init.body ? JSON.parse(init.body) : {};
+    const cost = mockCostRpc(u, payload); if (cost) return cost;
     if (u.hostname === "api.openai.com") {
       modelInputs.push(payload.input);
       const manager = payload.tools.some(t => t.name === "consult_marketing");

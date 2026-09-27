@@ -35,6 +35,7 @@ interface Callbacks {
 export function useCopilotLive(
   conversationId: string | undefined,
   callbacks: Callbacks,
+  modelChoice?: string,
 ) {
   const [active, setActive] = useState(false),
     [state, setState] = useState<LiveState>("disconnected"),
@@ -46,6 +47,8 @@ export function useCopilotLive(
   cb.current = callbacks;
   const currentConversation = useRef(conversationId);
   currentConversation.current = conversationId;
+  const selectedModel = useRef(modelChoice);
+  selectedModel.current = modelChoice;
   const r = useRef<{
     pc?: RTCPeerConnection;
     dc?: RTCDataChannel;
@@ -235,6 +238,7 @@ export function useCopilotLive(
           if (e.type === "complete") result = e;
         },
         { voiceSessionId: session.voiceSessionId, delegationId: delegation.id },
+        selectedModel.current,
       );
       if (!valid() || !result?.messageId) return;
       c.metrics.delegationMs = performance.now() - started;
@@ -476,6 +480,7 @@ export function useCopilotLive(
         {
           sdp: pc.localDescription?.sdp,
           conversationId: currentConversation.current,
+          modelChoice: selectedModel.current,
         },
         startup.signal,
       );

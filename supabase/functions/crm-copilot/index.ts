@@ -1,5 +1,6 @@
 import { centralHandler } from "./central.ts";
 import { CopilotDataError } from "./contracts.ts";
+import { backendModelRouter } from "./model-router.ts";
 type JsonRecord = Record<string, unknown>;
 
 type Profile = {
@@ -297,7 +298,7 @@ Deno.serve(async (req) => {
       return json({ ok: true, service: "crm-copilot", engine: "central", contractVersion: 1 });
     }
 
-    if (!(["message", "campaign-draft", "report", "legacy-message", "voice-session", "voice-result", "voice-interrupt", "voice-end", "voice-usage"].includes(route) && req.method === "POST") && !(["conversations", "history", "export", "inventory", "voice-stats", "agent-observability"].includes(route) && req.method === "GET")) {
+    if (!(["message", "campaign-draft", "report", "legacy-message", "voice-session", "voice-result", "voice-interrupt", "voice-end", "voice-usage", "agent-observability"].includes(route) && req.method === "POST") && !(["models", "conversations", "history", "export", "inventory", "voice-stats", "agent-observability"].includes(route) && req.method === "GET")) {
       return json({ error: "Ruta no encontrada" }, 404);
     }
 
@@ -312,7 +313,7 @@ Deno.serve(async (req) => {
       return json({ error: "Usuario sin permiso para usar el copiloto." }, 403);
     }
 
-    if (["message", "conversations", "history", "export", "inventory", "voice-session", "voice-result", "voice-interrupt", "voice-end", "voice-usage", "voice-stats", "agent-observability"].includes(route)) {
+    if (["models", "message", "conversations", "history", "export", "inventory", "voice-session", "voice-result", "voice-interrupt", "voice-end", "voice-usage", "voice-stats", "agent-observability"].includes(route)) {
       return await centralHandler(req, rest, { id: auth.id, role: profile.role, accessToken: auth.token }, traceId, corsHeaders);
     }
     // The legacy report path contains financial aggregates; never expose it to sales/viewer roles.
@@ -2783,7 +2784,8 @@ async function callOpenAI(input: {
   const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
   if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
 
-  const model = Deno.env.get("OPENAI_TEXT_MODEL")?.trim() || "gpt-4.1-mini";
+  const router = backendModelRouter({ requestId: input.context.requestId, conversationId: input.conversationId, userId: input.context.userId, role: input.profile.role, message: input.message });
+  const model = router.policy.defaultModel;
   const maxOutputTokens = getNumberEnv("OPENAI_MAX_OUTPUT_TOKENS", 900, 100, 4000);
   const timeoutMs = getNumberEnv("OPENAI_REQUEST_TIMEOUT_MS", 30000, 5000, 120000);
   const store = getBooleanEnv("OPENAI_STORE_RESPONSES", false);
@@ -2894,22 +2896,7 @@ async function callOpenAI(input: {
   if (effort && effort !== "auto") body.reasoning = { effort };
 
   try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const errorMessage = String((data as JsonRecord).error && typeof (data as JsonRecord).error === "object"
-        ? ((data as JsonRecord).error as JsonRecord).message ?? "OpenAI rechazo la solicitud."
-        : "OpenAI rechazo la solicitud.");
-      throw new HttpError(response.status, errorMessage);
-    }
+    const data = await router.call(body, "legacy_copilot", controller.signal);
 
     const structured = parseCopilotOutput(extractOutputText(data));
     return {

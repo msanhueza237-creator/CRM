@@ -138,7 +138,7 @@ await context.addInitScript(
     payload,
   },
 );
-let delayMessage = false, priceMode = false, failHealth = false, postRequests = 0,
+let delayMessage = false, priceMode = false, failHealth = false, postRequests = 0, lastModelChoice,
   exportRequests = 0;
 await context.route("**/*", async (route) => {
   const url = new URL(route.request().url());
@@ -155,6 +155,13 @@ await context.route("**/*", async (route) => {
   if (route.request().method() === "OPTIONS")
     return route.fulfill({ status: 204, headers });
   let body = [];
+  if (url.pathname.endsWith("/models")) body = {
+    defaultId: "deepseek:deepseek-v4-pro", warnings: [], models: [
+      { id: "deepseek:deepseek-v4-pro", model: "deepseek-v4-pro", provider: "deepseek", label: "DeepSeek · deepseek-v4-pro" },
+      { id: "deepseek:deepseek-flash", model: "deepseek-flash", provider: "deepseek", label: "DeepSeek · deepseek-flash" },
+      { id: "openai:default", model: "configured-openai", provider: "openai", label: "OpenAI · configured-openai" },
+    ],
+  };
   if (url.pathname.endsWith("/health")) {
     if (failHealth) return route.abort("failed");
     body = { ok: true, engine: "central", contractVersion: 1 };
@@ -190,6 +197,7 @@ await context.route("**/*", async (route) => {
     body = { message: priceMode ? priceReply : reply };
   }
   if (url.pathname.endsWith("/message")) {
+    lastModelChoice = route.request().postDataJSON().modelChoice;
     postRequests++;
     const activeReply = priceMode ? priceReply : reply;
     if (delayMessage) await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -221,15 +229,19 @@ await context.route("**/*", async (route) => {
 });
 const page = await context.newPage(),
   errors = [];
+page.setDefaultNavigationTimeout(120000);
 page.on("pageerror", (error) => errors.push(error.message));
 try {
   const inventoryDraft = "Consulta el inventario de ST-1: unidades, costo y venta neta. Filtro low, umbral 7.";
   await page.goto(`${base}/copiloto?inventory_query=${encodeURIComponent(inventoryDraft)}`);
-  await page.getByRole("heading", { name: "Copiloto central" }).waitFor();
+  await page.getByRole("heading", { name: "Copiloto · Gerente" }).waitFor();
   assert.equal(await page.getByRole("textbox", { name: "Consulta al Copiloto" }).inputValue(), inventoryDraft);
   assert.equal(postRequests, 0, "Abrir inventario no debe enviar una consulta IA automaticamente");
   await page.goto(`${base}/copiloto`);
-  await page.getByRole("heading", { name: "Copiloto central" }).waitFor();
+  await page.getByRole("heading", { name: "Copiloto · Gerente" }).waitFor();
+  const selector = page.getByRole("combobox", { name: "Modelo del Copiloto" });
+  await page.waitForFunction(() => document.querySelector('[aria-label="Modelo del Copiloto"]')?.value === 'deepseek:deepseek-v4-pro');
+  await selector.selectOption("deepseek:deepseek-flash");
   await page
     .getByRole("textbox", { name: "Consulta al Copiloto" })
     .fill("Cuanto queda por cobrar?");
@@ -237,6 +249,10 @@ try {
     .getByRole("button", { name: "Enviar consulta", exact: true })
     .click();
   await page.getByRole("heading", { name: "Cartera vigente" }).waitFor();
+  assert.equal(lastModelChoice, "deepseek:deepseek-flash");
+  await selector.selectOption("openai:default");
+  assert.equal(await page.getByRole("heading", { name: "Cartera vigente" }).count(), 1, "Cambiar modelo conserva la conversacion");
+  await selector.selectOption("deepseek:deepseek-flash");
   assert.equal(await page.getByRole("link", { name: "Inventario filtrado", exact: true }).first().getAttribute("href"), result.evidence[1].path);
   assert.equal(await page.locator('a[href="https://evil.invalid"]').count(), 0);
   assert.equal(await page.locator(".cc-markdown script").count(), 0);
@@ -274,6 +290,8 @@ try {
       () => document.documentElement.scrollWidth > window.innerWidth + 1,
     );
     assert.equal(overflow, false, `Desborde global a ${width}px`);
+    const modelBox = await selector.boundingBox();
+    assert.ok(modelBox.x >= 0 && modelBox.x + modelBox.width <= width, `Selector visible a ${width}px`);
     const composer = await page.locator(".cc-composer").boundingBox(),
       main = await page.locator(".cc-main").boundingBox();
     assert.ok(

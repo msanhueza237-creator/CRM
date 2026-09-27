@@ -8,6 +8,7 @@ import {
 } from "./sessions.ts";
 import { redactSecrets, safeData } from "./safety.ts";
 import { requireOpenAI } from "./provider-errors.ts";
+import { chooseModel, modelCatalog } from "./model-selection.ts";
 
 type Settings = ReturnType<typeof copilotConfig>;
 export const liveRoutes = [
@@ -385,6 +386,7 @@ export async function liveHandler(
           );
       const id = String(current.id),
         voiceId = crypto.randomUUID();
+      const choice = chooseModel(await modelCatalog(source, settings), body.modelChoice, object(current.metadata).modelChoice);
       auditedConversation = id;
       const history = await source.select(
         `copilot_messages?select=role,content&user_id=eq.${source.actor.id}&conversation_id=eq.${id}&role=in.(user,assistant)&order=created_at.desc,id.desc&limit=${settings.historyMessages}`,
@@ -420,7 +422,9 @@ export async function liveHandler(
           {
             liveId: session.id,
             role: source.actor.role,
-            reasoningModel: settings.model,
+            reasoningModel: choice.model,
+            modelChoice: choice.id,
+            reasoningProvider: choice.provider,
             recording: false,
           },
           voiceId,

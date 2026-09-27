@@ -7,3 +7,18 @@
 .agent-diagnostics th, .agent-diagnostics td { text-align: right; padding: 12px; border-bottom: 1px solid var(--border, #d5e2e6); white-space: nowrap; }
 .agent-diagnostics th:first-child { text-align: left; }
 .agent-diagnostics header button { flex: 0 0 44px; width: 44px; height: 44px; padding: 0; }
+.model-cost-policy { padding-block: 16px; border-bottom: 1px solid var(--border, #d5e2e6); margin-bottom: 20px; }
+.model-cost-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 16px; }
+.model-cost-summary dt { font-size: 13px; color: var(--muted, #57676f); }
+.model-cost-summary dd { margin: 4px 0 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.model-cost-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.model-cost-controls label { display: grid; gap: 6px; max-width: 100%; font-size: 14px; }
+.model-cost-controls select { max-width: 100%; min-height: 44px; }
+.model-cost-controls input { width: 80px; min-height: 44px; }
+.model-cost-controls button { min-width: 44px; min-height: 44px; }
+.model-cost-controls input, .model-cost-controls select { border: 1px solid var(--border, #d5e2e6); border-radius: 4px; padding: 8px 10px; background: white; color: inherit; font: inherit; }
+.model-cost-policy details { margin-block: 16px; font-size: 14px; }
+.model-cost-policy li { overflow-wrap: anywhere; }
+.model-cost-confirm { border-left: 3px solid #a66b0a; padding: 8px 16px 16px; margin-block: 16px; background: #fff8e8; }
+.model-cost-confirm > div { display: flex; flex-wrap: wrap; gap: 12px; }
+.model-cost-confirm button { min-height: 44px; }

@@ -38,6 +38,8 @@ import {
   type CopilotReadResult,
   type CentralEvent,
   copilotVoiceRequest,
+  getCopilotModels,
+  type CopilotModelChoice,
 } from "../../lib/copilotCentralApi";
 import { exportCentralMessage, exportCustomerPriceList } from "../../lib/copilotCentralExport";
 import { useAuth } from "../auth/AuthContext";
@@ -47,6 +49,7 @@ import { BusinessVisuals } from "./BusinessVisuals";
 import { useCopilotVoice } from "./useCopilotVoice";
 import { useCopilotLive } from "./useCopilotLive";
 import { CopilotLivePanel } from "./CopilotLivePanel";
+import { CopilotModelSelector } from "./CopilotModelSelector";
 
 const labels: Record<string, string> = {
   consult_commercial: "Comercial",
@@ -136,6 +139,35 @@ function CentralConversationPage() {
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [error, setError] = useState("");
+  const modelStorageKey = `copilot-model:${user?.id}:${user?.role}`;
+  const [models, setModels] = useState<CopilotModelChoice[]>([]);
+  const [modelChoice, setModelChoice] = useState("");
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelsError, setModelsError] = useState("");
+  const modelAbort = useRef<AbortController>();
+  const modelReady = models.some(m => m.id === modelChoice);
+  async function loadModels() {
+    modelAbort.current?.abort();
+    const controller = new AbortController();
+    modelAbort.current = controller;
+    setModelsLoading(true);
+    setModelsError("");
+    try {
+      const catalog = await getCopilotModels(controller.signal);
+      if (controller.signal.aborted) return;
+      setModels(catalog.models);
+      setModelsError(catalog.warnings.join(" "));
+      let saved = "";
+      try { saved = localStorage.getItem(modelStorageKey) || ""; } catch { /* Private browsing can disable storage. */ }
+      setModelChoice(current => current || saved || catalog.defaultId);
+    } catch (e) {
+      if (!controller.signal.aborted) setModelsError(e instanceof Error ? e.message : "Modelos no disponibles.");
+    } finally { if (!controller.signal.aborted) setModelsLoading(false); }
+  }
+  function selectModel(id: string) {
+    setModelChoice(id);
+    try { localStorage.setItem(modelStorageKey, id); } catch { /* The current session still retains the selection. */ }
+  }
   const voice = useCopilotVoice(setDraft, setError);
   const [progress, setProgress] = useState<
     Array<{ id: string; name: string; status: string }>
@@ -152,13 +184,13 @@ function CentralConversationPage() {
     onEvent:acceptEvent,
     onQuestion:text=>{setMessages(m=>[...m,{id:crypto.randomUUID(),role:"user",content:text}]);setProgress([]);setError("");},
     onBusy:value=>{if(voiceModeRef.current)setBusy(value);},onError:setError,
-  });
+  }, modelChoice);
   function acceptEvent(event:CentralEvent) {
     if(event.type==="conversation"){setConversationId(event.conversationId);selected.current=event.conversationId;}
     if(event.type==="tool_start")setProgress(p=>[...p,{id:event.callId!,name:event.toolName!,status:"running"}]);
     if(event.type==="tool_end")setProgress(p=>p.map(t=>t.id===event.callId?{...t,status:event.status!}:t));
     if(event.type==="complete"){
-      setMessages(m=>m.some(row=>row.id===event.messageId)?m:[...m,{id:event.messageId||crypto.randomUUID(),role:"assistant",content:event.message||"",metadata:{results:event.results,traceId:event.traceId,timings:event.timings,agents:event.agents}}]);
+      setMessages(m=>m.some(row=>row.id===event.messageId)?m:[...m,{id:event.messageId||crypto.randomUUID(),role:"assistant",content:event.message||"",metadata:{results:event.results,traceId:event.traceId,timings:event.timings,agents:event.agents,model:event.model,provider:event.provider,modelChoice:event.modelChoice}}]);
       void loadList().catch(()=>{});
     }
   }
@@ -167,9 +199,11 @@ function CentralConversationPage() {
     centralHistory().then((data) => setConversations(data.conversations || []));
   useEffect(() => {
     loadList().catch((e) => setError(e.message));
+    void loadModels();
     return () => {
       abortRef.current?.abort();
       historyAbort.current?.abort();
+      modelAbort.current?.abort();
     };
   }, []);
   useEffect(() => {
@@ -189,6 +223,7 @@ function CentralConversationPage() {
       const data = await centralHistory(id, offset, controller.signal);
       if (selected.current !== id) return;
       setConversationId(id);
+      if (!offset && data.modelChoice) setModelChoice(data.modelChoice);
       setNextOffset(data.nextOffset ?? null);
       setMessages((current) =>
         offset ? [...(data.messages || []), ...current] : data.messages || [],
@@ -225,6 +260,7 @@ function CentralConversationPage() {
     event?.preventDefault();
     const text = (prompt || draft).trim();
     if (!text || busy || historyBusy) return;
+    if (!modelReady || modelsLoading) { setError("Selecciona un modelo disponible antes de consultar."); return; }
     if(live.active){returnToText();}
     voice.stop();
     const controller = new AbortController();
@@ -253,6 +289,8 @@ function CentralConversationPage() {
           }
           acceptEvent(event);
         },
+        undefined,
+        modelChoice,
       );
       await loadList().catch(() => setError("La respuesta esta guardada, pero no se pudo actualizar la lista de conversaciones."));
     } catch (e) {
@@ -304,7 +342,7 @@ function CentralConversationPage() {
           </div>
         </div>
         <div className="cc-heading-actions">
-          <button className={`cc-mode ${voiceMode?"is-active":""}`} aria-pressed={voiceMode} disabled={!voiceMode&&(busy||historyBusy)} onClick={()=>{if(voiceMode)returnToText();else {voice.stop();setVoiceMode(true);setHistoryOpen(false);void live.start();}}}><Mic size={18}/> Voz</button>
+          <button className={`cc-mode ${voiceMode?"is-active":""}`} aria-pressed={voiceMode} disabled={!voiceMode&&(busy||historyBusy||modelsLoading||!modelReady)} onClick={()=>{if(voiceMode)returnToText();else {voice.stop();setVoiceMode(true);setHistoryOpen(false);void live.start();}}}><Mic size={18}/> Voz</button>
           <span className="cc-read-only">
             <ShieldCheck size={15} /> Solo lectura
           </span>
@@ -332,6 +370,7 @@ function CentralConversationPage() {
           </button>
         </div>
       </header>
+      <CopilotModelSelector models={models} value={modelChoice} loading={modelsLoading} disabled={busy || historyBusy || live.active || voiceMode} error={modelsError} onChange={selectModel} onRefresh={() => void loadModels()} />
       <div className="cc-workspace">
         <aside className={`cc-history ${historyOpen ? "is-open" : ""}`}>
           <div className="cc-history-heading">
@@ -653,6 +692,7 @@ function ConversationMessage({
               </footer>
             )}
             {message.metadata?.timings && <details className="cc-technical"><summary>Detalle tecnico</summary><dl>
+              {message.metadata.model && <div><dt>Modelo utilizado</dt><dd>{message.metadata.model}</dd></div>}
               {Object.entries({ "Respuesta total": message.metadata.timings.totalMs, "Modelo": message.metadata.timings.modelMs, "Lecturas de datos (acumulado)": message.metadata.timings.databaseMs, "Servicios (acumulado)": message.metadata.timings.serviceMs }).map(([label,ms]) => <div key={label}><dt>{label}</dt><dd>{(ms / 1000).toFixed(1)} s</dd></div>)}
               <div><dt>Lecturas reutilizadas</dt><dd>{message.metadata.timings.cacheHits}</dd></div>
               {message.metadata.agents?.map((agent, index) => <div key={`${agent.agent}-${index}`}><dt>{agent.agent === "executive" ? "Gerente" : labels[`consult_${agent.agent}`] || agent.agent}</dt><dd>{statuses[agent.status] || agent.status} · {(agent.durationMs / 1000).toFixed(1)} s · {agent.modelCalls} llamadas</dd></div>)}

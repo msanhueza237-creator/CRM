@@ -9,7 +9,8 @@ import {
 import { todayChile } from "./dates.ts";
 import type { ToolRegistry } from "./tool-registry.ts";
 import { redactSecrets } from "./safety.ts";
-import { requireOpenAI } from "./provider-errors.ts";
+import { backendModelRouter, escalationMarker, routerInstruction } from "./model-router.ts";
+import type { ModelEngine } from "./model-selection.ts";
 
 export const centralPromptVersion = "enterprise-read-tools-v1";
 export interface ToolTrace {
@@ -34,7 +35,8 @@ export interface OrchestratorOptions {
   agent?: string;
   roleInstructions?: string;
   concurrency?: number;
-  onUsage?: (usage: { tokensInput: number; tokensOutput: number; modelMs: number }) => void;
+  onUsage?: (usage: { tokensInput: number; tokensOutput: number; modelMs: number; model?: string; estimatedCost?: number; cached?: boolean }) => void;
+  modelRouter?: ModelEngine;
   model: string;
   apiKey: string;
   message: string;
@@ -71,8 +73,11 @@ export function redactArguments(args: Row): Row {
 }
 export async function runOrchestrator(options: OrchestratorOptions) {
   const { registry, signal } = options;
+  const router = options.modelRouter || backendModelRouter({ requestId: crypto.randomUUID(), message: options.message }, options.fetcher);
+  const agent = options.agent || "copilot";
+  let responseModel = router.policy.defaultModel;
   const input: Row[] = options.history
-    .slice(-16)
+    .slice(router.policy.economy ? -8 : -16)
     .filter(m => m.role === "user" || m.role === "assistant")
     .map((m) => ({ role: m.role, content: redactSecrets(String(m.content)).slice(0, 5000) }));
   input.push({ role: "user", content: redactSecrets(options.message) });
@@ -122,23 +127,14 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     "Los reportes/listas con tablas se pueden descargar en la interfaz; no inventes enlaces a archivos. Usa solo rutas presentes en evidence. No repitas una tabla completa si ya se entrega como resultado estructurado.",
     "Si faltan fuentes, informa las limitaciones por modulo y responde solo lo comprobado. Si no existe informacion suficiente di: No tengo informacion suficiente para calcularlo con precision. Indica exactamente que falta.",
     options.roleInstructions || "",
+    routerInstruction,
   ].join("\n");
   for (let round = 0; round < 6; round++) {
     if (signal.aborted)
       throw new DOMException("Consulta cancelada", "AbortError");
     const modelStarted = Date.now();
     modelCalls++;
-    const response = await (options.fetcher || fetch)(
-      "https://api.openai.com/v1/responses",
-      {
-        method: "POST",
-        signal,
-        headers: {
-          Authorization: `Bearer ${options.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: options.model,
+    const requestBody: Row = {
           instructions,
           input,
           tools,
@@ -149,30 +145,41 @@ export async function runOrchestrator(options: OrchestratorOptions) {
                 ? "none"
                 : "auto",
           parallel_tool_calls: true,
-          max_output_tokens: options.maxOutputTokens || 5000,
+          max_output_tokens: Math.min(options.maxOutputTokens || router.policy.outputTokens, agent === "executive" || agent === "copilot" ? router.policy.outputTokens : router.policy.specialistTokens),
           ...(options.reasoningEffort ? { reasoning: { effort: options.reasoningEffort } } : {}),
         store: false,
         include: ["reasoning.encrypted_content"],
-        }),
-      },
-    );
-    await requireOpenAI(response);
-    const payload = object(await response.json()),
+        };
+    const payload = await router.call(requestBody, agent, signal, results.length > 0),
       output = rows(payload.output),
       usage = object(payload.usage);
     const elapsed = Date.now() - modelStarted;
     modelMs += elapsed;
-    options.onUsage?.({ tokensInput: Number(usage.input_tokens || 0), tokensOutput: Number(usage.output_tokens || 0), modelMs: elapsed });
+    const tracked = object(payload.router_usage);
+    options.onUsage?.({ tokensInput: Number(usage.input_tokens || 0), tokensOutput: Number(usage.output_tokens || 0), modelMs: elapsed, model: router.policy.defaultModel, estimatedCost: Number(tracked.estimatedCost || 0), cached: payload.router_cache_hit === true });
     tokensInput += Number(usage.input_tokens || 0);
     tokensOutput += Number(usage.output_tokens || 0);
     input.push(...output);
     const requested = output.filter((item) => item.type === "function_call");
     if (!requested.length) {
-      const text = output
+      let text = output
         .flatMap((item) => rows(item.content))
         .filter((part) => part.type === "output_text")
         .map((part) => String(part.text || ""))
-        .join("\n") + (payload.status === "incomplete" ? "\n\nLa explicacion alcanzo el limite de longitud. Los datos consultados estan adjuntos; solicita continuar para completar el analisis." : "");
+        .join("\n");
+      const escalated = await router.escalate({ ...requestBody, input }, agent, signal, text, results, !text.trim() && payload.status !== "incomplete" && !output.some(r => rows(r.content).some(p => p.type === "refusal")));
+      if (escalated) {
+        const extra = object(escalated.usage), timing = escalated.router_usage as import("./model-router.ts").ModelUsage;
+        tokensInput += Number(extra.input_tokens || 0); tokensOutput += Number(extra.output_tokens || 0);
+        modelCalls++; modelMs += timing.modelMs; responseModel = router.policy.escalationModel;
+        options.onUsage?.(timing);
+        const finalText = rows(escalated.output).flatMap(r => rows(r.content)).filter(p => p.type === "output_text").map(p => String(p.text || "")).join("\n");
+        if (finalText.trim()) text = finalText;
+        else router.notices.add("Sol no entrego una respuesta final valida; no se reintentara automaticamente.");
+      }
+      text = text.replace(escalationMarker, "").trim();
+      if (payload.status === "incomplete") text += "\n\nLa explicacion alcanzo el limite de longitud. Los datos consultados estan adjuntos; solicita continuar para completar el analisis.";
+      if (agent === "executive" || agent === "copilot") text += [...router.notices].map(n => `\n\n${n}`).join("");
       const verified = results.some((result) =>
         ["ok", "empty", "partial", "needs_clarification"].includes(
           result.status,
@@ -264,7 +271,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
         traces,
         tokensInput,
         tokensOutput,
-        model: options.model,
+        model: responseModel,
         modelMs,
         modelCalls,
       };
@@ -373,7 +380,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     traces,
     tokensInput,
     tokensOutput,
-    model: options.model,
+    model: responseModel,
     modelMs,
     modelCalls,
   };

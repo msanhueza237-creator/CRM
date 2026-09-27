@@ -20,7 +20,7 @@ const settings = copilotConfig(
   (k) =>
     ({
       OPENAI_API_KEY: "sk-private-never-return-to-browser",
-      OPENAI_REASONING_MODEL: "configured-reasoning",
+      OPENAI_DEFAULT_MODEL: "configured-reasoning",
       OPENAI_LIVE_MODEL: "configured-voice",
     })[k],
 );

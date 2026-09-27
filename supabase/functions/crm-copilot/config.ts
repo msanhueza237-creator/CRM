@@ -1,3 +1,4 @@
+import { modelPolicy } from "../_shared/openai-cost-policy.ts";
 type Env = (name: string) => string | undefined;
 
 export function copilotConfig(env: Env) {
@@ -17,14 +18,27 @@ export function copilotConfig(env: Env) {
     const value = Number(env(name) ?? fallback);
     return Number.isFinite(value) && value >= 0 ? value : fallback;
   };
+  const policy = modelPolicy(env);
+  const deepseekModels = (env("COPILOT_DEEPSEEK_MODELS") || "deepseek-v4-pro,deepseek-flash")
+    .split(",").map(m => m.trim()).filter(m => /^[a-zA-Z0-9._-]{1,100}$/.test(m));
+  let deepseekRates: Record<string, { input: number; output: number }> = {
+    "deepseek-v4-pro": { input: 1.32, output: 3.96 },
+    "deepseek-flash": { input: 0.3, output: 1.2 },
+  };
+  try {
+    const custom = JSON.parse(env("COPILOT_DEEPSEEK_RATES_JSON") || "{}");
+    for (const [model, entry] of Object.entries(custom)) {
+      const rate = entry as { input?: unknown; output?: unknown };
+      if (rate && typeof rate.input === "number" && rate.input > 0 && typeof rate.output === "number" && rate.output > 0)
+        deepseekRates[model] = { input: rate.input, output: rate.output };
+    }
+  } catch { deepseekRates = {}; }
   return {
+    defaultModelChoice: env("COPILOT_DEFAULT_MODEL_CHOICE")?.trim() || (env("PROSPECTING_SECRET_ENCRYPTION_KEY") ? "deepseek:deepseek-v4-pro" : "openai:auto"),
+    deepseek: { models: [...new Set(deepseekModels)], rates: deepseekRates, encryptionSecret: env("PROSPECTING_SECRET_ENCRYPTION_KEY") || "" },
+    modelPolicy: policy,
     apiKey: (env("OPENAI_API_KEY") || "").trim(),
-    model: (
-      env("OPENAI_REASONING_MODEL") ||
-      env("OPENAI_MODEL") ||
-      env("OPENAI_COPILOT_MODEL") ||
-      "gpt-5.6-sol"
-    ).trim(),
+    model: policy.defaultModel,
     liveModel: (env("OPENAI_LIVE_MODEL") || "gpt-live-1").trim(),
     liveVoice: (env("OPENAI_LIVE_VOICE") || "marin").trim(),
     liveEnabled: env("COPILOT_LIVE_ENABLED") !== "false",
@@ -41,7 +55,7 @@ export function copilotConfig(env: Env) {
     managerTimeoutMs: integer("COPILOT_MANAGER_TIMEOUT_MS", 150000, 30000, 180000),
     specialistTimeoutMs: integer("COPILOT_SPECIALIST_TIMEOUT_MS", 75000, 1000, 120000),
     sourceTimeoutMs: integer("COPILOT_SOURCE_TIMEOUT_MS", 20000, 1000, 45000),
-    maxOutputTokens: integer("COPILOT_MAX_OUTPUT_TOKENS", 5000, 1000, 12000),
+    maxOutputTokens: Math.min(integer("COPILOT_MAX_OUTPUT_TOKENS", policy.outputTokens, 256, 8000), policy.outputTokens),
     sessionDays: integer("COPILOT_SESSION_DAYS", 30, 1, 90),
     historyMessages: integer("COPILOT_HISTORY_MESSAGES", 12, 2, 24),
   };

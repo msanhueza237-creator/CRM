@@ -40,7 +40,9 @@ import {
   latestMetrics,
   validateArguments,
 } from "../supabase/functions/crm-copilot/tool-registry.ts";
-import { runOrchestrator } from "../supabase/functions/crm-copilot/orchestrator.ts";
+import { runOrchestrator as runCoreOrchestrator } from "../supabase/functions/crm-copilot/orchestrator.ts";
+import { offlineRouter } from "./fixtures/offline-model-router.mjs";
+const runOrchestrator = options => runCoreOrchestrator({ ...options, modelRouter: offlineRouter(options) });
 import {
   dateRange,
   todayChile,

@@ -11,7 +11,9 @@ import {
   redactSecrets,
   sessionExpires,
 } from "../supabase/functions/crm-copilot/safety.ts";
-import { modelPreview, redactArguments, runOrchestrator } from "../supabase/functions/crm-copilot/orchestrator.ts";
+import { modelPreview, redactArguments, runOrchestrator as runCoreOrchestrator } from "../supabase/functions/crm-copilot/orchestrator.ts";
+import { offlineRouter, mockCostRpc } from "./fixtures/offline-model-router.mjs";
+const runOrchestrator = options => runCoreOrchestrator({ ...options, modelRouter: offlineRouter(options) });
 import { CopilotSources } from "../supabase/functions/crm-copilot/sources.ts";
 import { dateRange } from "../supabase/functions/crm-copilot/dates.ts";
 import { ToolRegistry } from "../supabase/functions/crm-copilot/tool-registry.ts";
@@ -51,7 +53,7 @@ test("Configuracion central y limites validan variables sin propagarlas al clien
   const c = copilotConfig(
     (k) =>
       ({
-        OPENAI_MODEL: "modelo-autorizado",
+        OPENAI_DEFAULT_MODEL: "modelo-autorizado",
         COPILOT_TIMEOUT_MS: "999999",
         COPILOT_HISTORY_MESSAGES: "invalid",
       })[k],
@@ -59,7 +61,7 @@ test("Configuracion central y limites validan variables sin propagarlas al clien
   assert.equal(c.model, "modelo-autorizado");
   assert.equal(c.timeoutMs, 180000);
   assert.equal(c.historyMessages, 12);
-  assert.equal(copilotConfig(() => undefined).maxOutputTokens, 5000);
+  assert.equal(copilotConfig(() => undefined).maxOutputTokens, 2400);
   assert.equal(copilotConfig(() => undefined).timeoutMs, 50000);
 });
 test("Fechas calendario, ayer y 12 meses usan fecha de negocio", () => {
@@ -284,6 +286,7 @@ test("Endpoint central conserva auditoria, permisos y contexto sin escribir dato
   globalThis.fetch = async (url, init = {}) => {
     const u = new URL(url),
       payload = init.body ? JSON.parse(init.body) : {};
+    const cost = mockCostRpc(u, payload); if (cost) return cost;
     const response = (data) =>
       new Response(JSON.stringify(data), {
         headers: { "Content-Type": "application/json", "content-range": "*/0" },

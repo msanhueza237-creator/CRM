@@ -39,7 +39,7 @@ export interface CentralMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  metadata?: { results?: CopilotReadResult[]; traceId?: string; inReplyTo?: string; timings?: CopilotTimings; agents?: CopilotAgentRun[] };
+  metadata?: { results?: CopilotReadResult[]; traceId?: string; inReplyTo?: string; timings?: CopilotTimings; agents?: CopilotAgentRun[]; model?: string; provider?: string; modelChoice?: string };
   created_at?: string;
 }
 export interface CentralConversation {
@@ -48,6 +48,9 @@ export interface CentralConversation {
   updated_at: string;
 }
 export interface CentralEvent {
+  model?: string;
+  provider?: string;
+  modelChoice?: string;
   type: string;
   toolName?: string;
   callId?: string;
@@ -61,6 +64,14 @@ export interface CentralEvent {
   traceId?: string;
   timings?: CopilotTimings;
   agents?: CopilotAgentRun[];
+}
+export interface CopilotModelChoice { id: string; provider: "deepseek" | "openai"; model: string; label: string }
+export interface CopilotModelCatalog { models: CopilotModelChoice[]; defaultId: string; warnings: string[] }
+export async function getCopilotModels(signal?: AbortSignal): Promise<CopilotModelCatalog> {
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "models"), { headers: await headers(), signal, cache: "no-store" });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "No se pudieron cargar los modelos del Copiloto.");
+  return result;
 }
 export class CopilotConnectionError extends Error {
   constructor(public requestStarted: boolean) {
@@ -83,6 +94,18 @@ async function headers() {
 export interface AgentUsage {
   enabled: boolean; since: string; partial: boolean; sampledRuns: number; estimateNote: string;
   agents: Array<{ agent: string; label: string; runs: number; failed: number; partial: number; durationMs: number; modelCalls: number; tokensInput: number; tokensOutput: number; estimatedUsd: number; lastAt: string | null }>;
+  modelPolicy?: { defaultModel: string; escalationModel: string; mode: string; economy: boolean; guardEnabled: boolean; maxSolCalls: number; budget: number | null; solBudget: number | null; warningPercent: number };
+  costs?: { error?: string; day: string; warning?: string; policy?: { quota_blocked: boolean; expires_at: string | null }; totals?: { calls: number; cost: number; uncertain: number };
+    models?: Array<{ tier: string; model: string; calls: number; cost: number; tokens: number }>;
+    agents?: Array<{ agent: string; calls: number; cost: number }>;
+    conversations?: Array<{ conversation_id: string | null; calls: number; cost: number }>;
+    errors?: Array<{ created_at: string; agent: string; model: string; error_code: string }> };
+}
+export async function setModelCostMode(mode: string, hours: number): Promise<AgentUsage> {
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "agent-observability"), { method: "POST", headers: await headers(), body: JSON.stringify({ mode, hours, confirmed: true }) });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "No se pudo cambiar la politica de modelos.");
+  return result;
 }
 export async function getAgentUsage(signal?: AbortSignal): Promise<AgentUsage> {
   const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "agent-observability"), { headers: await headers(), signal, cache: "no-store" });
@@ -109,6 +132,7 @@ export async function centralHistory(
     conversations?: CentralConversation[];
     messages?: CentralMessage[];
     nextOffset?: number | null;
+    modelChoice?: string | null;
   };
 }
 export async function authorizedExportMessage(
@@ -130,6 +154,7 @@ export async function streamCentralMessage(
   signal: AbortSignal,
   onEvent: (event: CentralEvent) => void,
   voice?: { voiceSessionId: string; delegationId: string },
+  modelChoice?: string,
 ) {
   let requestStarted = false;
   try {
@@ -145,7 +170,7 @@ export async function streamCentralMessage(
     {
       method: "POST",
       headers: { ...authorization, Accept: "application/x-ndjson" },
-      body: JSON.stringify({ message, conversationId, ...(voice ? {channel:"voice", ...voice} : {}) }),
+      body: JSON.stringify({ message, conversationId, modelChoice, ...(voice ? {channel:"voice", ...voice} : {}) }),
       signal,
     },
   );

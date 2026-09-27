@@ -1,6 +1,6 @@
 import ts from "typescript";
 const program = ts.createProgram(
-  ["scripts/copilot-runtime.d.ts", "supabase/functions/crm-copilot/central.ts"],
+  ["scripts/copilot-runtime.d.ts", "scripts/model-policy-runtime.d.ts", "supabase/functions/crm-copilot/central.ts", "supabase/functions/crm-copilot/index.ts"],
   {
     target: ts.ScriptTarget.ES2022,
     module: ts.ModuleKind.ESNext,
