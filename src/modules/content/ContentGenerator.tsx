@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CalendarClock, CheckCircle2, ClipboardCheck, Facebook, FileText, Hash, Instagram, LayoutTemplate, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Sparkles, X, XCircle } from "lucide-react";
+import { AlertTriangle, CalendarClock, CheckCircle2, ChevronRight, ClipboardCheck, Facebook, FileText, Hash, Instagram, LayoutTemplate, RefreshCw, RotateCcw, Search, Send, ShieldCheck, Sparkles, X, XCircle } from "lucide-react";
 import {
   approveContentPublication,
   attachContentCreatives,
@@ -38,6 +38,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const [productSearch, setProductSearch] = useState("");
   const productSearchStatusId = useId();
   const productSearchRef = useRef<HTMLInputElement>(null);
+  const productSelectRef = useRef<HTMLSelectElement>(null);
   const [variants, setVariants] = useState(1);
   const [useHashtags, setUseHashtags] = useState(true);
   const [operationMode, setOperationMode] = useState<"manual" | "approval">("approval");
@@ -318,7 +319,19 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
             <button className="icon-button" type="button" title="Limpiar búsqueda de productos" aria-label="Limpiar búsqueda de productos" disabled={!productSearch || Boolean(busy)} onClick={() => { setProductSearch(""); productSearchRef.current?.focus(); }}><X size={18} /></button>
           </div>
           <span className="content-product-search-status" id={productSearchStatusId} role="status">{productSearch.trim() ? filteredProducts.length ? `${filteredProducts.length} coincidencia${filteredProducts.length === 1 ? "" : "s"}` : "Sin productos que coincidan" : `${availableProducts.length} productos`}</span>
-          <label className="content-generator-field content-product-selector"><span>Producto</span><select aria-label="Producto" required value={selectedProductId} disabled={Boolean(busy)} onChange={(event) => onProductChange(event.target.value)}><option value="">Selecciona un producto</option>{selectedOutsideSearch ? <optgroup label="Selección actual"><option value={selectedOutsideSearch.id}>{selectedOutsideSearch.name}{selectedOutsideSearch.sku ? ` · ${selectedOutsideSearch.sku}` : ""}</option></optgroup> : null}<optgroup label={productSearch.trim() ? "Coincidencias" : "Productos"}>{filteredProducts.map((product) => <option value={product.id} key={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ""}</option>)}</optgroup></select></label>
+          {productSearch.trim() && filteredProducts.length > 0 ? (
+            <ul className="content-product-results" aria-label="Resultados de productos">
+              {filteredProducts.map(product => (
+                <li key={product.id}>
+                  <button type="button" disabled={Boolean(busy)} aria-pressed={product.id === selectedProductId} aria-label={`Seleccionar ${product.name}${product.sku ? ` · ${product.sku}` : ""}`} onClick={() => { onProductChange(product.id); setProductSearch(""); productSelectRef.current?.focus(); }}>
+                    <span><strong>{product.name}</strong><small>{product.sku || "Sin SKU"}{product.brand ? ` · ${product.brand}` : ""}</small></span>
+                    {product.id === selectedProductId ? <CheckCircle2 size={20} aria-hidden="true" /> : <ChevronRight size={20} aria-hidden="true" />}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <label className="content-generator-field content-product-selector"><span>Producto seleccionado</span><select ref={productSelectRef} aria-label="Producto" required value={selectedProductId} disabled={Boolean(busy)} onChange={(event) => onProductChange(event.target.value)}><option value="">Selecciona un producto</option>{selectedOutsideSearch ? <optgroup label="Selección actual"><option value={selectedOutsideSearch.id}>{selectedOutsideSearch.name}{selectedOutsideSearch.sku ? ` · ${selectedOutsideSearch.sku}` : ""}</option></optgroup> : null}<optgroup label={productSearch.trim() ? "Coincidencias" : "Productos"}>{filteredProducts.map((product) => <option value={product.id} key={product.id}>{product.name}{product.sku ? ` · ${product.sku}` : ""}</option>)}</optgroup></select></label>
           <fieldset className="content-channel-picker"><legend>Redes sociales</legend><button className={channels.includes("instagram") ? "active" : ""} type="button" aria-pressed={channels.includes("instagram")} onClick={() => toggleChannel("instagram")}><Instagram size={19} /> Instagram</button><button className={channels.includes("facebook") ? "active" : ""} type="button" aria-pressed={channels.includes("facebook")} onClick={() => toggleChannel("facebook")}><Facebook size={19} /> Facebook</button></fieldset>
         </section>
 

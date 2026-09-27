@@ -8230,6 +8230,15 @@ th {
 .content-product-search .icon-button:disabled { opacity: .45; cursor: default; }
 .content-product-search input:focus, .content-product-search .icon-button:focus-visible { border-color: #168791; box-shadow: 0 0 0 3px rgba(22, 135, 145, .12); outline: 0; }
 .content-product-search-status { color: #52676d; font-size: 12px; min-height: 18px; overflow-wrap: anywhere; }
+.content-product-results { list-style: none; margin: 0; padding: 0; max-height: 320px; overflow-y: auto; overscroll-behavior: contain; border: 1px solid #cad8db; border-radius: 7px; }
+.content-product-results li + li { border-top: 1px solid #e2eaeb; }
+.content-product-results button { display: grid; grid-template-columns: minmax(0, 1fr) 20px; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 12px; border: 0; border-radius: 0; background: #fff; color: #173e45; text-align: left; cursor: pointer; }
+.content-product-results button > span { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.content-product-results strong { font-size: 14px; line-height: 1.4; }
+.content-product-results small { font-size: 12px; color: #52676d; }
+.content-product-results button:hover, .content-product-results button[aria-pressed="true"] { background: #edf7f5; }
+.content-product-results button:focus-visible { outline: 2px solid #168791; outline-offset: -3px; }
+.content-product-results button:disabled { opacity: .55; cursor: default; }
 .content-model-row .icon-button { width: 42px; height: 44px; }
 .content-model-row select { width: 100%; min-width: 0; text-overflow: ellipsis; }
 .content-model-references { font-size: .8rem; color: #52676d; }

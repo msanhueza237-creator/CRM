@@ -8,7 +8,7 @@ const output = 'outputs/content-designs';
 await mkdir(output, { recursive: true });
 const realProducts = await readFile('tmp/content-studio/products.json', 'utf8').then(JSON.parse).catch(() => null);
 const example = { id: '11111111-1111-4111-8111-111111111111', sku: 'QA-TOOL', name: 'Abocardador de prueba', description_text: 'Abocardador con trinquete\nEspecificaciones Técnicas\nParámetro\nDetalle Técnico\nModelo\nQA-TOOL\nÁngulo\n45 grados\nMedidas\n1/4 y 3/8', brand: 'Marca de prueba', category: 'Herramientas', primary_image_url: 'https://example.test/tool.jpg', images: [], source_status: 'active', sync_status: 'synced', paused: false, stock: 3, price: 1000, promotional_price: null };
-const products = realProducts || [example, { ...example, id: '22222222-2222-4222-8222-222222222222', sku: 'QA-SECOND', name: 'Manómetro con manguera de carga 1.5m R410A, R32, R134A.' }];
+const products = realProducts || [example, { ...example, id: '22222222-2222-4222-8222-222222222222', sku: 'QA-SECOND', name: 'Manómetro con manguera de carga 1.5m R410A, R32, R134A.' }, { ...example, id: '33333333-3333-4333-8333-333333333333', sku: 'QA-TECHO', name: 'Soporte de techo 800x250x450 incluye accesorios' }];
 const first = products.find((p) => p.sku === 'ST-R806A') || products[0];
 const api = `
 export async function getContentModels(){if(window.failModels)throw new Error('Catalogo temporalmente no disponible');return{defaultId:'deepseek:deepseek-v4-pro',models:[{id:'deepseek:deepseek-v4-pro',label:'DeepSeek · deepseek-v4-pro'},{id:'deepseek:deepseek-flash',label:'DeepSeek · deepseek-flash'},{id:'openai:default',label:'OpenAI · modelo configurado'}].filter(m=>!window.removedModel||m.id!==window.removedModel),warnings:[],references:[{id:'reference:free',label:'Modelo gratuito de referencia',available:false,note:'Requiere cuenta y revision de privacidad.',url:'https://example.test/models'}]}}
@@ -80,10 +80,14 @@ try {
   assert.equal(await page.evaluate(() => window.sourceReads), 1);
   const productSearch = page.getByRole('searchbox', { name:'Buscar productos' });
   const productSelect = page.getByRole('combobox', { name:'Producto', exact:true });
+  const productResults = page.getByRole('list', { name:'Resultados de productos' });
   const searchTarget = products.find(product => product.id !== first.id);
   const normalizedName = searchTarget.name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toUpperCase();
   const searchText = `  ${normalizedName.split(/\s+/).reverse().join('   ')}  `;
   await productSearch.fill(searchText);
+  assert.equal(await productResults.isVisible(),true,'Matches must be visible without opening the select');
+  assert.equal(await productResults.getByRole('button').count(),1);
+  assert.match(await productResults.innerText(),new RegExp(searchTarget.sku));
   assert.equal(await productSelect.locator('optgroup[label="Coincidencias"] option').count(),1);
   assert.equal(await productSelect.inputValue(),first.id,'Filtering must preserve the selected product');
   assert.equal(await productSelect.locator('optgroup[label="Selección actual"] option').getAttribute('value'),first.id);
@@ -91,11 +95,13 @@ try {
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'Search must fit mobile');
   await page.screenshot({path:output+'/product-search-390.png',fullPage:false});
   await productSearch.fill(searchTarget.sku.toLowerCase());
+  assert.equal(await productResults.getByRole('button').count(),1);
   assert.equal(await productSelect.locator('optgroup[label="Coincidencias"] option').count(),1);
   await productSearch.fill(first.brand.toUpperCase());
   assert.ok(await productSelect.locator('optgroup[label="Coincidencias"] option').count()>=1);
   await productSearch.fill('zzzz-sin-coincidencias-99999');
   await page.getByRole('status').filter({hasText:'Sin productos que coincidan'}).waitFor();
+  assert.equal(await productResults.count(),0);
   assert.equal(await productSelect.locator('optgroup[label="Coincidencias"] option').count(),0);
   assert.equal(await productSelect.inputValue(),first.id);
   await productSearch.press('Enter');
@@ -104,13 +110,32 @@ try {
   assert.equal(await productSearch.inputValue(),'');
   assert.equal(await productSelect.locator('option').count(),products.length+1);
   await productSearch.fill(searchTarget.sku);
-  await productSelect.selectOption(searchTarget.id); await ready();
-  assert.equal(await productSelect.inputValue(),searchTarget.id);
-  assert.equal(await productSelect.locator('optgroup[label="Selección actual"]').count(),0);
   await page.getByRole('button',{name:'Limpiar búsqueda de productos',exact:true}).click();
   assert.equal(await productSearch.inputValue(),'');
   assert.equal(await productSearch.evaluate(input=>input===document.activeElement),true);
+  assert.equal(await productSelect.inputValue(),first.id);
+  await productSearch.fill(searchTarget.sku);
+  await productResults.getByRole('button').click(); await ready();
   assert.equal(await productSelect.inputValue(),searchTarget.id);
+  assert.equal(await productSearch.inputValue(),'','Choosing a visible result closes the search');
+  assert.equal(await productResults.count(),0);
+  assert.equal(await productSelect.evaluate(select=>select===document.activeElement),true);
+  assert.equal(await page.evaluate(()=>window.generateInputs.length),0,'Selecting a product must not generate content');
+  const roofProduct = products.find(product=>product.sku==='QA-TECHO');
+  if(roofProduct) {
+    await productSearch.fill('techo');
+    const roofButton = productResults.getByRole('button',{name:`Seleccionar ${roofProduct.name} · ${roofProduct.sku}`,exact:true});
+    assert.equal(await roofButton.isVisible(),true,'The reported techo query must show its product directly');
+    for(const width of [390,360]) {
+      await page.setViewportSize({width,height:980});
+      await productSearch.scrollIntoViewIfNeeded();
+      assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
+      await page.screenshot({path:output+`/product-search-techo-${width}.png`,fullPage:false});
+    }
+    await roofButton.press('Enter'); await ready();
+    assert.equal(await productSelect.inputValue(),roofProduct.id);
+    assert.equal(await page.evaluate(()=>window.generateInputs.length),0);
+  }
   await productSelect.selectOption(first.id); await ready();
   await page.setViewportSize({width:1440,height:1000});
   console.log('Product search by name, SKU and brand, accents, empty results and mobile passed.');
