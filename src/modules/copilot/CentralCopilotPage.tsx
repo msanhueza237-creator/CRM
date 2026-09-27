@@ -40,6 +40,7 @@ import {
   copilotVoiceRequest,
   getCopilotModels,
   type CopilotModelChoice,
+  type CopilotVoiceCatalog,
 } from "../../lib/copilotCentralApi";
 import { exportCentralMessage, exportCustomerPriceList } from "../../lib/copilotCentralExport";
 import { useAuth } from "../auth/AuthContext";
@@ -178,13 +179,33 @@ function CentralConversationPage() {
   const selected = useRef<string>();
   const campaignId = params.get("campaign");
   const [voiceMode,setVoiceMode]=useState(false);
+  const [voiceCatalog, setVoiceCatalog] = useState<CopilotVoiceCatalog>();
+  const [voiceProvider, setVoiceProvider] = useState("openai");
+  const [voiceCatalogError, setVoiceCatalogError] = useState("");
+  const voiceStorageKey = `copilot-voice:${user?.id}:${user?.role}`;
+  const voiceReady = voiceCatalog ? voiceCatalog.providers.some(p => p.id === voiceProvider && p.available) : voiceProvider === "openai";
+  useEffect(() => {
+    const controller = new AbortController();
+    void copilotVoiceRequest<CopilotVoiceCatalog>("voice-providers", undefined, controller.signal).then(catalog => {
+      if (controller.signal.aborted) return;
+      setVoiceCatalog(catalog);
+      let saved = "";
+      try { saved = localStorage.getItem(voiceStorageKey) || ""; } catch { /* Optional preference. */ }
+      setVoiceProvider(saved === "gemini" || saved === "openai" ? saved : catalog.defaultId);
+    }).catch(() => { if (!controller.signal.aborted) setVoiceCatalogError("No se pudo comprobar Gemini. La voz OpenAI existente sigue disponible."); });
+    return () => controller.abort();
+  }, [voiceStorageKey]);
+  function selectVoiceProvider(value: string) {
+    setVoiceProvider(value);
+    try { localStorage.setItem(voiceStorageKey, value); } catch { /* Keep session choice. */ }
+  }
   const voiceModeRef=useRef(voiceMode); voiceModeRef.current=voiceMode;
   const [usage,setUsage]=useState<Record<string,unknown>>();
   const live=useCopilotLive(conversationId,{
     onEvent:acceptEvent,
     onQuestion:text=>{setMessages(m=>[...m,{id:crypto.randomUUID(),role:"user",content:text}]);setProgress([]);setError("");},
     onBusy:value=>{if(voiceModeRef.current)setBusy(value);},onError:setError,
-  }, modelChoice);
+  }, modelChoice, voiceProvider);
   function acceptEvent(event:CentralEvent) {
     if(event.type==="conversation"){setConversationId(event.conversationId);selected.current=event.conversationId;}
     if(event.type==="tool_start")setProgress(p=>[...p,{id:event.callId!,name:event.toolName!,status:"running"}]);
@@ -342,7 +363,7 @@ function CentralConversationPage() {
           </div>
         </div>
         <div className="cc-heading-actions">
-          <button className={`cc-mode ${voiceMode?"is-active":""}`} aria-pressed={voiceMode} disabled={!voiceMode&&(busy||historyBusy||modelsLoading||!modelReady)} onClick={()=>{if(voiceMode)returnToText();else {voice.stop();setVoiceMode(true);setHistoryOpen(false);void live.start();}}}><Mic size={18}/> Voz</button>
+          <button className={`cc-mode ${voiceMode?"is-active":""}`} aria-pressed={voiceMode} disabled={!voiceMode&&(busy||historyBusy||modelsLoading||!modelReady||!voiceReady)} onClick={()=>{if(voiceMode)returnToText();else {voice.stop();setVoiceMode(true);setHistoryOpen(false);void live.start();}}}><Mic size={18}/> Voz</button>
           <span className="cc-read-only">
             <ShieldCheck size={15} /> Solo lectura
           </span>
@@ -371,6 +392,14 @@ function CentralConversationPage() {
         </div>
       </header>
       <CopilotModelSelector models={models} value={modelChoice} loading={modelsLoading} disabled={busy || historyBusy || live.active || voiceMode} error={modelsError} onChange={selectModel} onRefresh={() => void loadModels()} />
+      <div className="cc-voice-provider">
+        <label htmlFor="copilot-voice-provider"><Mic size={16} /> Voz</label>
+        <select id="copilot-voice-provider" value={voiceProvider} disabled={live.active || busy || historyBusy} onChange={e => selectVoiceProvider(e.target.value)}>
+          {(voiceCatalog?.providers || [{ id: "openai", label: "OpenAI Live", available: true }, { id: "gemini", label: "Gemini Live", available: false }]).map(p => <option key={p.id} value={p.id} disabled={!p.available}>{p.label}{p.available ? "" : " (sin configurar)"}</option>)}
+        </select>
+        {voiceCatalogError && <small role="status">{voiceCatalogError}</small>}
+        {voiceCatalog && !voiceReady && <small role="status">El proveedor seleccionado no esta disponible. Elige otra opcion.</small>}
+      </div>
       <div className="cc-workspace">
         <aside className={`cc-history ${historyOpen ? "is-open" : ""}`}>
           <div className="cc-history-heading">

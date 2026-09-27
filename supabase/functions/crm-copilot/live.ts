@@ -9,9 +9,11 @@ import {
 import { redactSecrets, safeData } from "./safety.ts";
 import { requireOpenAI } from "./provider-errors.ts";
 import { chooseModel, modelCatalog } from "./model-selection.ts";
+import { createGeminiSession, geminiHistory, geminiUsage } from "./gemini.ts";
 
 type Settings = ReturnType<typeof copilotConfig>;
 export const liveRoutes = [
+  "voice-providers",
   "voice-session",
   "voice-result",
   "voice-interrupt",
@@ -143,7 +145,7 @@ export async function ownedVoice(
     !opaqueId(meta.liveId) ||
     !Number.isFinite(age) ||
     age < -60000 ||
-    age > 86400000
+    age > (meta.protocol === "gemini" ? (Number(meta.maxSeconds) || 900) * 1000 + 60000 : 86400000)
   )
     throw new CopilotDataError(
       "Sesion de voz no autorizada o vencida.",
@@ -160,6 +162,7 @@ export async function ownedVoice(
     );
   return {
     ...meta,
+    protocol: meta.protocol === "gemini" ? "gemini" : "live",
     liveId: String(meta.liveId),
     conversationId: String(record.conversation_id),
     createdAt: String(record.created_at),
@@ -294,7 +297,15 @@ export async function liveHandler(
     });
   let auditedConversation: string | undefined;
   try {
-    if (!settings.apiKey || !settings.liveEnabled)
+    if (route === "voice-providers") {
+      const gemini = settings.liveEnabled && settings.gemini.enabled && !!settings.gemini.apiKey;
+      const openai = settings.liveEnabled && !!settings.apiKey;
+      return json({ defaultId: settings.defaultVoiceProvider === "gemini" && gemini ? "gemini" : "openai", providers: [
+        { id: "gemini", label: "Gemini Live", model: settings.gemini.model, available: gemini },
+        { id: "openai", label: "OpenAI Live", model: settings.liveModel, available: openai },
+      ] });
+    }
+    if (!settings.liveEnabled)
       return json(
         {
           error:
@@ -310,13 +321,18 @@ export async function liveHandler(
         `copilot_audit_events?select=event_type,model,tokens_input,tokens_output,latency_ms,metadata_redacted,channel&user_id=eq.${source.actor.id}&created_at=gte.${since}&order=created_at.desc&limit=1000`,
       );
       const seconds = new Map<string, number>();
+      const geminiSeconds = new Map<string, number>();
       let input = 0,
         output = 0,
         calls = 0,
         unpricedCalls = 0;
       for (const e of events) {
         const m = object(e.metadata_redacted);
-        if (e.event_type === "live_usage")
+        if (e.event_type === "live_usage" && m.protocol === "gemini") {
+          const key = String(m.voiceSessionId);
+          geminiSeconds.set(key, Math.max(geminiSeconds.get(key) || 0, Number(m.seconds) || 0));
+        }
+        if (e.event_type === "live_usage" && m.protocol !== "gemini")
           seconds.set(
             String(m.voiceSessionId),
             Math.max(
@@ -341,7 +357,10 @@ export async function liveHandler(
         partial: events.length === 1000,
         model: settings.model,
         liveModel: settings.liveModel,
-        sessions: seconds.size,
+        sessions: seconds.size + geminiSeconds.size,
+        geminiSeconds: [...geminiSeconds.values()].reduce((a, b) => a + b, 0),
+        geminiSessions: geminiSeconds.size,
+        geminiEstimatedUsd: null,
         seconds: duration,
         modelCalls: calls,
         inputTokens: input,
@@ -353,7 +372,7 @@ export async function liveHandler(
             output * settings.outputUsdPerMillion) /
             1e6,
         estimateNote:
-          "Estimacion del modelo configurado, sin descuentos de cache; otros modelos y llamadas fallidas no valorizados. Duracion de voz informada por el cliente. No es factura.",
+          "Estimacion del modelo configurado y OpenAI Live por duracion. Gemini se registra por separado sin precio configurado. Otros modelos y llamadas fallidas no valorizados. Telemetria del cliente, no es factura ni limite de gasto de audio.",
       });
     }
     const raw = await req.text();
@@ -366,11 +385,15 @@ export async function liveHandler(
       return json({ error: "Solicitud invalida." }, 400);
     }
     if (route === "voice-session") {
-      if (
+      if (body.protocol && !["live", "gemini"].includes(String(body.protocol))) return json({ error: "Protocolo no soportado." }, 400);
+      const gemini = body.protocol === "gemini";
+      if (gemini ? !settings.gemini.apiKey || !settings.gemini.enabled : !settings.apiKey)
+        return json({ error: "El proveedor de voz elegido no esta configurado en el backend." }, 503);
+      if (!gemini && (
         typeof body.sdp !== "string" ||
         !body.sdp.startsWith("v=0") ||
         !body.sdp.includes("m=audio")
-      )
+      ))
         return json({ error: "La oferta de audio no es valida." }, 400);
       const current = body.conversationId
         ? await ownedConversation(
@@ -391,6 +414,19 @@ export async function liveHandler(
       const history = await source.select(
         `copilot_messages?select=role,content&user_id=eq.${source.actor.id}&conversation_id=eq.${id}&role=in.(user,assistant)&order=created_at.desc,id.desc&limit=${settings.historyMessages}`,
       );
+      if (gemini) {
+        const recent = await source.select(`copilot_audit_events?select=id&user_id=eq.${source.actor.id}&event_type=eq.live_session_created&created_at=gte.${new Date(Date.now() - 60000).toISOString()}&limit=5`);
+        if (recent.length >= 5) return json({ error: "Espera un minuto antes de volver a conectar la voz." }, 429);
+        const session = await createGeminiSession(settings.gemini, liveSessionConfig(settings, []).instructions, req.signal);
+        await audit(source, id, traceId, "live_session_created", settings.gemini.model, {
+          liveId: voiceId, role: source.actor.role, reasoningModel: choice.model, modelChoice: choice.id,
+          reasoningProvider: choice.provider, recording: false, protocol: "gemini", maxSeconds: session.maxSeconds,
+        }, voiceId);
+        // Explicit capability response, never copied to the audit or persisted. No permanent key.
+        return new Response(JSON.stringify({ voiceSessionId: voiceId, conversationId: id, protocol: "gemini",
+          ...session, history: geminiHistory(history.reverse()) }), { status: 201,
+          headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" } });
+      }
       const response = await fetch("https://api.openai.com/v1/live/sessions", {
         method: "POST",
         signal: AbortSignal.any([req.signal, AbortSignal.timeout(25000)]),
@@ -454,10 +490,14 @@ export async function liveHandler(
     const voiceId = String(body.voiceSessionId),
       liveId = String(session.liveId),
       id = session.conversationId;
+    const gemini = session.protocol === "gemini";
+    const voiceModel = gemini ? settings.gemini.model : settings.liveModel;
     auditedConversation = id;
     if (route === "voice-result") {
       if (!validUuid(body.messageId) || !opaqueId(body.delegationId))
         return json({ error: "Resultado de voz invalido." }, 400);
+      const cancelled = await source.select(`copilot_audit_events?select=id&id=eq.${await stableVoiceId(`${voiceId}:${body.delegationId}:cancel`)}&user_id=eq.${source.actor.id}&limit=1`);
+      if (cancelled.length) return json({ accepted: false, cancelled: true }, 409);
       const messages = await source.select(
         `copilot_messages?select=id,content,metadata&user_id=eq.${source.actor.id}&conversation_id=eq.${id}&role=eq.assistant&id=eq.${body.messageId}&limit=1`,
       );
@@ -477,13 +517,14 @@ export async function liveHandler(
         id,
         traceId,
         "live_result_delivery",
-        settings.liveModel,
+        voiceModel,
         { voiceSessionId: voiceId, messageId: message.id },
         await stableVoiceId(`${voiceId}:${body.delegationId}:delivery`),
         "pending",
       );
       if (!claim.length)
         return json({ accepted: true, alreadyAttempted: true });
+      if (gemini) return json({ accepted: true, spokenResult: spokenFacts(message) });
       await send(
         settings.apiKey,
         liveId,
@@ -499,12 +540,17 @@ export async function liveHandler(
         id,
         traceId,
         "live_result_acknowledged",
-        settings.liveModel,
+        voiceModel,
         { voiceSessionId: voiceId, messageId: message.id },
       );
       return json({ accepted: true });
     }
     if (route === "voice-interrupt") {
+      if (gemini) {
+        if (body.delegationId && !opaqueId(body.delegationId)) return json({ error: "Delegacion invalida." }, 400);
+        if (body.delegationId) await audit(source, id, traceId, "live_request_cancelled", voiceModel, { voiceSessionId: voiceId }, await stableVoiceId(`${voiceId}:${body.delegationId}:cancel`));
+        return json({ accepted: true });
+      }
       await send(
         settings.apiKey,
         liveId,
@@ -540,16 +586,18 @@ export async function liveHandler(
         const n = Number(object(body.metrics)[key]);
         if (Number.isFinite(n) && n >= 0 && n < 86400000) metrics[key] = n;
       }
-      await audit(source, id, traceId, "live_usage", settings.liveModel, {
+      await audit(source, id, traceId, "live_usage", voiceModel, {
         voiceSessionId: voiceId,
         seconds,
         finalized: body.finalized === true,
         measurementSource: "client",
         metrics,
+        ...(gemini ? { protocol: "gemini", tokens: geminiUsage(body.tokens), estimatedUsd: null, costSource: "unpriced_client_telemetry", usageIncomplete: true } : {}),
       });
       return json({ ok: true });
     }
     if (route === "voice-end") {
+      if (!gemini) {
       const response = await fetch(
         `https://api.openai.com/v1/live/sessions/${encodeURIComponent(liveId)}/hangup`,
         {
@@ -560,12 +608,13 @@ export async function liveHandler(
       );
       if (!response.ok && ![404, 409, 410].includes(response.status))
         await requireOpenAI(response);
+      }
       await audit(
         source,
         id,
         `voice-${voiceId}`,
         "live_session_ended",
-        settings.liveModel,
+        voiceModel,
         { voiceSessionId: voiceId },
       );
       return json({ ok: true });

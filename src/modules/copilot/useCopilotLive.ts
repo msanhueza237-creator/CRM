@@ -9,6 +9,8 @@ import {
   microphoneError,
   type LiveFragment,
 } from "./liveProtocol";
+import { GeminiTransport } from "./geminiTransport";
+import type { GeminiSession } from "./geminiProtocol";
 
 export type LiveState =
   | "disconnected"
@@ -36,6 +38,7 @@ export function useCopilotLive(
   conversationId: string | undefined,
   callbacks: Callbacks,
   modelChoice?: string,
+  voiceProvider = "openai",
 ) {
   const [active, setActive] = useState(false),
     [state, setState] = useState<LiveState>("disconnected"),
@@ -49,12 +52,17 @@ export function useCopilotLive(
   currentConversation.current = conversationId;
   const selectedModel = useRef(modelChoice);
   selectedModel.current = modelChoice;
+  const selectedVoice = useRef(voiceProvider);
+  selectedVoice.current = voiceProvider;
   const r = useRef<{
     pc?: RTCPeerConnection;
     dc?: RTCDataChannel;
     mic?: MediaStream;
     audio?: HTMLAudioElement;
-    session?: Session;
+    session?: Session | GeminiSession;
+    gemini?: GeminiTransport;
+    tokens?: Record<string, unknown>;
+    pendingId?: string;
     turn?: AbortController;
     startup?: AbortController;
     transcript: LiveTranscript;
@@ -107,6 +115,9 @@ export function useCopilotLive(
     for (const timer of c.timers) clearTimeout(timer);
     c.timers.clear();
     c.dc?.close();
+    c.gemini?.close();
+    c.gemini = undefined;
+    c.pendingId = undefined;
     c.pc?.close();
     c.mic?.getTracks().forEach((t) => t.stop());
     if (c.audio) {
@@ -123,14 +134,16 @@ export function useCopilotLive(
   async function reportUsage(finalized = false) {
     const c = r.current;
     if (!c.session) return;
+    if (c.gemini && c.started) c.usage = Math.max(c.usage, (performance.now() - c.started) / 1000);
     await copilotVoiceRequest("voice-usage", {
       voiceSessionId: c.session.voiceSessionId,
       seconds: c.usage,
       finalized,
       metrics: c.metrics,
+      tokens: c.tokens,
     }).catch(() => {});
   }
-  async function hangup(session?: Session) {
+  async function hangup(session?: Session | GeminiSession) {
     if (session)
       await copilotVoiceRequest("voice-end", {
         voiceSessionId: session.voiceSessionId,
@@ -151,6 +164,11 @@ export function useCopilotLive(
     c.turnVersion++;
     c.mic?.getTracks().forEach((t) => t.stop());
     if (c.audio) c.audio.muted = true;
+    c.gemini?.clearAudio();
+    if (c.gemini) {
+      c.usage = Math.max(0, (performance.now() - c.started) / 1000);
+      void reportUsage(false);
+    }
     cb.current.onBusy(false);
     setActive(false);
     setState("disconnected");
@@ -177,7 +195,7 @@ export function useCopilotLive(
   async function delegate(event: Record<string, unknown>, generation: number) {
     const c = r.current,
       delegation = event.delegation as
-        | { id?: string; target?: string }
+        | { id?: string; target?: string; question?: string }
         | undefined;
     if (
       !c.running ||
@@ -187,6 +205,7 @@ export function useCopilotLive(
     )
       return;
     c.delegations.add(delegation.id);
+    c.pendingId = delegation.id;
     c.turn?.abort();
     const version = ++c.turnVersion;
     const controller = new AbortController();
@@ -201,9 +220,9 @@ export function useCopilotLive(
     delete c.metrics.firstAudioMs;
     setState(c.phase);
     // Allow out-of-order caption fragments to arrive; silence never initiates a query.
-    await new Promise<void>((resolve) => setTimeout(resolve, 350));
+    if (!delegation.question) await new Promise<void>((resolve) => setTimeout(resolve, 350));
     if (!valid()) return;
-    let question = c.transcript.takeQuestion(Number(event.offset_ms));
+    let question = delegation.question || c.transcript.takeQuestion(Number(event.offset_ms));
     if (!question) {
       c.phase = "listening";
       await new Promise<void>((resolve) => setTimeout(resolve, 500));
@@ -242,7 +261,7 @@ export function useCopilotLive(
       );
       if (!valid() || !result?.messageId) return;
       c.metrics.delegationMs = performance.now() - started;
-      await copilotVoiceRequest(
+      const delivery = await copilotVoiceRequest<{ spokenResult?: string }>(
         "voice-result",
         {
           voiceSessionId: session.voiceSessionId,
@@ -251,6 +270,7 @@ export function useCopilotLive(
         },
         controller.signal,
       );
+      if (valid() && c.gemini && delivery.spokenResult) c.gemini.result(delegation.id, delivery.spokenResult);
       if (valid()) {
         c.phase = "listening";
         setState(c.phase);
@@ -262,9 +282,10 @@ export function useCopilotLive(
         setError(msg);
         cb.current.onError(msg);
         setState("error");
+        c.gemini?.result(delegation.id, "No pude consultar el CRM. No tengo datos suficientes para responder. Puedes continuar por texto.", true);
       }
     } finally {
-      if (valid()) cb.current.onBusy(false);
+      if (valid()) { cb.current.onBusy(false); c.pendingId = undefined; }
     }
   }
   function reconnect(generation: number) {
@@ -305,6 +326,7 @@ export function useCopilotLive(
     c.transcript = new LiveTranscript();
     c.delegations.clear();
     c.usage = 0;
+    c.tokens = undefined;
     c.delegatedAt = undefined;
     c.started = performance.now();
     c.metrics = {};
@@ -323,7 +345,7 @@ export function useCopilotLive(
       if (
         !window.isSecureContext ||
         !navigator.mediaDevices?.getUserMedia ||
-        !window.RTCPeerConnection
+        (selectedVoice.current === "openai" && !window.RTCPeerConnection)
       )
         throw new Error(
           "Este navegador no permite voz segura. Usa Chrome o Edge en HTTPS, o continua por texto.",
@@ -336,6 +358,55 @@ export function useCopilotLive(
       void context.resume().catch(() => {
         if (valid()) setAudioBlocked(true);
       });
+      if (selectedVoice.current === "gemini") {
+        const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+        if (!valid()) { mic.getTracks().forEach(t => t.stop()); return; }
+        c.mic = mic;
+        for (const track of mic.getAudioTracks()) {
+          track.enabled = !c.muted;
+          track.onended = () => { if (valid()) { setError("El microfono se desconecto. Revisa el dispositivo o Bluetooth."); void stop(); } };
+        }
+        const session = await copilotVoiceRequest<GeminiSession>("voice-session", {
+          protocol: "gemini", conversationId: currentConversation.current, modelChoice: selectedModel.current,
+        }, startup.signal);
+        if (!valid()) { void hangup(session); return; }
+        c.session = session;
+        currentConversation.current = session.conversationId;
+        cb.current.onEvent({ type: "conversation", conversationId: session.conversationId });
+        const gemini = new GeminiTransport(context, e => {
+          if (!valid()) return;
+          if (e.type === "session.started") { c.ready = true; c.metrics.connectMs = performance.now() - c.started; setState("listening"); }
+          if (c.transcript.add(e)) setCaptions(c.transcript.captions());
+          if (e.type === "session.delegation.created") void delegate(e, generation);
+          if (e.type === "voice.interrupted" || (e.type === "voice.cancelled" && e.delegationId === c.pendingId)) {
+            const pending = c.pendingId;
+            c.turn?.abort(); c.turnVersion++; c.pendingId = undefined; c.phase = "listening";
+            gemini.cancelPending(); cb.current.onBusy(false); setState("listening");
+            if (pending) void copilotVoiceRequest("voice-interrupt", { voiceSessionId: session.voiceSessionId, delegationId: pending }).catch(() => {});
+          }
+          if (e.type === "voice.speaking") {
+            if (c.delegatedAt !== undefined && c.metrics.firstAudioMs === undefined) c.metrics.firstAudioMs = performance.now() - c.delegatedAt;
+            setState("speaking");
+          }
+          if (e.type === "voice.audio_idle") setState(c.phase);
+          if (e.type === "voice.audio_blocked") setAudioBlocked(true);
+          if (e.type === "voice.usage") c.tokens = e.tokens as Record<string, unknown>;
+          if (e.type === "voice.reconnect") later(() => { if (valid()) reconnect(generation); }, 1500);
+          if (e.type === "error") { setError("Gemini no pudo completar el audio. Puedes volver a conectar o seguir por texto."); void stop(); }
+        });
+        c.gemini = gemini;
+        gemini.mute(c.muted);
+        await gemini.start(session, mic, startup.signal);
+        if (!valid()) return;
+        const observe = () => {
+          if (!valid()) return;
+          c.usage = Math.max(0, (performance.now() - c.started) / 1000);
+          void reportUsage(); later(observe, 30000);
+        };
+        later(observe, 30000);
+        later(() => { if (valid()) { setError("La sesion de Gemini termino su tiempo. Puedes conectar una nueva sesion sin perder el historial."); void stop(); } }, session.maxSeconds * 1000);
+        return;
+      }
       const pc = new RTCPeerConnection();
       c.pc = pc;
       pc.ontrack = (e) => {
@@ -545,6 +616,7 @@ export function useCopilotLive(
     c.muted = !c.muted;
     c.mic?.getAudioTracks().forEach((t) => (t.enabled = !c.muted));
     setMuted(c.muted);
+    c.gemini?.mute(c.muted);
     command(
       c.muted ? "session.input_audio.mute" : "session.input_audio.unmute",
     );
@@ -554,6 +626,9 @@ export function useCopilotLive(
     const audio = c.audio,
       generation = c.generation;
     if (audio) audio.muted = true;
+    const delegationId = c.pendingId;
+    c.gemini?.interrupt();
+    c.pendingId = undefined;
     c.turn?.abort();
     c.turnVersion++;
     cb.current.onBusy(false);
@@ -562,6 +637,7 @@ export function useCopilotLive(
     if (c.session)
       await copilotVoiceRequest("voice-interrupt", {
         voiceSessionId: c.session.voiceSessionId,
+        delegationId,
       }).catch((e) => setError(microphoneError(e)));
     if (
       audio &&
@@ -577,6 +653,10 @@ export function useCopilotLive(
     const offline = () => {
       if (c.running) {
         c.turn?.abort();
+        if (c.gemini) {
+          c.usage = Math.max(0, (performance.now() - c.started) / 1000);
+          c.gemini.close(); c.mic?.getTracks().forEach(t => { t.onended = null; t.stop(); });
+        }
         setState("disconnected");
         setError(
           "Sin conexion. Puedes seguir por texto cuando vuelva internet.",
@@ -613,7 +693,8 @@ export function useCopilotLive(
     toggleMute,
     interrupt,
     resumeAudio: () => {
-      void r.current.audioContext?.resume();
+      void r.current.audioContext?.resume().then(() => setAudioBlocked(false)).catch(() => setAudioBlocked(true));
+      if (r.current.gemini) return;
       void r.current.audio
         ?.play()
         .then(() => setAudioBlocked(false))

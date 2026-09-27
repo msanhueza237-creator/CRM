@@ -2,6 +2,7 @@ import { object, type Row } from "./contracts.ts";
 
 export function redactSecrets(value: string): string {
   return value
+    .replace(/\bAIza[A-Za-z0-9_-]{20,}\b/g, "[credencial omitida]")
     .replace(/\bsk-[a-zA-Z0-9_-]{12,}\b/g, "[credencial omitida]")
     .replace(/Bearer\s+[a-zA-Z0-9._~-]+/gi, "Bearer [omitido]")
     .replace(

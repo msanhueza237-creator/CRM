@@ -685,6 +685,10 @@
 .cc-business-kpis { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
 .cc-business-kpis dd { font-size: 23px; overflow-wrap: anywhere; }
 .cc-composer .cc-voice-controls { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.cc-voice-provider { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; padding:8px 16px; border-bottom:1px solid var(--border, #d6e2e5); }
+.cc-voice-provider label { display:flex; align-items:center; gap:6px; font-size:13px; font-weight:600; }
+.cc-voice-provider select { min-height:40px; width:220px; max-width:100%; font-size:14px; border:1px solid #cbdadd; border-radius:6px; padding:6px 10px; background:#fff; color:#17383e; }
+.cc-voice-provider small { flex:1 1 240px; color:#8a491f; font-size:12px; }
 .cc-icon[aria-pressed="true"] { background: #fceae5; color: #a13324; }
 .cc-technical { margin-top: 14px; color: #60747b; font-size: 12px; }
 .cc-technical dl { display: grid; gap: 4px; }

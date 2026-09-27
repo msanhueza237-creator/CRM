@@ -67,6 +67,8 @@ export interface CentralEvent {
 }
 export interface CopilotModelChoice { id: string; provider: "deepseek" | "openai"; model: string; label: string }
 export interface CopilotModelCatalog { models: CopilotModelChoice[]; defaultId: string; warnings: string[] }
+export interface CopilotVoiceProvider { id: "gemini" | "openai"; label: string; model: string; available: boolean }
+export interface CopilotVoiceCatalog { defaultId: "gemini" | "openai"; providers: CopilotVoiceProvider[] }
 export async function getCopilotModels(signal?: AbortSignal): Promise<CopilotModelCatalog> {
   const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "models"), { headers: await headers(), signal, cache: "no-store" });
   const result = await response.json();

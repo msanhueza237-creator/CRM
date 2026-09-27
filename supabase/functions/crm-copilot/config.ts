@@ -1,4 +1,5 @@
 import { modelPolicy } from "../_shared/openai-cost-policy.ts";
+import { geminiConfig } from "./gemini.ts";
 type Env = (name: string) => string | undefined;
 
 export function copilotConfig(env: Env) {
@@ -38,6 +39,8 @@ export function copilotConfig(env: Env) {
     deepseek: { models: [...new Set(deepseekModels)], rates: deepseekRates, encryptionSecret: env("PROSPECTING_SECRET_ENCRYPTION_KEY") || "" },
     modelPolicy: policy,
     apiKey: (env("OPENAI_API_KEY") || "").trim(),
+    gemini: geminiConfig(env),
+    defaultVoiceProvider: env("COPILOT_DEFAULT_VOICE_PROVIDER") === "openai" ? "openai" : "gemini",
     model: policy.defaultModel,
     liveModel: (env("OPENAI_LIVE_MODEL") || "gpt-live-1").trim(),
     liveVoice: (env("OPENAI_LIVE_VOICE") || "marin").trim(),
