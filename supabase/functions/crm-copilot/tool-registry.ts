@@ -25,6 +25,7 @@ import { agentReport, agentSectionRows } from "./agent-reports.ts";
 import { prospectingReport } from "./prospecting-report.ts";
 import { financialPeriod, comparePeriods, customerAnalytics } from "./business-analytics.ts";
 import { safeData } from "./safety.ts";
+import { summarizeObligations } from "./obligation-summary.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -1458,7 +1459,7 @@ export class ToolRegistry {
         balance_ledger_clp: d.balance_clp,
         balance_operational_clp: d.reported_balance_clp ?? d.balance_clp,
         balance_source:
-          d.reported_balance_clp != null ? "Facto informado" : "CRM conciliado",
+          d.reported_balance_clp != null ? "Facto informado" : "CRM contable",
         reported_at: d.reported_at || null,
         updated_at: d.updated_at,
       }))
@@ -1482,13 +1483,13 @@ export class ToolRegistry {
         "due_on:Vencimiento",
         "original_clp:Original CLP",
         "balance_operational_clp:Saldo operativo CLP",
-        "balance_ledger_clp:Saldo conciliado CLP",
+        "balance_ledger_clp:Saldo contable CLP (referencia)",
         "balance_source:Fuente saldo",
       ),
       `/finanzas-contabilidad?view=${payable ? "payables" : "receivables"}`,
       args,
       [
-        "Saldo informado y saldo conciliado son fuentes diferentes; no se suman. Sin vencimiento no se puede afirmar mora.",
+        "Saldo informado y saldo contable son fuentes diferentes; no se suman ni acreditan conciliacion bancaria. El saldo operativo ya refleja el saldo pendiente; no vuelvas a descontar pagos. Sin vencimiento no se puede afirmar mora.",
       ],
     );
     result.data = {
@@ -1520,6 +1521,6 @@ export class ToolRegistry {
         freshness: currentSummary.factoFreshness,
       };
     }
-    return result;
+    return summarizeObligations(result, records, args);
   }
 }

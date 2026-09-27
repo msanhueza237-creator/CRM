@@ -57,6 +57,61 @@ import { catalogUrl, findProducts, locationStock, resolveProducts } from "../sup
 import { clientPriceRows, factoCurrencies, productPrices } from "../supabase/functions/crm-copilot/product-prices.ts";
 import { productSales } from "../supabase/functions/crm-copilot/product-sales.ts";
 import { productProfitability } from "../supabase/functions/crm-copilot/product-profitability.ts";
+import { summarizeObligations, canonicalObligationMessage } from "../supabase/functions/crm-copilot/obligation-summary.ts";
+import { tableResult } from "../supabase/functions/crm-copilot/contracts.ts";
+
+function debtSummary(records, args = {}, overrides = {}) {
+  const result = tableResult("get_accounts_receivable", "finance", "Cartera", records, [], "/finanzas-contabilidad?view=receivables", args);
+  result.data = { ...result.data, selected_total_clp: decimalSum(records.map(r => r.balance_operational_clp)), as_of: "2026-09-26", ...overrides };
+  return summarizeObligations(result, records, args);
+}
+test("Cartera calcula total y ranking con saldo operativo de TODAS las filas, no ledger ni preview", () => {
+  const records = Array.from({ length: 19 }, (_, i) => ({ id: i, name: `Cliente ${i}`, rut: `1234567-${i}`, balance_operational_clp: i + 1, balance_ledger_clp: 999999, balance_source: "Facto informado", reported_at: "2026-09-26T15:00:00Z" }));
+  records[18].rut = records[0].rut;
+  const result = debtSummary(records, { limit: 3 });
+  assert.equal(result.data.records.length, 3);
+  assert.equal(result.data.selected_total_clp, "190.0000");
+  assert.equal(result.data.top_counterparties[0].balance_operational_clp, "20.0000");
+  assert.equal(result.data.top_counterparties[0].document_count, 2);
+  assert.equal(result.data.counterparties_total, 18);
+  assert.equal(result.data.counterparties_omitted, 8);
+  assert.match(result.summary, /\$190 CLP/);
+  assert.doesNotMatch(result.summary, /999999/);
+  assert.match(result.summary, /no se puede afirmar que esten vencidos/);
+  assert.equal(canonicalObligationMessage([result]), result.summary);
+  assert.equal(canonicalObligationMessage([result, result]), null);
+});
+test("Cartera no certifica diferencias con dashboard ni importes desconocidos", () => {
+  const row = { id: 1, name: "Cliente", rut: "1-9", balance_operational_clp: 100, balance_source: "Facto informado" };
+  const mismatch = debtSummary([row], {}, { dashboard_total_clp: 200 });
+  assert.equal(mismatch.status, "partial");
+  assert.equal(mismatch.data.selected_total_clp, null);
+  assert.deepEqual(mismatch.data.top_counterparties, []);
+  assert.match(mismatch.summary, /No tengo informacion suficiente/);
+  const unknown = debtSummary([{ ...row, balance_operational_clp: null }]);
+  assert.equal(unknown.data.selected_total_clp, null);
+  assert.doesNotMatch(unknown.summary, /\$0/);
+});
+test("Filtros de cobranza conservan su alcance y no comparan un subconjunto con dashboard global", () => {
+  const result = debtSummary([{ id: 1, name: "Cliente", balance_operational_clp: 15 }], { query: "Cliente", state: "overdue", due_to: "2026-09-20" }, { dashboard_total_clp: 200 });
+  assert.equal(result.status, "ok");
+  assert.equal(result.data.scope.full_portfolio, false);
+  assert.match(result.summary, /seleccion vencida para Cliente, vencimiento sin inicio al 2026-09-20/);
+  assert.doesNotMatch(result.summary, /cartera pendiente completa/);
+});
+test("Contrapartes sin RUT no se fusionan por nombre y las fuentes quedan separadas", () => {
+  const result = debtSummary([
+    { id: 1, name: "Cliente igual", balance_operational_clp: 12, balance_source: "CRM contable" },
+    { id: 2, name: "Cliente igual", balance_operational_clp: 18, balance_source: "Facto informado" },
+  ]);
+  assert.equal(result.data.counterparties_total, 2);
+  assert.equal(result.data.source_document_counts["CRM contable"], 1);
+  assert.equal(result.data.source_document_counts["Facto informado"], 1);
+  assert.match(result.summary, /sin RUT; sin agrupar/);
+  const empty = debtSummary([]);
+  assert.equal(empty.status, "empty");
+  assert.match(empty.summary, /\$0 CLP/);
+});
 
 test("Costo directo, margen y descuentos respetan moneda, confirmacion y objetivo solicitado", () => {
   const details = [{ external_id: "85", updated_at: stamp, payload: { sku: "FLARE 3/8", name: "Tuerca flare 3/8", product_id: 85, cost: { value: "360", currency_id: null }, price: [{ product_price_list_id: "1", currency_id: "39", unit_net: "691.900000" }] } }];
@@ -881,6 +936,8 @@ test("Cartera parcial suprime total y no se certifica", async () => {
   assert.equal(result.status, "partial");
   assert.equal(result.data.dashboard_total_clp, null);
   assert.equal(result.data.selected_total_clp, null);
+  assert.deepEqual(result.data.top_counterparties, []);
+  assert.match(result.summary, /No tengo informacion suficiente/);
 });
 test("Clientes inactivos incluyen clientes sin correo y excluyen historial desconocido", async () => {
   const result = await fixture().registry.execute("search_customers", {
@@ -1088,6 +1145,10 @@ for (const [question, plan] of scenarios)
       assert.match(result.message, /Stock registrado/);
       assert.match(result.message, /no es una comprobacion en vivo/);
       assert.ok(!result.message.includes("Actualmente"));
+    } else if (plan.length === 1 && plan[0][0] === "get_accounts_receivable") {
+      assert.equal(result.message, result.results[0].summary);
+      assert.match(result.message, /\$11\.287\.934 CLP/);
+      assert.match(result.message, /saldo operativo/);
     } else assert.equal(result.message, "Respuesta con evidencia verificada.");
     assert.equal(requests[0].tool_choice, "required");
     assert.equal(requests[0].store, false);

@@ -11,6 +11,7 @@ import type { ToolRegistry } from "./tool-registry.ts";
 import { redactSecrets } from "./safety.ts";
 import { backendModelRouter, escalationMarker, routerInstruction } from "./model-router.ts";
 import type { ModelEngine } from "./model-selection.ts";
+import { canonicalObligationMessage } from "./obligation-summary.ts";
 
 export const centralPromptVersion = "enterprise-read-tools-v1";
 export interface ToolTrace {
@@ -118,6 +119,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
     "Para cuanto stock tenemos de un producto usa search_products con stock_filter=all, no known: hay que encontrarlo aunque falte la cantidad. Si el usuario entrega un enlace, conserva la URL completa en query para identificar el SKU. Nombre generico con varios modelos requiere mostrar sus SKU y cantidades por separado, sin sumarlos como si fueran un producto unico. Una coincidencia aproximada requiere confirmar el modelo.",
     "Busqueda vacia no significa agotado ni no tenemos. Solo afirma stock cero cuando una fila identificada tenga stock_known=true y stock=0. Si hay identity_matches pero unknown_stock_matches, el producto existe y falta cantidad verificada. Para stock indica stock_source y stock_updated_at de cada fila; no uses una fecha de sincronizacion mas reciente de otra fuente. No afirmes disponibilidad actual en vivo con datos historicos.",
     "Factura, pago, banco, asiento y conciliacion son diferentes. No sumes saldos informados con saldos conciliados. No presentes utilidad como caja ni resultado provisional como certificado.",
+    "Para cuentas por cobrar/pagar usa selected_total_clp y top_counterparties, calculados sobre TODOS los documentos filtrados con balance_operational_clp. El saldo informado por Facto prevalece si existe; balance_ledger_clp es solo referencia contable, NO conciliacion bancaria. No recalcules deuda desde una muestra de records ni descuentes pagos otra vez. No cambies estas etiquetas. Si selected_total_clp es null no certifiques un total. El summary canonico de la herramienta prevalece sobre interpretaciones del modelo o del historial.",
     "Respeta coverage, nextOffset, freshness y warnings. Nunca llames 'todos' a una pagina; para totales usa los agregados de la herramienta. Indica fuente y fecha de observacion, no solo hora de consulta.",
     "Para todos los productos de una marca o todos los resultados de una busqueda usa result_scope=all_matches en search_products o get_price_list. Conserva la marca en query (Super Star y Super Stars se normalizan); NO uses scope=catalog si hay una marca o producto especifico. No filtres por stock positivo salvo que lo pidan. La tabla adjunta contiene todas las coincidencias: indica el total y evita reescribir una tabla parcial en el mensaje.",
     "Para ventas, utilidad, margen y evolucion mensual usa get_sales_summary con period exacto; last_12_months entrega un grafico y totales calculados. Para comparar meses usa compare_sales_periods; period=this_month y compare_period=last_month por defecto. Si dice agosto/septiembre usa from/to y compare_from/compare_to del ano actual. No sumes ventas emitidas con ventas en resultado. Conserva el contexto de seguimientos como 'y el mes pasado' o 'comparalos', pero vuelve a consultar fuentes.",
@@ -263,7 +265,7 @@ export async function runOrchestrator(options: OrchestratorOptions) {
       }).join("\n\n") : null;
       return {
         message:
-          (results.length && results.every(r => r.toolName === "get_inventory_valuation" && ["ok", "partial", "empty"].includes(r.status))
+          canonicalObligationMessage(results) || (results.length && results.every(r => r.toolName === "get_inventory_valuation" && ["ok", "partial", "empty"].includes(r.status))
             ? [...new Set(results.map(r => [r.summary, ...r.warnings].join("\n\n")))].join("\n\n") : null) || profitabilityMessage || directSalesMessage || salesMessage || catalogMessage || safeStockMessage || (verified && text
             ? text
             : "No encontre informacion suficiente en el CRM para responder con seguridad. Revisa los estados de las fuentes consultadas."),

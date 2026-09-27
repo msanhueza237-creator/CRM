@@ -146,6 +146,16 @@ test("Gerente recibe evidencia compacta sin perder totales ni modificar tablas a
   assert.equal(preview.data.records[5].omitted_from_manager, 95);
   assert.equal(result.table.rows.length, 100);
 });
+
+test("Gerente conserva resumen canonico de cobranza aunque el modelo confunda saldos", async () => {
+  const f = fixture({ selected: ["collections"] });
+  const summary = "Por cobrar: $190 CLP segun saldo operativo, no saldo contable.";
+  f.options.registry.execute = async () => readResult("get_accounts_receivable", "finance", summary, { canonical_obligation_summary: true, selected_total_clp: "190.0000" }, []);
+  const result = await runAgentManager(f.options);
+  assert.equal(result.message, summary);
+  const specialist = f.requests.find(r => !r.tools.some(t => t.name.startsWith("consult_")) && r.input.some(i => i.type === "function_call_output"));
+  assert.ok(specialist.input.some(i => i.type === "function_call_output" && i.output.includes(summary)));
+});
 test("Endpoint de texto y delegacion de voz comparten Gerente, auditoria y sesion", async () => {
   const priorFetch = globalThis.fetch, priorDeno = globalThis.Deno;
   const user = "00000000-0000-4000-8000-000000000001", session = "00000000-0000-4000-8000-000000000002", voice = "00000000-0000-4000-8000-000000000003";

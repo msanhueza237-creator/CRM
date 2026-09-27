@@ -3,6 +3,7 @@ import { CopilotDataError, object, readResult, type CopilotRole, type Domain, ty
 import { modelPreview, runOrchestrator, type OrchestratorOptions, type ToolTrace } from "./orchestrator.ts";
 import { redactSecrets } from "./safety.ts";
 import { backendModelRouter } from "./model-router.ts";
+import { canonicalObligationMessage } from "./obligation-summary.ts";
 
 type AgentId = keyof typeof moduleActions;
 interface Specialist { id: Exclude<AgentId, "executive">; label: string; domain: Domain; description: string; tools: string[] }
@@ -179,7 +180,8 @@ export async function runAgentManager(options: ManagerOptions) {
   // Keep the original structured results, so exports and chart contracts remain unchanged.
   const failures = output.results.filter(r => ["unavailable", "forbidden"].includes(r.status));
   return {
-    ...output, results: [...results.values(), ...failures], traces, agentRuns: runs,
+    ...output, message: canonicalObligationMessage([...results.values(), ...failures]) || output.message,
+    results: [...results.values(), ...failures], traces, agentRuns: runs,
     agentContext: { ...options.context, intent: [...new Set(runs.filter(r => r.agent !== "executive").map(r => r.agent))].join(",") || "conversation", agentsUsed: [...new Set(runs.map(r => r.agent))], sourcesConsulted: [...new Set(runs.flatMap(r => r.sources))] },
     tokensInput: runs.reduce((n, r) => n + r.tokensInput, 0), tokensOutput: runs.reduce((n, r) => n + r.tokensOutput, 0),
     modelMs: runs.reduce((n, r) => n + r.modelMs, 0), modelCalls: runs.reduce((n, r) => n + r.modelCalls, 0),
