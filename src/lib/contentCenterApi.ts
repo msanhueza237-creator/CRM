@@ -7,6 +7,7 @@ import type {
   ContentProduct,
   ContentPublication,
   ContentOperationMode,
+  ContentModelCatalog,
 } from "../types/content";
 
 async function contentRequest<T>(
@@ -56,7 +57,12 @@ export function checkContentConnections() {
   return contentRequest<ContentConnectionCheck>("connections");
 }
 
+export function getContentModels() {
+  return contentRequest<ContentModelCatalog>("models");
+}
+
 export function generateSocialContent(input: {
+  modelChoice: string;
   productId: string;
   channels: ContentChannelCode[];
   templateId?: string;

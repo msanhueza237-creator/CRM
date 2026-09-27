@@ -8221,6 +8221,14 @@ th {
   padding: 18px 0;
 }
 
+.content-model-row { display: grid; grid-template-columns: minmax(0, 1fr) 42px; gap: .6rem; align-items: end; }
+.content-model-row .icon-button { width: 42px; height: 44px; }
+.content-model-row select { width: 100%; min-width: 0; text-overflow: ellipsis; }
+.content-model-references { font-size: .8rem; color: #52676d; }
+.content-model-references summary { cursor: pointer; padding: .35rem 0; }
+.content-model-references p { display: grid; gap: .25rem; margin: .6rem 0; overflow-wrap: anywhere; }
+.content-generator-form .notice-banner { min-width: 0; overflow-wrap: anywhere; }
+
 .content-generator-section-heading {
   align-items: center;
   display: flex;

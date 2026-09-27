@@ -212,3 +212,9 @@ export interface ContentConnectionCheck {
   instagram: { connected: boolean; status: string; message: string; accountId?: string; accountName?: string };
   facebook: { connected: boolean; status: string; message: string; accountId?: string; accountName?: string };
 }
+export interface ContentModelCatalog {
+  models: Array<{ id: string; provider: "deepseek" | "openai"; model: string; label: string }>;
+  defaultId: string;
+  warnings: string[];
+  references: Array<{ id: string; label: string; available: false; note: string; url: string }>;
+}

@@ -42,7 +42,7 @@ export function chooseModel(catalog: Awaited<ReturnType<typeof modelCatalog>>, r
   return choice;
 }
 
-export async function selectedModelRouter(source: CopilotSources, settings: Settings, choice: ModelChoice, context: ModelCallContext, fetcher: typeof fetch = fetch): Promise<ModelEngine> {
+export async function selectedModelRouter(source: CopilotSources, settings: Settings, choice: ModelChoice, context: ModelCallContext, fetcher: typeof fetch = fetch, auditModelCall?: (data: Row) => Promise<void>): Promise<ModelEngine> {
   if (choice.provider === "openai") {
     const policy = choice.id === "openai:default" ? { ...settings.modelPolicy, mode: "luna_only" as const } : settings.modelPolicy;
     return new ModelRouter(policy, { ...context, reviewRequested: choice.id === "openai:review" }, new ModelCostStore(source.config, fetcher), settings.apiKey, fetcher);
@@ -55,7 +55,7 @@ export async function selectedModelRouter(source: CopilotSources, settings: Sett
   let key: string;
   try { key = await decryptApiKey(String(integration.api_key_encrypted), settings.deepseek.encryptionSecret); }
   catch { throw new CopilotDataError("No se pudo abrir la conexion segura DeepSeek. Revisa su configuracion en el servidor.", "MODEL_UNAVAILABLE"); }
-  const audit = async (data: Row) => {
+  const audit = auditModelCall || (async (data: Row) => {
     await source.request("rest/v1/copilot_audit_events", {
       method: "POST", headers: { Prefer: "return=representation" },
       body: JSON.stringify({ user_id: context.userId, conversation_id: context.conversationId, request_id: context.requestId,
@@ -63,6 +63,6 @@ export async function selectedModelRouter(source: CopilotSources, settings: Sett
         permission_decision: "role_scoped_read", risk_level: "read", affected_count: 0,
         metadata_redacted: { provider: choice.provider, ...data } }),
     });
-  };
+  });
   return new DeepSeekRouter(settings.modelPolicy, choice.model, key, object(settings.deepseek.rates[choice.model]), audit, fetcher);
 }

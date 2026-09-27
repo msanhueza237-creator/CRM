@@ -6,6 +6,12 @@ import {
 } from "./social-adapters.ts";
 import { ensureBrandHashtag, ensureOfficialWebsiteCta, normalizeSocialImageUrls } from "./social-publishing-logic.ts";
 import { findSimilarDraft, nextScheduleAt, selectRotatedProduct } from "./content-logic.ts";
+import { backendModelRouter } from "../crm-copilot/model-router.ts";
+import type { ModelEngine } from "../crm-copilot/model-selection.ts";
+import { CopilotSources } from "../crm-copilot/sources.ts";
+import { CopilotDataError } from "../crm-copilot/contracts.ts";
+import { redactSecrets } from "../crm-copilot/safety.ts";
+import { callModelJson, contentModelCatalog, contentModelRouter } from "./model-generation.ts";
 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "vendedor" | "visualizador";
@@ -82,6 +88,11 @@ Deno.serve(async (req) => {
       requirePermission(profile, "content.generate");
       return json(await generateContent(rest, profile, await readJson(req), requestId), 201, req);
     }
+    if (route === "models" && req.method === "GET") {
+      requirePermission(profile, "content.generate");
+      const source = new CopilotSources(rest, { id: profile.id, role: profile.role, accessToken: "" }, req.signal);
+      return json(await contentModelCatalog(source), 200, req);
+    }
     if (route === "creative-source" && req.method === "GET") {
       requirePermission(profile, "content.generate");
       return await proxyCreativeSource(rest, new URL(req.url), req);
@@ -109,13 +120,13 @@ Deno.serve(async (req) => {
 
     throw new HttpError(404, "Ruta no encontrada.");
   } catch (error) {
-    const status = error instanceof HttpError
+    const status = error instanceof CopilotDataError ? (error.code === "MODEL_UNAVAILABLE" ? 409 : 503) : error instanceof HttpError
       ? error.status
       : error instanceof SocialPublishError
       ? error.status
       : 500;
-    const message = error instanceof Error ? error.message : "Error inesperado.";
-    console.error("[content-center] request failed", { requestId, status, message });
+    const message = error instanceof HttpError || error instanceof SocialPublishError || error instanceof CopilotDataError ? redactSecrets(error.message) : "No se pudo completar la operacion del Centro de Contenido.";
+    console.error("[content-center] request failed", { requestId, status, code: error instanceof CopilotDataError ? error.code : "CONTENT_REQUEST_FAILED" });
     return json({ error: message, requestId }, status, req);
   }
 });
@@ -319,6 +330,8 @@ async function generateContent(
   if (channelCodes.some((code) => !channelMap.has(code))) throw new HttpError(409, "Uno de los canales no esta configurado.");
 
   const facts = buildProductFacts(product);
+  const source = new CopilotSources(rest, { id: profile.id, role: profile.role, accessToken: "" });
+  const { router: costRouter, choice } = await contentModelRouter(source, payload.modelChoice, requestId);
   const generation = await createGroundedVariants({
     facts,
     channels: channelCodes,
@@ -331,7 +344,7 @@ async function generateContent(
     context: optionalText(payload.context, 1000),
     useHashtags: payload.useHashtags !== false,
     recent: recentRows,
-  });
+  }, costRouter);
 
   const repeated = findSimilarDraft(generation.variants, recentRows, 0.86);
   if (repeated) {
@@ -345,7 +358,7 @@ async function generateContent(
     throw new HttpError(422, `La IA intento usar cifras no verificadas (${numericIssues.join(", ")}). No se guardo el contenido.`);
   }
 
-  const verification = await verifyGrounding(facts, generation.variants);
+  const verification = await verifyGrounding(facts, generation.variants, costRouter);
   if (!verification.valid) {
     console.warn("[content-center] grounded verification blocked content", {
       requestId,
@@ -395,7 +408,7 @@ async function generateContent(
     product_id: productId,
     event_type: "content_generated",
     message: `Borrador generado para ${channelCodeById(channelRows, String(row.channel_id))}.`,
-    metadata: { model: generation.model, template_id: templateRows[0]?.id || null },
+    metadata: { model: generation.model, model_choice: choice.id, provider: choice.provider, template_id: templateRows[0]?.id || null },
     correlation_id: requestIdToUuid(requestId),
     actor_type: String(payload.generatorType || "user") === "agent" ? "agent" : "user",
     actor_id: optionalText(payload.generatorId, 120) || profile.id,
@@ -893,6 +906,7 @@ async function processAutomationTick(rest: RestClient, job: JsonRecord, requestI
     .filter((publication) => Date.parse(String(publication.created_at || 0)) >= recentCutoff)
     .slice(0, 40);
   const template = templates.find((item) => item.slug === "producto-destacado") || templates[0] || null;
+  const costRouter = backendModelRouter({ requestId });
   const generation = await createGroundedVariants({
     facts,
     channels: socialChannels,
@@ -905,14 +919,14 @@ async function processAutomationTick(rest: RestClient, job: JsonRecord, requestI
     context: `Ejecución automática de la regla ${schedule.name}.`,
     useHashtags: true,
     recent,
-  });
+  }, costRouter);
   const repeated = findSimilarDraft(generation.variants, recent, 0.74);
   if (repeated) {
     throw new HttpError(422, `La rotación detectó una estructura reciente demasiado similar (${Math.round(repeated.similarity * 100)}%).`);
   }
   const numericIssues = generation.variants.flatMap((variant) => unsupportedNumbers(`${variant.body} ${variant.cta}`, JSON.stringify(facts)));
   if (numericIssues.length) throw new HttpError(422, `La generación automática incluyó cifras no verificadas: ${numericIssues.join(", ")}.`);
-  const verification = await verifyGrounding(facts, generation.variants);
+  const verification = await verifyGrounding(facts, generation.variants, costRouter);
   if (!verification.valid) throw new HttpError(422, `La generación automática no superó la revisión factual: ${verification.unsupportedClaims.join("; ")}.`);
 
   const groupId = crypto.randomUUID();
@@ -1023,7 +1037,7 @@ type GeneratedVariant = {
   factKeysUsed: string[];
 };
 
-async function createGroundedVariants(context: GenerationContext) {
+async function createGroundedVariants(context: GenerationContext, router: ModelEngine) {
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -1072,9 +1086,12 @@ async function createGroundedVariants(context: GenerationContext) {
     },
     recent_content_to_avoid: context.recent.map((row) => ({ body: row.body, hashtags: row.hashtags })),
   };
-  const result = await callOpenAiJson("grounded_social_content", schema, prompt, 2200);
+  const result = await callModelJson("grounded_social_content", schema, prompt, 2200, router);
   const parsed = asObject(result.data);
   const variants = Array.isArray(parsed.variants) ? parsed.variants : [];
+  if (variants.length !== context.channels.length * context.variantCount || context.channels.some(channel => variants.filter(item => asObject(item).channel === channel).length !== context.variantCount)) {
+    throw new HttpError(502, "El modelo no devolvio todas las variantes solicitadas. No se guardaron borradores.");
+  }
   return {
     model: result.model,
     variants: variants.map((item): GeneratedVariant => {
@@ -1094,7 +1111,7 @@ async function createGroundedVariants(context: GenerationContext) {
   };
 }
 
-async function verifyGrounding(facts: JsonRecord, variants: GeneratedVariant[]) {
+async function verifyGrounding(facts: JsonRecord, variants: GeneratedVariant[], router: ModelEngine) {
   const schema = {
     type: "object",
     additionalProperties: false,
@@ -1104,71 +1121,16 @@ async function verifyGrounding(facts: JsonRecord, variants: GeneratedVariant[]) 
       unsupported_claims: { type: "array", maxItems: 20, items: { type: "string", maxLength: 300 } },
     },
   };
-  const result = await callOpenAiJson("verify_social_grounding", schema, {
+  const result = await callModelJson("verify_social_grounding", schema, {
     task: "Audita cada afirmacion factual. Marca invalido si alguna no esta explicitamente respaldada.",
     product_facts: facts,
     drafts: variants,
-  }, 700);
+  }, 700, router);
   const data = asObject(result.data);
   return {
-    valid: data.valid === true,
+    valid: data.valid === true && Array.isArray(data.unsupported_claims) && data.unsupported_claims.length === 0,
     unsupportedClaims: stringArray(data.unsupported_claims, 20),
   };
-}
-
-async function callOpenAiJson(name: string, schema: JsonRecord, input: JsonRecord, maxTokens: number) {
-  const apiKey = Deno.env.get("OPENAI_API_KEY")?.trim();
-  if (!apiKey) throw new HttpError(503, "Falta configurar OPENAI_API_KEY en la Edge Function.");
-  const model = Deno.env.get("OPENAI_CONTENT_MODEL")?.trim()
-    || Deno.env.get("OPENAI_TEXT_MODEL")?.trim()
-    || "gpt-4.1-mini";
-  const timeoutMs = clampNumber(Deno.env.get("OPENAI_REQUEST_TIMEOUT_MS"), 10_000, 120_000, 45_000);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch("https://api.openai.com/v1/responses", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        input: [
-          { role: "system", content: "Eres un editor de marketing estricto. La fuente entregada es el unico conocimiento permitido sobre el producto." },
-          { role: "user", content: JSON.stringify(input) },
-        ],
-        max_output_tokens: maxTokens,
-        store: false,
-        text: { format: { type: "json_schema", name, strict: true, schema } },
-      }),
-      signal: controller.signal,
-    });
-    const payload = await response.json().catch(() => ({})) as JsonRecord;
-    if (!response.ok) {
-      const apiError = payload.error && typeof payload.error === "object" ? payload.error as JsonRecord : {};
-      throw new HttpError(response.status, String(apiError.message || "OpenAI rechazo la solicitud."));
-    }
-    const outputText = extractOutputText(payload);
-    if (!outputText) throw new HttpError(502, "OpenAI no devolvio contenido estructurado.");
-    return { model, data: JSON.parse(outputText) as JsonRecord };
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") throw new HttpError(504, "La generacion excedio el tiempo disponible.");
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
-function extractOutputText(payload: JsonRecord) {
-  if (typeof payload.output_text === "string") return payload.output_text;
-  const output = Array.isArray(payload.output) ? payload.output : [];
-  for (const item of output) {
-    const row = asObject(item);
-    const content = Array.isArray(row.content) ? row.content : [];
-    for (const part of content) {
-      const block = asObject(part);
-      if (block.type === "output_text" && typeof block.text === "string") return block.text;
-    }
-  }
-  return "";
 }
 
 function buildProductFacts(product: JsonRecord): JsonRecord {

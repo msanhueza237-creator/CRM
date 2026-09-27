@@ -5,7 +5,7 @@ Módulo nativo del CRM para catálogo Tiendanube, generación fundamentada con I
 ## Arquitectura
 
 - `content_products` normaliza `integration_records` sin reemplazar Tiendanube como fuente oficial.
-- La Edge Function `content-center` concentra autenticación, permisos, OpenAI, Meta y trabajos privilegiados.
+- La Edge Function `content-center` concentra autenticación, permisos, selección de IA, Meta y trabajos privilegiados.
 - `content_jobs` es una cola con lease, reintentos exponenciales e idempotencia por operación.
 - `SocialChannelAdapter` desacopla los canales. Las primeras implementaciones son Instagram y Facebook.
 - El scheduler se activa desde Dokploy; no depende de una pestaña abierta.
@@ -34,7 +34,8 @@ Configurar en el servicio de Edge Functions de Supabase dentro de Dokploy. Nunca
 ```dotenv
 CRM_APP_URL=https://crm.latinchile.cl
 OPENAI_API_KEY=...
-OPENAI_CONTENT_MODEL=gpt-4.1-mini
+CONTENT_DEFAULT_MODEL_CHOICE=deepseek:deepseek-v4-pro
+CONTENT_AI_TIMEOUT_MS=45000
 OPENAI_REQUEST_TIMEOUT_MS=45000
 
 META_GRAPH_API_VERSION=v25.0
@@ -44,6 +45,21 @@ META_INSTAGRAM_BUSINESS_ACCOUNT_ID=...
 
 CONTENT_SCHEDULER_SECRET=una-cadena-aleatoria-larga-y-privada
 ```
+
+## Modelos de los borradores
+
+- `GET content-center/models` requiere sesión activa y permiso `content.generate`.
+- `POST content-center/generate` acepta `modelChoice`; si se omite, usa `CONTENT_DEFAULT_MODEL_CHOICE`, o el primer modelo DeepSeek de la configuración central. No cambia silenciosamente a OpenAI ante un error.
+- El generador y la verificación factual usan el mismo modelo seleccionado. Se conserva el modelo en `model_name` y el proveedor/selección en el historial. La generación solo crea borradores, nunca aprueba, programa ni publica.
+- Reutiliza `crm-copilot/model-selection.ts`, el adaptador Responses de DeepSeek y la clave cifrada existente de `prospecting_ai_integrations`. El catálogo solo habilita modelos configurados y verificados en esa conexión. La clave permanece en backend.
+- El selector recuerda la preferencia por usuario en este navegador; un modelo retirado bloquea la generación hasta elegir otro. La preferencia del Copiloto es independiente.
+- OpenAI ofrece su modelo base configurado y conserva la guardia diaria de USD 5 si ese es el valor de `DAILY_OPENAI_BUDGET_USD`. DeepSeek es de pago y su consumo se registra aparte. No se aplican escalaciones del Copiloto a los JSON de contenido.
+- Las reglas automáticas existentes mantienen la ruta OpenAI con su política central de presupuesto; la selección interactiva no las cambia ni activa reglas. No se modifican publicaciones previamente programadas.
+- Gemma 4 en Google AI Studio y OpenRouter Free se muestran solo como referencias gratuitas **no conectadas**, no como modelos operativos. No se envían datos a esos proveedores ni se crean cuentas. Requieren credenciales, revisión de disponibilidad, límites y privacidad antes de una integración posterior.
+
+Documentación consultada el 26-09-2026: [DeepSeek Responses y salida JSON Schema](https://api-docs.deepseek.com/api/create-response/), [niveles gratuitos y uso de datos de Google](https://ai.google.dev/gemini-api/docs/pricing), [modelos gratuitos de OpenRouter](https://openrouter.ai/collections/free-models/).
+
+Pruebas específicas: `node --experimental-transform-types --test scripts/test-content-models.mjs scripts/test-copilot-model-selection.mjs`, `node scripts/typecheck-content.mjs` y `node scripts/test-content-creatives.mjs` con `CONTENT_STUDIO_URL` apuntando al servidor local. Las pruebas usan fixtures y no publican en redes.
 
 El token de Meta debe pertenecer a una aplicación autorizada para administrar la página y la cuenta profesional de Instagram asociada. La pantalla `Administración > Instagram y Facebook` valida la conexión sin mostrar secretos.
 

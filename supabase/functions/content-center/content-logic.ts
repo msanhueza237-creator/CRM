@@ -9,7 +9,7 @@ export function selectRotatedProduct(
 ) {
   const latestProductId = publications.find((item) => ["published", "scheduled"].includes(String(item.status)))?.product_id;
   const latestCategory = products.find((item) => item.id === latestProductId)?.category;
-  const scored = products.map((product) => {
+  const scored = products.map((product): ContentLogicRecord & { _rotation_score: number } => {
     const related = publications.filter((item) => item.product_id === product.id);
     const lastTime = related.reduce(
       (latest, item) => Math.max(latest, Date.parse(String(item.published_at || item.scheduled_at || item.created_at || 0)) || 0),

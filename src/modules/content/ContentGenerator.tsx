@@ -5,13 +5,14 @@ import {
   attachContentCreatives,
   fetchContentCreativeSource,
   generateSocialContent,
+  getContentModels,
   publishContentPublication,
   rejectContentPublication,
   removeContentCreatives,
   scheduleContentPublication,
   uploadContentCreative,
 } from "../../lib/contentCenterApi";
-import type { ContentChannelCode, ContentCreativeLayout, ContentProduct, ContentPublication, ContentVisualStyle } from "../../types/content";
+import type { ContentChannelCode, ContentCreativeLayout, ContentModelCatalog, ContentProduct, ContentPublication, ContentVisualStyle } from "../../types/content";
 import { useAuth } from "../auth/AuthContext";
 import { ContentMediaGallery } from "./ContentMediaGallery";
 import { creativeStyles, defaultCreativeLayout, renderContentCreative } from "./contentCreative";
@@ -45,6 +46,11 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const [modelCatalog, setModelCatalog] = useState<ContentModelCatalog | null>(null);
+  const [modelChoice, setModelChoice] = useState("");
+  const [modelsError, setModelsError] = useState("");
+  const [modelsLoading, setModelsLoading] = useState(true);
+  const [modelRevision, setModelRevision] = useState(0);
   const [scheduleDates, setScheduleDates] = useState<Record<string, string>>({});
   const defaultedProductId = useRef<string>();
 
@@ -56,7 +62,31 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   const alternativeActionPublicationId = reviewableGenerated[0]?.id;
   const selectedLayout = useMemo<ContentCreativeLayout>(() => ({ style: visualStyle, headline: visualHeadline, supporting_text: visualSupportingText, badge: visualBadge, website: "climactiva.cl" }), [visualStyle, visualHeadline, visualSupportingText, visualBadge]);
   const studio = useCreativeStudio(selectedProduct, selectedLayout);
+  const modelAvailable = Boolean(modelCatalog?.models.some(model => model.id === modelChoice));
   const designableDrafts = reviewableGenerated.filter((publication) => publication.product_id === selectedProduct?.id);
+
+  useEffect(() => {
+    let active = true;
+    setModelsLoading(true);
+    setModelsError("");
+    setModelCatalog(null);
+    setModelChoice("");
+    void getContentModels().then(catalog => {
+      if (!active) return;
+      let saved: string | null = null;
+      try { if (user?.id) saved = localStorage.getItem(`content-model:${user.id}`); } catch { /* Storage can be disabled. */ }
+      setModelCatalog(catalog);
+      setModelChoice(saved || catalog.defaultId);
+    }).catch(error => {
+      if (active) setModelsError(error instanceof Error ? error.message : "No se pudo consultar el catalogo de modelos.");
+    }).finally(() => { if (active) setModelsLoading(false); });
+    return () => { active = false; };
+  }, [user?.id, modelRevision]);
+
+  function changeModel(value: string) {
+    setModelChoice(value);
+    try { if (user?.id) localStorage.setItem(`content-model:${user.id}`, value); } catch { /* Keep the selection for this view. */ }
+  }
 
   useEffect(() => {
     if (!selectedProductId && availableProducts[0]) onProductChange(availableProducts[0].id);
@@ -98,9 +128,11 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
   }
 
   function generationInput(productId: string) {
+    if (!modelAvailable || modelsLoading) throw new Error("Selecciona un modelo conectado antes de generar borradores.");
     const product = data.products.find((item) => item.id === productId);
     return {
       productId,
+      modelChoice,
       channels,
       templateId,
       brandProfileId: brandId,
@@ -295,6 +327,18 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
 
         <section className="content-generator-section">
           <div className="content-generator-section-heading"><strong>Mensaje</strong></div>
+          <div className="content-model-row">
+            <label className="content-generator-field"><span>Modelo de contenido</span><select aria-label="Modelo de contenido" value={modelChoice} disabled={Boolean(busy) || modelsLoading} onChange={event => changeModel(event.target.value)}>
+              {!modelAvailable ? <option value={modelChoice}>{modelsLoading ? "Cargando modelos..." : modelChoice ? "Modelo no disponible; selecciona otro" : "Selecciona un modelo"}</option> : null}
+              {modelCatalog?.models.map(model => <option key={model.id} value={model.id}>{model.label}</option>)}
+              {modelCatalog?.references.length ? <optgroup label="Referencias gratuitas · sin conectar">{modelCatalog.references.map(model => <option key={model.id} value={model.id} disabled>{model.label}</option>)}</optgroup> : null}
+            </select></label>
+            <button className="icon-button" type="button" aria-label="Actualizar modelos" title="Actualizar modelos disponibles" disabled={Boolean(busy) || modelsLoading} onClick={() => setModelRevision(value => value + 1)}><RefreshCw size={18} /></button>
+          </div>
+          {modelsError ? <div className="notice-banner error" role="alert">{modelsError}</div> : null}
+          {!modelsLoading && modelCatalog && !modelAvailable ? <div className="notice-banner warning" role="status">El modelo seleccionado no está conectado. No se cambiará de proveedor automáticamente.</div> : null}
+          {modelCatalog?.warnings.map(warning => <div className="notice-banner warning" key={warning}>{warning}</div>)}
+          {modelCatalog?.references.length ? <details className="content-model-references"><summary>Referencias gratuitas</summary>{modelCatalog.references.map(model => <p key={model.id}><a href={model.url} target="_blank" rel="noopener noreferrer">{model.label}</a><span>{model.note}</span></p>)}</details> : null}
           <div className="content-generator-copy-grid">
             <label className="content-generator-field"><span>Objetivo</span><input value={objective} onChange={(event) => setObjective(event.target.value)} /></label>
             <label className="content-generator-field"><span>Llamada a la acción</span><input value={cta} onChange={(event) => setCta(event.target.value)} /></label>
@@ -309,7 +353,7 @@ export function ContentGenerator({ data, selectedProductId, onProductChange }: P
         {selectedProduct ? <ProductFacts product={selectedProduct} /> : null}
         {error ? <div className="notice-banner error"><AlertTriangle size={18} /> {error}</div> : null}
         {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}
-        <div className="content-generator-submit"><span>{channels.length ? `${channels.length} ${channels.length === 1 ? "canal seleccionado" : "canales seleccionados"}` : "Selecciona al menos un canal"}</span><button className="primary-button" type="submit" disabled={Boolean(busy) || !selectedProductId || !channels.length}><Sparkles size={18} /> {busy === "generate" ? "Generando y verificando..." : busy === "design-save" ? "Aplicando diseño..." : busy.startsWith("design-") ? `Diagramando ${busy.split("-")[1]} de ${busy.split("-")[2]}...` : "Generar borradores"}</button></div>
+        <div className="content-generator-submit"><span>{channels.length ? `${channels.length} ${channels.length === 1 ? "canal seleccionado" : "canales seleccionados"}` : "Selecciona al menos un canal"}</span><button className="primary-button" type="submit" disabled={Boolean(busy) || modelsLoading || !modelAvailable || !selectedProductId || !channels.length}><Sparkles size={18} /> {busy === "generate" ? "Generando y verificando..." : busy === "design-save" ? "Aplicando diseño..." : busy.startsWith("design-") ? `Diagramando ${busy.split("-")[1]} de ${busy.split("-")[2]}...` : "Generar borradores"}</button></div>
       </form>
 
       <section className="content-generated-column">

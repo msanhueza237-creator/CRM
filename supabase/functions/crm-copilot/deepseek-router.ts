@@ -23,6 +23,7 @@ export class DeepSeekRouter implements ModelEngine {
     const request = { model: this.model, instructions: body.instructions, input: body.input,
       tools: rows(body.tools).map(({ strict: _strict, ...tool }) => tool), tool_choice: body.tool_choice,
       max_output_tokens: Math.min(Number(body.max_output_tokens) || this.policy.outputTokens, this.policy.outputTokens),
+      ...(body.text ? { text: body.text } : {}),
       // Mandatory evidence tools require non-thinking mode. Keep it for the entire
       // tool loop: switching mid-turn requires reasoning history that was not generated.
       reasoning: { effort: "none" },

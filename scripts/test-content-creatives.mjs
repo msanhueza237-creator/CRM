@@ -11,6 +11,7 @@ const example = { id: '11111111-1111-4111-8111-111111111111', sku: 'QA-TOOL', na
 const products = realProducts || [example, { ...example, id: '22222222-2222-4222-8222-222222222222', sku: 'QA-SECOND', name: 'Segundo producto' }];
 const first = products.find((p) => p.sku === 'ST-R806A') || products[0];
 const api = `
+export async function getContentModels(){if(window.failModels)throw new Error('Catalogo temporalmente no disponible');return{defaultId:'deepseek:deepseek-v4-pro',models:[{id:'deepseek:deepseek-v4-pro',label:'DeepSeek · deepseek-v4-pro'},{id:'deepseek:deepseek-flash',label:'DeepSeek · deepseek-flash'},{id:'openai:default',label:'OpenAI · modelo configurado'}].filter(m=>!window.removedModel||m.id!==window.removedModel),warnings:[],references:[{id:'reference:free',label:'Modelo gratuito de referencia',available:false,note:'Requiere cuenta y revision de privacidad.',url:'https://example.test/models'}]}}
 export async function fetchContentCreativePreview(id,signal){window.sourceReads++;if(window.failImage)throw new Error('Imagen temporalmente no disponible');return (await fetch('/qa-image/'+id,{signal})).blob()}
 export async function fetchContentCreativeSource(id,url){return (await fetch('/qa-image/'+window.publications[id].product_id)).blob()}
 export async function generateSocialContent(input){window.generateInputs.push(input);const product=window.products.find(p=>p.id===input.productId);const publications=input.channels.map((channel,i)=>({id:'draft-'+i,product_id:product.id,channel_id:channel,status:'pending_approval',image_url:product.primary_image_url,body:'Texto de prueba conservado.',hashtags:['Climactiva'],cta:'climactiva.cl',source_facts:{media_urls:[product.primary_image_url],creative_layout:input.visualLayout}}));publications.forEach(p=>window.publications[p.id]=p);return{publications}}
@@ -39,7 +40,7 @@ try {
   await context.route('**/creative-design-qa', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Estudio visual CLIMACTIVA</title><link rel="stylesheet" href="/src/styles.css"><body><main id="root" style="max-width:1240px;margin:auto;padding:24px"></main><script type="module" src="/qa-fixture.js"></script></body></html>' }));
   await context.route('**/qa-fixture.js', route => route.fulfill({ contentType: 'text/javascript', body: fixture }));
   await context.route('**/src/lib/contentCenterApi.ts', route => route.fulfill({ contentType: 'text/javascript', body: api }));
-  await context.route('**/src/modules/auth/AuthContext.tsx', route => route.fulfill({ contentType: 'text/javascript', body: "export const useAuth=()=>({user:{role:'administrador'}});" }));
+  await context.route('**/src/modules/auth/AuthContext.tsx', route => route.fulfill({ contentType: 'text/javascript', body: "export const useAuth=()=>({user:{id:'qa-content-user',role:'administrador'}});" }));
   await context.route('**/qa-image/*', async route => {
     const index = products.findIndex((p) => p.id === route.request().url().split('/').pop());
     if (realProducts) return route.fulfill({ body: await readFile(`tmp/content-studio/product-${index}.${index === 0 ? 'png' : 'jpg'}`), contentType: index === 0 ? 'image/png' : 'image/jpeg' });
@@ -55,6 +56,25 @@ try {
   console.log('Studio loaded. Checking compositions and download.');
   async function ready() { await preview.waitFor(); await preview.evaluate(img => img.decode()); }
   await ready();
+  const modelSelect = page.getByRole('combobox', {name:'Modelo de contenido'});
+  await page.waitForFunction(()=>document.querySelector('[aria-label="Modelo de contenido"]')?.value==='deepseek:deepseek-v4-pro');
+  assert.equal(await modelSelect.inputValue(),'deepseek:deepseek-v4-pro');
+  assert.equal(await modelSelect.locator('option[value="reference:free"]').evaluate(option=>option.disabled),true);
+  await modelSelect.selectOption('deepseek:deepseek-flash');
+  await page.reload(); await ready();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="Modelo de contenido"]')?.value==='deepseek:deepseek-flash');
+  await page.evaluate(()=>window.removedModel='deepseek:deepseek-flash');
+  await page.getByRole('button',{name:'Actualizar modelos'}).click();
+  await page.getByText('El modelo seleccionado no está conectado. No se cambiará de proveedor automáticamente.').waitFor();
+  assert.equal(await page.getByRole('button',{name:'Generar borradores',exact:true}).isDisabled(),true);
+  await modelSelect.selectOption('deepseek:deepseek-v4-pro');
+  await page.evaluate(()=>{window.removedModel=null;window.failModels=true});
+  await page.getByRole('button',{name:'Actualizar modelos'}).click();
+  await page.getByRole('alert').filter({hasText:'Catalogo temporalmente no disponible'}).waitFor();
+  assert.equal(await page.getByRole('button',{name:'Generar borradores',exact:true}).isDisabled(),true);
+  await page.evaluate(()=>window.failModels=false);
+  await page.getByRole('button',{name:'Actualizar modelos'}).click();
+  await page.waitForFunction(()=>document.querySelector('[aria-label="Modelo de contenido"]')?.value==='deepseek:deepseek-v4-pro');
   assert.equal(await page.getByRole('button', { name: /^Diseño / }).count(), 6);
   assert.equal(await page.evaluate(() => window.sourceReads), 1);
   const frames = [];
@@ -88,6 +108,7 @@ try {
   await page.getByRole('button',{name:'Generar borradores',exact:true}).click();
   await page.getByRole('button',{name:'Aplicar diseño a 2 borrador(es)',exact:true}).waitFor();
   await page.waitForFunction(()=>window.attachments.length===2);
+  assert.equal(await page.evaluate(()=>window.generateInputs[0].modelChoice),'deepseek:deepseek-v4-pro');
   assert.equal(await page.evaluate(()=>window.uploads),1,'Only the main image is uploaded, shared by both channels');
   assert.ok(await page.evaluate(()=>window.attachments.every(a=>a.urls.length===1)));
   await page.getByRole('button',{name:'Diseño Industrial',exact:true}).click(); await ready();
