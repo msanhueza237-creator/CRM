@@ -18,6 +18,7 @@ const states = {
   searching: "Consultando CRM",
   analyzing: "Analizando",
   speaking: "Hablando",
+  paused: "Audio suspendido",
   error: "Voz no disponible",
 };
 export function CopilotLivePanel({
@@ -58,6 +59,11 @@ export function CopilotLivePanel({
       {live.error && (
         <p className="cc-live-error" role="alert">
           {live.error}
+        </p>
+      )}
+      {live.state === "paused" && (
+        <p className="cc-live-error" role="alert">
+          El navegador suspendio el audio o el microfono. Vuelve al CRM y pulsa Reanudar audio.
         </p>
       )}
       <div
@@ -118,8 +124,8 @@ export function CopilotLivePanel({
         {live.audioBlocked && (
           <button
             className="cc-icon"
-            title="Activar audio"
-            aria-label="Activar audio"
+            title="Reanudar audio"
+            aria-label="Reanudar audio"
             onClick={live.resumeAudio}
           >
             <Volume2 />

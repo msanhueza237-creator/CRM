@@ -20,6 +20,7 @@ export type LiveState =
   | "searching"
   | "analyzing"
   | "speaking"
+  | "paused"
   | "error";
 interface Session {
   voiceSessionId: string;
@@ -81,6 +82,7 @@ export function useCopilotLive(
     timers: Set<ReturnType<typeof setTimeout>>;
     delegations: Set<string>;
     audioContext?: AudioContext;
+    audioPaused?: boolean;
   }>({
     transcript: new LiveTranscript(),
     generation: 0,
@@ -111,6 +113,7 @@ export function useCopilotLive(
     c.turn?.abort();
     c.turnVersion++;
     c.ready = false;
+    c.audioPaused = false;
     c.phase = "listening";
     for (const timer of c.timers) clearTimeout(timer);
     c.timers.clear();
@@ -134,6 +137,7 @@ export function useCopilotLive(
   async function reportUsage(finalized = false) {
     const c = r.current;
     if (!c.session) return;
+    if (c.gemini) Object.assign(c.metrics, c.gemini.healthMetrics());
     if (c.gemini && c.started) c.usage = Math.max(c.usage, (performance.now() - c.started) / 1000);
     await copilotVoiceRequest("voice-usage", {
       voiceSessionId: c.session.voiceSessionId,
@@ -154,6 +158,7 @@ export function useCopilotLive(
     if (c.ready && c.dc?.readyState === "open")
       c.dc.send(JSON.stringify({ type, event_id: crypto.randomUUID() }));
   }
+  function showPhase() { setState(r.current.audioPaused ? "paused" : r.current.phase); }
   async function stop() {
     const c = r.current;
     if (c.closing) return;
@@ -234,6 +239,7 @@ export function useCopilotLive(
         "No llego la transcripcion completa. Repite la pregunta o continua por texto.",
       );
       setState("listening");
+      c.pendingId = undefined;
       return;
     }
     const session = c.session!;
@@ -253,13 +259,14 @@ export function useCopilotLive(
           if (e.type === "tool_start") c.phase = "searching";
           if (e.type === "composing" || e.type === "tool_end")
             c.phase = "analyzing";
-          setState(c.phase);
+          showPhase();
           if (e.type === "complete") result = e;
         },
         { voiceSessionId: session.voiceSessionId, delegationId: delegation.id },
         selectedModel.current,
       );
-      if (!valid() || !result?.messageId) return;
+      if (!valid()) return;
+      if (!result?.messageId) throw new Error("La consulta no entrego una respuesta completa. Revisa el historial antes de repetirla.");
       c.metrics.delegationMs = performance.now() - started;
       const delivery = await copilotVoiceRequest<{ spokenResult?: string }>(
         "voice-result",
@@ -270,10 +277,12 @@ export function useCopilotLive(
         },
         controller.signal,
       );
-      if (valid() && c.gemini && delivery.spokenResult) c.gemini.result(delegation.id, delivery.spokenResult);
+      if (valid() && c.gemini && (!delivery.spokenResult || !c.gemini.result(delegation.id, delivery.spokenResult))) {
+        throw new Error("La respuesta quedo en el historial, pero no se pudo entregar a la voz. No es necesario repetir la consulta.");
+      }
       if (valid()) {
         c.phase = "listening";
-        setState(c.phase);
+        showPhase();
       }
     } catch (e) {
       if (valid()) {
@@ -375,23 +384,30 @@ export function useCopilotLive(
         cb.current.onEvent({ type: "conversation", conversationId: session.conversationId });
         const gemini = new GeminiTransport(context, e => {
           if (!valid()) return;
-          if (e.type === "session.started") { c.ready = true; c.metrics.connectMs = performance.now() - c.started; setState("listening"); }
+          if (e.type === "session.started") { c.ready = true; c.metrics.connectMs = performance.now() - c.started; showPhase(); }
           if (c.transcript.add(e)) setCaptions(c.transcript.captions());
           if (e.type === "session.delegation.created") void delegate(e, generation);
           if (e.type === "voice.interrupted" || (e.type === "voice.cancelled" && e.delegationId === c.pendingId)) {
             const pending = c.pendingId;
             c.turn?.abort(); c.turnVersion++; c.pendingId = undefined; c.phase = "listening";
-            gemini.cancelPending(); cb.current.onBusy(false); setState("listening");
+            gemini.cancelPending(); cb.current.onBusy(false); showPhase();
             if (pending) void copilotVoiceRequest("voice-interrupt", { voiceSessionId: session.voiceSessionId, delegationId: pending }).catch(() => {});
           }
           if (e.type === "voice.speaking") {
             if (c.delegatedAt !== undefined && c.metrics.firstAudioMs === undefined) c.metrics.firstAudioMs = performance.now() - c.delegatedAt;
-            setState("speaking");
+            setState(c.audioPaused ? "paused" : "speaking");
           }
-          if (e.type === "voice.audio_idle") setState(c.phase);
+          if (e.type === "voice.audio_idle") showPhase();
+          if (e.type === "voice.audio_health") Object.assign(c.metrics, e.metrics);
+          if (e.type === "voice.audio_paused") {
+            c.audioPaused = true; setAudioBlocked(true); setState("paused");
+          }
+          if (e.type === "voice.audio_resumed") {
+            c.audioPaused = false; setAudioBlocked(false); showPhase();
+          }
           if (e.type === "voice.audio_blocked") setAudioBlocked(true);
           if (e.type === "voice.usage") c.tokens = e.tokens as Record<string, unknown>;
-          if (e.type === "voice.reconnect") later(() => { if (valid()) reconnect(generation); }, 1500);
+          if (e.type === "voice.reconnect") { setState("connecting"); later(() => { if (valid()) reconnect(generation); }, 1500); }
           if (e.type === "error") { setError("Gemini no pudo completar el audio. Puedes volver a conectar o seguir por texto."); void stop(); }
         });
         c.gemini = gemini;
@@ -693,8 +709,8 @@ export function useCopilotLive(
     toggleMute,
     interrupt,
     resumeAudio: () => {
+      if (r.current.gemini) { void r.current.gemini.resumeCapture(); return; }
       void r.current.audioContext?.resume().then(() => setAudioBlocked(false)).catch(() => setAudioBlocked(true));
-      if (r.current.gemini) return;
       void r.current.audio
         ?.play()
         .then(() => setAudioBlocked(false))

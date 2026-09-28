@@ -62,5 +62,29 @@ La prueba real del proveedor usa solo una consulta tecnica y resultado de prueba
 sin datos financieros ni cambios del CRM. Android, Bluetooth, ruido y latencia de
 microfono necesitan verificacion en el dispositivo del usuario.
 
+## Pantalla bloqueada y recuperacion web
+
+Chrome puede suspender AudioContext, AudioWorklet o el microfono cuando la pagina
+queda oculta o el telefono se bloquea. WebSocket conectado no demuestra captura
+activa. La web no implementa deteccion local de "Oye Climactiva": una respuesta a
+esa frase dentro de una sesion abierta es conversacion con el proveedor.
+
+El transporte detecta suspension del contexto, mute del sistema y ausencia de
+frames durante cuatro segundos (no confundir silencio con falta de frames).
+Muestra "Audio suspendido", conserva el resultado escrito y descarta audio obsoleto.
+Al volver a la pagina intenta recuperar el contexto; solo vuelve a "Escuchando"
+cuando recibe frames. Si el navegador exige un gesto, ofrece "Reanudar audio".
+Un worklet detenido solicita una unica reconexion dentro del limite existente,
+sin repetir automaticamente la consulta al Gerente. Ocultar una pagina cuyo audio
+sigue funcionando no cancela la conversacion. El mute voluntario no se considera fallo.
+
+La auditoria acepta solo contadores numericos de captura, pausas, recuperaciones,
+interrupciones de captura y cambios a segundo plano, sin audio ni transcripcion.
+Las pruebas simulan estos eventos, no certifican pantalla bloqueada en Android.
+`node scripts/test-copilot-audio-lifecycle-browser.mjs` verifica hook, panel y
+transporte en Chromium con audio y backend de prueba, sin datos reales ni credenciales.
+La conversacion sostenida con el telefono bloqueado requiere validar el cliente
+Android nativo y su servicio de microfono; no se promete mediante un ajuste de Chrome.
+
 Documentacion oficial: https://ai.google.dev/gemini-api/docs/live-api/ephemeral-tokens
 y https://ai.google.dev/api/live .

@@ -17,6 +17,71 @@ export class GeminiTransport {
   private protocol: GeminiProtocol;
   private rejectStart?: (error: Error) => void;
   private startTimeout?: ReturnType<typeof setTimeout>;
+  private healthTimer?: ReturnType<typeof setInterval>;
+  private mic?: MediaStream;
+  private lastCapture = 0;
+  private pausedReason = "";
+  private reconnectRequested = false;
+  private resuming?: Promise<boolean>;
+  private diagnostics = { captureFrames: 0, audioPauses: 0, audioRecoveries: 0, captureStalls: 0, hiddenCount: 0 };
+  private onContextState = () => this.checkHealth();
+  private onVisibility = () => {
+    if (document.visibilityState === "visible") void this.resumeCapture();
+    else { this.diagnostics.hiddenCount++; this.reportHealth(); }
+  };
+  private reportHealth() { this.emit({ type: "voice.audio_health", metrics: { ...this.diagnostics } }); }
+  healthMetrics() { return { ...this.diagnostics }; }
+  private requestReconnect() {
+    if (this.closed || this.reconnectRequested) return;
+    this.reconnectRequested = true;
+    this.ready = false;
+    this.emit({ type: "voice.reconnect" });
+  }
+  private pauseAudio(reason: string) {
+    if (this.closed || this.pausedReason === reason) return;
+    if (!this.pausedReason) this.diagnostics.audioPauses++;
+    if (reason === "capture_stalled") this.diagnostics.captureStalls++;
+    this.pausedReason = reason;
+    // Audio queued while a mobile page is suspended is stale after unlocking.
+    this.clearAudio();
+    this.emit({ type: "voice.audio_paused", reason });
+    this.reportHealth();
+  }
+  private checkHealth() {
+    if (!this.ready || this.closed) return;
+    if (this.context.state !== "running") { this.pauseAudio("context_suspended"); return; }
+    if (this.muted) return;
+    if (this.mic?.getAudioTracks().some(track => track.muted)) { this.pauseAudio("microphone_muted"); return; }
+    if (performance.now() - this.lastCapture > 4000) this.pauseAudio("capture_stalled");
+  }
+  resumeCapture(): Promise<boolean> {
+    if (this.closed) return Promise.resolve(false);
+    if (this.resuming) return this.resuming;
+    this.resuming = (async () => {
+      if (this.ws?.readyState !== WebSocket.OPEN || this.context.state === "closed") {
+        this.requestReconnect(); return false;
+      }
+      if (this.pausedReason) this.clearAudio();
+      if (this.context.state !== "running") {
+        let timeout: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            this.context.resume(),
+            new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Audio suspendido")), 1500); }),
+          ]);
+        } catch { if (!this.closed) this.pauseAudio("context_suspended"); return false; }
+        finally { clearTimeout(timeout); }
+      } else if (this.pausedReason === "capture_stalled" && !this.muted) {
+        this.requestReconnect(); return false;
+      }
+      if (this.closed) return false;
+      // Do not claim to be listening until real microphone frames arrive again.
+      this.lastCapture = performance.now();
+      this.checkHealth();
+      return this.context.state === "running";
+    })().finally(() => { this.resuming = undefined; });
+    return this.resuming;
+  }
   constructor(private context: AudioContext, private emit: (event: Row) => void) {
     this.protocol = new GeminiProtocol(
       e => { if (e.type === "session.input_transcript.delta") this.suppressAudio = false; this.emit(e); },
@@ -27,6 +92,7 @@ export class GeminiTransport {
     if (!this.closed && this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(event));
   }
   async start(session: GeminiSession, mic: MediaStream, signal: AbortSignal) {
+    this.mic = mic;
     const abort = () => this.close();
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) this.close();
@@ -39,9 +105,18 @@ export class GeminiTransport {
       this.silence.gain.value = 0;
       this.source.connect(this.capture).connect(this.silence).connect(this.context.destination);
       this.capture.port.onmessage = event => {
+        this.lastCapture = performance.now();
         if (!this.ready || this.closed || this.muted) return;
+        if (this.context.state !== "running" || this.mic?.getAudioTracks().some(track => track.muted)) { this.checkHealth(); return; }
+        this.diagnostics.captureFrames++;
+        if (this.pausedReason) {
+          this.pausedReason = "";
+          this.diagnostics.audioRecoveries++;
+          this.emit({ type: "voice.audio_resumed" });
+          this.reportHealth();
+        }
         if ((this.ws?.bufferedAmount || 0) > 256000) {
-          this.emit({ type: "voice.reconnect" });
+          this.requestReconnect();
           return;
         }
         this.send({ realtimeInput: { audio: { data: pcm16(event.data), mimeType: `audio/pcm;rate=${this.context.sampleRate}` } } });
@@ -62,10 +137,18 @@ export class GeminiTransport {
             const raw = typeof event.data === "string" ? event.data : await (event.data as Blob).text();
             if (this.closed) return;
             const message = JSON.parse(raw);
-            if (message.setupComplete) {
+            if (message.setupComplete && !this.ready && !this.reconnectRequested) {
               clearTimeout(this.startTimeout);
               if (session.history.length) this.send({ clientContent: { turns: session.history, turnComplete: false } });
               this.ready = true;
+              this.lastCapture = performance.now();
+              this.context.addEventListener("statechange", this.onContextState);
+              if (typeof document !== "undefined") document.addEventListener("visibilitychange", this.onVisibility);
+              for (const track of mic.getAudioTracks()) {
+                track.addEventListener("mute", this.onContextState);
+                track.addEventListener("unmute", this.onContextState);
+              }
+              this.healthTimer = setInterval(() => this.checkHealth(), 1000);
               this.rejectStart = undefined;
               resolve();
             }
@@ -80,13 +163,15 @@ export class GeminiTransport {
           clearTimeout(this.startTimeout);
           if (this.closed) return;
           if (!this.ready) reject(new Error(event.code === 1008 ? "Google rechazo la sesion. Revisa permisos, cuota y modelo de Gemini Live." : "Gemini cerro la conexion antes de iniciar audio."));
-          else this.emit({ type: "voice.reconnect" });
+          else this.requestReconnect();
         };
       });
+      this.checkHealth();
     } finally { signal.removeEventListener("abort", abort); }
   }
   private play(data: string) {
     if (this.closed || this.suppressAudio) return;
+    if (this.context.state !== "running") { this.pauseAudio("context_suspended"); return; }
     const samples = decodePcm16(data);
     if (!samples.length) return;
     const buffer = this.context.createBuffer(1, samples.length, 24000);
@@ -103,7 +188,6 @@ export class GeminiTransport {
     this.nextAudio = when + buffer.duration;
     node.start(when);
     this.emit({ type: "voice.speaking" });
-    if (this.context.state === "suspended") this.emit({ type: "voice.audio_blocked" });
   }
   clearAudio() {
     for (const node of this.playing) { node.onended = null; try { node.stop(); } catch { /* Already ended. */ } node.disconnect(); }
@@ -111,6 +195,7 @@ export class GeminiTransport {
   }
   mute(muted: boolean) {
     this.muted = muted;
+    this.lastCapture = performance.now();
     if (muted && this.ready) this.send({ realtimeInput: { audioStreamEnd: true } });
   }
   result(id: string, text: string, failed = false) { return this.protocol.result(id, text, failed); }
@@ -123,6 +208,13 @@ export class GeminiTransport {
     if (this.closed) return;
     this.closed = true; this.ready = false;
     clearTimeout(this.startTimeout);
+    clearInterval(this.healthTimer);
+    this.context.removeEventListener("statechange", this.onContextState);
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", this.onVisibility);
+    for (const track of this.mic?.getAudioTracks() || []) {
+      track.removeEventListener("mute", this.onContextState);
+      track.removeEventListener("unmute", this.onContextState);
+    }
     this.rejectStart?.(new DOMException("Cancelado", "AbortError"));
     this.rejectStart = undefined;
     this.clearAudio();

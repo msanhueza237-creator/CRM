@@ -136,6 +136,13 @@ test('Audio PCM is little-endian, bounded and rejects malformed chunks',()=>{
   assert.throws(()=>geminiSocketUrl('permanent-key'));
   assert.match(geminiSocketUrl('auth_tokens/test'),/BidiGenerateContentConstrained\?access_token=/);
 });
+
+test('Audio suspension metrics are allowlisted without microphone content or credentials',async()=>{
+  const s=source();
+  const r=await liveHandler(req('voice-usage',{voiceSessionId:voice,seconds:1,metrics:{captureFrames:45,audioPauses:1,audioRecoveries:1,captureStalls:0,hiddenCount:2,transcript:'private',apiKey:'private'}}),s,config(),'trace',{});
+  assert.equal(r.status,200);
+  assert.deepEqual(s.writes.at(-1).body.metadata_redacted.metrics,{captureFrames:45,audioPauses:1,audioRecoveries:1,captureStalls:0,hiddenCount:2});
+});
 test('Gemini supports multiple audio parts, transcripts and scoped manager delegation',()=>{
   const events=[],audio=[],sent=[];let cleared=0;
   const p=new GeminiProtocol(e=>events.push(e),d=>audio.push(d),()=>cleared++,e=>sent.push(e));

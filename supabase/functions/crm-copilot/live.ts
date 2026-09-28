@@ -582,6 +582,11 @@ export async function liveHandler(
         "jitterMs",
         "packetsLost",
         "speechDetectionMs",
+        "captureFrames",
+        "audioPauses",
+        "audioRecoveries",
+        "captureStalls",
+        "hiddenCount",
       ]) {
         const n = Number(object(body.metrics)[key]);
         if (Number.isFinite(n) && n >= 0 && n < 86400000) metrics[key] = n;
