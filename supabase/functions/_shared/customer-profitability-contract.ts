@@ -20,12 +20,15 @@ export interface CustomerProfitabilityReport {
   currency: "CLP";
   customers: number;
   rankedCustomers: number;
+  salesCustomers: number;
   pendingCustomers: number;
   excludedDocuments: number;
   missingCostDocuments: number;
   pendingCreditNotes: number;
   topProfit: CustomerProfitabilityRow[];
   topMargin: CustomerProfitabilityRow[];
+  topSales: CustomerProfitabilityRow[];
+  matches: CustomerProfitabilityRow[];
   pending: CustomerProfitabilityRow[];
   warnings: string[];
 }

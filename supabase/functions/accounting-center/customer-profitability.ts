@@ -31,6 +31,7 @@ export function customerProfitability(documents: Row[], ledger: Row[], accounts:
   const reviews = creditNoteCostReview(docs, lines, accounts, to);
   const notes = new Map(reviews.map(n => [n.id, n]));
   const groups = new Map<string, CustomerProfitabilityRow>();
+  const matchingKeys = new Set<string>();
   let excludedDocuments = 0;
   const search = query.trim().normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   const taxSearch = /^[\d.kK\-\s]+$/.test(query) && /\d/.test(query) ? rut(query).toLowerCase() : "";
@@ -39,11 +40,14 @@ export function customerProfitability(documents: Row[], ledger: Row[], accounts:
     const taxId = rut(doc.counterpart_tax_id);
     const customer = String(doc.counterpart_name || "Cliente sin nombre");
     const haystack = `${customer} ${doc.counterpart_tax_id || ""} ${taxId}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-    if (search && !haystack.includes(search) && !(taxSearch && taxId.toLowerCase().includes(taxSearch))) continue;
     const sales = dashboardDocumentSales(doc);
-    if (sales === null) { excludedDocuments++; continue; }
+    if (sales === null) {
+      if (!search || haystack.includes(search) || (taxSearch && taxId.toLowerCase().includes(taxSearch))) excludedDocuments++;
+      continue;
+    }
     const id = String(doc.id), identified = /^\d{7,8}[0-9K]$/.test(taxId);
     const key = `${doc.entity_id}:${identified ? taxId : `unknown:${id}`}`;
+    if (!search || haystack.includes(search) || (taxSearch && taxId.toLowerCase().includes(taxSearch))) matchingKeys.add(key);
     const row = groups.get(key) || { customerKey: key, customer, taxId: String(doc.counterpart_tax_id || ""), sales: 0, knownCost: 0, cost: null,
       grossProfit: null, margin: null, documents: 0, missingCostDocuments: 0, pendingCreditNotes: 0, coverage: 0,
       status: identified ? "complete" : "unidentified" } as CustomerProfitabilityRow;
@@ -58,7 +62,8 @@ export function customerProfitability(documents: Row[], ledger: Row[], accounts:
     else row.missingCostDocuments++;
     groups.set(key, row);
   }
-  const all = [...groups.values()].map(row => {
+  // Match the whole customer, not only invoices whose historical name matches.
+  const all = [...groups.values()].filter(row => matchingKeys.has(row.customerKey)).map(row => {
     const missing = row.missingCostDocuments + row.pendingCreditNotes;
     row.coverage = money(100 * (row.documents - missing) / row.documents);
     if (row.status === "unidentified") return row;
@@ -70,20 +75,24 @@ export function customerProfitability(documents: Row[], ledger: Row[], accounts:
     return row;
   });
   const ranked = all.filter(row => row.status === "complete");
+  // A sales cohort must keep high-volume customers even when cost is pending.
+  const salesRanked = all.filter(row => row.status !== "unidentified" && row.sales > 0);
   const tie = (a: CustomerProfitabilityRow, b: CustomerProfitabilityRow) => b.sales - a.sales || a.customerKey.localeCompare(b.customerKey);
   const size = Math.max(1, Math.min(100, limit));
   const pending = all.filter(row => row.status === "pending" || row.status === "unidentified");
   return {
-    from, to, basis: "document_issue_date", currency: "CLP", customers: all.length, rankedCustomers: ranked.length,
+    from, to, basis: "document_issue_date", currency: "CLP", customers: all.length, rankedCustomers: ranked.length, salesCustomers: salesRanked.length,
     pendingCustomers: pending.length, excludedDocuments,
     missingCostDocuments: all.reduce((n, r) => n + r.missingCostDocuments, 0),
     pendingCreditNotes: all.reduce((n, r) => n + r.pendingCreditNotes, 0),
     topProfit: [...ranked].sort((a, b) => b.grossProfit! - a.grossProfit! || tie(a, b)).slice(0, size),
     topMargin: [...ranked].sort((a, b) => b.margin! - a.margin! || tie(a, b)).slice(0, size),
+    topSales: [...salesRanked].sort(tie).slice(0, size),
+    matches: search ? [...all].sort(tie).slice(0, size) : [],
     pending: pending.sort((a, b) => b.sales - a.sales || tie(a, b)).slice(0, size),
     warnings: ["Utilidad bruta: ventas netas sin IVA menos costos documentados. No es utilidad final ni caja; no distribuye gastos generales.",
       "Ventas y notas de credito por fecha de emision, con costos y reversas vinculados registrados hasta el cierre del periodo. Puede diferir del resultado contable por fechas de contabilizacion o costos sin cliente.",
-      ...(pending.length ? [`${pending.length} clientes fuera del ranking por costos, reversas o identidad pendientes. No se consideran costos faltantes como cero.`] : []),
+      ...(pending.length ? [`${pending.length} clientes fuera de los rankings de utilidad/margen por costos, reversas o identidad pendientes. El ranking de ventas conserva clientes identificados con costos pendientes, sin inventar su margen.`] : []),
       ...(excludedDocuments ? [`${excludedDocuments} documentos excluidos por validacion, tipo o importes incompletos.`] : [])],
   };
 }

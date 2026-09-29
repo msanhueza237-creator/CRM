@@ -12,12 +12,17 @@ Consulta de solo lectura, disponible para Administracion y Finanzas. El especial
 - El costo requiere par costo/inventario balanceado y vinculado. Notas de credito usan la verificacion existente de referencias/reversas, nunca un porcentaje estimado del costo.
 - Un cliente con costos o reversas pendientes queda fuera del ranking; sus importes de utilidad y margen son nulos. Costo ausente no es cero. Ventas netas no positivas tampoco generan margen ni ranking.
 - Se preservan perdidas verificadas (no se truncan a cero). La lista puede contener menos de diez clientes.
+- El ranking por ventas selecciona primero empresas identificadas con ventas netas positivas. Mantiene en el top a clientes con costos/reversas pendientes, con costo total, utilidad y margen nulos, sin reemplazarlos por clientes de menor venta. Es distinto del top por utilidad o margen.
 
 ## Integracion
 
 - `accounting-center/customer-profitability?from=YYYY-MM-DD&to=YYYY-MM-DD&query=...&limit=10`: GET autenticado. Empresa activa unica, fechas reales no futuras, limite 1 a 100. Sin SQL suministrado por el cliente.
 - Dashboard: consulta el mismo endpoint que el Copiloto, solamente para el periodo seleccionado, con cancelacion al cambiar de periodo/usuario y timeout. El resumen financiero no calcula rankings de todos los meses: se evita superar el limite de CPU del runtime y un fallo del ranking no bloquea el resto del dashboard.
-- `get_customer_profitability`: herramienta del Copiloto, dominio finance, con `sort_by=gross_profit|margin`, periodo y filtro opcional de cliente/RUT. Consulta el endpoint con el token del usuario.
+- `get_customer_profitability`: herramienta del Copiloto, dominio finance, con `sort_by=gross_profit|margin|sales`, periodo y filtro opcional de cliente/RUT. Consulta el endpoint con el token del usuario. `sales` usa `topSales` del mismo calculo contable; no cruza muestras parciales de otra herramienta.
+- Ejemplo: "Cual es la rentabilidad de las top 10 empresas de mayor ventas de este ano" delega al especialista Finanzas con `sort_by=sales`, `period=this_year`, `limit=10`, `query=null`. Este ano significa 1 de enero hasta hoy en America/Santiago.
+- El resultado agrega `selection` con ventas del grupo, cobertura y totales de costo/utilidad/margen solo cuando todos los seleccionados tienen evidencia completa. Margen ponderado = utilidad total / ventas totales; nunca media simple de porcentajes. La tabla muestra posicion por ventas, ventas, costo, utilidad, margen y estado. Cobertura es por documentos, no por pesos.
+- Para negociaciones, el margen historico sirve de contexto, no de descuento autorizado ni de margen garantizado para una nueva cotizacion. No cambia precios, descuentos, asientos ni saldos.
+- Dashboard: buscador por empresa/RUT en Rentabilidad. Consulta el backend, no filtra solo el top diez. Incluye en `matches` empresas con costos pendientes o ventas netas no positivas, con el periodo vigente. Un alias historico selecciona todos los documentos del RUT. Maximo 100 coincidencias por busqueda, con aviso para precisar si hay mas; vacio no acredita cero ventas. Debounce, cancelacion y clave de solicitud impiden mostrar una empresa/periodo anterior mientras se carga otra busqueda. Al limpiar vuelve al ranking. Selector Ventas $ muestra la rentabilidad de los mayores compradores.
 - Ambos caminos ejecutan `accounting-center/customer-profitability.ts` y comparten contrato de tipos. No hay migraciones ni variables nuevas.
 
 ## Verificacion y despliegue

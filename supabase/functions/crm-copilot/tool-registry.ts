@@ -237,8 +237,8 @@ export class ToolRegistry {
   }
   private registerTools() {
     this.add("get_customer_profitability", "finance",
-      "Rentabilidad real por cliente: ventas netas sin IVA, costo vinculado, utilidad bruta CLP y margen porcentual. Ranking por gross_profit (mayor utilidad en pesos) o margin (mayor porcentaje). Usa query para un cliente/RUT y limit=10 para top 10. No confundir con mayores ventas. Excluye del ranking costos/reversas sin verificar; devuelve pendientes y cobertura. No calcula utilidad neta ni reparte gastos generales. Mismo calculo del dashboard.",
-      { ...period, query: paging.query, limit: integer(1, 100), sort_by: choice("gross_profit", "margin") },
+      "Rentabilidad por cliente: ventas netas sin IVA, costo vinculado, utilidad bruta CLP y margen. sort_by=sales para rentabilidad de los clientes/empresas de MAYOR VENTA o facturacion: selecciona primero por ventas, conserva costos pendientes con margen null. gross_profit para mayor utilidad, margin para mayor porcentaje: solo costos/reversas verificados. limit=10 para top 10, period=this_year para este ano, query=null salvo cliente/RUT pedido. Devuelve cobertura y totales ponderados de la seleccion. No es utilidad neta ni descuento autorizado. Mismo calculo del dashboard.",
+      { ...period, query: paging.query, limit: integer(1, 100), sort_by: choice("gross_profit", "margin", "sales") },
       args => customerProfitabilityTool(this.source, args));
     this.add("get_sales_summary", "finance",
       "Ventas netas, costos, gastos, utilidad, margen y serie mensual para el periodo solicitado. Reutiliza las reglas del dashboard, notas de credito y asientos; no suma de nuevo ventas contabilizadas. Para ventas del mes, utilidad, informe financiero y grafico de ultimos 12 meses. Retorna KPI y graficos estructurados calculados, no generados por IA.",

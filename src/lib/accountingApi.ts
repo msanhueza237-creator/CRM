@@ -65,8 +65,9 @@ export function getAccountingOverview() {
   return accountingRequest<Pick<AccountingBootstrap, "summary" | "dashboard" | "bankReality" | "factoFreshness">>("summary");
 }
 
-export function getCustomerProfitability(from: string, to: string, signal?: AbortSignal) {
-  const params = new URLSearchParams({ from, to, limit: "10" });
+export function getCustomerProfitability(from: string, to: string, signal?: AbortSignal, query = "") {
+  const params = new URLSearchParams({ from, to, limit: query.trim() ? "100" : "10" });
+  if (query.trim()) params.set("query", query.trim());
   return accountingRequest<CustomerProfitabilityReport>(`customer-profitability?${params}`, { signal });
 }
 

@@ -4,6 +4,7 @@ import { customerProfitability } from "../supabase/functions/accounting-center/c
 import { customerProfitabilityTool } from "../supabase/functions/crm-copilot/customer-profitability.ts";
 import { ToolRegistry } from "../supabase/functions/crm-copilot/tool-registry.ts";
 import { specialists } from "../supabase/functions/crm-copilot/agent-manager.ts";
+import { todayChile } from "../supabase/functions/crm-copilot/dates.ts";
 const accounts = [{ id: "cost", classification: "cost_of_sales" }, { id: "stock", classification: "inventory" }];
 const doc = (id, net = 1000, taxId = "12345678-9", date = "2026-09-05") => ({ id, entity_id: "entity", external_id: id, source_type: "FACTO", folio: id, issued_on: date, document_type: "sales_invoice", currency: "CLP", net_amount: net, exempt_amount: 0, tax_amount: net * .19, total_clp: net * 1.19, data_quality: "validated", status: "validated", counterpart_tax_id: taxId, counterpart_name: `Cliente ${id}` });
 const pair = (d, cost, date = d.issued_on, key = "cost") => [
@@ -104,4 +105,112 @@ test("Finanzas es el especialista; vendedor y visualizador no acceden a costos",
     assert.ok(!registry.list().some(t => t.name === "get_customer_profitability"));
     assert.equal((await registry.execute("get_customer_profitability", {})).status, "forbidden");
   }
+});
+
+test("Top ventas selecciona antes de verificar costos: no sustituye el mayor comprador pendiente", () => {
+  const docs = Array.from({ length: 12 }, (_, i) => doc(`top-${i}`, 12000 - i * 1000, `${12345670 + i}-9`));
+  const r = report(docs, docs.slice(1).flatMap(d => pair(d, d.net_amount * .5)));
+  assert.equal(r.topSales.length, 10);
+  assert.equal(r.salesCustomers, 12);
+  assert.equal(r.topSales[0].customer, "Cliente top-0");
+  assert.equal(r.topSales[0].grossProfit, null);
+  assert.equal(r.topSales[0].margin, null);
+  assert.equal(r.topSales[0].status, "pending");
+  assert.equal(r.topSales[9].customer, "Cliente top-9");
+  assert.equal(r.topProfit[0].customer, "Cliente top-1");
+});
+
+test("Mayor venta, utilidad y margen son tres criterios distintos", () => {
+  const a = doc("volumen", 10000), b = doc("utilidad", 5000, "76543210-K"), c = doc("margen", 1000, "11111111-1");
+  const r = report([a, b, c], [...pair(a, 9900), ...pair(b, 1000), ...pair(c, 100)]);
+  assert.equal(r.topSales[0].customer, "Cliente volumen");
+  assert.equal(r.topProfit[0].customer, "Cliente utilidad");
+  assert.equal(r.topMargin[0].customer, "Cliente margen");
+});
+
+test("Seleccion por ventas netas descuenta NC y respeta ano sin sumar ventas fuera del corte", () => {
+  const a = doc("a", 10000), note = nc(a, 3, 8000), b = doc("b", 5000, "76543210-K");
+  const old = doc("viejo", 999999, "99999999-9", "2025-12-31"), future = doc("futuro", 999999, "88888888-8", "2026-10-01");
+  const r = report([a, note, b, old, future], [...pair(a, 6000), ...pair(note, -4800), ...pair(b, 4000), ...pair(old, 1), ...pair(future, 1)], "2026-01-01");
+  assert.equal(r.topSales[0].customer, "Cliente b");
+  assert.equal(r.topSales[1].sales, 2000);
+  assert.equal(r.topSales[1].cost, 1200);
+  assert.equal(r.salesCustomers, 2);
+});
+
+test("Cohorte de ventas excluye identidad ausente y ventas no positivas, mantiene perdidas verificadas", () => {
+  const a = doc("a"), unknown = doc("sin-rut", 5000, ""), cancelled = doc("c", 500, "76543210-K"), note = nc(cancelled);
+  const r = report([a, unknown, cancelled, note], [...pair(a, 1200), ...pair(unknown, 1000), ...pair(cancelled, 100), ...pair(note, -100)]);
+  assert.equal(r.topSales.length, 1);
+  assert.equal(r.topSales[0].grossProfit, -200);
+});
+
+test("Busqueda por alias incluye todos los documentos del RUT y su costo pendiente", () => {
+  const a = { ...doc("a"), counterpart_name: "Climatización Sur" };
+  const b = { ...doc("b", 2000, "12.345.678-9"), counterpart_name: "Sociedad Servicios Sur" };
+  const c = { ...doc("c", 999999, "76543210-K"), counterpart_name: "Otro cliente" };
+  const r = customerProfitability([a, b, c], [...pair(a, 600), ...pair(c, 10)], accounts, "2026-09-01", "2026-09-28", "climatizacion", 100);
+  assert.equal(r.customers, 1);
+  assert.equal(r.matches[0].sales, 3000);
+  assert.equal(r.matches[0].documents, 2);
+  assert.equal(r.matches[0].grossProfit, null);
+  assert.equal(r.matches[0].knownCost, 600);
+});
+
+test("Busqueda incluye cualquier empresa fuera del top diez, RUT, anulacion neta y sin coincidencias", () => {
+  const docs = Array.from({ length: 12 }, (_, i) => doc(`empresa-${i}`, 12000 - i * 1000, `${12345670 + i}-9`));
+  const lines = docs.flatMap(d => pair(d, d.net_amount * .5));
+  const r = customerProfitability(docs, lines, accounts, "2026-09-01", "2026-09-28", "empresa-11", 100);
+  assert.equal(r.matches.length, 1);
+  assert.equal(r.matches[0].grossProfit, 500);
+  const tax = customerProfitability(docs, lines, accounts, "2026-09-01", "2026-09-28", "12.345.681-9", 100);
+  assert.equal(tax.matches[0].customer, "Cliente empresa-11");
+  assert.equal(customerProfitability(docs, lines, accounts, "2026-09-01", "2026-09-28", "no-existe", 100).matches.length, 0);
+  const d = docs[0], note = nc(d);
+  const zero = customerProfitability([d, note], [...pair(d, 500), ...pair(note, -500)], accounts, "2026-09-01", "2026-09-28", d.counterpart_tax_id);
+  assert.equal(zero.matches[0].status, "no_positive_sales");
+  assert.equal(zero.matches[0].sales, 0);
+  assert.equal(zero.matches[0].margin, null);
+});
+
+test("Herramienta top ventas anual conserva cohorte y declara totales incompletos", async () => {
+  const a = doc("a", 10000), b = doc("b", 5000, "76543210-K");
+  const data = report([a, b], pair(b, 2000));
+  let route;
+  const r = await customerProfitabilityTool({ api: async (_, path) => { route = path; return data; } }, { period: "this_year", sort_by: "sales", query: null, limit: 10 });
+  const today = todayChile();
+  const params = new URLSearchParams(route.split("?")[1]);
+  assert.equal(params.get("from"), `${today.slice(0, 4)}-01-01`);
+  assert.equal(params.get("to"), today);
+  assert.equal(params.get("limit"), "10");
+  assert.equal(params.has("query"), false);
+  assert.equal(r.data.sortBy, "sales");
+  assert.equal(r.data.ranking[0].customer, "Cliente a");
+  assert.equal(r.table.rows[0].costStatus, "Costos/reversas pendientes");
+  assert.equal(r.table.rows[0].salesRank, 1);
+  assert.equal(r.status, "partial");
+  assert.equal(r.coverage.totalMatched, 2);
+  assert.equal(r.data.selection.sales, 15000);
+  assert.equal(r.data.selection.pendingCustomers, 1);
+  assert.equal(r.data.selection.cost, null);
+  assert.equal(r.data.selection.grossProfit, null);
+  assert.equal(r.data.selection.margin, null);
+  assert.match(r.summary, /No se sustituyeron/);
+  assert.match(r.warnings.join(" "), /no es un descuento autorizado/);
+});
+
+test("Margen total del grupo es ponderado por ventas, no promedio simple", async () => {
+  const a = doc("a", 9000), b = doc("b", 1000, "76543210-K");
+  const r = await customerProfitabilityTool({ api: async () => report([a, b], [...pair(a, 8100), ...pair(b, 100)]) }, { period: "custom", from: "2026-09-01", to: "2026-09-28", sort_by: "sales" });
+  assert.equal(r.data.selection.cost, 8200);
+  assert.equal(r.data.selection.grossProfit, 1800);
+  assert.equal(r.data.selection.margin, 18);
+  assert.equal(r.status, "ok");
+});
+
+test("Despliegue mixto no sustituye silenciosamente top ventas por otro ranking", async () => {
+  await assert.rejects(customerProfitabilityTool({ api: async () => ({ topProfit: [], topMargin: [] }) }, { period: "this_year", sort_by: "sales" }), /no dispone del ranking por ventas/);
+  const registry = new ToolRegistry({ actor: { role: "finanzas" }, signal: new AbortController().signal });
+  const schema = registry.list().find(t => t.name === "get_customer_profitability").parameters;
+  assert.match(JSON.stringify(schema.properties.sort_by), /sales/);
 });
