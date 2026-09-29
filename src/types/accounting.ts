@@ -1,3 +1,4 @@
+import type { CustomerProfitabilityReport } from "../../supabase/functions/_shared/customer-profitability-contract";
 export type AccountingRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
 export type AccountingView = "dashboard" | "detail" | "accounts" | "ledger" | "facto" | "banks" | "reconcile" | "receivables" | "payables" | "checks" | "loans" | "periods" | "reports" | "controls";
 
@@ -463,6 +464,7 @@ export interface AccountingDashboardMonth extends AccountingDashboardTotals {
 }
 
 export interface AccountingDashboardAnalytics {
+  customerProfitability?: { year: CustomerProfitabilityReport; months: Record<string, CustomerProfitabilityReport> };
   salesComparison?: AccountingSalesComparison;
   creditCostReview?: Array<{ id: string; folio: string; issuedOn: string; recognizedOn: string; counterpart: string; netClp: number;
     invoiceId: string | null; invoiceFolio: string | null; invoiceIssuedOn: string | null; kind: "cancellation" | "partial" | "text" | "unresolved";

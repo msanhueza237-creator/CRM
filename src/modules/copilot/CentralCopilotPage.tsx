@@ -62,6 +62,7 @@ const labels: Record<string, string> = {
   get_sales_summary: "Ventas y resultado",
   compare_sales_periods: "Comparacion de periodos",
   get_customer_sales: "Facturacion por cliente",
+  get_customer_profitability: "Rentabilidad por cliente",
   get_customer_profile: "Ficha de empresa",
   get_loans: "Prestamos",
   get_product_profitability: "Margen por producto",

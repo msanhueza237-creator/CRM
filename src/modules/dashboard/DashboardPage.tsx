@@ -7,6 +7,7 @@ import { dashboardDetailLink, exactDocumentLink, type DashboardMetric } from "..
 import { stages, useDashboardOverview } from "./useDashboardOverview";
 import { InventoryOverview } from "./InventoryOverview";
 import { SalesComparison } from "./SalesComparison";
+import { CustomerProfitability } from "./CustomerProfitability";
 import "./dashboard.css";
 
 const financial = (view: string) => `/finanzas-contabilidad?view=${view}`;
@@ -158,6 +159,7 @@ export function DashboardPage() {
       {analytics && <div className="overview-quality"><Link to={dashboardDetailLink("cost-confirmed", analytics.from, analytics.to)}><FileCheck2 size={17} /> Costo exacto: {number(analytics.costCoverage.salesWithExactCost)} de {number(analytics.costCoverage.totalSalesDocuments)} facturas <ArrowUpRight size={15} /></Link><span>{analytics.basis === "ledger" ? "Base contable" : "Base documental o mixta"} · No equivale a caja disponible</span></div>}
       {(analytics?.warnings || []).map(warning => <p className="overview-data-note" key={warning}>{warning}</p>)}
     </section>}
+    {financeAccess && <CustomerProfitability report={selected ? analytics?.customerProfitability?.months[selected.period] : analytics?.customerProfitability?.year} loading={loading} periodLabel={periodLabel} />}
     <div className="overview-two">
       <section className="overview-section"><Heading title="Decisiones pendientes" detail="Control operativo" to={financeAccess ? financial("controls") : "/contenido?view=publications"} /><div className="overview-list">
         {financeAccess && <Action to="/finanzas-contabilidad?view=reconcile&status=unmatched" icon={Landmark} label="Movimientos sin conciliar" value={number(f?.summary.unmatched_bank)} />}

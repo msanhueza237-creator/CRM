@@ -8,6 +8,7 @@ import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "../supabase/
 import { isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 import { confirmedCostSourceIds } from "../supabase/functions/accounting-center/facto-cost-evidence.ts";
 import { creditNoteCostReview, creditNoteCostPeriod } from "../supabase/functions/accounting-center/credit-note-costs.ts";
+import { customerProfitability } from "../supabase/functions/accounting-center/customer-profitability.ts";
 import { dashboardDetailRows } from "../src/modules/accounting/dashboardNavigation.ts";
 
 // Exercise the actual edge calculation with read-only REST fixtures, without starting Deno.
@@ -33,10 +34,21 @@ async function build(documents, lines, { failLedger = false, asOf = "2026-09-09"
     }
     throw new Error(`Unexpected query: ${path}`);
   };
-  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", "confirmedCostSourceIds", "creditNoteCostReview", "creditNoteCostPeriod", "dashboardSalesComparison", "previousSalesCutoff", `${javascript}\nreturn buildDashboardAnalytics;`)(
-    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge, confirmedCostSourceIds, creditNoteCostReview, creditNoteCostPeriod, dashboardSalesComparison, previousSalesCutoff);
+  const run = new Function("selectAllRows", "asObject", "numeric", "dashboardSalesEvidence", "dashboardPurchaseEvidence", "dashboardDocumentTotals", "isPostableFactoDocument", "dashboardSalesPeriodBridge", "confirmedCostSourceIds", "creditNoteCostReview", "creditNoteCostPeriod", "dashboardSalesComparison", "previousSalesCutoff", "customerProfitability", `${javascript}\nreturn buildDashboardAnalytics;`)(
+    selectAllRows, value => value && typeof value === "object" ? value : {}, value => Number(value) || 0, dashboardSalesEvidence, dashboardPurchaseEvidence, dashboardDocumentTotals, isPostableFactoDocument, dashboardSalesPeriodBridge, confirmedCostSourceIds, creditNoteCostReview, creditNoteCostPeriod, dashboardSalesComparison, previousSalesCutoff, customerProfitability);
   return run({}, "entity", asOf, documents, accounts, includeDetails);
 }
+
+test("Dashboard y herramienta comparten exactamente rankings anuales y mensuales", async () => {
+  const d = doc("customer-sale", 1000, "2026-09-08", { entity_id: "entity", counterpart_tax_id: "12345678-9", counterpart_name: "Cliente" });
+  const cost = { ...line(d.id, 600, d.issued_on, "cost"), id: "cost-line" };
+  const stock = { ...inventoryLine(cost), id: "stock-line" };
+  const result = await build([d], [cost, stock]);
+  assert.deepEqual(result.customerProfitability.year, customerProfitability([d], [cost, stock], accounts, "2026-01-01", "2026-09-09"));
+  assert.deepEqual(result.customerProfitability.months["2026-09"], customerProfitability([d], [cost, stock], accounts, "2026-09-01", "2026-09-09"));
+  assert.equal(result.customerProfitability.year.topProfit[0].grossProfit, 400);
+  assert.equal((await build([d], [], { failLedger: true })).customerProfitability, undefined);
+});
 
 test("Full bootstrap drill-downs exactly reconcile with the actual dashboard calculation", async () => {
   const docs = Array.from({ length: 162 }, (_, i) => doc(`sale-${i}`, 1000, i < 3 ? "2026-09-09" : "2026-08-18", { counterpart_name: `Cliente ${i}` }));

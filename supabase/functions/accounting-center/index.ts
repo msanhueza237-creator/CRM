@@ -22,6 +22,7 @@ import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
 import { normalizeFactoDocument } from "./facto-document-normalization.ts";
 import { confirmedCostSourceIds, assertExistingFactoCost } from "./facto-cost-evidence.ts";
 import { creditNoteCostReview, creditNoteCostPeriod } from "./credit-note-costs.ts";
+import { customerProfitability } from "./customer-profitability.ts";
 import { readStatementClosings, statementClosingBalance, validatedBankBalance } from "./bank-statement-balance.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -59,6 +60,10 @@ Deno.serve(async (request) => {
     if (route === "summary" && request.method === "GET") {
       requirePermission(profile, "view");
       return json(await bootstrap(rest, profile, true), 200, request);
+    }
+    if (route === "customer-profitability" && request.method === "GET") {
+      requirePermission(profile, "profitability");
+      return json(await readCustomerProfitability(rest, new URL(request.url)), 200, request);
     }
     if (route === "loans" && request.method === "GET") {
       requirePermission(profile, "view");
@@ -586,6 +591,28 @@ function addDashboardExpense(
   else breakdown.otherOperatingExpenses += amount;
 }
 
+async function readCustomerProfitability(rest: RestClient, url: URL) {
+  const today = accountingToday();
+  const from = requiredDate(url.searchParams.get("from") || `${today.slice(0, 4)}-01-01`);
+  const to = requiredDate(url.searchParams.get("to") || today);
+  for (const date of [from, to]) {
+    if (!Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0, 10) !== date) throw new HttpError(400, "Fecha invalida.");
+  }
+  if (from > to || to > today) throw new HttpError(400, "El periodo debe terminar a mas tardar hoy y comenzar antes del cierre.");
+  const limit = Number(url.searchParams.get("limit") || 10);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, "Limite invalido (1 a 100).");
+  const query = optionalText(url.searchParams.get("query"), 160);
+  const entities = await selectRows(rest, "accounting_entities?select=id&active=eq.true&limit=2");
+  if (entities.length !== 1) throw new HttpError(409, "Se requiere una unica empresa contable activa.");
+  const entityId = String(entities[0].id);
+  const [documents, accounts, lines] = await Promise.all([
+    readSourceDocumentSummaries(path => selectRows(rest, path), entityId, to),
+    selectAllRows(rest, `accounting_accounts?select=id,account_type,classification&entity_id=eq.${entityId}&order=id.asc`),
+    selectAllRows(rest, `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(id,source_document_id,status,entry_date)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${to}&order=id.asc`),
+  ]);
+  return customerProfitability(documents, lines, accounts, from, to, query, limit);
+}
+
 async function buildDashboardAnalytics(
   rest: RestClient,
   entityId: string,
@@ -748,6 +775,10 @@ async function buildDashboardAnalytics(
     to: asOf,
     monthly,
     salesComparison: dashboardSalesComparison(salesEvidence, asOf),
+    customerProfitability: ledgerReadFailed ? undefined : {
+      year: customerProfitability(sources, ledgerLines, accounts, yearStart, asOf),
+      months: Object.fromEntries(monthRanges.map(month => [month.period, customerProfitability(sources, ledgerLines, accounts, month.from, month.to)])),
+    },
     purchaseDocuments,
     salesAdjustments,
     creditCostReview,

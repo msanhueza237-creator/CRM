@@ -26,6 +26,7 @@ import { prospectingReport } from "./prospecting-report.ts";
 import { financialPeriod, comparePeriods, customerAnalytics } from "./business-analytics.ts";
 import { safeData } from "./safety.ts";
 import { summarizeObligations } from "./obligation-summary.ts";
+import { customerProfitabilityTool } from "./customer-profitability.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -235,6 +236,10 @@ export class ToolRegistry {
     });
   }
   private registerTools() {
+    this.add("get_customer_profitability", "finance",
+      "Rentabilidad real por cliente: ventas netas sin IVA, costo vinculado, utilidad bruta CLP y margen porcentual. Ranking por gross_profit (mayor utilidad en pesos) o margin (mayor porcentaje). Usa query para un cliente/RUT y limit=10 para top 10. No confundir con mayores ventas. Excluye del ranking costos/reversas sin verificar; devuelve pendientes y cobertura. No calcula utilidad neta ni reparte gastos generales. Mismo calculo del dashboard.",
+      { ...period, query: paging.query, limit: integer(1, 100), sort_by: choice("gross_profit", "margin") },
+      args => customerProfitabilityTool(this.source, args));
     this.add("get_sales_summary", "finance",
       "Ventas netas, costos, gastos, utilidad, margen y serie mensual para el periodo solicitado. Reutiliza las reglas del dashboard, notas de credito y asientos; no suma de nuevo ventas contabilizadas. Para ventas del mes, utilidad, informe financiero y grafico de ultimos 12 meses. Retorna KPI y graficos estructurados calculados, no generados por IA.",
       {...period,chart:choice("line","bar")}, args=>financialPeriod(this.source,args));

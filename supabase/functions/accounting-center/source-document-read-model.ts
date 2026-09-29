@@ -12,11 +12,13 @@ function withoutElectronicFiles(value: unknown): unknown {
 export async function readSourceDocumentSummaries(
   readPage: (path: string) => Promise<Row[]>,
   entityId: string,
+  salesThrough?: string,
 ): Promise<Row[]> {
   const rows: Row[] = [];
   const pageSize = 25;
   for (let offset = 0; offset < 50000; offset += pageSize) {
-    const page = await readPage(`accounting_source_documents?select=*&entity_id=eq.${entityId}&order=issued_on.desc.nullslast,id.asc&limit=${pageSize}&offset=${offset}`);
+    const filter = salesThrough ? `&document_type=like.sales_*&issued_on=lte.${salesThrough}` : "";
+    const page = await readPage(`accounting_source_documents?select=*&entity_id=eq.${entityId}${filter}&order=issued_on.desc.nullslast,id.asc&limit=${pageSize}&offset=${offset}`);
     for (const row of page) rows.push({ ...row, raw_payload: withoutElectronicFiles(row.raw_payload) });
     if (page.length < pageSize) return rows;
   }
