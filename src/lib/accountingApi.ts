@@ -18,8 +18,9 @@ import type {
 } from "../types/accounting";
 import { normalizeAccountingReconciliationProposal } from "../modules/accounting/reconciliationCompatibility";
 import type { AccountingLoan, LoanDraft, LoanPosting, LoanPreview } from "../types/loans";
+import type { CustomerProfitabilityReport } from "../../supabase/functions/_shared/customer-profitability-contract";
 
-type RequestOptions = { method?: "GET" | "POST"; body?: unknown };
+type RequestOptions = { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal };
 
 async function accountingRequest<T>(route: string, options: RequestOptions = {}): Promise<T> {
   if (!isSupabaseConfigured || !supabase) throw new Error("Conecta Supabase para usar Finanzas y Contabilidad.");
@@ -31,6 +32,7 @@ async function accountingRequest<T>(route: string, options: RequestOptions = {})
     response = await fetch(getSupabaseFunctionUrl("accounting-center", route), {
       method: options.method || "GET",
       cache: "no-store",
+      signal: options.signal,
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
@@ -61,6 +63,11 @@ export function postAccountingLoan(input: LoanPosting) {
 
 export function getAccountingOverview() {
   return accountingRequest<Pick<AccountingBootstrap, "summary" | "dashboard" | "bankReality" | "factoFreshness">>("summary");
+}
+
+export function getCustomerProfitability(from: string, to: string, signal?: AbortSignal) {
+  const params = new URLSearchParams({ from, to, limit: "10" });
+  return accountingRequest<CustomerProfitabilityReport>(`customer-profitability?${params}`, { signal });
 }
 
 export function syncAccountingFacto(input: { fromDate: string; toDate: string }) {

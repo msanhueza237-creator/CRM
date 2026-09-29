@@ -39,14 +39,15 @@ async function build(documents, lines, { failLedger = false, asOf = "2026-09-09"
   return run({}, "entity", asOf, documents, accounts, includeDetails);
 }
 
-test("Dashboard y herramienta comparten exactamente rankings anuales y mensuales", async () => {
+test("El resumen no calcula rankings mensuales que agoten la CPU del runtime", async () => {
   const d = doc("customer-sale", 1000, "2026-09-08", { entity_id: "entity", counterpart_tax_id: "12345678-9", counterpart_name: "Cliente" });
   const cost = { ...line(d.id, 600, d.issued_on, "cost"), id: "cost-line" };
   const stock = { ...inventoryLine(cost), id: "stock-line" };
   const result = await build([d], [cost, stock]);
-  assert.deepEqual(result.customerProfitability.year, customerProfitability([d], [cost, stock], accounts, "2026-01-01", "2026-09-09"));
-  assert.deepEqual(result.customerProfitability.months["2026-09"], customerProfitability([d], [cost, stock], accounts, "2026-09-01", "2026-09-09"));
-  assert.equal(result.customerProfitability.year.topProfit[0].grossProfit, 400);
+  assert.equal(result.customerProfitability, undefined);
+  assert.equal(result.current.costs, 600);
+  assert.equal(customerProfitability([d], [cost, stock], accounts, "2026-09-01", "2026-09-09").topProfit[0].grossProfit, 400);
+  assert.doesNotMatch(calculation.split("async function buildDashboardAnalytics")[1], /customerProfitability\(/);
   assert.equal((await build([d], [], { failLedger: true })).customerProfitability, undefined);
 });
 

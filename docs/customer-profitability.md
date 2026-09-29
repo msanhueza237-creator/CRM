@@ -16,7 +16,7 @@ Consulta de solo lectura, disponible para Administracion y Finanzas. El especial
 ## Integracion
 
 - `accounting-center/customer-profitability?from=YYYY-MM-DD&to=YYYY-MM-DD&query=...&limit=10`: GET autenticado. Empresa activa unica, fechas reales no futuras, limite 1 a 100. Sin SQL suministrado por el cliente.
-- `accounting-center/summary`: incluye rankings anual y mensuales, reutilizando documentos y libro mayor ya leidos. Un fallo del mayor no produce un ranking vacio certificado.
+- Dashboard: consulta el mismo endpoint que el Copiloto, solamente para el periodo seleccionado, con cancelacion al cambiar de periodo/usuario y timeout. El resumen financiero no calcula rankings de todos los meses: se evita superar el limite de CPU del runtime y un fallo del ranking no bloquea el resto del dashboard.
 - `get_customer_profitability`: herramienta del Copiloto, dominio finance, con `sort_by=gross_profit|margin`, periodo y filtro opcional de cliente/RUT. Consulta el endpoint con el token del usuario.
 - Ambos caminos ejecutan `accounting-center/customer-profitability.ts` y comparten contrato de tipos. No hay migraciones ni variables nuevas.
 

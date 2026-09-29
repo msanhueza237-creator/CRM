@@ -775,10 +775,6 @@ async function buildDashboardAnalytics(
     to: asOf,
     monthly,
     salesComparison: dashboardSalesComparison(salesEvidence, asOf),
-    customerProfitability: ledgerReadFailed ? undefined : {
-      year: customerProfitability(sources, ledgerLines, accounts, yearStart, asOf),
-      months: Object.fromEntries(monthRanges.map(month => [month.period, customerProfitability(sources, ledgerLines, accounts, month.from, month.to)])),
-    },
     purchaseDocuments,
     salesAdjustments,
     creditCostReview,

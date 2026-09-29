@@ -5,7 +5,7 @@ import type { CustomerProfitabilityReport } from "../../../supabase/functions/_s
 const money = (value: number | null) => value == null ? "Pendiente" : value.toLocaleString("es-CL", { style: "currency", currency: "CLP", maximumFractionDigits: 0 });
 const percent = (value: number | null) => value == null ? "Sin base" : `${value.toLocaleString("es-CL", { maximumFractionDigits: 1 })}%`;
 
-export function CustomerProfitability({ report, loading, periodLabel }: { report?: CustomerProfitabilityReport; loading: boolean; periodLabel: string }) {
+export function CustomerProfitability({ report, loading, periodLabel, error }: { report?: CustomerProfitabilityReport; loading: boolean; periodLabel: string; error?: string }) {
   const [mode, setMode] = useState<"profit" | "margin">("profit");
   const rows = (mode === "profit" ? report?.topProfit : report?.topMargin) || [];
   const max = Math.max(1, ...rows.map(row => Math.abs(mode === "profit" ? row.grossProfit || 0 : row.margin || 0)));
@@ -35,6 +35,6 @@ export function CustomerProfitability({ report, loading, periodLabel }: { report
       </details>}
       <p className="overview-data-note">Ventas y notas de crédito por fecha de emisión; costos y reversas vinculados registrados hasta {report.to}. Sin gastos generales asignados: no equivale a utilidad final. Los costos faltantes no se consideran cero.</p>
       {!!report.excludedDocuments && <p className="overview-data-note">{report.excludedDocuments} documentos excluidos por tipo, validación o importes incompletos.</p>}
-    </> : <p className="overview-empty" role="status">{loading ? "Calculando rentabilidad por cliente…" : "Rentabilidad no disponible. No se recibió la evidencia completa de costos."}</p>}
+    </> : <p className="overview-empty" role="status">{loading ? "Calculando rentabilidad por cliente…" : error || "Rentabilidad no disponible. No se recibió la evidencia completa de costos."}</p>}
   </section>;
 }
