@@ -159,7 +159,7 @@ export function DashboardPage() {
       {analytics && <div className="overview-quality"><Link to={dashboardDetailLink("cost-confirmed", analytics.from, analytics.to)}><FileCheck2 size={17} /> Costo exacto: {number(analytics.costCoverage.salesWithExactCost)} de {number(analytics.costCoverage.totalSalesDocuments)} facturas <ArrowUpRight size={15} /></Link><span>{analytics.basis === "ledger" ? "Base contable" : "Base documental o mixta"} · No equivale a caja disponible</span></div>}
       {(analytics?.warnings || []).map(warning => <p className="overview-data-note" key={warning}>{warning}</p>)}
     </section>}
-    {financeAccess && <CustomerProfitabilityOverview key={`${user?.id}:${from}:${to}`} from={from} to={to} refreshedAt={data.readAt} periodLabel={periodLabel} />}
+    {financeAccess && <CustomerProfitabilityOverview key={user?.id} from={from} to={to} refreshedAt={data.readAt} periodLabel={periodLabel} />}
     <div className="overview-two">
       <section className="overview-section"><Heading title="Decisiones pendientes" detail="Control operativo" to={financeAccess ? financial("controls") : "/contenido?view=publications"} /><div className="overview-list">
         {financeAccess && <Action to="/finanzas-contabilidad?view=reconcile&status=unmatched" icon={Landmark} label="Movimientos sin conciliar" value={number(f?.summary.unmatched_bank)} />}

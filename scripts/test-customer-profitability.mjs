@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { customerProfitability } from "../supabase/functions/accounting-center/customer-profitability.ts";
-import { customerProfitabilityTool } from "../supabase/functions/crm-copilot/customer-profitability.ts";
+import { canonicalCustomerProfitabilityMessage, customerProfitabilityTool } from "../supabase/functions/crm-copilot/customer-profitability.ts";
 import { ToolRegistry } from "../supabase/functions/crm-copilot/tool-registry.ts";
 import { specialists } from "../supabase/functions/crm-copilot/agent-manager.ts";
 import { todayChile } from "../supabase/functions/crm-copilot/dates.ts";
@@ -191,11 +191,15 @@ test("Herramienta top ventas anual conserva cohorte y declara totales incompleto
   assert.equal(r.status, "partial");
   assert.equal(r.coverage.totalMatched, 2);
   assert.equal(r.data.selection.sales, 15000);
+  assert.equal(r.data.selection.pendingCostSales, 10000);
+  assert.equal(r.data.selection.completeCostSales, 5000);
   assert.equal(r.data.selection.pendingCustomers, 1);
   assert.equal(r.data.selection.cost, null);
   assert.equal(r.data.selection.grossProfit, null);
   assert.equal(r.data.selection.margin, null);
   assert.match(r.summary, /No se sustituyeron/);
+  assert.match(r.summary, /\$10\.000/);
+  assert.equal(r.data.canonical_customer_profitability_summary, true);
   assert.match(r.warnings.join(" "), /no es un descuento autorizado/);
 });
 
@@ -213,4 +217,13 @@ test("Despliegue mixto no sustituye silenciosamente top ventas por otro ranking"
   const registry = new ToolRegistry({ actor: { role: "finanzas" }, signal: new AbortController().signal });
   const schema = registry.list().find(t => t.name === "get_customer_profitability").parameters;
   assert.match(JSON.stringify(schema.properties.sort_by), /sales/);
+});
+
+test("Resumen canonico no oculta otras fuentes, fallos ni consultas de otro tipo", async () => {
+  const a = doc("a");
+  const r = await customerProfitabilityTool({ api: async () => report([a], pair(a, 600)) }, { period: "custom", from: "2026-09-01", to: "2026-09-28", sort_by: "sales" });
+  assert.equal(canonicalCustomerProfitabilityMessage([r]), r.summary);
+  assert.equal(canonicalCustomerProfitabilityMessage([r, { toolName: "get_sales_summary", status: "unavailable" }]), null);
+  assert.equal(canonicalCustomerProfitabilityMessage([{ ...r, status: "forbidden" }]), null);
+  assert.equal(canonicalCustomerProfitabilityMessage([{ ...r, data: {} }]), null);
 });

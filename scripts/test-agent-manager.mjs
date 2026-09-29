@@ -156,6 +156,14 @@ test("Gerente conserva resumen canonico de cobranza aunque el modelo confunda sa
   const specialist = f.requests.find(r => !r.tools.some(t => t.name.startsWith("consult_")) && r.input.some(i => i.type === "function_call_output"));
   assert.ok(specialist.input.some(i => i.type === "function_call_output" && i.output.includes(summary)));
 });
+test("Gerente conserva totales de rentabilidad sin sustituirlos por aritmetica del modelo", async () => {
+  const f = fixture({ selected: ["finance"] });
+  const summary = "Top por ventas: $15.000; clientes con costo pendiente: $10.000.";
+  f.options.registry.execute = async () => readResult("get_customer_profitability", "finance", summary, { canonical_customer_profitability_summary: true }, []);
+  const result = await runAgentManager(f.options);
+  assert.equal(result.message, summary);
+});
+
 test("Endpoint de texto y delegacion de voz comparten Gerente, auditoria y sesion", async () => {
   const priorFetch = globalThis.fetch, priorDeno = globalThis.Deno;
   const user = "00000000-0000-4000-8000-000000000001", session = "00000000-0000-4000-8000-000000000002", voice = "00000000-0000-4000-8000-000000000003";
