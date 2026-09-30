@@ -21,6 +21,8 @@ import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPo
 import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
 import { normalizeFactoDocument } from "./facto-document-normalization.ts";
 import { confirmedCostSourceIds, assertExistingFactoCost } from "./facto-cost-evidence.ts";
+import { previewFactoCostReturn, costReturnKey } from "./facto-cost-return.ts";
+import type { FactoCostReturnPreview } from "../_shared/facto-cost-return-contract.ts";
 import { factoPostingPreview, assertUnpostedFactoSource, assertFactoPostingSaved } from "./facto-posting-preview.ts";
 import { creditNoteCostReview, creditNoteCostPeriod } from "./credit-note-costs.ts";
 import { customerProfitability } from "./customer-profitability.ts";
@@ -102,6 +104,10 @@ Deno.serve(async (request) => {
     if (route === "facto/cost-entry" && request.method === "POST") {
       requirePermission(profile, "post");
       return json(await postFactoCostEntry(rest, profile, requestId, await readJson(request)), 200, request);
+    }
+    if (route === "facto/cost-return-review" && request.method === "POST") {
+      requirePermission(profile, "post");
+      return json(await reviewFactoCostReturn(rest, profile, requestId, await readJson(request)), 200, request);
     }
     if (route === "facto-excel/preview" && request.method === "POST") {
       requirePermission(profile, "import");
@@ -3496,11 +3502,32 @@ async function postFactoDocument(
   });
 }
 
+async function reviewFactoCostReturn(rest: RestClient, profile: Profile, requestId: string, payload: JsonRecord) {
+  const entityId = requiredUuid(payload.entityId);
+  requiredUuid(payload.sourceDocumentId);
+  if (payload.preview !== true && (payload.confirmed !== true || typeof payload.reviewKey !== "string"))
+    throw new HttpError(400, "Revisa y confirma la reversa antes de registrarla.");
+  const [documents, lines, accounts, periods, entries] = await Promise.all([
+    selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO&document_type=like.sales_*&order=id.asc`),
+    selectAllRows(rest, `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(id,entity_id,source_document_id,status,entry_date,description)&accounting_journal_entries.entity_id=eq.${entityId}&order=id.asc`),
+    selectAllRows(rest, `accounting_accounts?select=id,entity_id,classification,account_type,active,allows_posting&entity_id=eq.${entityId}&order=id.asc`),
+    selectAllRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=id.asc`),
+    selectAllRows(rest, `accounting_journal_entries?select=id,entity_id,idempotency_key,status&entity_id=eq.${entityId}&idempotency_key=like.facto-*&order=id.asc`),
+  ]);
+  let preview: FactoCostReturnPreview;
+  try { preview = previewFactoCostReturn(payload, documents, lines, accounts, periods, entries, accountingToday()); }
+  catch (error) { throw new HttpError(409, error instanceof Error ? error.message : "No se pudo verificar la devolucion."); }
+  if (payload.preview === true) return { preview };
+  if (payload.reviewKey !== preview.reviewKey) throw new HttpError(409, "Cambio la evidencia desde la revision. Actualiza y revisa nuevamente; no se registro la reversa.");
+  return postFactoCostEntry(rest, profile, requestId, payload, preview);
+}
+
 async function postFactoCostEntry(
   rest: RestClient,
   profile: Profile,
   requestId: string,
   payload: JsonRecord,
+  reviewedReturn?: FactoCostReturnPreview,
 ) {
   const entityId = requiredUuid(payload.entityId);
   const sourceDocumentId = requiredUuid(payload.sourceDocumentId);
@@ -3531,14 +3558,18 @@ async function postFactoCostEntry(
   );
   const issuedOn = requiredDate(document.issued_on);
   const creditNote = documentType.includes("credit_note");
+  if (creditNote && (!reviewedReturn || reviewedReturn.id !== sourceDocumentId || reviewedReturn.date !== issuedOn || reviewedReturn.amountClp !== amountClp))
+    throw new HttpError(409, "Las notas de credito requieren revision separada de su costo y devolucion fisica.");
   const evidence = optionalText(payload.evidence, 500);
   if (!evidence || evidence.length < 20) throw new HttpError(400, "Indica la evidencia del Libro Diario Facto que respalda este costo.");
-  const idempotencyKey = `facto-cost:${sourceDocumentId}`;
+  const idempotencyKey = reviewedReturn ? costReturnKey(reviewedReturn.invoiceId) : `facto-cost:${sourceDocumentId}`;
   const existingEntry = (await selectRows(
     rest,
-    `accounting_journal_entries?select=id,status&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(idempotencyKey)}&limit=1`,
+    `accounting_journal_entries?select=id,status,source_document_id,entry_date&entity_id=eq.${entityId}&idempotency_key=eq.${encodeURIComponent(idempotencyKey)}&limit=1`,
   ))[0];
   if (existingEntry) {
+    if (existingEntry.source_document_id !== sourceDocumentId || existingEntry.entry_date !== issuedOn)
+      throw new HttpError(409, "El registro existente corresponde a otra nota o fecha. No se duplico la devolucion.");
     const existingLines = await selectRows(rest, `accounting_journal_lines?select=account_id,debit_clp,credit_clp&entry_id=eq.${existingEntry.id}&order=line_number.asc`);
     let actualAmount: number;
     try {
@@ -3583,7 +3614,7 @@ async function postFactoCostEntry(
     ];
   const entry = await postAutomatedEntry(rest, profile, {
     entityId,
-    periodId: periodForDate(periods, issuedOn),
+    periodId: periodForDate(reviewedReturn ? periods.filter(p => p.status === "open") : periods, issuedOn),
     date: issuedOn,
     description: `${creditNote ? "Reverso de costo" : "Costo de venta"} Facto ${String(document.folio || document.external_id || "")}`.trim(),
     reference: String(document.folio || document.external_id || sourceDocumentId),
@@ -3596,9 +3627,11 @@ async function postFactoCostEntry(
     lines,
   });
   // Another request may have won the idempotency key after the initial read.
-  const savedEntry = (await selectRows(rest, `accounting_journal_entries?select=id,status&id=eq.${entry.id}&entity_id=eq.${entityId}&limit=1`))[0];
+  const savedEntry = (await selectRows(rest, `accounting_journal_entries?select=id,status,source_document_id,entry_date&id=eq.${entry.id}&entity_id=eq.${entityId}&limit=1`))[0];
   const savedLines = await selectRows(rest, `accounting_journal_lines?select=account_id,debit_clp,credit_clp&entry_id=eq.${entry.id}&order=line_number.asc`);
   try {
+    if (savedEntry?.source_document_id !== sourceDocumentId || savedEntry?.entry_date !== issuedOn)
+      throw new Error("El registro persistido corresponde a otro documento o fecha. Revisar antes de repetir.");
     assertExistingFactoCost(savedEntry || {}, savedLines,
       postingAccount(accountByClassification, "cost_of_sales"), postingAccount(accountByClassification, "inventory"), amountClp, creditNote);
   } catch (error) {
@@ -3617,6 +3650,8 @@ async function postFactoCostEntry(
       amount_clp: amountClp,
       source_module: "facto_accounting_entry",
       evidence,
+      ...(reviewedReturn ? { invoice_id: reviewedReturn.invoiceId, original_cost: reviewedReturn.originalCost,
+        other_reversals: reviewedReturn.otherReversals, saleable_return_confirmed: true, review_key: reviewedReturn.reviewKey } : {}),
     },
   }]);
   await rpc(rest, "accounting_refresh_controls", { p_entity_id: entityId });

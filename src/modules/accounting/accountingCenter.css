@@ -232,6 +232,7 @@
 }
 
 .accounting-center-page .accounting-import-card > label.accounting-report-confirmation,
+.accounting-center-page .facto-cost-return label.accounting-report-confirmation,
 .accounting-center-page .facto-posting-review > label.accounting-report-confirmation {
   display: flex;
   align-items: flex-start;
@@ -256,6 +257,20 @@
 .facto-posting-review th:first-child, .facto-posting-review td:first-child { text-align: left; overflow-wrap: anywhere; }
 .facto-posting-review td:not(:first-child) { white-space: nowrap; }
 .facto-posting-review button { max-width: 100%; white-space: normal; }
+.facto-cost-return fieldset { min-width: 0; }
+.facto-cost-return .accounting-form-grid .wide { grid-column: 1 / -1; }
+.facto-cost-return .accounting-balance-check { flex-wrap: wrap; overflow-wrap: anywhere; }
+.facto-cost-return button { max-width: 100%; white-space: normal; }
+.facto-cost-return .accounting-form-grid input,
+.facto-cost-return .accounting-form-grid textarea {
+  border: 1px solid var(--accounting-line);
+  border-radius: 5px;
+  padding: 10px 12px;
+  color: var(--accounting-ink);
+  background: #fff;
+  font: inherit;
+  font-size: 16px;
+}
 
 .accounting-filter-grid {
   display: grid;

@@ -3,6 +3,7 @@ import { Check, FileCheck2, LoaderCircle } from "lucide-react";
 import { importVerifiedFactoCost } from "../../lib/accountingApi";
 import type { AccountingPeriod, AccountingSourceDocument } from "../../types/accounting";
 import { eligibleForVerifiedCost, validVerifiedCostInput } from "./verifiedFactoCostPolicy";
+import { VerifiedFactoReturn } from "./VerifiedFactoReturn";
 
 type Props = {
   entityId: string;
@@ -42,6 +43,7 @@ export function VerifiedFactoCost({ entityId, source, periods, onImported }: Pro
     }
   }
 
+  if (source.document_type === "sales_credit_note") return <VerifiedFactoReturn entityId={entityId} source={source} periods={periods} onImported={onImported} />;
   return <section className="panel">
     <div className="accounting-panel-heading"><div><p>Respaldo contable Facto</p><h2>Costo verificado de mercaderias</h2><span>{source.counterpart_name} · Documento {source.folio} · {source.issued_on}</span></div><FileCheck2 size={24} /></div>
     {result ? <div role="status" className="accounting-balance-check ok"><Check size={18} /><strong>{result.existing ? "Costo existente verificado" : "Costo incorporado"}: {clp(result.amountClp)}</strong><span>Asiento {result.entryId}</span></div> : <form onSubmit={event => void submit(event)}>

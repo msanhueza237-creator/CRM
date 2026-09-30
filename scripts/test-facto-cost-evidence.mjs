@@ -60,7 +60,7 @@ function handlerFixture({ existing, existingLines = pair(), otherCost = false, p
       if (path.startsWith("accounting_source_documents?")) return [sourceDocument];
       if (path.startsWith("accounting_periods?")) return [];
       if (path.startsWith("accounting_accounts?")) return accounts;
-      if (path.startsWith("accounting_journal_entries?")) return path.includes("id=eq.new") ? [{ id: "new", status: "posted" }] : existing ? [existing] : [];
+      if (path.startsWith("accounting_journal_entries?")) return path.includes("id=eq.new") ? [{ id: "new", status: "posted", source_document_id: "document", entry_date: "2026-09-08" }] : existing ? [{ source_document_id: "document", entry_date: "2026-09-08", ...existing }] : [];
       if (path.includes("entry_id=eq.")) return path.includes("entry_id=eq.new") ? savedLines : existingLines;
       if (path.startsWith("accounting_journal_lines?")) {
         assert.match(path, /select=id,accounting_journal_entries!inner/);
@@ -111,4 +111,15 @@ test("Concurrent idempotency winner with a different persisted amount is not rep
   const fixture = handlerFixture({ savedLines: pair(1) });
   await assert.rejects(() => fixture.run(payload), error => error.status === 409);
   assert.equal(fixture.writes(), 1, "No successful import audit is written after a persisted-cost mismatch");
+});
+
+test("Legacy cost route cannot bypass reviewed returns; mismatched saved identity is blocked", async () => {
+  const note = handlerFixture({ sourceDocument: { ...document, document_type: "sales_credit_note" } });
+  await assert.rejects(() => note.run(payload), /revision separada/);
+  assert.equal(note.writes(), 0);
+  for (const patch of [{ source_document_id: "other" }, { entry_date: "2026-09-09" }]) {
+    const fixture = handlerFixture({ existing: { id: "old", status: "posted", ...patch } });
+    await assert.rejects(() => fixture.run(payload), /otra nota o fecha/);
+    assert.equal(fixture.writes(), 0);
+  }
 });

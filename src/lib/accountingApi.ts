@@ -20,6 +20,7 @@ import { normalizeAccountingReconciliationProposal } from "../modules/accounting
 import type { AccountingLoan, LoanDraft, LoanPosting, LoanPreview } from "../types/loans";
 import type { CustomerProfitabilityReport } from "../../supabase/functions/_shared/customer-profitability-contract";
 import type { FactoPostingPreview } from "../../supabase/functions/_shared/facto-posting-contract";
+import type { FactoCostReturnInput, FactoCostReturnPreview } from "../../supabase/functions/_shared/facto-cost-return-contract";
 
 type RequestOptions = { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal };
 
@@ -51,6 +52,16 @@ export function getAccountingBootstrap() {
 
 export function importVerifiedFactoCost(input: { entityId: string; sourceDocumentId: string; amountClp: number; evidence: string }) {
   return accountingRequest<{ entryId: string; amountClp: number; status: string; existing: boolean }>("facto/cost-entry", { method: "POST", body: input });
+}
+
+export function reviewFactoCostReturn(input: FactoCostReturnInput) {
+  return accountingRequest<{ preview: FactoCostReturnPreview }>("facto/cost-return-review", { method: "POST", body: { ...input, preview: true } });
+}
+
+export function confirmFactoCostReturn(input: FactoCostReturnInput, reviewKey: string) {
+  return accountingRequest<{ entryId: string; amountClp: number; status: string; existing: boolean }>("facto/cost-return-review", {
+    method: "POST", body: { ...input, reviewKey, confirmed: true },
+  });
 }
 
 export function previewFactoPosting(entityId: string, sourceDocumentId: string) {
