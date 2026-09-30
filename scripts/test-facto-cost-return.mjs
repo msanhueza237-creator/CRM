@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
 import { previewFactoCostReturn, costReturnKey } from '../supabase/functions/accounting-center/facto-cost-return.ts';
+import { readSourceDocumentSummaries } from '../supabase/functions/accounting-center/source-document-read-model.ts';
 
 const invoice = { id: 'invoice', entity_id: 'entity', source_type: 'FACTO', document_type: 'sales_invoice', folio: '1001', external_id: '900',
   issued_on: '2026-08-27', currency: 'CLP', net_amount: 1000000, tax_amount: 190000, total_clp: 1190000,
@@ -77,7 +78,12 @@ function fixture() {
   const writes = [];
   class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
   const deps = { requiredUuid: x => x, HttpError, accountingToday: () => '2026-09-30', previewFactoCostReturn,
-    selectAllRows: async (_, path) => path.startsWith('accounting_source_documents') ? [invoice, note] : path.startsWith('accounting_journal_lines') ? lines
+    readSourceDocumentSummaries,
+    selectRows: async (_, path) => {
+      assert.match(path, /limit=25&offset=0&source_type=eq.FACTO/);
+      return [invoice, note];
+    },
+    selectAllRows: async (_, path) => path.startsWith('accounting_journal_lines') ? lines
       : path.startsWith('accounting_accounts') ? accounts : path.startsWith('accounting_periods') ? periods : [],
     postFactoCostEntry: async (...args) => { writes.push(args); return { entryId: 'saved' }; } };
   const execute = new Function(...Object.keys(deps), `${compiled}; return reviewFactoCostReturn;`)(...Object.values(deps));
@@ -89,6 +95,22 @@ test('backend preview never writes; stale and unconfirmed requests fail closed',
   assert.equal(f.writes.length, 0);
   await f.execute({ confirmed: true, reviewKey: result.preview.reviewKey }); assert.equal(f.writes.length, 1);
   assert.equal(f.writes[0][4].invoiceId, 'invoice');
+});
+
+test('return review pages documents and removes embedded files without losing references', async () => {
+  const paths = [];
+  const docs = await readSourceDocumentSummaries(async path => {
+    paths.push(path);
+    const row = { ...note, raw_payload: { ...note.raw_payload, electronic_document: { pdf: 'large-file' } } };
+    return path.includes('offset=0') ? Array.from({ length: 25 }, () => row) : [row];
+  }, 'entity', '9999-12-31');
+  assert.equal(paths.length, 2);
+  assert.equal(docs.length, 26);
+  assert.match(paths[1], /limit=25&offset=25/);
+  assert.ok(docs.every(d => !('electronic_document' in d.raw_payload)));
+  assert.deepEqual(docs[25].raw_payload.header.references, note.raw_payload.header.references);
+  assert.match(body, /readSourceDocumentSummaries/);
+  assert.doesNotMatch(body, /selectAllRows\(rest, `accounting_source_documents/);
 });
 test('route requires posting permission, legacy rejects unreviewed notes, and invoice-wide uniqueness prevents parallel notes', async () => {
   assert.match(source, /route === "facto\/cost-return-review"[\s\S]{0,150}requirePermission\(profile, "post"\)/);

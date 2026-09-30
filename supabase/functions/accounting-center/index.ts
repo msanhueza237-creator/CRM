@@ -3508,7 +3508,7 @@ async function reviewFactoCostReturn(rest: RestClient, profile: Profile, request
   if (payload.preview !== true && (payload.confirmed !== true || typeof payload.reviewKey !== "string"))
     throw new HttpError(400, "Revisa y confirma la reversa antes de registrarla.");
   const [documents, lines, accounts, periods, entries] = await Promise.all([
-    selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO&document_type=like.sales_*&order=id.asc`),
+    readSourceDocumentSummaries(path => selectRows(rest, `${path}&source_type=eq.FACTO`), entityId, "9999-12-31"),
     selectAllRows(rest, `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(id,entity_id,source_document_id,status,entry_date,description)&accounting_journal_entries.entity_id=eq.${entityId}&order=id.asc`),
     selectAllRows(rest, `accounting_accounts?select=id,entity_id,classification,account_type,active,allows_posting&entity_id=eq.${entityId}&order=id.asc`),
     selectAllRows(rest, `accounting_periods?select=*&entity_id=eq.${entityId}&order=id.asc`),
