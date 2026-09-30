@@ -8,9 +8,10 @@ const periods = [{ status: 'open', starts_on: '2026-06-01', ends_on: '2026-06-30
 test('validated CLP sale in open period can be reviewed', () => {
   assert.equal(eligibleForVerifiedCost(source, periods), true);
   assert.equal(eligibleForVerifiedCost({ ...source, status: 'posted' }, periods), true);
+  assert.equal(eligibleForVerifiedCost({ ...source, document_type: 'sales_receipt' }, periods), true);
 });
 test('reject credit notes, purchases, foreign currency and unvalidated sources', () => {
-  for (const changes of [{ document_type: 'sales_credit_note' }, { document_type: 'purchase_invoice' }, { currency: 'USD' }, { source_type: 'MANUAL' }, { status: 'voided' }, { status: 'inconsistent' }, { data_quality: 'pending' }]) {
+  for (const changes of [{ document_type: 'sales_credit_note' }, { document_type: 'purchase_invoice' }, { document_type: 'dispatch_guide' }, { document_type: 'sales_debit_note' }, { currency: 'USD' }, { source_type: 'MANUAL' }, { status: 'voided' }, { status: 'inconsistent' }, { data_quality: 'pending' }]) {
     assert.equal(eligibleForVerifiedCost({ ...source, ...changes }, periods), false);
   }
 });

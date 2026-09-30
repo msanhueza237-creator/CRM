@@ -1,7 +1,7 @@
 import type { AccountingPeriod, AccountingSourceDocument } from "../../types/accounting";
 
 export function eligibleForVerifiedCost(source: AccountingSourceDocument, periods: AccountingPeriod[]) {
-  return source.source_type === "FACTO" && source.document_type === "sales_invoice" && source.currency === "CLP"
+  return source.source_type === "FACTO" && ["sales_invoice", "sales_receipt"].includes(source.document_type) && source.currency === "CLP"
     && ["validated", "posted"].includes(source.status) && source.data_quality === "validated"
     && Boolean(source.issued_on && periods.some(period => period.status === "open"
       && source.issued_on! >= period.starts_on && source.issued_on! <= period.ends_on));
