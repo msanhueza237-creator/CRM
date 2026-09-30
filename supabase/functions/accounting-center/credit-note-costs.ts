@@ -1,4 +1,4 @@
-import { factoHeader, isPostableFactoDocument } from "./facto-document-policy.ts";
+import { factoHeader, isPostableFactoDocument, isRejectedFactoDocument } from "./facto-document-policy.ts";
 import { dashboardDocumentSales, dashboardSalesEvidence } from "./dashboard-sales.ts";
 
 type Row = Record<string, unknown>;
@@ -94,6 +94,11 @@ export function creditNoteCostReview(documents: Row[], lines: Row[], accounts: R
   for (const row of reviews) if (row.invoiceId && row.originalCost !== null && (reversedByInvoice.get(row.invoiceId) || 0) > row.originalCost + 0.005) {
     row.pending = true;
     row.detail = "Las reversas acumuladas superan el costo conocido de la factura; conciliar antes de confirmar.";
+  }
+  const rejectedIds = new Set(unique.filter(isRejectedFactoDocument).map(d => text(d.id)));
+  for (const row of reviews) if (rejectedIds.has(row.id)) {
+    row.pending = true;
+    row.detail = "Nota rechazada por el SII en Facto. No registrar nuevas reversas de costo; revisar por separado su contabilizacion existente en CRM.";
   }
   return reviews;
 }

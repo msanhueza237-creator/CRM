@@ -17,7 +17,7 @@ import { buildAccountingAgentReport, hasAccountingTaskLease } from "./agent-repo
 import { accountingToday, dashboardSalesEvidence, dashboardSalesPeriodBridge } from "./dashboard-sales.ts";
 import { dashboardSalesComparison, previousSalesCutoff } from "./dashboard-sales-comparison.ts";
 import { dashboardPurchaseEvidence, dashboardDocumentTotals } from "./dashboard-purchases.ts";
-import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "./facto-document-policy.ts";
+import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument, assertFactoDocumentNotRejected } from "./facto-document-policy.ts";
 import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
 import { normalizeFactoDocument } from "./facto-document-normalization.ts";
 import { confirmedCostSourceIds, assertExistingFactoCost } from "./facto-cost-evidence.ts";
@@ -3421,6 +3421,7 @@ async function postFactoDocument(
   accounts: Map<string, string>,
   postingDate = String(document.issued_on),
 ) {
+  assertFactoDocumentNotRejected(document);
   const type = String(document.document_type || "");
   const sale = type.startsWith("sales_");
   const purchase = type.startsWith("purchase_");
@@ -3473,6 +3474,11 @@ async function postFactoCostEntry(
     `accounting_source_documents?select=*&id=eq.${sourceDocumentId}&entity_id=eq.${entityId}&source_type=eq.FACTO&limit=1`,
   ))[0];
   if (!document) throw new HttpError(404, "No se encontró el documento Facto asociado al asiento.");
+  try {
+    assertFactoDocumentNotRejected(document);
+  } catch (error) {
+    throw new HttpError(409, error instanceof Error ? error.message : "Documento rechazado por el SII.");
+  }
   const documentType = String(document.document_type || "");
   if (!documentType.startsWith("sales_") || !isPostableFactoDocument(document)) {
     throw new HttpError(409, "El costo de venta solo puede asociarse a un documento de venta Facto.");

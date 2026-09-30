@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
 import { confirmedCostSourceIds, assertExistingFactoCost } from "../supabase/functions/accounting-center/facto-cost-evidence.ts";
+import { assertFactoDocumentNotRejected } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 
 const accounts = [{ id: "cost", classification: "cost_of_sales" }, { id: "inventory", classification: "inventory" }, { id: "income", classification: "net_sales" }];
 function pair(amount = 91328, entryId = "entry", status = "posted", date = "2026-09-08") {
@@ -50,13 +51,13 @@ const code = ts.transpileModule(handler, { compilerOptions: { target: ts.ScriptT
 class HttpError extends Error { constructor(status, message) { super(message); this.status = status; } }
 const document = { id: "document", document_type: "sales_invoice", issued_on: "2026-09-08", folio: "1557" };
 const payload = { entityId: "entity", sourceDocumentId: "document", amountClp: 91328, evidence: "Libro Diario Facto 1557: 5101 contra 1201" };
-function handlerFixture({ existing, existingLines = pair(), otherCost = false, postable = true, savedLines = pair() } = {}) {
+function handlerFixture({ existing, existingLines = pair(), otherCost = false, postable = true, savedLines = pair(), sourceDocument = document } = {}) {
   let writes = 0;
   const context = {
-    requiredUuid: x => x, requiredDate: x => x, optionalText: x => x, HttpError, assertExistingFactoCost,
+    requiredUuid: x => x, requiredDate: x => x, optionalText: x => x, HttpError, assertExistingFactoCost, assertFactoDocumentNotRejected,
     isPostableFactoDocument: () => postable, postingAccount: (map, key) => map.get(key),
     selectRows: async (_, path) => {
-      if (path.startsWith("accounting_source_documents?")) return [document];
+      if (path.startsWith("accounting_source_documents?")) return [sourceDocument];
       if (path.startsWith("accounting_periods?")) return [];
       if (path.startsWith("accounting_accounts?")) return accounts;
       if (path.startsWith("accounting_journal_entries?")) return path.includes("id=eq.new") ? [{ id: "new", status: "posted" }] : existing ? [existing] : [];
@@ -82,6 +83,15 @@ test("Handler blocks conflicting/repeated costs without financial writes", async
   const other = handlerFixture({ otherCost: true });
   await assert.rejects(() => other.run(payload), error => error.status === 409);
   assert.equal(other.writes(), 0);
+});
+
+test("SII-rejected invoice or note cannot create cost or inventory reversals", async () => {
+  for (const document_type of ["sales_invoice", "sales_credit_note"]) {
+    const fixture = handlerFixture({ sourceDocument: { ...document, document_type,
+      raw_payload: { header: { taxbureau_validation_status: 5 } } } });
+    await assert.rejects(() => fixture.run(payload), error => error.status === 409 && /rechazado por el SII/.test(error.message));
+    assert.equal(fixture.writes(), 0);
+  }
 });
 test("Handler requires positive amount, validated sale and evidence before any write", async () => {
   for (const amountClp of [-1, 0, NaN, Infinity, "no"]) {

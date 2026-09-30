@@ -23,6 +23,33 @@ const pair = (document, cost, date = document.issued_on, suffix = "cost") => [
 const periodLines = (lines, range = august) => lines.filter(l => l.accounting_journal_entries.entry_date >= range.from && l.accounting_journal_entries.entry_date <= range.to);
 const review = (docs, lines) => creditNoteCostReview(docs, lines, accounts, "2026-09-16");
 
+test("Nota rechazada sigue pendiente aunque exista reversa, sin cambiar ventas ni costos", () => {
+  const invoice = doc(1, "2026-08-10"), nc = note(invoice);
+  const rejected = { ...nc, raw_payload: { ...nc.raw_payload, header: { taxbureau_validation_status: 5 } } };
+  const lines = [...pair(invoice, 600), ...pair(nc, -600)];
+  const before = aggregateFinancialPeriod([invoice, nc], lines, lines, accounts, august);
+  const after = aggregateFinancialPeriod([invoice, rejected], lines, lines, accounts, august);
+  const checked = review([invoice, rejected], lines)[0];
+  assert.equal(checked.pending, true);
+  assert.match(checked.detail, /rechazada por el SII/);
+  assert.equal(checked.reversedCost, 600);
+  for (const field of ["sales", "costs", "operatingProfit", "costCreditNotes"])
+    assert.equal(after[field], before[field], field);
+  assert.equal(after.creditNoteCostPending, 1);
+  const rows = dashboardDetailRows({ creditCostReview: [checked], detail: { ledgerAvailable: true } }, "credit-cost-review", august.from, august.to);
+  assert.ok(JSON.stringify(rows).includes("rechazada por el SII"));
+});
+
+test("Rechazo prevalece sobre correccion de texto y referencia de otra empresa", () => {
+  const invoice = doc(1, "2026-08-10"), nc = note(invoice, 2);
+  const rejected = { ...nc, counterpart_tax_id: "87654321-0", raw_payload: { ...nc.raw_payload, taxbureau_validation_status: "5" } };
+  const checked = review([invoice, rejected], [])[0];
+  assert.equal(checked.pending, true);
+  assert.equal(checked.invoiceId, null);
+  assert.equal(checked.reversedCost, null);
+  assert.match(checked.detail, /rechazada por el SII/);
+});
+
 test("Anulacion total descuenta el costo contabilizado exactamente una vez", () => {
   const invoice = doc(1, "2026-08-10"), nc = note(invoice), docs = [invoice, nc];
   const lines = [...pair(invoice, 600), ...pair(nc, -600)];

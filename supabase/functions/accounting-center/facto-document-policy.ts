@@ -17,6 +17,18 @@ export function factoIdentity(payload: Row, resource: string, fallback: string) 
   };
 }
 
+export function isRejectedFactoDocument(document: Row) {
+  return String(factoHeader(object(document.raw_payload)).taxbureau_validation_status ?? "") === "5";
+}
+
+// Apply this at write boundaries, not historical read filters: an existing
+// posting needs an explicit correction, never silent removal from reports.
+export function assertFactoDocumentNotRejected(document: Row) {
+  if (isRejectedFactoDocument(document)) {
+    throw new Error("Documento rechazado por el SII en Facto. No se permiten nuevas contabilizaciones ni reversas de costo; revisar los asientos existentes por separado.");
+  }
+}
+
 export function isPostableFactoDocument(document: Row) {
   const type = String(document.document_type || "");
   const raw = object(document.raw_payload);

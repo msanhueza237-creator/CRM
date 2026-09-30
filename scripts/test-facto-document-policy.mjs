@@ -2,10 +2,33 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { normalizeFactoDocument as normalize } from "../supabase/functions/accounting-center/facto-document-normalization.ts";
-import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument } from "../supabase/functions/accounting-center/facto-document-policy.ts";
+import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPostableFactoDocument, isRejectedFactoDocument, assertFactoDocumentNotRejected } from "../supabase/functions/accounting-center/facto-document-policy.ts";
 
 const source = await readFile(new URL("../supabase/functions/accounting-center/index.ts", import.meta.url), "utf8");
 const note = { document_id: 762, header: { document_number: 80, document_type_taxbureau: "61", received_issued_flag: 1, issue_date: "2026-08-18", currency_id: 39, receiver_legal_name: "ANDREA GARAY" }, totals: { net_amount: 9091838, taxes_amount: 1727449, total_amount: "10819287.00" }, references: [{ reference_number: 1534, reference_date: "2026-07-28", document_id: 731 }] };
+
+test("Explicit SII rejection blocks new postings without removing historical evidence", () => {
+  for (const raw of [{ taxbureau_validation_status: 5 }, { header: { taxbureau_validation_status: "5" } },
+    { data: { document: { header: { taxbureau_validation_status: 5 } } } }]) {
+    const document = { document_type: "sales_credit_note", status: "posted", data_quality: "validated", raw_payload: raw };
+    assert.equal(isRejectedFactoDocument(document), true);
+    assert.throws(() => assertFactoDocumentNotRejected(document), /rechazado por el SII/);
+    assert.equal(isPostableFactoDocument(document), true, "Existing read models must retain booked figures until explicit correction");
+  }
+  for (const status of [undefined, null, "", 3, "3", 4, "4", "unknown"]) {
+    const document = { raw_payload: { header: { taxbureau_validation_status: status } } };
+    assert.equal(isRejectedFactoDocument(document), false);
+    assert.doesNotThrow(() => assertFactoDocumentNotRejected(document));
+  }
+});
+
+test("Both Facto posting boundaries reject before automated entry creation", () => {
+  for (const name of ["postFactoDocument", "postFactoCostEntry"]) {
+    const body = source.slice(source.indexOf(`async function ${name}(`));
+    const guard = body.indexOf("assertFactoDocumentNotRejected(document)");
+    assert.ok(guard >= 0 && guard < body.indexOf("await postAutomatedEntry("), name);
+  }
+});
 
 test("Details supply nested totals and the original credit reference, never a moved date", () => {
   const result = normalize(note, false, "762");
