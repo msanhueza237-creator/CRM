@@ -4,6 +4,7 @@ import { reportPeriod } from "./reportNavigation";
 import { DashboardDetailView } from "./DashboardDetailView";
 import { LoansView } from "./LoansView";
 import { VerifiedFactoCost } from "./VerifiedFactoCost";
+import { FactoPostingReview } from "./FactoPostingReview";
 import { bankControlValue, parseBankControlNumber } from "./bankBalanceInput";
 import { reportedChecks, checkInstrumentDate, checkInvoiceNumbers } from "./checkPortfolio";
 import {
@@ -752,6 +753,7 @@ function FactoView({ data, busy, runAction, excelOnly = false, excelProfile }: A
     </section>
     : null}
     {preview ? <FactoExcelPreviewDialog preview={preview} busy={busy} close={() => setPreview(null)} runAction={runAction} /> : null}
+    {!excelOnly && documentId && data.profile.permissions.includes("post") && filteredSources.length === 1 ? <FactoPostingReview key={`posting-${filteredSources[0].id}`} entityId={data.entity.id} source={filteredSources[0]} onPosted={() => runAction("refresh-facto-posting", () => refreshAccountingControls(data.entity.id), "Asiento del documento verificado; informes actualizados.")} /> : null}
     {!excelOnly && documentId && ["administrador", "finanzas"].includes(data.profile.role) && filteredSources.length === 1 ? <VerifiedFactoCost key={filteredSources[0].id} entityId={data.entity.id} source={filteredSources[0]} periods={data.periods} onImported={() => runAction("refresh-verified-cost", () => refreshAccountingControls(data.entity.id), "Costo Facto verificado; informes actualizados.")} /> : null}
     {receivablesPreview ? <FactoReceivablesPreviewDialog detail={receivablesPreview} busy={busy} close={() => setReceivablesPreview(null)} runAction={runAction} /> : null}
   </div>;

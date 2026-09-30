@@ -19,6 +19,7 @@ import type {
 import { normalizeAccountingReconciliationProposal } from "../modules/accounting/reconciliationCompatibility";
 import type { AccountingLoan, LoanDraft, LoanPosting, LoanPreview } from "../types/loans";
 import type { CustomerProfitabilityReport } from "../../supabase/functions/_shared/customer-profitability-contract";
+import type { FactoPostingPreview } from "../../supabase/functions/_shared/facto-posting-contract";
 
 type RequestOptions = { method?: "GET" | "POST"; body?: unknown; signal?: AbortSignal };
 
@@ -50,6 +51,18 @@ export function getAccountingBootstrap() {
 
 export function importVerifiedFactoCost(input: { entityId: string; sourceDocumentId: string; amountClp: number; evidence: string }) {
   return accountingRequest<{ entryId: string; amountClp: number; status: string; existing: boolean }>("facto/cost-entry", { method: "POST", body: input });
+}
+
+export function previewFactoPosting(entityId: string, sourceDocumentId: string) {
+  return accountingRequest<{ preview: FactoPostingPreview; bankBalanceAdjustments: number }>("ledger/facto-document-review", {
+    method: "POST", body: { entityId, documentIds: [sourceDocumentId], preview: true },
+  });
+}
+
+export function confirmFactoPosting(entityId: string, preview: FactoPostingPreview) {
+  return accountingRequest<{ documents: Array<{ id: string; folio: string }>; bankBalanceAdjustments: number }>("ledger/facto-document-review", {
+    method: "POST", body: { entityId, documentIds: [preview.id], reviewKey: preview.reviewKey, confirmed: true },
+  });
 }
 
 export function getAccountingLoans(entityId: string) {

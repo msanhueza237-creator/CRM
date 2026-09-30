@@ -21,6 +21,7 @@ import { factoHeader, factoIdentity, factoReferenceLabel, factoPostingDate, isPo
 import { readSourceDocumentSummaries } from "./source-document-read-model.ts";
 import { normalizeFactoDocument } from "./facto-document-normalization.ts";
 import { confirmedCostSourceIds, assertExistingFactoCost } from "./facto-cost-evidence.ts";
+import { factoPostingPreview, assertUnpostedFactoSource, assertFactoPostingSaved } from "./facto-posting-preview.ts";
 import { creditNoteCostReview, creditNoteCostPeriod } from "./credit-note-costs.ts";
 import { customerProfitability } from "./customer-profitability.ts";
 import { readStatementClosings, statementClosingBalance, validatedBankBalance } from "./bank-statement-balance.ts";
@@ -203,6 +204,14 @@ Deno.serve(async (request) => {
     if (route === "ledger/prepare" && request.method === "POST") {
       requirePermission(profile, "post");
       return json(await prepareAccountingLedger(rest, profile, await readJson(request)), 200, request);
+    }
+    if (route === "ledger/facto-document-review" && request.method === "POST") {
+      requirePermission(profile, "post");
+      const payload = await readJson(request);
+      // A separate route makes preview fail closed against an older backend.
+      if (payload.preview !== true && (typeof payload.reviewKey !== "string" || payload.confirmed !== true))
+        throw new HttpError(400, "Solicita una previsualizacion o confirma expresamente el documento revisado.");
+      return json(await centralizeFactoDocuments(rest, profile, payload), 200, request);
     }
     if (route === "ledger/facto-documents" && request.method === "POST") {
       requirePermission(profile, "post");
@@ -3319,15 +3328,44 @@ async function centralizeFactoDocuments(rest: RestClient, profile: Profile, payl
   const documents = await selectAllRows(rest, `accounting_source_documents?select=*&entity_id=eq.${entityId}&source_type=eq.FACTO&id=in.(${ids.join(",")})&order=issued_on.asc`);
   if (documents.length !== ids.length || documents.some(row => !isPostableFactoDocument(row))) throw new HttpError(409, "Los documentos deben estar validados y tener un tipo y dirección compatibles.");
   const periods = await selectAllRows(rest, `accounting_periods?select=id,starts_on,ends_on,status&entity_id=eq.${entityId}&status=neq.closed`);
-  const accounts = await selectAllRows(rest, `accounting_accounts?select=id,classification&entity_id=eq.${entityId}&active=eq.true&allows_posting=eq.true`);
+  const allAccounts = await selectAllRows(rest, `accounting_accounts?select=id,classification,active,allows_posting&entity_id=eq.${entityId}`);
+  const accounts = allAccounts.filter(a => a.active === true && a.allows_posting === true);
   const accountMap = new Map(accounts.map(row => [String(row.classification), String(row.id)]));
   const adjustmentDate = payload.closedPeriodAdjustmentDate ? requiredDate(payload.closedPeriodAdjustmentDate) : null;
+  const reviewedPosting = payload.preview === true || payload.reviewKey !== undefined;
+  if (reviewedPosting) {
+    if (documents.length !== 1 || adjustmentDate) throw new HttpError(400, "La revision individual conserva la fecha original de un solo documento.");
+    const document = documents[0];
+    try {
+      const preview = factoPostingPreview(document);
+      if (!periods.some(p => p.status === "open" && preview.date >= String(p.starts_on) && preview.date <= String(p.ends_on)))
+        throw new Error("El periodo original debe estar abierto.");
+      factoPostingDate(document, periods, null, accountingToday());
+      const entries = await selectAllRows(rest, `accounting_journal_entries?select=id,status,idempotency_key&entity_id=eq.${entityId}&source_document_id=eq.${document.id}`);
+      const lines = entries.length ? await selectAllRows(rest, `accounting_journal_lines?select=entry_id,account_id,debit_clp,credit_clp&entry_id=in.(${entries.map(e => e.id).join(",")})`) : [];
+      assertUnpostedFactoSource(entries, lines, allAccounts);
+      for (const classification of ["receivables", "net_sales", "vat_debit"]) {
+        if (accounts.filter(a => a.classification === classification).length !== 1) throw new Error(`Revisar la cuenta contable de ${classification}.`);
+      }
+      if (payload.preview === true) return { preview, bankBalanceAdjustments: 0 };
+      if (payload.reviewKey !== preview.reviewKey) throw new Error("El documento cambio desde la previsualizacion. Revisalo otra vez antes de confirmar.");
+      if (payload.confirmed !== true) throw new Error("Falta la confirmacion explicita del asiento revisado.");
+    } catch (error) {
+      throw new HttpError(409, error instanceof Error ? error.message : "No se pudo verificar el documento.");
+    }
+  }
   // Validate every posting date before starting the bounded batch.
   const postingDates = documents.map(document => factoPostingDate(document, periods, adjustmentDate, accountingToday()));
+  for (const document of documents) assertFactoDocumentNotRejected(document);
   const results: JsonRecord[] = [];
   for (const [index, document] of documents.entries()) {
     const postingDate = postingDates[index];
-    await postFactoDocument(rest, profile, document, periods, accountMap, postingDate);
+    const created = await postFactoDocument(rest, profile, document, periods, accountMap, postingDate);
+    if (reviewedPosting) {
+      const saved = (await selectRows(rest, `accounting_journal_entries?select=id,status,entry_date,source_document_id&entity_id=eq.${entityId}&id=eq.${created.id}&limit=1`))[0];
+      const savedLines = await selectAllRows(rest, `accounting_journal_lines?select=account_id,debit_clp,credit_clp&entry_id=eq.${created.id}`);
+      assertFactoPostingSaved(factoPostingPreview(document), saved || {}, savedLines, accounts);
+    }
     await patchRows(rest, "accounting_source_documents", `id=eq.${document.id}&entity_id=eq.${entityId}`, { status: "posted" });
     results.push({ id: document.id, folio: document.folio });
   }
@@ -3443,7 +3481,7 @@ async function postFactoDocument(
     if (tax > 0) lines.push(postingLine(accounts, "vat_credit", creditNote ? 0 : tax, creditNote ? tax : 0, "IVA crédito fiscal Facto"));
     lines.push(postingLine(accounts, "payables", creditNote ? total : 0, creditNote ? 0 : total, "Proveedor / documento por pagar"));
   }
-  await postAutomatedEntry(rest, profile, {
+  return await postAutomatedEntry(rest, profile, {
     entityId: String(document.entity_id),
     periodId: periodForDate(periods, postingDate),
     date: postingDate,

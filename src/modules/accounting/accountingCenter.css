@@ -231,7 +231,8 @@
   font-size: 0.84rem;
 }
 
-.accounting-center-page .accounting-import-card > label.accounting-report-confirmation {
+.accounting-center-page .accounting-import-card > label.accounting-report-confirmation,
+.accounting-center-page .facto-posting-review > label.accounting-report-confirmation {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -247,6 +248,14 @@
   min-height: 18px;
   margin: 2px 0 0;
 }
+
+.facto-posting-review { min-width: 0; }
+.facto-posting-review .facto-posting-table { overflow-x: auto; max-width: 100%; }
+.facto-posting-review table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 0.84rem; }
+.facto-posting-review th, .facto-posting-review td { padding: 10px 6px; text-align: right; border-bottom: 1px solid var(--accounting-line); }
+.facto-posting-review th:first-child, .facto-posting-review td:first-child { text-align: left; overflow-wrap: anywhere; }
+.facto-posting-review td:not(:first-child) { white-space: nowrap; }
+.facto-posting-review button { max-width: 100%; white-space: normal; }
 
 .accounting-filter-grid {
   display: grid;
