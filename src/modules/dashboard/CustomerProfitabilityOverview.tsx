@@ -8,10 +8,10 @@ export function CustomerProfitabilityOverview({ from, to, refreshedAt, periodLab
 }) {
   const [query, setQuery] = useState("");
   const [page, setPage] = useState({ scope: "", offset: 0 });
-  const scope = JSON.stringify([from, to, refreshedAt, query.trim()]);
+  const scope = JSON.stringify([from, to, query.trim()]);
   const offset = page.scope === scope ? page.offset : 0;
   const [result, setResult] = useState<{ key: string; report?: CustomerProfitabilityReport; error?: string }>();
-  const requestKey = JSON.stringify([scope, offset]);
+  const requestKey = JSON.stringify([scope, offset, refreshedAt]);
   useEffect(() => {
     if (!from || !to || !refreshedAt) return;
     const abort = new AbortController();

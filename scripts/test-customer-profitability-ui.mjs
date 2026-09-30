@@ -12,6 +12,20 @@ const code = ts.transpileModule(source, { compilerOptions: {
 } }).outputText;
 const exports = {};
 new Function("require", "exports", "React", code)(createRequire(import.meta.url), exports, React);
+const loaderSource = await readFile(new URL("../src/modules/dashboard/CustomerProfitabilityOverview.tsx", import.meta.url), "utf8");
+const loaderCode = ts.transpileModule(loaderSource, { compilerOptions: {
+  jsx: ts.JsxEmit.React, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
+} }).outputText;
+function loaderState(props, page, query = "") {
+  const states = [query, page, undefined];
+  let dependencies;
+  const hooks = { useState: () => [states.shift(), () => {}], useEffect: (_callback, deps) => { dependencies = deps; } };
+  const module = {};
+  const require = name => name === "react" ? hooks : name.endsWith("CustomerProfitability") ? exports : { getCustomerProfitability() {} };
+  new Function("require", "exports", "React", loaderCode)(require, module, React);
+  module.CustomerProfitabilityOverview(props);
+  return { offset: dependencies[4], requestKey: dependencies[5] };
+}
 const row = (i) => ({ customerKey: String(i), customer: `Cliente ${i}`, taxId: "12345678-9", sales: 10000 - i,
   knownCost: 600, knownSales: 10000 - i, knownDocuments: 1, cost: 600, grossProfit: 9400 - i, margin: 94,
   analysis: { status: "verified", sales: 10000 - i, cost: 600, grossProfit: 9400 - i, margin: 94 },
@@ -62,4 +76,15 @@ test("Carga y busqueda vacia conservan mensajes explicitos", () => {
   assert.match(render(null, "", true), /aria-busy="true"/);
   assert.match(render(null, "", true), /Calculando rentabilidad/);
   assert.match(render({ ...data, matches: [], customers: 0 }, "Inexistente"), /No se encontraron documentos de venta/);
+});
+
+test("Actualizacion automatica mantiene pagina, pero periodo o busqueda nuevos la reinician", () => {
+  const props = { from: "2026-01-01", to: "2026-09-30", refreshedAt: "first", periodLabel: "2026" };
+  const page = { scope: JSON.stringify([props.from, props.to, ""]), offset: 20 };
+  const first = loaderState(props, page);
+  const refreshed = loaderState({ ...props, refreshedAt: "second" }, page);
+  assert.equal(first.offset, 20); assert.equal(refreshed.offset, 20);
+  assert.notEqual(first.requestKey, refreshed.requestKey);
+  assert.equal(loaderState({ ...props, from: "2026-09-01" }, page).offset, 0);
+  assert.equal(loaderState(props, page, "MARBA").offset, 0);
 });
