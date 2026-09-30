@@ -227,3 +227,68 @@ test("Resumen canonico no oculta otras fuentes, fallos ni consultas de otro tipo
   assert.equal(canonicalCustomerProfitabilityMessage([{ ...r, status: "forbidden" }]), null);
   assert.equal(canonicalCustomerProfitabilityMessage([{ ...r, data: {} }]), null);
 });
+
+test("Nota pendiente conserva analisis provisional sin certificar ni inventar reversa", () => {
+  const a = doc("a"), note = nc(a, 3, 200);
+  const r = report([a, note], pair(a, 600));
+  const row = r.matches[0];
+  assert.equal(row.cost, null); assert.equal(row.grossProfit, null); assert.equal(row.margin, null);
+  assert.deepEqual(row.analysis, { status: "provisional", sales: 800, cost: 600, grossProfit: 200, margin: 25 });
+  assert.equal(r.topMargin.length, 0); assert.equal(r.topProfit.length, 0);
+  assert.equal(r.topSales[0], row);
+});
+
+test("Analisis parcial solo compara ventas y costos de documentos completos", () => {
+  const missing = doc("grande", 1000000), known = doc("chica");
+  const row = report([missing, known], pair(known, 600)).matches[0];
+  assert.equal(row.sales, 1001000); assert.equal(row.knownDocuments, 1);
+  assert.deepEqual(row.analysis, { status: "partial", sales: 1000, cost: 600, grossProfit: 400, margin: 40 });
+  assert.equal(row.grossProfit, null);
+  assert.equal(report([missing], []).matches[0].analysis.status, "unavailable");
+  const unknown = doc("unknown", 1000, "");
+  assert.equal(report([unknown], pair(unknown, 1)).matches[0].analysis.grossProfit, null);
+});
+
+test("Reversa confirmada coincide con el resultado completo y admite ventas netas cero", () => {
+  const a = doc("a"), note = nc(a);
+  const row = report([a, note], [...pair(a, 600), ...pair(note, -600)]).matches[0];
+  assert.deepEqual(row.analysis, { status: "verified", sales: 0, cost: 0, grossProfit: 0, margin: null });
+  assert.equal(row.status, "no_positive_sales");
+});
+
+test("Todos los clientes pagina mas de cien sin perder pendientes ni duplicar clientes", () => {
+  const docs = Array.from({ length: 105 }, (_, i) => doc(`cliente-${i}`, 10500 - i * 100, `${12345000 + i}-9`));
+  const lines = docs.slice(1).flatMap(d => pair(d, d.net_amount * .6));
+  const keys = [];
+  for (let offset = 0; offset < 105; offset += 20) {
+    const r = customerProfitability(docs, lines, accounts, "2026-09-01", "2026-09-28", "", 20, offset);
+    assert.equal(r.offset, offset); assert.equal(r.limit, 20); assert.equal(r.customers, 105);
+    assert.equal(r.matches[0].customer, `Cliente cliente-${offset}`);
+    assert.equal(r.topSales[0].customer, "Cliente cliente-0");
+    keys.push(...r.matches.map(row => row.customerKey));
+  }
+  assert.equal(keys.length, 105); assert.equal(new Set(keys).size, 105);
+  const search = customerProfitability(docs, lines, accounts, "2026-09-01", "2026-09-28", "cliente-104", 20, 0);
+  assert.equal(search.matches.length, 1); assert.equal(search.matches[0].sales, 100);
+});
+
+test("Copiloto encuentra empresa pendiente fuera del ranking y explica analisis provisional", async () => {
+  const a = doc("marba"), note = nc(a, 3, 200);
+  const r = await customerProfitabilityTool({ api: async () => report([a, note], pair(a, 600)) },
+    { period: "custom", from: "2026-09-01", to: "2026-09-28", query: "marba", sort_by: "gross_profit" });
+  assert.equal(r.data.ranking.length, 1); assert.equal(r.status, "partial");
+  assert.equal(r.data.selection.grossProfit, null);
+  assert.equal(r.table.rows[0].analysisProfit, 200);
+  assert.match(r.summary, /Provisional/); assert.match(r.summary, /25%/);
+  assert.match(r.summary, /sin aplicar reversas/);
+  assert.equal(canonicalCustomerProfitabilityMessage([r]), r.summary);
+});
+
+test("Copiloto no transforma empresa sin ventas netas positivas en margen infinito", async () => {
+  const a = doc("a"), note = nc(a);
+  const r = await customerProfitabilityTool({ api: async () => report([a, note], [...pair(a, 600), ...pair(note, -600)]) },
+    { period: "custom", from: "2026-09-01", to: "2026-09-28", query: "Cliente a", sort_by: "sales" });
+  assert.equal(r.data.ranking.length, 1); assert.equal(r.data.selection.grossProfit, 0);
+  assert.equal(r.data.selection.margin, null); assert.match(r.summary, /sin base positiva/);
+  assert.doesNotMatch(r.summary, /NaN|Infinity/);
+});

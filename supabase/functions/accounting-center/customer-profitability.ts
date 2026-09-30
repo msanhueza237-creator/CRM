@@ -10,7 +10,7 @@ const amount = (v: unknown) => v === null || v === undefined || v === "" || !Num
 
 // Same document cohort for revenue and cost, with evidence available through the
 // period end. Unallocated operating expenses are not customer-level net profit.
-export function customerProfitability(documents: Row[], ledger: Row[], accounts: Row[], from: string, to: string, query = "", limit = 10): CustomerProfitabilityReport {
+export function customerProfitability(documents: Row[], ledger: Row[], accounts: Row[], from: string, to: string, query = "", limit = 10, offset = 0): CustomerProfitabilityReport {
   const docs = [...new Map(documents.map(d => [String(d.id), d])).values()];
   const accountMap = new Map(accounts.map(a => [String(a.id), a]));
   const lines = [...new Map(ledger.map(l => [String(l.id), l])).values()].filter(l => {
@@ -48,7 +48,8 @@ export function customerProfitability(documents: Row[], ledger: Row[], accounts:
     const id = String(doc.id), identified = /^\d{7,8}[0-9K]$/.test(taxId);
     const key = `${doc.entity_id}:${identified ? taxId : `unknown:${id}`}`;
     if (!search || haystack.includes(search) || (taxSearch && taxId.toLowerCase().includes(taxSearch))) matchingKeys.add(key);
-    const row = groups.get(key) || { customerKey: key, customer, taxId: String(doc.counterpart_tax_id || ""), sales: 0, knownCost: 0, cost: null,
+    const row = groups.get(key) || { customerKey: key, customer, taxId: String(doc.counterpart_tax_id || ""), sales: 0, knownCost: 0, knownSales: 0, knownDocuments: 0, cost: null,
+      analysis: { status: "unavailable", sales: null, cost: null, grossProfit: null, margin: null },
       grossProfit: null, margin: null, documents: 0, missingCostDocuments: 0, pendingCreditNotes: 0, coverage: 0,
       status: identified ? "complete" : "unidentified" } as CustomerProfitabilityRow;
     row.sales = money(row.sales + sales);
@@ -57,8 +58,16 @@ export function customerProfitability(documents: Row[], ledger: Row[], accounts:
       const note = notes.get(id);
       // Text corrections do not prove a monetary reduction or an inventory reversal.
       if (!note || note.pending || invalidCosts.has(id) || (note.invoiceId && invalidCosts.has(note.invoiceId)) || (note.kind === "text" && sales !== 0)) row.pendingCreditNotes++;
-      else row.knownCost = money(row.knownCost - (note.reversedCost || 0));
-    } else if (confirmed.has(id) && !invalidCosts.has(id)) row.knownCost = money(row.knownCost + (costs.get(id) || 0));
+      else {
+        row.knownCost = money(row.knownCost - (note.reversedCost || 0));
+        row.knownSales = money(row.knownSales + sales);
+        row.knownDocuments++;
+      }
+    } else if (confirmed.has(id) && !invalidCosts.has(id)) {
+      row.knownCost = money(row.knownCost + (costs.get(id) || 0));
+      row.knownSales = money(row.knownSales + sales);
+      row.knownDocuments++;
+    }
     else row.missingCostDocuments++;
     groups.set(key, row);
   }
@@ -67,6 +76,15 @@ export function customerProfitability(documents: Row[], ledger: Row[], accounts:
     const missing = row.missingCostDocuments + row.pendingCreditNotes;
     row.coverage = money(100 * (row.documents - missing) / row.documents);
     if (row.status === "unidentified") return row;
+    // Keep exact totals null until all evidence is complete. A partial analysis
+    // uses only matched sales/costs; pending returns remain explicitly provisional.
+    if (row.knownDocuments > 0) {
+      const basisSales = row.missingCostDocuments ? row.knownSales : row.sales;
+      const profit = money(basisSales - row.knownCost);
+      row.analysis = { status: row.missingCostDocuments ? "partial" : missing ? "provisional" : "verified",
+        sales: basisSales, cost: row.knownCost, grossProfit: profit,
+        margin: basisSales > 0 ? money(100 * profit / basisSales) : null };
+    }
     if (missing) { row.status = "pending"; return row; }
     row.cost = row.knownCost;
     row.grossProfit = money(row.sales - row.cost);
@@ -78,19 +96,21 @@ export function customerProfitability(documents: Row[], ledger: Row[], accounts:
   // A sales cohort must keep high-volume customers even when cost is pending.
   const salesRanked = all.filter(row => row.status !== "unidentified" && row.sales > 0);
   const tie = (a: CustomerProfitabilityRow, b: CustomerProfitabilityRow) => b.sales - a.sales || a.customerKey.localeCompare(b.customerKey);
-  const size = Math.max(1, Math.min(100, limit));
+  const size = Number.isFinite(limit) ? Math.max(1, Math.min(100, Math.floor(limit))) : 10;
+  const start = Number.isFinite(offset) ? Math.max(0, Math.floor(offset)) : 0;
   const pending = all.filter(row => row.status === "pending" || row.status === "unidentified");
   return {
-    from, to, basis: "document_issue_date", currency: "CLP", customers: all.length, rankedCustomers: ranked.length, salesCustomers: salesRanked.length,
+    from, to, basis: "document_issue_date", currency: "CLP", customers: all.length, offset: start, limit: size, rankedCustomers: ranked.length, salesCustomers: salesRanked.length,
     pendingCustomers: pending.length, excludedDocuments,
     missingCostDocuments: all.reduce((n, r) => n + r.missingCostDocuments, 0),
     pendingCreditNotes: all.reduce((n, r) => n + r.pendingCreditNotes, 0),
     topProfit: [...ranked].sort((a, b) => b.grossProfit! - a.grossProfit! || tie(a, b)).slice(0, size),
     topMargin: [...ranked].sort((a, b) => b.margin! - a.margin! || tie(a, b)).slice(0, size),
     topSales: [...salesRanked].sort(tie).slice(0, size),
-    matches: search ? [...all].sort(tie).slice(0, size) : [],
+    matches: [...all].sort(tie).slice(start, start + size),
     pending: pending.sort((a, b) => b.sales - a.sales || tie(a, b)).slice(0, size),
     warnings: ["Utilidad bruta: ventas netas sin IVA menos costos documentados. No es utilidad final ni caja; no distribuye gastos generales.",
+      "analysis es un analisis separado: verified usa toda la evidencia; provisional descuenta las notas de venta pero conserva solo reversas de costo verificadas; partial usa exclusivamente knownSales y knownCost de documentos conciliados, excluyendo documentos pendientes. Nunca representa utilidad exacta de toda la empresa cuando falta evidencia.",
       "Ventas y notas de credito por fecha de emision, con costos y reversas vinculados registrados hasta el cierre del periodo. Puede diferir del resultado contable por fechas de contabilizacion o costos sin cliente.",
       ...(pending.length ? [`${pending.length} clientes fuera de los rankings de utilidad/margen por costos, reversas o identidad pendientes. El ranking de ventas conserva clientes identificados con costos pendientes, sin inventar su margen.`] : []),
       ...(excludedDocuments ? [`${excludedDocuments} documentos excluidos por validacion, tipo o importes incompletos.`] : [])],

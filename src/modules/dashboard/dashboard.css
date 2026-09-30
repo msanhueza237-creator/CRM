@@ -113,6 +113,11 @@
 .overview-result-total { flex-wrap: wrap; }
 .overview-result-total strong { white-space: nowrap; overflow-wrap: normal; word-break: normal; }
 .profitability-modes { display: flex; gap: 4px; flex-wrap: wrap; }
+.profitability-order { margin-bottom: 16px; }
+.profitability-pagination { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 16px; font-size: 13px; }
+.profitability-pagination button { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; border: 1px solid #cad8da; border-radius: 6px; background: #fff; color: #315258; cursor: pointer; }
+.profitability-pagination button:disabled { opacity: .45; cursor: default; }
+.profitability-table small.profitability-status-warning { color: #8a5b13; font-weight: 600; }
 .profitability-modes button { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 8px 12px; border: 1px solid #cad8da; border-radius: 6px; background: #fff; color: #315258; font: inherit; cursor: pointer; }
 .profitability-modes button[aria-pressed="true"] { background: #dceeed; border-color: #0a7781; color: #075c65; }
 .profitability-coverage { color: #557076; font-size: 13px; margin: 0 0 16px; }

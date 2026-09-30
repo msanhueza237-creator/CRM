@@ -4,6 +4,15 @@ export interface CustomerProfitabilityRow {
   taxId: string;
   sales: number;
   knownCost: number;
+  knownSales: number;
+  knownDocuments: number;
+  analysis: {
+    status: "verified" | "provisional" | "partial" | "unavailable";
+    sales: number | null;
+    cost: number | null;
+    grossProfit: number | null;
+    margin: number | null;
+  };
   cost: number | null;
   grossProfit: number | null;
   margin: number | null;
@@ -19,6 +28,8 @@ export interface CustomerProfitabilityReport {
   basis: "document_issue_date";
   currency: "CLP";
   customers: number;
+  offset: number;
+  limit: number;
   rankedCustomers: number;
   salesCustomers: number;
   pendingCustomers: number;

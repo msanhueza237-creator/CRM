@@ -616,6 +616,8 @@ async function readCustomerProfitability(rest: RestClient, url: URL) {
   if (from > to || to > today) throw new HttpError(400, "El periodo debe terminar a mas tardar hoy y comenzar antes del cierre.");
   const limit = Number(url.searchParams.get("limit") || 10);
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new HttpError(400, "Limite invalido (1 a 100).");
+  const offset = Number(url.searchParams.get("offset") || 0);
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new HttpError(400, "Desplazamiento invalido.");
   const query = optionalText(url.searchParams.get("query"), 160);
   const entities = await selectRows(rest, "accounting_entities?select=id&active=eq.true&limit=2");
   if (entities.length !== 1) throw new HttpError(409, "Se requiere una unica empresa contable activa.");
@@ -625,7 +627,7 @@ async function readCustomerProfitability(rest: RestClient, url: URL) {
     selectAllRows(rest, `accounting_accounts?select=id,account_type,classification&entity_id=eq.${entityId}&order=id.asc`),
     selectAllRows(rest, `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(id,source_document_id,status,entry_date)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${to}&order=id.asc`),
   ]);
-  return customerProfitability(documents, lines, accounts, from, to, query, limit);
+  return customerProfitability(documents, lines, accounts, from, to, query, limit, offset);
 }
 
 async function buildDashboardAnalytics(
