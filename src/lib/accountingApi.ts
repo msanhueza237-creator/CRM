@@ -48,6 +48,10 @@ export function getAccountingBootstrap() {
   return accountingRequest<AccountingBootstrap>("bootstrap");
 }
 
+export function importVerifiedFactoCost(input: { entityId: string; sourceDocumentId: string; amountClp: number; evidence: string }) {
+  return accountingRequest<{ entryId: string; amountClp: number; status: string; existing: boolean }>("facto/cost-entry", { method: "POST", body: input });
+}
+
 export function getAccountingLoans(entityId: string) {
   return accountingRequest<{ loans: AccountingLoan[] }>(`loans?entityId=${encodeURIComponent(entityId)}`);
 }
