@@ -49,6 +49,22 @@ test("Cliente requiere factura vigente identificada de la entidad; no guia, NC, 
   const result=invoiceCustomers([valid,valid,...invalid],"entity","2026-09-30");
   assert.equal(result.length,1); assert.deepEqual(result[0].documents,["ok"]);
 });
+
+test("Productos de empresa: mayor importe por defecto, unidades opcionales y paginacion posterior al orden", async()=>{
+  const invoice=raw(1); invoice.header.net_amount=1100;
+  const invoiceDetail={...invoice,totals:{net_amount:1100},details:[
+    {line_description:"Mucho volumen",quantity:100,unit_price:1},
+    {line_description:"Mayor venta",quantity:2,unit_price:500},
+  ]};
+  const registry=new ToolRegistry(source({rawDocuments:[invoice],rawDetails:[invoiceDetail]}));
+  const amount=await registry.execute("get_customer_products",{company_id:id,period:"this_year",limit:1});
+  assert.equal(amount.table.rows[0].name,"Mayor venta"); assert.equal(amount.table.rows[0].net_sales,1000);
+  assert.equal(amount.table.rows[0].average_net_unit_price,500);
+  const units=await registry.execute("get_customer_products",{company_id:id,period:"this_year",metric:"units",limit:1});
+  assert.equal(units.table.rows[0].name,"Mucho volumen");
+  const next=await registry.execute("get_customer_products",{company_id:id,period:"this_year",limit:1,offset:1});
+  assert.equal(next.table.rows[0].name,"Mucho volumen");
+});
 test("Historial incluye anos previos y no degrada clientes por ausencia de facturas recientes",()=>{
   const result=invoiceCustomers([doc("old",{issued_on:"2025-01-02"}),doc("new")],"entity","2026-09-30");
   assert.equal(result[0].firstPurchase,"2025-01-02"); assert.equal(result[0].lastPurchase,"2026-01-10");

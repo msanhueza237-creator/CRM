@@ -19,6 +19,7 @@ import { CopilotSources } from "./sources.ts";
 import { findProducts, resolveProducts, inventoryCatalogFields } from "./product-resolution.ts";
 import { clientPriceRows, factoCurrencies, productPrices } from "./product-prices.ts";
 import { productSales } from "./product-sales.ts";
+import { withFactoSaleXml } from "./facto-sale-xml.ts";
 import { productProfitability } from "./product-profitability.ts";
 import { inventoryValuation, inventorySummaryText } from "./inventory-valuation.ts";
 import { agentReport, agentSectionRows } from "./agent-reports.ts";
@@ -683,15 +684,16 @@ export class ToolRegistry {
         const company = await identifiedCompany(this.source, args.company_id);
         const taxId = await uniqueCompanyTaxId(this.source, company);
         const { range, sales } = await this.documentedProductSales({ ...args, customer_tax_id: taxId });
-        const metric = args.metric === "net_sales" ? "net_sales" : "units_sold", currency = String(args.currency || "CLP");
+        const metric = args.metric === "units" ? "units_sold" : "net_sales", currency = String(args.currency || "CLP");
         const records = sales.records.filter(r => r.currency === currency).sort((a,b) => Number(b[metric] ?? -Infinity) - Number(a[metric] ?? -Infinity) || String(a.name).localeCompare(String(b.name)));
         const unlinked = records.filter(r => !r.sku).length;
         const warnings = ["Unidades e importes facturados antes de devoluciones o notas no asignadas a productos. No equivalen a consumo fisico, ventas netas contables ni pagos.",
+          "Importe de venta = precio facturado por unidades, con ajustes de linea y descuentos globales prorrateados, conciliado con cada factura de Facto. Precio medio ponderado despues de descuentos; no es precio de catalogo ni costo. Orden descendente, importes pendientes al final.",
           "No se atribuye el margen total del cliente a cada producto. El costo actual del catalogo no es su costo historico.",
           ...(sales.coverage.problems.length ? [`${sales.coverage.problems.length} documentos o lineas pendientes: ranking provisional.`] : []),
           ...(unlinked ? [`${unlinked} conceptos sin SKU confirmado: pueden incluir fletes o servicios y se conservan como descripciones documentales.`] : [])];
         const result = tableResult("get_customer_products", "sales", `Productos facturados a ${company.name} · ${range.from} a ${range.to}`,
-          records, columns("sku:SKU", "name:Producto o concepto", "units_sold:Unidades facturadas", "net_sales:Importe sin IVA", "currency:Moneda", "document_count:Facturas", "identity:Identificacion"), `/empresas/${company.id}`, args, warnings);
+          records, columns("sku:SKU", "name:Producto o concepto", "units_sold:Unidades facturadas", "average_net_unit_price:Precio medio sin IVA", "net_sales:Importe de venta sin IVA", "currency:Moneda", "document_count:Facturas", "identity:Identificacion"), `/empresas/${company.id}`, args, warnings);
         result.data = { ...object(result.data), company: { id: company.id, name: company.name, rut: company.rut }, period: range, currency,
           availableCurrencies: [...new Set(sales.records.map(r => r.currency))], document_coverage: sales.coverage, unlinkedGroups: unlinked };
         if (sales.coverage.problems.length || unlinked || records.some(r => r.net_sales === null) || sales.records.some(r => r.currency === null)) { result.status = "partial"; result.coverage.complete = false; }
@@ -1440,6 +1442,7 @@ export class ToolRegistry {
     const fields = "external_id,updated_at,header:payload->header,details:payload->details,totals:payload->totals,global_modifiers:payload->global_modifiers,document_number:payload->>document_number,document_status:payload->>document_status,document_type_taxbureau:payload->>document_type_taxbureau,received_issued_flag:payload->>received_issued_flag,issue_date:payload->>issue_date,currency_id:payload->>currency_id,net_amount:payload->>net_amount,receiver_legal_name:payload->>receiver_legal_name,receiver_tax_id_code:payload->>receiver_tax_id_code,issuer_tax_id_code:payload->>issuer_tax_id_code";
     let documents = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.documents&order=id.asc`);
     let details: Row[] = [];
+    const detailFields = `${fields},document_xml:payload->electronic_document->>document_xml`;
     if (args.customer_tax_id) {
       const entityId = await this.source.entity();
       const entities = await this.source.select(`accounting_entities?select=tax_id&id=eq.${entityId}`);
@@ -1454,11 +1457,14 @@ export class ToolRegistry {
       });
       const ids = [...new Set(documents.map(d => String(d.external_id)))];
       if (ids.some(id => !/^\d+$/.test(id))) throw new CopilotDataError("Identidad documental no verificable.", "INVALID_ARGUMENTS");
-      for (let start = 0; start < ids.length; start += 50) details.push(...await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.document_details&external_id=in.(${ids.slice(start,start+50).join(",")})&order=id.asc`));
-    } else details = await this.source.all(`integration_records?select=${fields}&provider=eq.facto&resource=eq.document_details&order=id.asc`);
+      for (let start = 0; start < ids.length; start += 50) details.push(...await this.source.all(`integration_records?select=${detailFields}&provider=eq.facto&resource=eq.document_details&external_id=in.(${ids.slice(start,start+50).join(",")})&order=id.asc`));
+    } else details = await this.source.all(`integration_records?select=${detailFields}&provider=eq.facto&resource=eq.document_details&order=id.asc`);
     const catalog = await this.source.all("content_products?select=id,sku,name,brand,description_text,product_url,last_synced_at&order=id.asc");
     const products = resolveProducts([], await this.source.records("product_details"), catalog, false);
-    return { range, sales: productSales(documents, details, products, args.query, range, factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined), args.group_by) };
+    const currencies = factoCurrencies(typeof Deno !== "undefined" ? Deno.env.get("FACTO_CURRENCY_MAP_JSON") : undefined);
+    const verified: Row[] = [];
+    for (const detail of details) verified.push(await withFactoSaleXml(detail, currencies));
+    return { range, sales: productSales(documents, verified, products, args.query, range, currencies, args.group_by) };
   }
   private async publications(channel: unknown): Promise<Row[]> {
     const channels = await this.source.select(

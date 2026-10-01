@@ -15,7 +15,7 @@ export function CompanyInsights({ companyId }: { companyId: string }) {
   const today = todayChile(), year = Number(today.slice(0,4));
   const [period, setPeriod] = useState("this_year");
   const [customFrom, setCustomFrom] = useState(`${year}-01-01`), [customTo, setCustomTo] = useState(today);
-  const [metric, setMetric] = useState("units"), [currency, setCurrency] = useState("CLP");
+  const [metric, setMetric] = useState("net_sales"), [currency, setCurrency] = useState("CLP");
   const [page, setPage] = useState({ scope: "", offset: 0 }), [refresh, setRefresh] = useState(0);
   const from = period === "custom" ? customFrom : period === "last_year" ? `${year-1}-01-01` : period === "all" ? "2000-01-01" : `${year}-01-01`;
   const to = period === "custom" ? customTo : period === "last_year" ? `${year-1}-12-31` : today;
@@ -43,7 +43,7 @@ export function CompanyInsights({ companyId }: { companyId: string }) {
         <label>Hasta<input type="date" aria-label="Hasta" value={customTo} min={from} max={today} onChange={e=>setCustomTo(e.target.value)} /></label></>}
       <button type="button" className="ghost-button company-insight-icon" aria-label="Actualizar analisis de empresa" title="Actualizar analisis" onClick={()=>setRefresh(n=>n+1)}><RefreshCw size={18}/></button>
     </div>}
-    productControls={<div className="company-insight-controls"><label>Ordenar por<select aria-label="Orden de productos comprados" value={metric} onChange={e=>setMetric(e.target.value)}><option value="units">Unidades facturadas</option><option value="net_sales">Importe facturado</option></select></label>
+    productControls={<div className="company-insight-controls"><label>Ordenar por<select aria-label="Orden de productos comprados" value={metric} onChange={e=>setMetric(e.target.value)}><option value="net_sales">Mayor importe de venta</option><option value="units">Más unidades</option></select></label>
       <label>Moneda<select aria-label="Moneda de productos comprados" value={currency} onChange={e=>setCurrency(e.target.value)}><option>CLP</option><option>USD</option><option>EUR</option></select></label></div>}
     pagination={<nav className="company-insight-pagination" aria-label="Paginas de productos comprados">
       <button className="ghost-button company-insight-icon" type="button" title="Productos anteriores" aria-label="Productos anteriores" disabled={!current?.data || offset===0} onClick={()=>setPage({scope,offset:Math.max(0,offset-10)})}><ChevronLeft size={20}/></button>
@@ -75,13 +75,13 @@ export function CompanyInsightsView({ data, loading, error, from, to, controls, 
         {analysis?.status !== "verified" && <p className="company-insight-warning">{analysis?.status === "partial" ? `Base parcial: ${money(analysis.sales)} de ventas con costo documentado, no el total del cliente.` : analysis?.status === "provisional" ? "Notas descontadas de las ventas; reversas de costo pendientes no aplicadas." : "No hay evidencia suficiente para calcular utilidad y margen."} {row.missingCostDocuments} costos pendientes · {row.pendingCreditNotes} notas por verificar.</p>}
         <p className="company-insight-note">Utilidad bruta, sin gastos generales asignados. No es utilidad final ni un descuento autorizado. Los costos faltantes no se consideran cero.</p>
       </> : <p className="company-insight-note">{data?.profitability.status === "forbidden" ? "Tu perfil no tiene acceso a utilidad y margenes." : ["ok","empty"].includes(data?.profitability.status || "") ? "Sin documentos de venta verificados en este periodo." : data?.profitability.summary || "Rentabilidad no disponible."}</p>}
-      <div className="company-insight-heading company-products-heading"><div><h3>Productos más comprados</h3><p>Unidades facturadas antes de devoluciones pendientes</p></div>{productControls}</div>
+      <div className="company-insight-heading company-products-heading"><div><h3>Productos más comprados</h3><p>Ventas facturadas sin IVA · Descuentos aplicados · Antes de devoluciones pendientes</p></div>{productControls}</div>
       {products.length ? <>
         <div className="company-products-scroll" role="region" aria-label="Productos comprados por la empresa" tabIndex={0}><table>
-          <thead><tr><th>Producto o concepto</th><th>Unidades</th><th>Importe sin IVA</th><th>Facturas</th></tr></thead>
+          <thead><tr><th>Producto o concepto</th><th>Unidades</th><th>Precio medio sin IVA</th><th>Importe de venta sin IVA</th><th>Facturas</th></tr></thead>
           <tbody>{products.map((p,i)=><tr key={`${p.sku || p.name}-${i}`}><th scope="row">{String(p.name || "Sin descripcion")}<small>{String(p.sku || "SKU sin confirmar")}</small></th>
-            <td data-label="Unidades">{Number(p.units_sold).toLocaleString("es-CL")}</td><td data-label="Importe sin IVA">{money(p.net_sales,String(p.currency || "CLP"))} {String(p.currency || "")}</td><td data-label="Facturas">{String(p.document_count)}</td></tr>)}</tbody>
-        </table></div>{pagination}
+            <td data-label="Unidades">{Number(p.units_sold).toLocaleString("es-CL")}</td><td data-label="Precio medio sin IVA">{typeof p.average_net_unit_price === "number" ? p.average_net_unit_price.toLocaleString("es-CL",{minimumFractionDigits:0,maximumFractionDigits:2}) : "Pendiente"} {String(p.currency || "")}</td><td data-label="Importe de venta sin IVA">{money(p.net_sales,String(p.currency || "CLP"))} {String(p.currency || "")}</td><td data-label="Facturas">{String(p.document_count)}</td></tr>)}</tbody>
+        </table></div><p className="company-insight-note">Precio medio ponderado, después de descuentos. El importe conserva el total facturado; el precio medio se muestra redondeado. Fuente: facturas de Facto.</p>{pagination}
       </> : <p className="company-insight-note">{data?.products.status === "forbidden" ? "Tu perfil no tiene acceso al historial de ventas." : ["ok","empty","partial"].includes(data?.products.status || "") ? "Sin productos documentados para este periodo y moneda. Esto no confirma ausencia de compras." : data?.products.summary || "Historial de productos no disponible."}</p>}
       {!!data?.products.warnings.length && <details className="company-insight-evidence"><summary>{data.products.status === "partial" ? "Cobertura parcial: revisar evidencia" : "Fuentes y alcance del historial"}</summary><ul>{data.products.warnings.map(w=><li key={w}>{w}</li>)}</ul></details>}
     </>}

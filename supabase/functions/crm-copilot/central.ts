@@ -53,7 +53,7 @@ export async function centralHandler(
     const [profile, profitability, products] = await Promise.all([
       registry.execute("get_customer_profile", { company_id: args.company_id }),
       registry.execute("get_customer_profitability", { ...args, sort_by: "sales", limit: 1 }),
-      registry.execute("get_customer_products", { ...args, currency: url.searchParams.get("currency") || "CLP", metric: url.searchParams.get("metric") || "units", limit: 10, offset: Number(url.searchParams.get("offset") || 0) }),
+      registry.execute("get_customer_products", { ...args, currency: url.searchParams.get("currency") || "CLP", metric: url.searchParams.get("metric") || "net_sales", limit: 10, offset: Number(url.searchParams.get("offset") || 0) }),
     ]);
     return json({ profile, profitability, products, traceId });
   }
