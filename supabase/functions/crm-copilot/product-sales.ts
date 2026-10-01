@@ -44,6 +44,9 @@ export function productSales(documents: Row[], details: Row[], products: Row[], 
     if ((dh.document_number != null && h.document_number != null && String(dh.document_number) !== String(h.document_number)) || (dh.receiver_tax_id_code && h.receiver_tax_id_code && rutKey(dh.receiver_tax_id_code) !== rutKey(h.receiver_tax_id_code))) {
       problems.push({ ...ref, problem: "Folio o receptor inconsistente entre documento y detalle" }); continue;
     }
+    if (dh.issuer_tax_id_code && h.issuer_tax_id_code && rutKey(dh.issuer_tax_id_code) !== rutKey(h.issuer_tax_id_code)) {
+      problems.push({ ...ref, problem: "Emisor inconsistente entre documento y detalle" }); continue;
+    }
     const buyer = { customer: h.receiver_legal_name || dh.receiver_legal_name || null, tax_id: h.receiver_tax_id_code || dh.receiver_tax_id_code || null };
     // Credit/debit notes can correct text, amounts or annul a document. Never assume a quantity reversal.
     if (["56", "61"].includes(String(h.document_type_taxbureau))) {

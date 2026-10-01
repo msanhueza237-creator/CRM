@@ -23,6 +23,9 @@ export class CopilotSources {
     else this.metrics.cacheHits++;
     return this.cache.get(key) as Promise<T>;
   }
+  invalidateCache() {
+    this.cache.clear();
+  }
   private async fetch(path: string, init: RequestInit): Promise<Response> {
     const controller = new AbortController(), started = Date.now();
     const abort = () => controller.abort();

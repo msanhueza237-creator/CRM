@@ -2,16 +2,21 @@ import { CopilotDataError, object, tableResult, type ReadResult, type Row } from
 import { dateRange, todayChile } from "./dates.ts";
 import type { CopilotSources } from "./sources.ts";
 import type { CustomerProfitabilityReport } from "../_shared/customer-profitability-contract.ts";
+import { customerTaxId, hasCustomerTaxId } from "../_shared/invoice-customers.ts";
 
 export async function customerProfitabilityTool(source: CopilotSources, args: Row) {
   const range = dateRange(args);
   if (range.to > todayChile()) range.to = todayChile();
   const params = new URLSearchParams({ ...range, limit: String(args.limit || 10) });
   if (args.query) params.set("query", String(args.query));
+  if (args.company_id) params.set("companyId", String(args.company_id));
   const report = await source.api("accounting-center", `customer-profitability?${params}`) as unknown as CustomerProfitabilityReport;
+  if (args.company_id && (report.companyId !== args.company_id || !hasCustomerTaxId(report.companyTaxId) ||
+    !Array.isArray(report.matches) || report.matches.some(row => customerTaxId(row.taxId) !== customerTaxId(report.companyTaxId))))
+    throw new CopilotDataError("El servicio no confirmo la identidad de la empresa. Revisa su version antes de atribuir rentabilidad.", "SOURCE_UNAVAILABLE");
   const bySales = args.sort_by === "sales";
   const byMargin = args.sort_by === "margin";
-  const byCustomer = Boolean(String(args.query || "").trim());
+  const byCustomer = Boolean(args.company_id || String(args.query || "").trim());
   if (bySales && (!Array.isArray(report.topSales) || !Number.isFinite(report.salesCustomers)))
     throw new CopilotDataError("El servicio de rentabilidad no dispone del ranking por ventas. No se sustituira por otro ranking.", "SOURCE_UNAVAILABLE");
   if (byCustomer && !Array.isArray(report.matches))

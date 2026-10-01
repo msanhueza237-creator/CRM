@@ -23,6 +23,8 @@ export interface CustomerProfitabilityRow {
   status: "complete" | "pending" | "unidentified" | "no_positive_sales";
 }
 export interface CustomerProfitabilityReport {
+  companyId?: string;
+  companyTaxId?: string;
   from: string;
   to: string;
   basis: "document_issue_date";

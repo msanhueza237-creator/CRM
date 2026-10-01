@@ -35,6 +35,30 @@ export interface CopilotReadResult {
   continuation?: { toolName: string; args: Record<string, unknown> };
   components?: CopilotComponent[];
 }
+export interface CompanyInsights {
+  profile: CopilotReadResult; profitability: CopilotReadResult; products: CopilotReadResult; traceId: string;
+}
+export interface CustomerClassificationPreview {
+  fingerprint: string; asOf: string;
+  plan: Array<{ companyId: string | null; companyName: string; taxId: string; previousStatus: string | null;
+    action: string; documents: string[]; firstPurchase: string; lastPurchase: string }>;
+}
+export async function getCompanyInsights(companyId: string, from: string, to: string, metric: string, currency: string, offset: number, signal?: AbortSignal): Promise<CompanyInsights> {
+  const params = new URLSearchParams({ companyId, from, to, metric, currency, offset: String(offset) });
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", `company-insights?${params}`), { headers: await headers(), signal, cache: "no-store" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "No se pudo consultar el analisis de la empresa.");
+  return data;
+}
+export async function customerClassification(preview?: CustomerClassificationPreview, includeNew = false): Promise<CustomerClassificationPreview | { applied: string[]; created: string[]; conflicts: string[] }> {
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", "customer-classification"), {
+    method: preview ? "POST" : "GET", headers: await headers(), cache: "no-store",
+    ...(preview ? { body: JSON.stringify({ fingerprint: preview.fingerprint, confirmed: true, includeNew }) } : {}),
+  });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "No se pudo completar la clasificacion. Revisa el estado antes de reintentar.");
+  return data;
+}
 export interface CentralMessage {
   id: string;
   role: "user" | "assistant";

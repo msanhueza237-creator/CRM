@@ -18,6 +18,7 @@ interface CompanyStoreValue {
   deleteCompany: (id: string) => Promise<void>;
   getCompany: (id: string) => Company | undefined;
   getCompanyInteractions: (companyId: string) => Interaction[];
+  refreshCompanies: () => void;
 }
 
 const CompanyStoreContext = createContext<CompanyStoreValue | undefined>(undefined);
@@ -56,6 +57,7 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
   const { user } = useAuth();
   const [companies, setCompanies] = useState<Company[]>(loadCompanies);
   const [interactions, setInteractions] = useState<Interaction[]>(loadInteractions);
+  const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
     if (!isSupabaseConfigured || !supabase || !user) return;
@@ -104,12 +106,13 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
     }
 
     void loadSupabaseData();
-  }, [user]);
+  }, [user, reloadToken]);
 
   const value = useMemo<CompanyStoreValue>(
     () => ({
       companies,
       interactions,
+      refreshCompanies: () => setReloadToken(value => value + 1),
       createCompany: (company, options) => {
         const created = { ...company, id: crypto.randomUUID() };
         setCompanies((currentCompanies) => {

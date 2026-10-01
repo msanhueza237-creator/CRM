@@ -18,6 +18,7 @@ import { createConversation, ownedConversation } from "./sessions.ts";
 import { liveHandler, liveRoutes, ownedVoice, stableVoiceId } from "./live.ts";
 import { chooseModel, modelCatalog, selectedModelRouter } from "./model-selection.ts";
 import { ModelCostStore } from "./model-cost-store.ts";
+import { readCustomerClassification, applyCustomerClassification } from "./company-evidence.ts";
 
 const uuid = (value: unknown) =>
   /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(
@@ -45,6 +46,28 @@ export async function centralHandler(
       headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
   if (route === "models") return json(await modelCatalog(source, settings));
+  if (route === "company-insights") {
+    if (req.method !== "GET") return json({ error: "Metodo no permitido." }, 405);
+    const args: Row = { company_id: url.searchParams.get("companyId"), period: "custom", from: url.searchParams.get("from"), to: url.searchParams.get("to") };
+    const registry = new ToolRegistry(source);
+    const [profile, profitability, products] = await Promise.all([
+      registry.execute("get_customer_profile", { company_id: args.company_id }),
+      registry.execute("get_customer_profitability", { ...args, sort_by: "sales", limit: 1 }),
+      registry.execute("get_customer_products", { ...args, currency: url.searchParams.get("currency") || "CLP", metric: url.searchParams.get("metric") || "units", limit: 10, offset: Number(url.searchParams.get("offset") || 0) }),
+    ]);
+    return json({ profile, profitability, products, traceId });
+  }
+  if (route === "customer-classification") {
+    if (actor.role !== "administrador") return json({ error: "Solo administracion puede revisar y aplicar esta clasificacion." }, 403);
+    if (req.method === "GET") return json(await readCustomerClassification(source));
+    if (req.method !== "POST") return json({ error: "Metodo no permitido." }, 405);
+    const raw = await req.text();
+    if (raw.length > 2048) return json({ error: "Solicitud demasiado grande." }, 413);
+    let body: Row;
+    try { body = object(JSON.parse(raw)); } catch { return json({ error: "Solicitud invalida." }, 400); }
+    if (body.confirmed !== true || !/^[a-f0-9]{64}$/.test(String(body.fingerprint))) return json({ error: "Revisa y confirma el lote de clientes facturados." }, 400);
+    return json(await applyCustomerClassification(source, body.fingerprint, traceId, body.includeNew === true));
+  }
   if (route === "agent-observability") {
     if (actor.role !== "administrador") return json({ error: "Solo administracion puede consultar este registro." }, 403);
     if (req.method === "POST") {

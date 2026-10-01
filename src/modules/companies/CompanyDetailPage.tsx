@@ -5,6 +5,7 @@ import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import { useCompanyStore } from "./CompanyStore";
 import type { Interaction } from "../../types/crm";
 import { useAuth } from "../auth/AuthContext";
+import { CompanyInsights } from "./CompanyInsights";
 
 const interactionTypes: Interaction["type"][] = ["Llamada", "Correo", "WhatsApp", "Reunion", "Cotizacion", "Nota"];
 const today = new Date().toISOString().slice(0, 10);
@@ -161,6 +162,8 @@ export function CompanyDetailPage() {
           <a href={`https://wa.me/${company.whatsapp.replace(/\D/g, "")}`} aria-label="WhatsApp"><MessageCircle size={20} /></a>
         </div>
       </div>
+
+      <CompanyInsights key={company.id} companyId={company.id} />
 
       <div className="panel company-description">
         <div className="panel-heading">

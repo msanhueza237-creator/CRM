@@ -12,6 +12,7 @@
     "test:foreign-trade": "node --experimental-strip-types scripts/test-foreign-trade-center.mjs",
     "test:accounting": "node --experimental-strip-types scripts/test-accounting-center.mjs",
     "test:copilot": "node --experimental-transform-types --test scripts/test-copilot.mjs",
+    "test:companies": "node --experimental-transform-types --test scripts/test-company-insights.mjs",
     "test:copilot:enterprise": "node --experimental-transform-types --test scripts/test-copilot-enterprise.mjs",
     "test:copilot:live": "node --experimental-transform-types --test scripts/test-copilot-live.mjs",
     "test:copilot:agents": "node --experimental-transform-types --test scripts/test-agent-manager.mjs",

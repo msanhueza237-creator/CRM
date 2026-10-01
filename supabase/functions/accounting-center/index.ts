@@ -26,6 +26,7 @@ import type { FactoCostReturnPreview } from "../_shared/facto-cost-return-contra
 import { factoPostingPreview, assertUnpostedFactoSource, assertFactoPostingSaved } from "./facto-posting-preview.ts";
 import { creditNoteCostReview, creditNoteCostPeriod } from "./credit-note-costs.ts";
 import { customerProfitability } from "./customer-profitability.ts";
+import { customerTaxId, hasCustomerTaxId } from "../_shared/invoice-customers.ts";
 import { readStatementClosings, statementClosingBalance, validatedBankBalance } from "./bank-statement-balance.ts";
 
 type JsonRecord = Record<string, unknown>;
@@ -619,6 +620,15 @@ async function readCustomerProfitability(rest: RestClient, url: URL) {
   const offset = Number(url.searchParams.get("offset") || 0);
   if (!Number.isSafeInteger(offset) || offset < 0) throw new HttpError(400, "Desplazamiento invalido.");
   const query = optionalText(url.searchParams.get("query"), 160);
+  let companyTaxId = "", companyId: string | undefined;
+  if (url.searchParams.has("companyId")) {
+    companyId = requiredUuid(url.searchParams.get("companyId"));
+    const companies = await selectAllRows(rest, "companies?select=id,rut&order=id.asc");
+    const company = companies.find(c => c.id === companyId);
+    companyTaxId = customerTaxId(company?.rut);
+    if (!company || !hasCustomerTaxId(companyTaxId)) throw new HttpError(400, "Empresa sin RUT verificable.");
+    if (companies.filter(c => customerTaxId(c.rut) === companyTaxId).length !== 1) throw new HttpError(409, "Hay varias fichas con el mismo RUT. Revisa su identidad.");
+  }
   const entities = await selectRows(rest, "accounting_entities?select=id&active=eq.true&limit=2");
   if (entities.length !== 1) throw new HttpError(409, "Se requiere una unica empresa contable activa.");
   const entityId = String(entities[0].id);
@@ -627,7 +637,9 @@ async function readCustomerProfitability(rest: RestClient, url: URL) {
     selectAllRows(rest, `accounting_accounts?select=id,account_type,classification&entity_id=eq.${entityId}&order=id.asc`),
     selectAllRows(rest, `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(id,source_document_id,status,entry_date)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${to}&order=id.asc`),
   ]);
-  return customerProfitability(documents, lines, accounts, from, to, query, limit, offset);
+  const report = customerProfitability(companyTaxId ? documents.filter(d => customerTaxId(d.counterpart_tax_id) === companyTaxId) : documents,
+    lines, accounts, from, to, companyTaxId ? "" : query, limit, offset);
+  return companyId ? { ...report, companyId, companyTaxId } : report;
 }
 
 async function buildDashboardAnalytics(

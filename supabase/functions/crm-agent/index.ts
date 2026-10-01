@@ -6,6 +6,7 @@ import { executiveDailySlot } from "./executive-daily.ts";
 import { executeResearch, RESEARCH_CAPABILITY } from "./prospecting-research.ts";
 import { retainedDiscoveryHint, publicResearchContext } from "./prospecting-enrichment.ts";
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
+import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
 
 type ApiKeyValidation = {
   valid: boolean;
@@ -290,7 +291,18 @@ async function handleAgentHubRoute(
         const accounting = provider === "facto"
           ? await mirrorFactoDocuments(context.supabase, resource, rows.map(row => ({ ...row, id: savedIds.get(row.external_id) })))
           : undefined;
-        return { body: { ok: true, accepted: rows.length, accounting } };
+        let customers: unknown;
+        if (provider === "facto" && resource === "documents") {
+          try {
+            customers = validation.scopes?.includes("crm:write")
+              ? await classifyInvoiceCustomers(context.supabase, rows.map(row => row.external_id), crypto.randomUUID())
+              : { skipped: "crm_write_scope_required" };
+          } catch {
+            console.warn("[crm-agent] invoice customer classification pending");
+            customers = { skipped: "classification_unavailable", reviewRequired: true };
+          }
+        }
+        return { body: { ok: true, accepted: rows.length, accounting, customers } };
       },
     );
   }

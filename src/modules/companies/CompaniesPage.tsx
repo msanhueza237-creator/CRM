@@ -4,6 +4,7 @@ import { Filter, Plus, Search } from "lucide-react";
 import { useCompanyStore } from "./CompanyStore";
 import type { CompanyStatus, CompanyType, Priority } from "../../types/crm";
 import { chileData, normalizeString } from "../../data/chileData";
+import { CustomerClassification } from "./CustomerClassification";
 
 const allTypes = ["todos", "distribuidor", "tienda comercial", "tecnico", "instalador grande", "competencia", "otro"] as const;
 const allStatuses = ["todos", "prospecto", "contactado", "interesado", "cotizado", "cliente", "descartado"] as const;
@@ -67,7 +68,7 @@ export function CompaniesPage() {
   const companies = useMemo(() => {
     return [...storedCompanies]
       .filter((company) => {
-        const searchable = [company.name, company.city, company.region, company.contactName, company.email].join(" ").toLowerCase();
+        const searchable = [company.name, company.legalName, company.rut, company.city, company.region, company.contactName, company.email].join(" ").toLowerCase();
         return searchable.includes(query.toLowerCase());
       })
       .filter((company) => type === "todos" || company.type === (type as CompanyType))
@@ -106,7 +107,7 @@ export function CompaniesPage() {
         <label className="search-field">
           <Search size={18} />
           <input
-            placeholder="Buscar por empresa, ciudad, contacto o email"
+            placeholder="Buscar por empresa, RUT, ciudad, contacto o email"
             value={query}
             onChange={(event) => {
               setQuery(event.target.value);
@@ -133,6 +134,8 @@ export function CompaniesPage() {
           </button>
         </p>
       )}
+
+      <CustomerClassification />
 
       <div className="panel">
         <div className="panel-heading">
