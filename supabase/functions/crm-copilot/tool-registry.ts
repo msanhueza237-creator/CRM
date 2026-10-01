@@ -27,6 +27,9 @@ import { prospectingReport } from "./prospecting-report.ts";
 import { financialPeriod, comparePeriods, customerAnalytics } from "./business-analytics.ts";
 import { safeData } from "./safety.ts";
 import { summarizeObligations } from "./obligation-summary.ts";
+import { stockOutlookTool } from "./stock-outlook.ts";
+import { customerPurchaseSignalsTool } from "./customer-purchase-signals.ts";
+import { salesProjectionTool } from "./sales-projection.ts";
 import { customerProfitabilityTool } from "./customer-profitability.ts";
 import { identifiedCompany, uniqueCompanyTaxId, companyPurchaseHistory } from "./company-evidence.ts";
 import { customerTaxId } from "../_shared/invoice-customers.ts";
@@ -240,9 +243,12 @@ export class ToolRegistry {
   }
   private registerTools() {
     this.add("get_customer_profitability", "finance",
-      "Rentabilidad por cliente: ventas netas sin IVA, costo vinculado, utilidad bruta CLP y margen. sort_by=sales para rentabilidad de los clientes/empresas de MAYOR VENTA o facturacion: selecciona primero por ventas, conserva costos pendientes con margen null. gross_profit para mayor utilidad, margin para mayor porcentaje: solo costos/reversas verificados. limit=10 para top 10, period=this_year para este ano, query=null salvo cliente/RUT pedido. Devuelve cobertura y totales ponderados de la seleccion. No es utilidad neta ni descuento autorizado. Mismo calculo del dashboard.",
-      { ...period, company_id: string, query: paging.query, limit: integer(1, 100), sort_by: choice("gross_profit", "margin", "sales") },
+      "Rentabilidad por cliente: ventas netas sin IVA, costo vinculado, utilidad bruta CLP y margen. sort_by=sales para rentabilidad de los clientes/empresas de MAYOR VENTA o facturacion: selecciona primero por ventas, conserva costos pendientes con margen null. gross_profit para mayor utilidad, margin para mayor porcentaje: solo costos/reversas verificados. limit=10 para top 10, period=this_year para este ano, query=null salvo cliente/RUT pedido. Devuelve universo, cobertura global, fuentes/frescura y pendientes por documento con accion y enlace. cohort=pending y offset para revisar todos los pendientes sin truncarlos; cohort=all para universo paginado. Los costos actuales de catalogo/importacion no reemplazan costos historicos. Devuelve cobertura y totales ponderados de la seleccion. No es utilidad neta ni descuento autorizado. Mismo calculo del dashboard.",
+      { ...period, company_id: string, query: paging.query, offset: paging.offset, cohort: choice("all", "verified", "provisional", "uncalculated", "pending"), limit: integer(1, 100), sort_by: choice("gross_profit", "margin", "sales") },
       args => customerProfitabilityTool(this.source, args));
+    this.add("get_stock_outlook", "sales", "Escenario de cobertura para UN SKU exacto: stock observado, ritmo de unidades facturadas de días completos y comparación con ETA/cantidades planificadas. No conoce reservas ni garantiza quiebre/llegada. Conserva permisos de ventas y Comercio Exterior, advierte cobertura limitada de importaciones. operation_id opcional limita a una operación existente; days=30 por defecto.", {query:string,days:integer(7,90),operation_id:string}, args=>stockOutlookTool((name,input)=>this.execute(name,input),args,canReadDomain(this.source.actor.role,"foreign_trade")));
+    this.add("get_customer_purchase_signals", "sales", "Señales de caída de compras: compara dos ventanas consecutivas iguales de días completos, por RUT, documentos únicos y fuentes fechadas. Neto y NC separados; muestra pequeña, identidad/datos pendientes y ausencia de compra no son cliente perdido. Solo recomienda revisar fichas; no contacta. days=30 por defecto.", {...paging,days:integer(7,90)}, args=>customerPurchaseSignalsTool(this.source,args));
+    this.add("get_sales_projection", "finance", "Escenarios condicionales de ventas netas al cierre del mes actual, usando documentos reales hasta ayer. Conservador/base/optimista por sensibilidad de ritmo, no probabilidades. Expone método, supuestos, fecha de fuente, confianza y acción. No proyecta caja o margen, ni extrapola menos de tres días completos o ventas no validables.", {}, () => salesProjectionTool(this.source));
     this.add("get_sales_summary", "finance",
       "Ventas netas, costos, gastos, utilidad, margen y serie mensual para el periodo solicitado. Reutiliza las reglas del dashboard, notas de credito y asientos; no suma de nuevo ventas contabilizadas. Para ventas del mes, utilidad, informe financiero y grafico de ultimos 12 meses. Retorna KPI y graficos estructurados calculados, no generados por IA.",
       {...period,chart:choice("line","bar")}, args=>financialPeriod(this.source,args));

@@ -9,18 +9,22 @@ export function useAccountingCenter() {
   const [data, setData] = useState<AccountingBootstrap | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [lastSuccessfulReadAt, setLastSuccessfulReadAt] = useState<string | null>(null);
   const queue = useRef(new LatestReadQueue<AccountingBootstrap>());
 
   const load = useCallback(async (background = false) => {
     if (!background) {
       setLoading(true);
-      setError("");
     }
     try {
       // Reading/focusing Finance must never start writes over an Excel import.
-      await queue.current.request(getAccountingBootstrap, setData, !background);
+      await queue.current.request(getAccountingBootstrap, value => {
+        setData(value);
+        setLastSuccessfulReadAt(new Date().toISOString());
+        setError("");
+      }, !background);
     } catch (caught) {
-      if (!background) setError(caught instanceof Error ? caught.message : "No se pudo cargar el centro financiero.");
+      setError(caught instanceof Error ? caught.message : "No se pudo cargar el centro financiero.");
       if (!background) throw caught;
     } finally {
       if (!background) setLoading(false);
@@ -42,5 +46,5 @@ export function useAccountingCenter() {
     };
   }, [load]);
 
-  return { data, loading, error, refresh };
+  return { data, loading, error, refresh, lastSuccessfulReadAt };
 }

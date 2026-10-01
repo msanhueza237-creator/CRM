@@ -1,3 +1,5 @@
+import { factoFreshnessLabel } from "./factoFreshnessLabel";
+import { factoHistoryStatus } from "./factoSyncStatus";
 import { Component, FormEvent, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { reportPeriod } from "./reportNavigation";
@@ -120,7 +122,7 @@ const views: Array<{ id: AccountingView; label: string; icon: typeof Landmark }>
 ];
 
 export function AccountingCenterPage() {
-  const { data, error, loading, refresh } = useAccountingCenter();
+  const { data, error, loading, refresh, lastSuccessfulReadAt } = useAccountingCenter();
   const { user } = useAuth();
   const [params, setParams] = useSearchParams();
   const requested = params.get("view") as AccountingView | null;
@@ -181,7 +183,7 @@ export function AccountingCenterPage() {
         ))}
       </nav>
 
-      {error ? <div className="notice-banner error"><AlertTriangle size={18} /> {error}</div> : null}
+      {error ? <div className="notice-banner error" role="alert"><AlertTriangle size={18} /><span>{error}{data ? " Se conservan las cifras de la última lectura; su actualización no está confirmada." : ""}{lastSuccessfulReadAt ? ` Última lectura exitosa del CRM: ${dateTime(lastSuccessfulReadAt)}.` : ""}</span></div> : null}
       {actionError ? <div className="notice-banner error"><AlertTriangle size={18} /> {actionError}</div> : null}
       {notice ? <div className="notice-banner success"><CheckCircle2 size={18} /> {notice}</div> : null}
       {loading && !data ? <div className="panel accounting-loading"><LoaderCircle className="spin" /><strong>Consolidando información financiera</strong><span>Validando permisos, períodos y fuentes.</span></div> : null}
@@ -719,9 +721,10 @@ function FactoView({ data, busy, runAction, excelOnly = false, excelProfile }: A
     <section className="panel accounting-facto-sync">
       <div className="accounting-panel-heading"><div><p>Integración Facto en solo lectura</p><h2>Carga histórica con respaldo</h2><span>Los documentos y saldos de cobranza individualizados se actualizan desde Facto. Los pagos bancarios conservan su conciliación independiente.</span></div><button className="ghost-button" disabled={Boolean(busy)} type="button" onClick={() => void runAction("foreign-trade", syncAccountingForeignTrade, "Comercio Exterior sincronizado como evidencia; ningún costo fue contabilizado automáticamente.")}><RefreshCw className={busy === "foreign-trade" ? "spin" : ""} size={17} /> Comercio Exterior</button></div>
       <div className="accounting-facto-range"><label>Desde<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label><label>Hasta<input type="date" max={today()} value={toDate} onChange={(event) => setToDate(event.target.value)} /></label><button className="primary-button" disabled={Boolean(busy) || !fromDate || !toDate || fromDate > toDate} type="button" onClick={() => void syncFactoRange()}><RefreshCw className={busy === "facto" ? "spin" : ""} size={17} /> {busy === "facto" ? "Consolidando…" : "Actualizar ahora"}</button></div>
-      <div className="accounting-facto-freshness"><span><strong>Conector Facto</strong>{data.factoFreshness.integrationUpdatedAt ? dateTime(data.factoFreshness.integrationUpdatedAt) : "Sin lectura disponible"}</span><span><strong>Finanzas CRM</strong>{data.factoFreshness.accountingSyncedAt ? dateTime(data.factoFreshness.accountingSyncedAt) : "Pendiente"}</span><Status value={data.factoFreshness.stale ? "Actualización pendiente" : "Sincronizado"} tone={data.factoFreshness.stale ? "review" : "success"} /></div>
+      <div className="accounting-facto-freshness"><span><strong>Última lectura del conector</strong>{data.factoFreshness.integrationUpdatedAt ? dateTime(data.factoFreshness.integrationUpdatedAt) : "Sin lectura disponible"}</span><span><strong>Última consolidación exitosa</strong>{data.factoFreshness.state && data.factoFreshness.accountingSyncedAt ? dateTime(data.factoFreshness.accountingSyncedAt) : "Sin éxito confirmado"}</span><span><strong>Último intento de consolidación</strong>{data.factoFreshness.lastAttemptAt ? dateTime(data.factoFreshness.lastAttemptAt) : "Sin intento confirmado"}{data.factoFreshness.lastAttemptStatus ? ` · ${humanize(data.factoFreshness.lastAttemptStatus)}` : ""}</span><Status value={factoFreshnessLabel(data.factoFreshness.state)} tone={data.factoFreshness.state === "mirror_consolidated" ? "success" : "review"} /></div>
+      <p className="accounting-source-note">La consolidación corresponde al período solicitado y usa el espejo disponible del conector. No confirma una consulta en vivo a Facto; las lecturas de más de 24 horas requieren revisión.</p>
       {result ? <div className="accounting-facto-result"><strong>{result.accepted} documentos del período</strong><span>{result.inserted} nuevos · {result.updated} actualizados · {result.backups} respaldos de origen</span><small>{result.receivables} cuentas por cobrar · {result.payables} cuentas por pagar · {result.reportedBalances} saldos Facto actualizados · {result.inconsistent} por revisar</small></div> : null}
-      <div className="accounting-facto-history"><h3>Historial de sincronización API</h3>{data.factoSyncRuns.length ? data.factoSyncRuns.map((run) => <article key={run.id}><div><strong>{date(run.from_date)} al {date(run.to_date)}</strong><span>{dateTime(run.created_at)}</span></div><Status value={run.status === "completed" ? "Completada" : run.status === "partial" ? "Con observaciones" : run.status === "failed" ? "Fallida" : "En curso"} tone={run.status === "completed" ? "success" : run.status === "failed" ? "danger" : "review"} /><p>{run.in_range_records} documentos · {run.inserted_records} nuevos · {run.updated_records} actualizados · {run.inconsistent_records} observaciones</p>{run.error_message ? <small>{run.error_message}</small> : null}</article>) : <Empty icon={RefreshCw} text="Todavía no hay cargas históricas registradas." />}</div>
+      <div className="accounting-facto-history"><h3>Historial de sincronización API</h3>{data.factoSyncRuns.length ? data.factoSyncRuns.map((run) => <article key={run.id}><div><strong>{date(run.from_date)} al {date(run.to_date)}</strong><span>{dateTime(run.created_at)}</span></div><Status value={factoHistoryStatus(run).label} tone={factoHistoryStatus(run).tone} /><p>{run.in_range_records} documentos · {run.inserted_records} nuevos · {run.updated_records} actualizados · {run.inconsistent_records} observaciones</p>{run.error_message ? <small>{run.error_message}</small> : null}</article>) : <Empty icon={RefreshCw} text="Todavía no hay cargas históricas registradas." />}</div>
     </section>
 
     </> : null}

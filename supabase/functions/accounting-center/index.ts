@@ -1,4 +1,6 @@
+import { buildFactoFreshness } from "./facto-freshness.ts";
 import { parseBankWorkbook } from "./bank-parsers.ts";
+import { boundedFactoFetch, startFactoSyncRuntime } from "./facto-sync-runtime.ts";
 import { buildCheckPortfolio } from "./check-portfolio.ts";
 import { isFactoDispatchGuide, parseFactoExcelWorkbook, type FactoExcelPreview } from "./facto-excel-parsers.ts";
 import {
@@ -32,7 +34,7 @@ import { readStatementClosings, statementClosingBalance, validatedBankBalance } 
 type JsonRecord = Record<string, unknown>;
 type AppRole = "administrador" | "finanzas" | "vendedor" | "visualizador";
 type Profile = { id: string; role: AppRole; active: boolean; full_name: string };
-type RestClient = { url: string; anonKey: string; serviceRoleKey: string };
+type RestClient = { url: string; anonKey: string; serviceRoleKey: string; bounded?: boolean; signal?: AbortSignal; factoLease?: { runId: string; token: string } };
 
 const rolePermissions: Record<AppRole, Set<string>> = {
   administrador: new Set(["view","import","reconcile","entry","post","close","config","profitability","audit"]),
@@ -280,7 +282,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
   if (summaryOnly && entities.length !== 1) throw new HttpError(409, "Selecciona una empresa contable antes de consultar el resumen.");
   if (!entity) throw new HttpError(409, "Falta aplicar la migración accounting_center.sql.");
   const entityId = String(entity.id);
-  const [accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, factoConnectionRows, factoIntegrationRows] = await Promise.all([
+  const [accounts, periods, bankAccounts, bankTransactions, bankBalanceSnapshots, sources, entries, receivables, payables, checks, paymentEvents, controls, batches, factoSyncRuns, factoReceivableSyncRuns, factoConnectionRows, factoIntegrationRows, successfulFactoRuns] = await Promise.all([
     selectRows(rest, `accounting_accounts?select=*&entity_id=eq.${entityId}&order=code.asc`),
     detail(`accounting_periods?select=*&entity_id=eq.${entityId}&order=starts_on.desc&limit=48`),
     selectRows(rest, `accounting_bank_accounts?select=*&entity_id=eq.${entityId}&order=institution.asc`),
@@ -298,6 +300,7 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
     detail(`integration_sync_runs?select=*&entity_id=eq.${entityId}&provider=eq.facto&resource=eq.receivables&order=created_at.desc&limit=12`),
     selectRows(rest, "integration_connections?select=provider,status,last_success_at&provider=eq.facto&limit=1"),
     selectRows(rest, "integration_records?select=id,payload,updated_at&provider=eq.facto&resource=eq.financial_snapshots&order=updated_at.desc&limit=1"),
+    selectRows(rest, `accounting_facto_sync_runs?select=status,created_at,completed_at&entity_id=eq.${entityId}&status=eq.completed&completed_at=not.is.null&order=completed_at.desc&limit=1`),
   ]);
   const asOf = accountingToday();
   const checkBatches = await selectRows(rest, `accounting_import_batches?select=id,file_name,created_at,status,row_count,error_count&entity_id=eq.${entityId}&source_type=eq.CHECKS&import_profile=eq.facto_checks_banco_estado&status=in.(imported,partial)&order=created_at.desc,id.desc&limit=1`);
@@ -338,15 +341,10 @@ async function bootstrap(rest: RestClient, profile: Profile, summaryOnly = false
       receivables_overdue: latestFactoCollections.overdueClp,
     } : {}),
   };
-  const accountingSyncedAt = factoSyncRuns
-    .map((run) => dateTimeValue(run.completed_at))
-    .find(Boolean) || null;
-  const factoFreshness = {
-    connectionStatus: String(factoConnectionRows[0]?.status || "unknown"),
-    integrationUpdatedAt,
-    accountingSyncedAt,
-    stale: Boolean(integrationUpdatedAt && (!accountingSyncedAt || integrationUpdatedAt > accountingSyncedAt)),
-  };
+  const factoFreshness = buildFactoFreshness(
+    String(factoConnectionRows[0]?.status || "unknown"), integrationUpdatedAt,
+    factoSyncRuns[0], successfulFactoRuns[0],
+  );
   if (summaryOnly) return {
     entity: { id: entity.id, name: entity.name }, summary, dashboard, bankReality, factoFreshness, checkPortfolio,
     ...(forAgent ? { receivables, sources, factoReceivables: latestFactoCollections } : {}),
@@ -620,10 +618,15 @@ async function readCustomerProfitability(rest: RestClient, url: URL) {
   const offset = Number(url.searchParams.get("offset") || 0);
   if (!Number.isSafeInteger(offset) || offset < 0) throw new HttpError(400, "Desplazamiento invalido.");
   const query = optionalText(url.searchParams.get("query"), 160);
+  const cohort = url.searchParams.get("cohort") || "all";
+  if (!["all", "verified", "provisional", "uncalculated", "pending"].includes(cohort)) throw new HttpError(400, "Grupo de clientes inválido.");
+  const companies = await selectAllRows(rest, "companies?select=id,rut&order=id.asc");
+  const taxCounts = new Map<string, number>();
+  for (const c of companies) { const tax = customerTaxId(c.rut); if (hasCustomerTaxId(tax)) taxCounts.set(tax, (taxCounts.get(tax) || 0) + 1); }
+  const ambiguousTaxIds = [...taxCounts].filter(([, count]) => count > 1).map(([tax]) => tax);
   let companyTaxId = "", companyId: string | undefined;
   if (url.searchParams.has("companyId")) {
     companyId = requiredUuid(url.searchParams.get("companyId"));
-    const companies = await selectAllRows(rest, "companies?select=id,rut&order=id.asc");
     const company = companies.find(c => c.id === companyId);
     companyTaxId = customerTaxId(company?.rut);
     if (!company || !hasCustomerTaxId(companyTaxId)) throw new HttpError(400, "Empresa sin RUT verificable.");
@@ -632,13 +635,14 @@ async function readCustomerProfitability(rest: RestClient, url: URL) {
   const entities = await selectRows(rest, "accounting_entities?select=id&active=eq.true&limit=2");
   if (entities.length !== 1) throw new HttpError(409, "Se requiere una unica empresa contable activa.");
   const entityId = String(entities[0].id);
-  const [documents, accounts, lines] = await Promise.all([
+  const [documents, accounts, lines, connectionRows] = await Promise.all([
     readSourceDocumentSummaries(path => selectRows(rest, path), entityId, to),
     selectAllRows(rest, `accounting_accounts?select=id,account_type,classification&entity_id=eq.${entityId}&order=id.asc`),
     selectAllRows(rest, `accounting_journal_lines?select=id,account_id,debit_clp,credit_clp,accounting_journal_entries!inner(id,source_document_id,status,entry_date)&accounting_journal_entries.entity_id=eq.${entityId}&accounting_journal_entries.status=in.(posted,reversed)&accounting_journal_entries.entry_date=lte.${to}&order=id.asc`),
+    selectRows(rest, "integration_connections?select=last_success_at&provider=eq.facto&limit=1"),
   ]);
   const report = customerProfitability(companyTaxId ? documents.filter(d => customerTaxId(d.counterpart_tax_id) === companyTaxId) : documents,
-    lines, accounts, from, to, companyTaxId ? "" : query, limit, offset);
+    lines, accounts, from, to, companyTaxId ? "" : query, limit, offset, { cohort, ambiguousTaxIds, sourceObservedAt: dateTimeValue(connectionRows[0]?.last_success_at) });
   return companyId ? { ...report, companyId, companyTaxId } : report;
 }
 
@@ -957,15 +961,19 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
   const fromDate = requiredDate(payload.fromDate);
   const toDate = requiredDate(payload.toDate);
   if (fromDate > toDate) throw new HttpError(400, "La fecha inicial no puede ser posterior a la fecha final.");
-  const run = (await insertRows(rest, "accounting_facto_sync_runs", [{
-    entity_id: entityId,
-    from_date: fromDate,
-    to_date: toDate,
-    status: "running",
-    requested_by: profile.id,
-    summary: { request_id: requestId, source: "integration_records/facto", accounting_policy: "document_only" },
-  }]))[0];
-  const runId = String(run.id);
+  const controlRest: RestClient = { ...rest, bounded: true };
+  const claim = asObject(await rpc(controlRest, "accounting_claim_facto_sync", {
+    p_entity_id: entityId, p_from_date: fromDate, p_to_date: toDate,
+    p_actor_id: profile.id, p_request_id: requestId,
+  }));
+  if (claim.acquired !== true) throw new HttpError(409, claim.reason === "legacy_review_required"
+    ? `La ejecución anterior ${String(claim.runId)} requiere revisión antes de volver a consolidar.`
+    : `Ya existe una consolidación en curso (${String(claim.runId)}).`);
+  const runId = requiredUuid(claim.runId);
+  const token = requiredUuid(claim.token);
+  const leaseArgs = { p_run_id: runId, p_token: token };
+  const runtime = startFactoSyncRuntime(() => rpc(controlRest, "accounting_heartbeat_facto_sync", leaseArgs));
+  rest = { ...controlRest, signal: runtime.signal, factoLease: { runId, token } };
 
   try {
     const existingSources = await selectAllRows(rest,
@@ -1028,7 +1036,6 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
         const sourceKeyByCanonical = new Map<string, string>();
         for (const item of includedItems) {
           includedCanonical.add(item.canonicalKey);
-          accepted += 1;
           const directionKey = `${item.purchase ? "purchase" : "sale"}:${item.externalId}`;
           let previous = existingByKey.get(item.canonicalKey) || existingByExternal.get(directionKey);
           if (!previous && item.normalized.documentType === "purchase_document") {
@@ -1041,9 +1048,6 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
           if (previous) existingByKey.set(item.canonicalKey, previous);
           const sourceKey = previous ? String(previous.source_key) : item.canonicalKey;
           sourceKeyByCanonical.set(item.canonicalKey, sourceKey);
-          if (previous) updated += 1;
-          else inserted += 1;
-          if (item.normalized.errors.length) inconsistent += 1;
         }
         for (const item of pageItems) {
           if (item.decision === "invalid") {
@@ -1052,7 +1056,10 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
           } else if (item.decision === "out_of_range") skipped += 1;
         }
 
-        const sourceBatch = includedItems.map(({ record, externalId, normalized, canonicalKey }) => ({
+        const sourceBatch = includedItems.filter(({ canonicalKey }) => {
+          const previous = existingByKey.get(sourceKeyByCanonical.get(canonicalKey) || canonicalKey);
+          return !previous || ["pending", "validated", "inconsistent"].includes(String(previous.status));
+        }).map(({ record, externalId, normalized, canonicalKey }) => ({
           entity_id: entityId,
           source_type: "FACTO",
           source_id: String(record.id),
@@ -1090,8 +1097,16 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
           const source = sourceByKey.get(sourceKey);
           if (!source) {
             controls += 1;
+            skipped += 1;
+            item.decision = "superseded";
+            const previous = existingByKey.get(sourceKey);
+            if (previous?.id) sourceDocumentByCanonical.set(item.canonicalKey, String(previous.id));
             continue;
           }
+          accepted += 1;
+          if (existingByKey.has(sourceKey)) updated += 1;
+          else inserted += 1;
+          if (item.normalized.errors.length) inconsistent += 1;
           sourceDocumentByCanonical.set(item.canonicalKey, String(source.id));
           existingByKey.set(sourceKey, source);
           existingByExternal.set(`${item.purchase ? "purchase" : "sale"}:${item.externalId}`, source);
@@ -1179,9 +1194,8 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
     const reportedResult = await syncFactoReportedBalances(rest, profile, requestId, entityId, fromDate, toDate);
     reportedBalances = reportedResult.updated + reportedResult.cleared;
 
-    const status = inconsistent > 0 ? "partial" : "completed";
+    const status = inconsistent > 0 || controls > 0 ? "partial" : "completed";
     await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
-      status,
       source_records: sourceRecords,
       in_range_records: accepted,
       inserted_records: inserted,
@@ -1192,7 +1206,6 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
       payables,
       source_observed_from: observedFrom,
       source_observed_to: observedTo,
-      completed_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       summary: {
         request_id: requestId,
@@ -1209,15 +1222,23 @@ async function syncFacto(rest: RestClient, profile: Profile, requestId: string, 
       entity_id_text: runId, correlation_id: requestIdToUuid(requestId),
       new_value: { from_date: fromDate, to_date: toDate, source_records: sourceRecords, accepted, inserted, updated, skipped, inconsistent, receivables, payables, backups, reported_balances: reportedBalances },
     }]);
+    await runtime.stop();
+    if (runtime.signal.aborted) throw runtime.signal.reason;
+    await rpc(controlRest, "accounting_finish_facto_sync", { ...leaseArgs, p_status: status });
     return { runId, status, fromDate, toDate, read: sourceRecords, accepted, inserted, updated, skipped, inconsistent, receivables, payables, controls, backups, reportedBalances };
   } catch (error) {
-    await patchRows(rest, "accounting_facto_sync_runs", `id=eq.${runId}`, {
-      status: "failed",
-      error_message: error instanceof Error ? error.message.slice(0, 1000) : "Error inesperado.",
-      completed_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }).catch(() => []);
+    await runtime.stop();
+    try {
+      await rpc(controlRest, "accounting_finish_facto_sync", {
+        ...leaseArgs, p_status: "failed", p_error: "Consolidación interrumpida; puede haber lotes guardados. Revisar antes de reintentar.",
+      });
+    } catch {
+      // A lost response or unavailable database cannot be called a completed rollback.
+      throw new HttpError(503, `No se pudo confirmar el cierre de ${runId}. No se garantiza reversión de los lotes; la reserva vencerá y se verificará en el próximo intento.`);
+    }
     throw error;
+  } finally {
+    await runtime.stop();
   }
 }
 
@@ -5185,7 +5206,7 @@ function requirePermission(profile: Profile, permission: string) {
 }
 
 async function selectRows(rest: RestClient, path: string): Promise<JsonRecord[]> {
-  const response = await fetch(`${rest.url}/rest/v1/${path}`, { headers: serviceHeaders(rest) });
+  const response = await restFetch(rest, `${rest.url}/rest/v1/${path}`, { headers: serviceHeaders(rest) });
   if (!response.ok) throw new HttpError(response.status, `Error leyendo contabilidad: ${(await response.text()).slice(0, 400)}`);
   return await response.json() as JsonRecord[];
 }
@@ -5203,14 +5224,14 @@ async function selectAllRows(rest: RestClient, path: string, pageSize = 1000): P
 
 async function insertRows(rest: RestClient, table: string, rows: JsonRecord[]) {
   if (!rows.length) return [];
-  const response = await fetch(`${rest.url}/rest/v1/${table}`, { method: "POST", headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(rows) });
+  const response = await restFetch(rest, `${rest.url}/rest/v1/${table}`, { method: "POST", headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(rows) });
   if (!response.ok) throw new HttpError(response.status, `Error guardando ${table}: ${(await response.text()).slice(0, 400)}`);
   return await response.json() as JsonRecord[];
 }
 
 async function upsertRows(rest: RestClient, table: string, rows: JsonRecord[], onConflict: string, ignore = false) {
   if (!rows.length) return [];
-  const response = await fetch(`${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
+  const response = await restFetch(rest, `${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
     method: "POST",
     headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: `${ignore ? "resolution=ignore-duplicates" : "resolution=merge-duplicates"},return=representation` },
     body: JSON.stringify(rows),
@@ -5221,7 +5242,7 @@ async function upsertRows(rest: RestClient, table: string, rows: JsonRecord[], o
 
 async function upsertRowsSelected(rest: RestClient, table: string, rows: JsonRecord[], onConflict: string, select: string) {
   if (!rows.length) return [];
-  const response = await fetch(`${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}&select=${encodeURIComponent(select)}`, {
+  const response = await restFetch(rest, `${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}&select=${encodeURIComponent(select)}`, {
     method: "POST",
     headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=representation" },
     body: JSON.stringify(rows),
@@ -5232,7 +5253,7 @@ async function upsertRowsSelected(rest: RestClient, table: string, rows: JsonRec
 
 async function upsertRowsMinimal(rest: RestClient, table: string, rows: JsonRecord[], onConflict: string) {
   if (!rows.length) return;
-  const response = await fetch(`${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
+  const response = await restFetch(rest, `${rest.url}/rest/v1/${table}?on_conflict=${encodeURIComponent(onConflict)}`, {
     method: "POST",
     headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "resolution=merge-duplicates,return=minimal" },
     body: JSON.stringify(rows),
@@ -5241,13 +5262,13 @@ async function upsertRowsMinimal(rest: RestClient, table: string, rows: JsonReco
 }
 
 async function patchRows(rest: RestClient, table: string, filter: string, row: JsonRecord) {
-  const response = await fetch(`${rest.url}/rest/v1/${table}?${filter}`, { method: "PATCH", headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(row) });
+  const response = await restFetch(rest, `${rest.url}/rest/v1/${table}?${filter}`, { method: "PATCH", headers: { ...serviceHeaders(rest), "Content-Type": "application/json", Prefer: "return=representation" }, body: JSON.stringify(row) });
   if (!response.ok) throw new HttpError(response.status, `Error actualizando ${table}: ${(await response.text()).slice(0, 400)}`);
   return await response.json() as JsonRecord[];
 }
 
 async function deleteRows(rest: RestClient, table: string, filter: string) {
-  const response = await fetch(`${rest.url}/rest/v1/${table}?${filter}`, {
+  const response = await restFetch(rest, `${rest.url}/rest/v1/${table}?${filter}`, {
     method: "DELETE",
     headers: { ...serviceHeaders(rest), Prefer: "return=minimal" },
   });
@@ -5255,13 +5276,16 @@ async function deleteRows(rest: RestClient, table: string, filter: string) {
 }
 
 async function rpc(rest: RestClient, fn: string, body: JsonRecord) {
-  const response = await fetch(`${rest.url}/rest/v1/rpc/${fn}`, { method: "POST", headers: { ...serviceHeaders(rest), "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const response = await restFetch(rest, `${rest.url}/rest/v1/rpc/${fn}`, { method: "POST", headers: { ...serviceHeaders(rest), "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const result = await response.json().catch(() => null);
   if (!response.ok) throw new HttpError(response.status, String(asObject(result).message || `No se pudo ejecutar ${fn}.`));
   return result;
 }
 
-function serviceHeaders(rest: RestClient) { return { apikey: rest.serviceRoleKey, Authorization: `Bearer ${rest.serviceRoleKey}` }; }
+function serviceHeaders(rest: RestClient): Record<string, string> { return { apikey: rest.serviceRoleKey, Authorization: "Bearer " + rest.serviceRoleKey, ...(rest.factoLease ? { "x-facto-sync-run": rest.factoLease.runId, "x-facto-sync-token": rest.factoLease.token } : {}) }; }
+function restFetch(rest: RestClient, url: string, init: RequestInit) {
+  return rest.bounded ? boundedFactoFetch(url, init, rest.signal) : fetch(url, init);
+}
 function getRestClient(): RestClient {
   const url = Deno.env.get("SUPABASE_URL")?.replace(/\/+$/, "") || "";
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY")?.trim() || "";

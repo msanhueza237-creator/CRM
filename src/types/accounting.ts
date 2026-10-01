@@ -252,6 +252,9 @@ export interface AccountingImportBatch {
 
 export interface AccountingFactoSyncRun {
   id: string;
+  updated_at?: string | null;
+  heartbeat_at?: string | null;
+  lease_expires_at?: string | null;
   from_date: string;
   to_date: string;
   status: "running" | "completed" | "partial" | "failed" | "cancelled";
@@ -383,6 +386,10 @@ export interface AccountingFactoReceivablesApplyResult {
 
 export interface AccountingFactoFreshness {
   connectionStatus: string;
+  /** Optional while an older backend is still deployed. Missing state is unknown. */
+  state?: string;
+  lastAttemptAt?: string | null;
+  lastAttemptStatus?: string | null;
   integrationUpdatedAt: string | null;
   accountingSyncedAt: string | null;
   stale: boolean;

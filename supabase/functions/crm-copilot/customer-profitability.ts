@@ -8,6 +8,8 @@ export async function customerProfitabilityTool(source: CopilotSources, args: Ro
   const range = dateRange(args);
   if (range.to > todayChile()) range.to = todayChile();
   const params = new URLSearchParams({ ...range, limit: String(args.limit || 10) });
+  if (args.cohort) params.set("cohort", String(args.cohort));
+  if (args.offset) params.set("offset", String(args.offset));
   if (args.query) params.set("query", String(args.query));
   if (args.company_id) params.set("companyId", String(args.company_id));
   const report = await source.api("accounting-center", `customer-profitability?${params}`) as unknown as CustomerProfitabilityReport;
@@ -16,14 +18,14 @@ export async function customerProfitabilityTool(source: CopilotSources, args: Ro
     throw new CopilotDataError("El servicio no confirmo la identidad de la empresa. Revisa su version antes de atribuir rentabilidad.", "SOURCE_UNAVAILABLE");
   const bySales = args.sort_by === "sales";
   const byMargin = args.sort_by === "margin";
-  const byCustomer = Boolean(args.company_id || String(args.query || "").trim());
+  const byCustomer = Boolean(args.company_id || String(args.query || "").trim() || args.cohort);
   if (bySales && (!Array.isArray(report.topSales) || !Number.isFinite(report.salesCustomers)))
     throw new CopilotDataError("El servicio de rentabilidad no dispone del ranking por ventas. No se sustituira por otro ranking.", "SOURCE_UNAVAILABLE");
   if (byCustomer && !Array.isArray(report.matches))
     throw new CopilotDataError("El servicio de rentabilidad no dispone de la busqueda por empresa.", "SOURCE_UNAVAILABLE");
   const records = byCustomer ? report.matches : bySales ? report.topSales : byMargin ? report.topMargin : report.topProfit;
   const selectedPending = records.filter(row => row.cost === null).length;
-  const totalMatched = byCustomer ? report.customers : bySales ? report.salesCustomers : report.rankedCustomers;
+  const totalMatched = byCustomer ? report.matchedCustomers ?? report.customers : bySales ? report.salesCustomers : report.rankedCustomers;
   const sortBy = bySales ? "sales" : byMargin ? "margin" : "gross_profit";
   const title = `${byCustomer ? "Rentabilidad de las empresas consultadas" : bySales ? "Rentabilidad de clientes con mayores ventas netas" : `Clientes por ${byMargin ? "margen bruto (%)" : "utilidad bruta (CLP)"}`} · ${range.from} a ${range.to}`;
   const warnings = [...report.warnings];
@@ -62,7 +64,8 @@ export async function customerProfitabilityTool(source: CopilotSources, args: Ro
   result.summary = bySales
     ? `${title}: primeros ${records.length} de ${totalMatched} clientes identificados con ventas netas positivas; ${selectedPending} de los seleccionados tienen utilidad y margen pendientes. No se sustituyeron por clientes de menor venta.`
     : `${title}: primeros ${records.length} de ${report.rankedCustomers} clientes comparables; ${report.pendingCustomers} pendientes fuera del ranking.`;
-  result.coverage = { complete: true, totalMatched, returned: records.length };
+  result.coverage = { complete: report.pendingCustomers === 0 && report.excludedDocuments === 0 && records.length >= totalMatched, totalMatched, returned: records.length,
+    ...(byCustomer && (report.offset || 0) + records.length < totalMatched ? { nextOffset: (report.offset || 0) + records.length } : {}) };
   if ((bySales || byCustomer) && selectedPending) {
     result.status = "partial";
     result.summary += " No tengo informacion suficiente para calcularlo con precision para esos clientes: faltan costos o reversas verificadas. La utilidad y el margen global del top quedan pendientes.";
@@ -93,6 +96,28 @@ export async function customerProfitabilityTool(source: CopilotSources, args: Ro
     ].filter(Boolean).join("\n\n");
     result.data = { ...object(result.data), canonical_customer_profitability_summary: true };
   }
+  const completeness = report.completeness;
+  result.data = { ...object(result.data), completeness, cohort: report.cohort,
+    resolution: records.flatMap(row => row.issues || []), excludedEvidence: report.excludedEvidence, pendingPreview: report.pending,
+    canonical_customer_profitability_summary: true };
+  result.freshness.sourceObservedAt = completeness?.sourceObservedAt || null;
+  if (report.pendingCustomers || report.excludedDocuments || completeness?.freshness !== "recent") result.status = "partial";
+  const cleanLabel = (s: string) => s.replace(/[\r\n<>\[\]*`|]/g, " ");
+  if (!bySales && !byCustomer) {
+    result.summary += records.slice(0, 3).map(row => `\n- ${cleanLabel(row.customer)}: utilidad bruta ${row.grossProfit?.toLocaleString("es-CL")} CLP; margen ${row.margin?.toLocaleString("es-CL")}% (verificado documentalmente).`).join("");
+    for (const row of report.pending.slice(0, 3)) result.summary += `\nPendiente destacado: ${cleanLabel(row.customer)}; ventas conocidas ${row.sales.toLocaleString("es-CL")} CLP; análisis ${row.analysis?.status || "unavailable"}${row.analysis?.grossProfit != null ? `, utilidad parcial/provisional ${row.analysis.grossProfit.toLocaleString("es-CL")} CLP sobre base ${row.analysis.sales?.toLocaleString("es-CL")}` : ", utilidad sin calcular"}. No comparable con el ranking verificado.`;
+  }
+  if (!bySales && !byCustomer) result.summary += " El mejor verificado no necesariamente es el mejor de todo el universo; los pendientes pueden cambiar el orden.";
+  result.summary += `\n\nUniverso del filtro: ${report.customers} clientes/grupos; ${report.rankedCustomers} comparables para utilidad, ${report.pendingCustomers} pendientes. Criterio: ${sortBy}; período ${range.from} a ${range.to}.`;
+  if (completeness) result.summary += `\nCobertura documental global: ${completeness.coveredDocuments}/${completeness.documents}; no es cobertura de montos ni del Top. Fuente: ${completeness.sourceObservedAt || "fecha no confirmada"}; frescura ${completeness.freshness}.`;
+  const actionable = [...new Map([...records, ...report.pending].map(row => [row.customerKey, row])).values()];
+  const issues = actionable.flatMap(row => (row.issues || []).map(issue => ({ row, issue })));
+  for (const { row, issue } of issues.slice(0, 6)) {
+    result.summary += `\n- ${cleanLabel(row.customer)}, ${cleanLabel(issue.source)} ${cleanLabel(issue.folio)}: ${cleanLabel(issue.reason)} [${cleanLabel(issue.action)}](${issue.path})`;
+    result.evidence.push({ label: `${row.customer}: ${issue.folio}`, path: issue.path, entityType: "accounting_source_document", entityId: issue.documentId });
+  }
+  if (report.pendingCustomers) result.summary += "\nRevisar el resto en Dashboard → Rentabilidad → Pendientes de resolución, o consultar cohort=pending por páginas. Las acciones contables requieren revisión; no se ejecutó ninguna corrección.";
+  if (!completeness) result.summary += "\nLa fuente no entregó detalle de completitud/frescura; no se afirma cobertura completa. Revisar versión del servicio.";
   return result;
 }
 

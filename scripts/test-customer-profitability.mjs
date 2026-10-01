@@ -209,7 +209,7 @@ test("Margen total del grupo es ponderado por ventas, no promedio simple", async
   assert.equal(r.data.selection.cost, 8200);
   assert.equal(r.data.selection.grossProfit, 1800);
   assert.equal(r.data.selection.margin, 18);
-  assert.equal(r.status, "ok");
+  assert.equal(r.status, "partial", "Frescura desconocida no certifica un informe actualizado");
 });
 
 test("Despliegue mixto no sustituye silenciosamente top ventas por otro ranking", async () => {

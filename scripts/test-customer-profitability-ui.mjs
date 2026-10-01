@@ -17,7 +17,7 @@ const loaderCode = ts.transpileModule(loaderSource, { compilerOptions: {
   jsx: ts.JsxEmit.React, module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText;
 function loaderState(props, page, query = "") {
-  const states = [query, page, undefined];
+  const states = [query, "all", 0, page, undefined];
   let dependencies;
   const hooks = { useState: () => [states.shift(), () => {}], useEffect: (_callback, deps) => { dependencies = deps; } };
   const module = {};
@@ -80,7 +80,7 @@ test("Carga y busqueda vacia conservan mensajes explicitos", () => {
 
 test("Actualizacion automatica mantiene pagina, pero periodo o busqueda nuevos la reinician", () => {
   const props = { from: "2026-01-01", to: "2026-09-30", refreshedAt: "first", periodLabel: "2026" };
-  const page = { scope: JSON.stringify([props.from, props.to, ""]), offset: 20 };
+  const page = { scope: JSON.stringify([props.from, props.to, "", "all"]), offset: 20 };
   const first = loaderState(props, page);
   const refreshed = loaderState({ ...props, refreshedAt: "second" }, page);
   assert.equal(first.offset, 20); assert.equal(refreshed.offset, 20);

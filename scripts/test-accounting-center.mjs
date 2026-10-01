@@ -1170,6 +1170,9 @@ const previewItem = {
     source_created_at: "2026-01-10T12:00:00.000Z",
   },
 };
+// The pending-balance scenario must remain in the future relative to PostgreSQL,
+// whose CURRENT_DATE drives status calculation (not the fixture's observation date).
+const futureDueOn = (await db.query("select (current_date + 30)::text due_on")).rows[0].due_on;
 const newPreviewItem = {
   ...previewItem,
   canonical_key: "facto:sale:facto-new-200",
@@ -1180,7 +1183,7 @@ const newPreviewItem = {
     customer_tax_id: "968927108",
     customer_name: "Cliente Facto nuevo",
     issued_on: "2026-08-27",
-    due_on: "2026-09-27",
+    due_on: futureDueOn,
     net_amount: 200000,
     tax_amount: 38000,
     original_amount: 238000,
