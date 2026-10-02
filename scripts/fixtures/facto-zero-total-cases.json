@@ -1,0 +1,294 @@
+[
+  {
+    "caseId": "case-1",
+    "folio": "900001",
+    "date": "2026-07-30",
+    "net": 19354,
+    "tax": 3678,
+    "total": 20000,
+    "xmlTotals": {
+      "MntNeto": "19354",
+      "MntExe": null,
+      "IVA": "3677",
+      "MntTotal": "20000",
+      "MontoNF": null,
+      "MontoPeriodo": null,
+      "TipoImp": "28",
+      "MontoImp": "1"
+    },
+    "lines": [
+      {
+        "amount": 19354,
+        "nonBillable": false
+      }
+    ]
+  },
+  {
+    "caseId": "case-2",
+    "folio": "900002",
+    "date": "2026-07-31",
+    "net": 0,
+    "tax": 0,
+    "total": 0,
+    "xmlTotals": {
+      "MntNeto": null,
+      "MntExe": "0",
+      "IVA": null,
+      "MntTotal": "0",
+      "MontoNF": "000000000006542607",
+      "MontoPeriodo": "000000000006542607",
+      "TipoImp": null,
+      "MontoImp": null
+    },
+    "lines": [
+      {
+        "amount": 6542607,
+        "nonBillable": true
+      }
+    ]
+  },
+  {
+    "caseId": "case-3",
+    "folio": "900003",
+    "date": "2026-07-24",
+    "net": 0,
+    "tax": 0,
+    "total": 0,
+    "xmlTotals": {
+      "MntNeto": null,
+      "MntExe": "0",
+      "IVA": null,
+      "MntTotal": "0",
+      "MontoNF": "000000000009693597",
+      "MontoPeriodo": "000000000009693597",
+      "TipoImp": null,
+      "MontoImp": null
+    },
+    "lines": [
+      {
+        "amount": 9693597,
+        "nonBillable": true
+      }
+    ]
+  },
+  {
+    "caseId": "case-4",
+    "folio": "900004",
+    "date": "2026-05-29",
+    "net": 0,
+    "tax": 0,
+    "total": 0,
+    "xmlTotals": {
+      "MntNeto": null,
+      "MntExe": "0",
+      "IVA": null,
+      "MntTotal": "0",
+      "MontoNF": "000000000004973240",
+      "MontoPeriodo": "000000000004973240",
+      "TipoImp": null,
+      "MontoImp": null
+    },
+    "lines": [
+      {
+        "amount": 4973240,
+        "nonBillable": true
+      }
+    ]
+  },
+  {
+    "caseId": "case-5",
+    "folio": "900005",
+    "date": "2026-01-09",
+    "net": 0,
+    "tax": 0,
+    "total": 0,
+    "xmlTotals": {
+      "MntNeto": null,
+      "MntExe": "0",
+      "IVA": null,
+      "MntTotal": "0",
+      "MontoNF": "000000000005394120",
+      "MontoPeriodo": "000000000005394120",
+      "TipoImp": null,
+      "MontoImp": null
+    },
+    "lines": [
+      {
+        "amount": 5394120,
+        "nonBillable": true
+      }
+    ]
+  },
+  {
+    "caseId": "case-6",
+    "folio": "900006",
+    "date": "2026-04-11",
+    "net": 48203,
+    "tax": 9160,
+    "total": 56317,
+    "xmlTotals": {
+      "MntNeto": "48203",
+      "MntExe": null,
+      "IVA": "9159",
+      "MntTotal": "56317",
+      "MontoNF": null,
+      "MontoPeriodo": null,
+      "TipoImp": "28",
+      "MontoImp": "1"
+    },
+    "lines": [
+      {
+        "amount": 48203,
+        "nonBillable": false
+      }
+    ]
+  },
+  {
+    "caseId": "case-7",
+    "folio": "900007",
+    "date": "2026-07-10",
+    "net": 0,
+    "tax": 0,
+    "total": 0,
+    "xmlTotals": {
+      "MntNeto": null,
+      "MntExe": "0",
+      "IVA": null,
+      "MntTotal": "0",
+      "MontoNF": "000000000001129197",
+      "MontoPeriodo": "000000000001129197",
+      "TipoImp": null,
+      "MontoImp": null
+    },
+    "lines": [
+      {
+        "amount": 1129197,
+        "nonBillable": true
+      }
+    ]
+  },
+  {
+    "caseId": "case-8",
+    "folio": "900008",
+    "date": "2026-08-12",
+    "net": 14953,
+    "tax": 2842,
+    "total": 15000,
+    "xmlTotals": {
+      "MntNeto": "14953",
+      "MntExe": null,
+      "IVA": "2841",
+      "MntTotal": "15000",
+      "MontoNF": null,
+      "MontoPeriodo": null,
+      "TipoImp": "28",
+      "MontoImp": "1"
+    },
+    "lines": [
+      {
+        "amount": 14953,
+        "nonBillable": false
+      }
+    ]
+  },
+  {
+    "caseId": "case-9",
+    "folio": "900009",
+    "date": "2026-03-22",
+    "net": 42976,
+    "tax": 8166,
+    "total": 37171,
+    "xmlTotals": {
+      "MntNeto": "42976",
+      "MntExe": null,
+      "IVA": "8165",
+      "MntTotal": "37171",
+      "MontoNF": null,
+      "MontoPeriodo": null,
+      "TipoImp": "28",
+      "MontoImp": "1"
+    },
+    "lines": [
+      {
+        "amount": 42976,
+        "nonBillable": false
+      }
+    ]
+  },
+  {
+    "caseId": "case-10",
+    "folio": "900010",
+    "date": "2026-03-13",
+    "net": 0,
+    "tax": 0,
+    "total": 0,
+    "xmlTotals": {
+      "MntNeto": null,
+      "MntExe": "0",
+      "IVA": null,
+      "MntTotal": "0",
+      "MontoNF": "000000000006501580",
+      "MontoPeriodo": "000000000006501580",
+      "TipoImp": null,
+      "MontoImp": null
+    },
+    "lines": [
+      {
+        "amount": 1085760,
+        "nonBillable": true
+      },
+      {
+        "amount": 5415820,
+        "nonBillable": true
+      }
+    ]
+  },
+  {
+    "caseId": "case-11",
+    "folio": "900011",
+    "date": "2026-01-23",
+    "net": 0,
+    "tax": 0,
+    "total": 0,
+    "xmlTotals": {
+      "MntNeto": null,
+      "MntExe": "0",
+      "IVA": null,
+      "MntTotal": "0",
+      "MontoNF": "000000000003576320",
+      "MontoPeriodo": "000000000003576320",
+      "TipoImp": null,
+      "MontoImp": null
+    },
+    "lines": [
+      {
+        "amount": 3576320,
+        "nonBillable": true
+      }
+    ]
+  },
+  {
+    "caseId": "case-12",
+    "folio": "900012",
+    "date": "2026-04-02",
+    "net": 0,
+    "tax": 0,
+    "total": 0,
+    "xmlTotals": {
+      "MntNeto": null,
+      "MntExe": "0",
+      "IVA": null,
+      "MntTotal": "0",
+      "MontoNF": "000000000032315837",
+      "MontoPeriodo": "000000000032315837",
+      "TipoImp": null,
+      "MontoImp": null
+    },
+    "lines": [
+      {
+        "amount": 32315837,
+        "nonBillable": true
+      }
+    ]
+  }
+]

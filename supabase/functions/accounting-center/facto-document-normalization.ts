@@ -1,4 +1,5 @@
 import { factoHeader } from "./facto-document-policy.ts";
+import { amountPresence, nonBillableZeroEvidence } from "./facto-non-billable-evidence.ts";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -11,7 +12,10 @@ export function normalizeFactoDocument(payload: JsonRecord, purchase: boolean, e
   let net = numeric(first(document, ["net","net_amount","monto_neto","total_neto"]));
   const tax = numeric(first(document, ["tax","vat","iva","monto_iva","taxes_amount"]));
   let exempt = numeric(first(document, ["exempt","exempt_amount","monto_exento"]));
-  const total = numeric(first(document, ["total","total_amount","monto_total","amount"]));
+  const rawTotal = first(document, ["total","total_amount","monto_total","amount"]);
+  const total = numeric(rawTotal);
+  const totalPresence = amountPresence(rawTotal);
+  const nonBillableEvidence = totalPresence === "present" && total === 0 ? nonBillableZeroEvidence(document, purchase) : null;
   const documentType = factoDocumentType(document, purchase);
   if (documentType.includes("exempt_") && tax === 0 && total > 0) {
     exempt = total;
@@ -30,11 +34,23 @@ export function normalizeFactoDocument(payload: JsonRecord, purchase: boolean, e
     counterpart = "Consumidor final";
   }
   const errors: string[] = [];
+  const suppliedTotals = ["total", "total_amount", "monto_total", "amount"]
+    .filter(key => document[key] !== undefined && document[key] !== null && document[key] !== "")
+    .map(key => document[key]);
+  if (suppliedTotals.some(value => amountPresence(value) !== "present")) errors.push("total_invalid");
+  else if (suppliedTotals.some(value => numeric(value) !== total)) errors.push("totals_conflicting");
   if (currency === "UNK") errors.push("currency_unknown");
   if (!/^(sales|purchase)_(invoice|exempt_invoice|receipt|exempt_receipt|debit_note|credit_note|document)$/.test(documentType)) errors.push("document_type_unsupported");
   if (Math.abs(net + exempt + tax - total) > 1) errors.push("totals_mismatch");
   if (!counterpart) errors.push("counterpart_missing");
-  if (!total) errors.push("total_missing");
+  if (totalPresence === "missing") errors.push("total_missing");
+  else if (totalPresence === "invalid") {
+    if (!errors.includes("total_invalid")) errors.push("total_invalid");
+  }
+  else if (total === 0) {
+    // Evidence of a zero billable total is not approval to post a purchase.
+    errors.push(nonBillableEvidence ? "non_billable_accounting_review_required" : "zero_total_evidence_required");
+  }
   if (currency !== "CLP" && !rate) errors.push("exchange_rate_missing");
   return {
     documentType,
@@ -52,6 +68,7 @@ export function normalizeFactoDocument(payload: JsonRecord, purchase: boolean, e
     currency,
     exchangeRate: rate || 1,
     net, tax, exempt, total,
+    nonBillableEvidence,
     totalClp: total * (rate || 1),
     sourceCreatedAt: dateTimeValue(first(document, ["created_at","createdAt","fecha_creacion"])),
     errors,
