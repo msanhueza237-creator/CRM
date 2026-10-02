@@ -27,6 +27,7 @@ const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard;
   { to: "/contenido", label: "Centro de Contenido", icon: Palette },
   { to: "/comercio-exterior", label: "Comercio Exterior", icon: Ship, roles: ["administrador"] },
   { to: "/finanzas-contabilidad", label: "Finanzas", icon: WalletCards, roles: ["administrador", "finanzas"] },
+  { to: "/estudio-mercado", label: "Estudio de Mercado", icon: BarChart3, roles: ["administrador"] },
   { to: "/copiloto", label: "Copiloto", icon: Bot },
   { to: "/informes", label: "Informes", icon: BarChart3 },
   { to: "/plantillas", label: "Plantillas", icon: FileText },

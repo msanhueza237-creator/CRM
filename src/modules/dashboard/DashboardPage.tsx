@@ -8,6 +8,7 @@ import { stages, useDashboardOverview } from "./useDashboardOverview";
 import { InventoryOverview } from "./InventoryOverview";
 import { SalesComparison } from "./SalesComparison";
 import { CustomerProfitabilityOverview } from "./CustomerProfitabilityOverview";
+import { MarketOpportunities } from "../market-study/MarketOpportunities";
 import "./dashboard.css";
 
 const financial = (view: string) => `/finanzas-contabilidad?view=${view}`;
@@ -86,6 +87,7 @@ export function DashboardPage() {
       {f?.bankReality?.asOf && <Link className="overview-chart-link" to={financial("banks")}>Último respaldo bancario: {date(f.bankReality.asOf)} · revisar fecha de cada cuenta <ArrowUpRight size={16} /></Link>}
       {f?.factoFreshness?.stale && <Link className="overview-inline-alert" to={financial("facto")}><AlertTriangle size={16} /> Hay información de Facto pendiente de consolidar <ArrowRight size={16} /></Link>}
     </section>}
+    {admin && <MarketOpportunities userId={user?.id || ""} refreshedAt={data.readAt} />}
     {financeAccess && <InventoryOverview refreshedAt={data.readAt} userId={user?.id || ""} />}
     {financeAccess && <SalesComparison data={f?.dashboard?.salesComparison} loading={loading} />}
     {financeAccess && <section className="overview-section" aria-label="Rendimiento financiero">

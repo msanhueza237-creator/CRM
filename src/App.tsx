@@ -19,6 +19,8 @@ import { ContentCenterPage } from "./modules/content/ContentCenterPage";
 import { ForeignTradeCenterPage } from "./modules/foreign-trade/ForeignTradeCenterPage";
 import { AccountingCenterPage } from "./modules/accounting/AccountingCenterPage";
 
+const MarketStudyPage = lazy(() => import("./modules/market-study/MarketStudyPage").then(module => ({ default: module.MarketStudyPage })));
+
 const CopilotPage = lazy(() => import("./modules/copilot/CentralCopilotPage").then(module => ({ default: module.CentralCopilotPage })));
 
 export function App() {
@@ -42,6 +44,7 @@ export function App() {
         <Route path="/contenido" element={<ContentCenterPage />} />
         <Route path="/comercio-exterior" element={<RoleProtectedRoute roles={["administrador"]}><ForeignTradeCenterPage /></RoleProtectedRoute>} />
         <Route path="/finanzas-contabilidad" element={<RoleProtectedRoute roles={["administrador", "finanzas"]}><AccountingCenterPage /></RoleProtectedRoute>} />
+        <Route path="/estudio-mercado" element={<RoleProtectedRoute roles={["administrador"]}><Suspense fallback={<p role="status">Cargando estudio...</p>}><MarketStudyPage /></Suspense></RoleProtectedRoute>} />
         <Route path="/copiloto" element={<Suspense fallback={<p role="status">Cargando Copiloto...</p>}><CopilotPage /></Suspense>} />
         <Route path="/informes" element={<ReportsPage />} />
         <Route path="/prospeccion" element={<ProspectingPage />} />

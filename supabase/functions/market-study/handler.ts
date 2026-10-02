@@ -1,0 +1,64 @@
+import { assertMarketAccess, normalizeMarketReview, previewMarketImport } from "../_shared/market-study-contract.ts";
+import { CopilotSources } from "../crm-copilot/sources.ts";
+import { inventoryValuation } from "../crm-copilot/inventory-valuation.ts";
+import { factoCurrencies } from "../crm-copilot/product-prices.ts";
+import { inventoryCatalogFields } from "../crm-copilot/product-resolution.ts";
+import { object, CopilotDataError, type RestConfig } from "../crm-copilot/contracts.ts";
+export interface MarketEnvironment { rest: RestConfig; origin: string; currencyMap?: string }
+class HttpError extends Error { constructor(public status: number,message: string) {super(message);} }
+async function readBody(req: Request) {
+  const reader=req.body?.getReader();if(!reader)throw new HttpError(400,"Falta JSON.");
+  const chunks:Uint8Array[]= [];let size=0;
+  while(true){const part=await reader.read();if(part.done)break;size+=part.value.length;if(size>350000){await reader.cancel();throw new HttpError(413,"Lote demasiado grande (máximo 350 KB).");}chunks.push(part.value);}
+  const bytes=new Uint8Array(size);let offset=0;for(const c of chunks){bytes.set(c,offset);offset+=c.length;}
+  try{return JSON.parse(new TextDecoder().decode(bytes));}catch{throw new HttpError(400,"JSON inválido.");}
+}
+export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch = fetch) {
+ return async(req:Request):Promise<Response>=>{
+  const headers={"Content-Type":"application/json; charset=utf-8","Cache-Control":"no-store","Access-Control-Allow-Origin":env.origin,"Vary":"Origin","Access-Control-Allow-Headers":"authorization,apikey,content-type","Access-Control-Allow-Methods":"GET,POST,OPTIONS"};
+  const json=(value:unknown,status=200)=>new Response(JSON.stringify(value),{status,headers});
+  if(req.method==='OPTIONS')return new Response(null,{status:204,headers});
+  try{
+   const route=new URL(req.url).pathname.split('/market-study/')[1]||'';
+   const token=(req.headers.get('authorization')||'').replace(/^Bearer\s+/i,'').trim();
+   if(!token)throw new HttpError(401,'Inicia sesión para consultar Estudios de Mercado.');
+   const userResponse=await fetcher(`${env.rest.url}/auth/v1/user`,{headers:{apikey:env.rest.anonKey,Authorization:`Bearer ${token}`},signal:req.signal});
+   if(!userResponse.ok)throw new HttpError(401,'Sesión inválida.');
+   const user=object(await userResponse.json());if(typeof user.id!=='string'||! /^[0-9a-f-]{36}$/i.test(user.id))throw new HttpError(401,'Identidad no válida.');
+   const source=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},req.signal,fetcher);
+   const profiles=await source.select(`profiles?select=id,role,active&id=eq.${user.id}&limit=1`);
+   try{assertMarketAccess(profiles[0]?{role:String(profiles[0].role),active:profiles[0].active===true}:null);}catch(e){throw new HttpError(403,(e as Error).message);}
+   if(route==='health'&&req.method==='GET')return json({ok:true,service:'market-study',schemaVersion:1});
+   if(route==='bootstrap'&&req.method==='GET'){
+    const [observations,reviews]=await Promise.all([source.all('market_study_observations?select=id,payload,created_at,created_by&order=created_at.asc,id.asc',5000),source.all('market_study_reviews?select=id,observation_id,payload,created_at,created_by&order=created_at.asc,id.asc',10000)]);
+    const warnings:string[]=[];
+    const inventory=async()=>{try{
+     const [snapshots,details,catalog,entity]=await Promise.all([source.records('inventory_snapshots'),source.records('product_details'),source.all(`content_products?select=${inventoryCatalogFields}&order=id.asc`),source.entity()]);
+     const settings=await source.select(`accounting_entities?select=confirmations:settings->copilot_cost_currency_confirmations&id=eq.${entity}`);
+     return inventoryValuation(snapshots,details,catalog,{},factoCurrencies(env.currencyMap),object(settings[0]?.confirmations),true);
+    }catch{warnings.push('Inventario/costos no disponibles: no se sustituyen por cero.');return null;}};
+    const imports=async()=>{try{
+     const operations=await source.all('foreign_trade_operations?select=id&inventory_mode=eq.future&status=not.in.(received,closed,cancelled)&order=id.asc',50);
+     const details=[];for(const op of operations)details.push(await source.rpc('foreign_trade_operation_detail',{p_operation_id:op.id}));
+     return {details,complete:true};
+    }catch{warnings.push('No se pudo verificar cobertura de productos por llegar.');return {details:[],complete:false};}};
+    const [stock,incoming]=await Promise.all([inventory(),imports()]);
+    return json({observations,reviews,inventory:stock?.records||[],inventoryAvailable:stock!==null,inventoryWarnings:stock?.warnings||[],imports:incoming.details,importsComplete:incoming.complete,warnings,readAt:new Date().toISOString()});
+   }
+   if(route==='imports/preview'&&req.method==='POST')return json(previewMarketImport(await readBody(req)));
+   if(route==='imports/commit'&&req.method==='POST'){
+    const preview=previewMarketImport(await readBody(req));if(!preview.canImport)return json(preview,422);
+    try{return json(await source.rpc('market_study_import',{p_actor:user.id,p_items:preview.items},false));}
+    catch{throw new HttpError(409,'No se importó el lote. Revisa claves, revisiones consecutivas y reintenta la lectura; no sobrescribas el historial.');}
+   }
+   if(route==='reviews'&&req.method==='POST'){
+    const review=normalizeMarketReview(await readBody(req));
+    // A submitted product key is a review proposal, not proof of product identity.
+    // It remains excluded from analysis unless it resolves uniquely in current sources.
+    try{return json(await source.rpc('market_study_review',{p_actor:user.id,p_review:review},false));}
+    catch{throw new HttpError(409,'La revisión cambió o no pudo guardarse. Actualiza antes de reintentar.');}
+   }
+   throw new HttpError(404,'Ruta no disponible. No existe una operación para cambiar precios.');
+  }catch(e){return json({error:e instanceof HttpError?e.message:e instanceof Error&&!(e instanceof CopilotDataError)?e.message:'Estudio de Mercado no está disponible en este entorno. No se generaron resultados con datos incompletos.'},e instanceof HttpError?e.status:e instanceof CopilotDataError?503:400);}
+ };
+}
