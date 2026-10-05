@@ -7,6 +7,7 @@ import { executeResearch, RESEARCH_CAPABILITY } from "./prospecting-research.ts"
 import { retainedDiscoveryHint, publicResearchContext } from "./prospecting-enrichment.ts";
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
+import { dispatchWhatsAppCampaign, getWhatsAppTemplates } from "./whatsapp-dispatch.ts";
 
 type ApiKeyValidation = {
   valid: boolean;
@@ -84,6 +85,25 @@ Deno.serve(async (req) => {
       return await handleMetaWhatsAppStatus({ req, url, supabase });
     }
 
+    if ((route === "meta-whatsapp-templates" && req.method === "GET") ||
+      (["meta-whatsapp-send", "send-campaign"].includes(route) && req.method === "POST")) {
+      const admin = await requireCrmAdmin(req, supabase);
+      if (!admin.authorized) return json({ error: admin.error }, admin.status);
+      try {
+        if (route === "meta-whatsapp-templates") return json(await getWhatsAppTemplates(supabase, firstEnvValue));
+        const payload = await readJsonObject(req);
+        const result = await dispatchWhatsAppCampaign(supabase, firstEnvValue, payload);
+        await logAgentAction(supabase, { valid: true, key_id: null, key_name: "CRM administrador", scopes: [] },
+          "campaigns", String(payload.campaignId), "dispatched_meta_campaign", {
+            user_id: admin.userId, template_id: payload.templateId, language: payload.language,
+            total: result.results.length, accepted: result.results.filter((r) => r.success).length,
+          });
+        return json(result);
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "No se pudo completar la operacion WhatsApp." }, 400);
+      }
+    }
+
     if (route === "gmail-webhook" && req.method === "POST") {
       const validation = await validateWebhookApiKey(req, url, supabase);
       if (!validation.valid) return unauthorized();
@@ -96,12 +116,6 @@ Deno.serve(async (req) => {
         { req, url, supabase },
         pathParts.slice(tiendanubePrivacyRouteIndex + 1),
       );
-    }
-
-    if (route === "send-campaign" && req.method === "POST") {
-      const validation = await validateApiKey(req, supabase, "crm:write");
-      if (!validation.valid) return unauthorized();
-      return await handleSendCampaign({ req, url, supabase }, validation);
     }
 
     const prospectingRouteIndex = pathParts.lastIndexOf("prospecting-runs");
@@ -2741,14 +2755,14 @@ async function requireCrmAdmin(req: Request, supabase: ReturnType<typeof createC
 
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
-    .select("role")
+    .select("role,active")
     .eq("id", authData.user.id)
     .maybeSingle();
-  const role = String(profile?.role || authData.user.user_metadata?.role || "");
-  if (profileError || role !== "administrador") {
-    return { authorized: false, status: 403, error: "Solo administradores pueden comprobar Meta." };
+  const role = String(profile?.role || "");
+  if (profileError || role !== "administrador" || profile?.active !== true) {
+    return { authorized: false, status: 403, error: "Solo administradores activos pueden operar Meta." };
   }
-  return { authorized: true, status: 200, error: "" };
+  return { authorized: true, status: 200, error: "", userId: authData.user.id };
 }
 
 function extractMetaError(payload: unknown) {
@@ -2886,169 +2900,6 @@ async function handleGmailWebhook(context: RouteContext, validation: ApiKeyValid
   return json({ success: true, company_id: matchedCompanyId, interaction_id: interaction.id });
 }
 
-async function handleSendCampaign(context: RouteContext, validation: ApiKeyValidation) {
-  const payload = await readJsonObject(context.req);
-  const campaignId = String(payload.campaignId || "");
-  const templateName = String(payload.templateName || "").trim();
-  const allowWithoutOptIn = Boolean(payload.allowWithoutOptIn);
-  const adminOverrideReason = String(payload.adminOverrideReason || "").trim();
-  const recipients = payload.recipients as Array<{
-    phone: string;
-    companyId: string;
-    parameters: string[];
-  }>;
-
-  const metaAccessToken = String(Deno.env.get("META_WHATSAPP_ACCESS_TOKEN") || "").trim();
-  const metaPhoneNumberId = String(Deno.env.get("META_WHATSAPP_PHONE_NUMBER_ID") || "").trim();
-  const metaGraphApiVersion = firstEnvValue(["META_GRAPH_API_VERSION"]) || "v25.0";
-
-  if (!metaAccessToken || !metaPhoneNumberId) {
-    return json({ error: "Missing META_WHATSAPP_ACCESS_TOKEN or META_WHATSAPP_PHONE_NUMBER_ID" }, 400);
-  }
-
-  if (!templateName) {
-    return json({ error: "Missing templateName" }, 400);
-  }
-
-  if (allowWithoutOptIn && !adminOverrideReason) {
-    return json({ error: "Missing adminOverrideReason for recipients without WhatsApp opt-in" }, 400);
-  }
-
-  if (!Array.isArray(recipients) || recipients.length === 0) {
-    return json({ error: "Recipients must be a non-empty array" }, 400);
-  }
-
-  const companyIds = Array.from(new Set(recipients.map((recipient) => recipient.companyId).filter(Boolean)));
-  const { data: companies, error: companiesError } = await context.supabase
-    .from("companies")
-    .select("id, whatsapp, whatsapp_number, phone, whatsapp_opt_in, whatsapp_status")
-    .in("id", companyIds);
-
-  if (companiesError) {
-    return json({ error: companiesError.message }, 500);
-  }
-
-  const companiesById = new Map((companies || []).map((company) => [String(company.id), company]));
-
-  console.log(`Starting WhatsApp campaign dispatch via Meta API for campaign ${campaignId}. Total: ${recipients.length}`);
-
-  const results = [];
-
-  for (const recipient of recipients) {
-    const company = companiesById.get(recipient.companyId);
-    const hasOptIn = Boolean(company?.whatsapp_opt_in);
-    const whatsappStatus = String(company?.whatsapp_status || (hasOptIn ? "opt_in" : "sin_consentimiento"));
-
-    if (["opt_out", "bloqueado", "invalido", "no_contactar"].includes(whatsappStatus)) {
-      results.push({ phone: recipient.phone, success: false, error: `Company WhatsApp status blocks sending: ${whatsappStatus}` });
-      continue;
-    }
-
-    if (!hasOptIn && !allowWithoutOptIn) {
-      results.push({ phone: recipient.phone, success: false, error: "Company does not have WhatsApp opt-in" });
-      continue;
-    }
-
-    const phoneSource = recipient.phone || String(company?.whatsapp_number || company?.whatsapp || company?.phone || "");
-    const cleanPhone = phoneSource.replace(/\D/g, "");
-    if (!cleanPhone) {
-      results.push({ phone: phoneSource, success: false, error: "Invalid phone format" });
-      continue;
-    }
-
-    const bodyParams = (recipient.parameters || []).map((p) => ({
-      type: "text",
-      text: String(p)
-    }));
-
-    const metaBody = {
-      messaging_product: "whatsapp",
-      to: cleanPhone,
-      type: "template",
-      template: {
-        name: templateName,
-        language: {
-          code: "es"
-        },
-        components: bodyParams.length > 0 ? [
-          {
-            type: "body",
-            parameters: bodyParams
-          }
-        ] : []
-      }
-    };
-
-    try {
-      const response = await fetch(`https://graph.facebook.com/${metaGraphApiVersion}/${metaPhoneNumberId}/messages`, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${metaAccessToken}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(metaBody)
-      });
-
-      const resData = await response.json();
-
-      if (response.ok) {
-        const metaMessageId = resData.messages?.[0]?.id || null;
-        await context.supabase.from("interactions").insert({
-          company_id: recipient.companyId,
-          type: "whatsapp",
-          description: `Campaña WhatsApp enviada vía Meta API. Plantilla: ${templateName}`,
-          result: `Enviado con ID de mensaje Meta: ${metaMessageId || "unknown"}`,
-          next_action: "Monitorear lectura"
-        });
-
-        await context.supabase.from("whatsapp_messages").insert({
-          company_id: recipient.companyId,
-          direction: "outbound",
-          phone_number: cleanPhone,
-          meta_message_id: metaMessageId,
-          message_type: "template",
-          template_name: templateName,
-          status: "sent",
-          raw_payload: resData,
-        });
-
-        await context.supabase
-          .from("companies")
-          .update({
-            last_whatsapp_message_at: new Date().toISOString(),
-            whatsapp_status: hasOptIn ? "opt_in" : "sin_consentimiento",
-          })
-          .eq("id", recipient.companyId);
-
-        results.push({ phone: cleanPhone, success: true, messageId: metaMessageId });
-      } else {
-        await context.supabase.from("whatsapp_messages").insert({
-          company_id: recipient.companyId,
-          direction: "outbound",
-          phone_number: cleanPhone,
-          message_type: "template",
-          template_name: templateName,
-          status: "failed",
-          raw_payload: resData,
-        });
-
-        results.push({ phone: cleanPhone, success: false, error: resData.error?.message || "Meta API Error" });
-      }
-    } catch (err) {
-      results.push({ phone: cleanPhone, success: false, error: err instanceof Error ? err.message : "Network error" });
-    }
-  }
-
-  await logAgentAction(context.supabase, validation, "campaigns", campaignId, "agent_dispatched_meta_campaign", {
-    templateName,
-    total: recipients.length,
-    successCount: results.filter((r) => r.success).length,
-    allowWithoutOptIn,
-    adminOverrideReason: allowWithoutOptIn ? adminOverrideReason : undefined
-  });
-
-  return json({ success: true, results });
-}
 
 async function handleTiendanubePrivacyWebhook(context: RouteContext, routePath: string[]) {
   const topic = routePath[0] || "";

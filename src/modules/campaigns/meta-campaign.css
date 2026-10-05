@@ -1,0 +1,22 @@
+.meta-campaign-dialog { border-radius: 8px; max-width: 640px; }
+.meta-dialog-heading { display: flex; align-items: start; justify-content: space-between; gap: 12px; }
+.meta-dialog-heading h2 { font-size: 22px; }
+.meta-dialog-heading button { flex: 0 0 40px; width: 40px; height: 40px; padding: 0; }
+.meta-template-fields { border: 0; padding: 0; margin: 0 0 20px; min-width: 0; display: grid; gap: 16px; }
+.meta-template-fields label { display: grid; gap: 8px; font-size: 14px; font-weight: 600; }
+.meta-template-fields input:not([type="checkbox"]), .meta-template-fields select { width: 100%; min-width: 0; min-height: 44px; padding: 10px; border: 1px solid #cfdade; border-radius: 6px; background: #fff; color: #172026; }
+.meta-template-fields p { margin: 0; }
+.meta-template-status { color: #27654b; font-size: 13px; }
+.meta-template-preview { padding-block: 16px; border-block: 1px solid #dfe7ea; overflow-wrap: anywhere; white-space: pre-wrap; color: #172026; }
+.meta-template-preview p { margin: 8px 0; }
+.meta-template-preview small { color: #62717a; }
+.meta-catalog-label { color: #087d80; font-weight: 600; }
+.meta-template-fields .meta-send-confirmation { display: flex; align-items: start; line-height: 1.5; }
+.meta-send-confirmation input { width: 20px; height: 20px; flex: 0 0 20px; margin-top: 2px; }
+.meta-campaign-dialog .meta-warning-panel, .meta-campaign-dialog .meta-log-panel { overflow-wrap: anywhere; }
+.meta-campaign-dialog .meta-modal-actions { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  .meta-modal-overlay:has(.meta-campaign-dialog) { padding: 12px; }
+  .meta-campaign-dialog { padding: 18px; max-height: 88dvh; }
+  .meta-campaign-dialog .meta-modal-actions button { min-height: 44px; }
+}

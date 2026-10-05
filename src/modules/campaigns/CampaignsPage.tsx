@@ -7,6 +7,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useCompanyStore } from "../companies/CompanyStore";
 import { useTemplateStore } from "../templates/TemplateStore";
 import { getGmailStatus, sendGmailCampaign, syncGmailReplies } from "../../lib/gmailApi";
+import { MetaCampaignDialog } from "./MetaCampaignDialog";
 import { chileData, normalizeString } from "../../data/chileData";
 import type { Campaign, CampaignStatus, CampaignType, Company, CompanyType, MessageTemplate } from "../../types/crm";
 
@@ -506,10 +507,6 @@ export function CampaignsPage() {
   const [companyToAdd, setCompanyToAdd] = useState("");
   const [showForm, setShowForm] = useState(false);
   const [showMetaModal, setShowMetaModal] = useState(false);
-  const [metaApiKey, setMetaApiKey] = useState("");
-  const [metaTemplateName, setMetaTemplateName] = useState("");
-  const [allowWithoutOptIn, setAllowWithoutOptIn] = useState(false);
-  const [adminOverrideReason, setAdminOverrideReason] = useState("");
   const [sendingCampaign, setSendingCampaign] = useState(false);
   const [sendingResults, setSendingResults] = useState<CampaignSendResults | null>(null);
   const [gmailSendingProgress, setGmailSendingProgress] = useState<GmailSendingProgress | null>(null);
@@ -1653,110 +1650,6 @@ export function CampaignsPage() {
     }
   }
 
-  async function executeMetaCampaign() {
-    if (!selectedCampaign || !isSupabaseConfigured || !supabase) return;
-    setSendingCampaign(true);
-    setSendingResults(null);
-
-    if (usesInstallerAccountContent(selectedCampaign, selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))) {
-      setSendingResults({
-        success: 0,
-        failed: selectedCompanies.length,
-        log: ["Campana bloqueada: la plantilla de cuenta instalador solo se puede usar con empresas tipo tecnico o instalador grande."],
-      });
-      setSendingCampaign(false);
-      return;
-    }
-
-    const blockedRecipients = selectedCompanies.filter((company) => !canReceiveWhatsAppCampaign(company));
-    if (blockedRecipients.length) {
-      setSendingResults({
-        success: 0,
-        failed: blockedRecipients.length,
-        log: [
-          `Campana bloqueada: ${blockedRecipients.length} destinatario(s) tienen WhatsApp opt-out, bloqueado, invalido o no_contactar.`,
-          ...blockedRecipients.slice(0, 8).map((company) => `${company.name}: ${company.whatsappStatus || "sin_consentimiento"}`),
-        ],
-      });
-      setSendingCampaign(false);
-      return;
-    }
-
-    const mappedRecipients = selectedCompanies.map((company) => {
-      const phone = company.whatsapp || company.phone || "";
-      return {
-        phone,
-        companyId: company.id,
-        parameters: [
-          company.name,
-          company.contactName || "cliente",
-          company.city || "su zona",
-          selectedCampaign.product || "",
-          getCampaignBenefitForCompany(selectedCampaign, company)
-        ]
-      };
-    }).filter((r) => r.phone);
-
-    if (mappedRecipients.length === 0) {
-      setSendingResults({
-        success: 0,
-        failed: 0,
-        log: ["❌ Error: No hay destinatarios con número de WhatsApp válido."]
-      });
-      setSendingCampaign(false);
-      return;
-    }
-
-    try {
-      const { data, error } = await supabase.functions.invoke("crm-agent/send-campaign", {
-        body: {
-          campaignId: selectedCampaign.id,
-          templateName: metaTemplateName,
-          recipients: mappedRecipients,
-          allowWithoutOptIn,
-          adminOverrideReason
-        },
-        headers: {
-          "x-climactiva-api-key": metaApiKey
-        }
-      });
-
-      if (error || !data || !data.success) {
-        setSendingResults({
-          success: 0,
-          failed: mappedRecipients.length,
-          log: [error?.message || data?.error || "Error al invocar la función de Supabase."]
-        });
-      } else {
-        const results = data.results as Array<{ phone: string; success: boolean; error?: string }>;
-        const successCount = results.filter((r) => r.success).length;
-        const failedCount = results.filter((r) => !r.success).length;
-        const logMsgs = results.map((r) => 
-          r.success 
-            ? `✅ Enviado con éxito a ${r.phone}`
-            : `❌ Falló para ${r.phone}: ${r.error || "error desconocido"}`
-        );
-
-        setSendingResults({
-          success: successCount,
-          failed: failedCount,
-          log: logMsgs
-        });
-
-        if (successCount > 0) {
-          markCampaignSent();
-        }
-      }
-    } catch (err) {
-      setSendingResults({
-        success: 0,
-        failed: mappedRecipients.length,
-        log: [err instanceof Error ? err.message : "Error inesperado al conectar con el servidor."]
-      });
-    } finally {
-      setSendingCampaign(false);
-    }
-  }
 
   function requestGmailCampaignSend() {
     setSendingResults(null);
@@ -2426,9 +2319,6 @@ export function CampaignsPage() {
                         className="primary-button" 
                         type="button" 
                         onClick={() => {
-                          if (!metaTemplateName && selectedTemplate?.name) {
-                            setMetaTemplateName(selectedTemplate.name);
-                          }
                           setShowMetaModal(true);
                         }}
                         style={{ background: "#25D366", borderColor: "#25D366", color: "#ffffff" }}
@@ -2951,121 +2841,14 @@ export function CampaignsPage() {
         </div>
       )}
 
-      {showMetaModal && (
-        <div className="meta-modal-overlay">
-          <div className="meta-modal-box">
-            <h2>Enviar Campaña vía Meta Cloud API</h2>
-            
-            <div className="meta-form-grid">
-              <label className="wide">
-                Climactiva API Key
-                <input 
-                  type="password" 
-                  placeholder="ca_live_..." 
-                  value={metaApiKey} 
-                  onChange={(e) => setMetaApiKey(e.target.value)} 
-                />
-              </label>
-
-              <label className="wide">
-                Configuracion segura
-                <input
-                  type="text"
-                  value="El token Meta y Phone Number ID se leen solo desde variables de entorno del backend."
-                  readOnly
-                />
-              </label>
-
-              <label>
-                Nombre de Plantilla en Meta
-                <input 
-                  type="text" 
-                  placeholder="Ej: presentacion_comercial" 
-                  value={metaTemplateName} 
-                  onChange={(e) => setMetaTemplateName(e.target.value)} 
-                />
-              </label>
-
-              <label className="checkbox-field wide">
-                <input
-                  type="checkbox"
-                  checked={allowWithoutOptIn}
-                  onChange={(e) => setAllowWithoutOptIn(e.target.checked)}
-                />
-                Permitir envio a destinatarios sin consentimiento registrado
-              </label>
-
-              {allowWithoutOptIn ? (
-                <label className="wide">
-                  Motivo de excepcion administrativa
-                  <input
-                    type="text"
-                    placeholder="Ej: autorizacion manual documentada por el administrador"
-                    value={adminOverrideReason}
-                    onChange={(e) => setAdminOverrideReason(e.target.value)}
-                  />
-                </label>
-              ) : null}
-            </div>
-
-            <div className="meta-variables-list">
-              <h4>Variables enviadas al template de Meta:</h4>
-              <ul>
-                <li><code>{"{{1}}"}</code>: Nombre de la empresa</li>
-                <li><code>{"{{2}}"}</code>: Nombre del contacto (o "cliente")</li>
-                <li><code>{"{{3}}"}</code>: Ciudad de la empresa (o "su zona")</li>
-                <li><code>{"{{4}}"}</code>: Producto destacado (o vacío)</li>
-                <li><code>{"{{5}}"}</code>: Llamado/beneficio, por ejemplo cuenta instalador con 7% de descuento</li>
-              </ul>
-            </div>
-
-            {analytics.withoutOptIn > 0 ? (
-              <div className="meta-warning-panel">
-                <strong>Advertencia de consentimiento</strong>
-                <p>
-                  Hay {analytics.withoutOptIn} destinatarios sin consentimiento WhatsApp registrado. El backend bloqueara
-                  esos envios salvo que actives la excepcion administrativa y dejes un motivo.
-                </p>
-              </div>
-            ) : null}
-
-            {sendingResults && (
-              <div className="meta-log-panel">
-                <strong>Resultados del envío:</strong><br />
-                Enviados con éxito: {sendingResults.success}<br />
-                Fallidos: {sendingResults.failed}<br />
-                <hr style={{ borderColor: "#333", margin: "6px 0" }} />
-                {sendingResults.log.map((line, i) => (
-                  <div key={i}>{line}</div>
-                ))}
-              </div>
-            )}
-
-            <div className="meta-modal-actions">
-              <button 
-                type="button" 
-                className="ghost-button" 
-                onClick={() => {
-                  setShowMetaModal(false);
-                  setSendingResults(null);
-                }}
-                disabled={sendingCampaign}
-              >
-                Cerrar
-              </button>
-              <button 
-                type="button" 
-                className="primary-button" 
-                onClick={executeMetaCampaign}
-                disabled={sendingCampaign || !metaApiKey || !metaTemplateName || (allowWithoutOptIn && !adminOverrideReason.trim())}
-                style={{ background: "#25D366", borderColor: "#25D366", color: "#ffffff" }}
-              >
-                {sendingCampaign ? "Enviando..." : "Iniciar Envío Masivo"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {showMetaModal && selectedCampaign && <MetaCampaignDialog
+        campaignId={selectedCampaign.id}
+        companies={selectedCompanies}
+        blockedReason={usesInstallerAccountContent(selectedCampaign, selectedTemplate) && selectedCompanies.some((company) => !canReceiveInstallerBenefit(company))
+          ? "La campana de cuenta instalador requiere destinatarios de tipo tecnico o instalador grande." : undefined}
+        onClose={() => setShowMetaModal(false)}
+        onSent={markCampaignEmailRecipientsSent}
+      />}
     </section>
   );
 }

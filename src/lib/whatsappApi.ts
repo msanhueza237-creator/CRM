@@ -1,4 +1,47 @@
 import { getSupabaseFunctionUrl, isSupabaseConfigured, supabase } from "./supabase";
+export interface MetaTemplate {
+  id: string; name: string; language: string; status: string; category: string;
+  body: string; header: string; footer: string; variables: string[];
+  named: boolean; catalogIndexes: number[]; blockedReason: string | null;
+}
+
+export interface WhatsAppTemplatesResponse {
+  templates: MetaTemplate[];
+  ready: boolean;
+  blockers: string[];
+  phoneNumberId: string;
+}
+
+export interface WhatsAppDispatchResult {
+  companyId: string;
+  phone: string;
+  success: boolean;
+  messageId?: string;
+  error?: string;
+}
+
+async function whatsappRequest<T>(route: string, body?: unknown): Promise<T> {
+  const token = await getSessionToken();
+  const response = await fetch(getSupabaseFunctionUrl("crm-agent", route), {
+    method: body ? "POST" : "GET",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.error || "No se pudo completar la operacion WhatsApp.");
+  return data as T;
+}
+
+export function getWhatsAppTemplates() {
+  return whatsappRequest<WhatsAppTemplatesResponse>("meta-whatsapp-templates");
+}
+
+export function sendWhatsAppCampaign(body: {
+  campaignId: string; templateId: string; language: string; confirmSend: true; thumbnailProductId?: string;
+  recipients: Array<{ companyId: string; phone: string; parameters: string[] }>;
+}) {
+  return whatsappRequest<{ success: boolean; results: WhatsAppDispatchResult[] }>("meta-whatsapp-send", body);
+}
 
 export interface WhatsAppConnectionStatus {
   ok: boolean;
