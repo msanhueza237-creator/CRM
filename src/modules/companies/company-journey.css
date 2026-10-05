@@ -1,0 +1,46 @@
+.company-journey { border-block: 1px solid #d4e0e1; padding:24px 0; min-width:0; scroll-margin-top:24px; }
+.company-journey-heading { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+.company-journey h2 { font-size:22px; margin:0 0 6px; }
+.company-journey-heading p { margin:0; font-size:14px; color:#5b6f72; }
+.company-journey-actions { display:flex; gap:8px; align-items:center; }
+.company-journey-filters { display:flex; gap:14px; align-items:flex-end; margin:20px 0 14px; flex-wrap:wrap; }
+.company-journey-filters label { display:grid; gap:5px; font-size:13px; }
+.company-journey-filters input,.company-journey-filters select { min-height:42px; border:1px solid #bacdd0; background:white; color:#213c42; border-radius:6px; padding:9px; min-width:0; max-width:100%; }
+.company-journey-filters .company-journey-search { position:relative; flex:1; min-width:210px; }
+.company-journey-search svg { position:absolute; left:12px; top:12px; color:#5b6f72; }
+.company-journey-search input { padding-left:38px; width:100%; }
+.company-journey-tabs { display:flex; flex-wrap:wrap; gap:0; border-bottom:1px solid #bacdd0; }
+.company-journey-tabs button { background:transparent; border:0; border-bottom:3px solid transparent; color:#52686c; min-height:44px; padding:10px 14px; font:inherit; font-size:14px; cursor:pointer; }
+.company-journey-tabs button[aria-selected=true] { color:#096c75; border-bottom-color:#096c75; font-weight:700; }
+.company-journey button:focus-visible,.company-journey a:focus-visible { outline:2px solid #096c75; outline-offset:3px; }
+.company-journey-next { display:flex; flex-wrap:wrap; gap:30px; padding:20px 0 14px; }
+.company-journey-next div { display:grid; gap:6px; }
+.company-journey-next span { font-size:13px; color:#5b6f72; }
+.company-journey-tasks { font-size:14px; margin-bottom:18px; }
+.company-journey-tasks summary { cursor:pointer; }
+.company-journey-tasks li { padding:6px 0; overflow-wrap:anywhere; }
+.company-journey-source-details { border-top:1px solid #d4e0e1; padding:14px 0; font-size:14px; }
+.company-journey-source-details summary { cursor:pointer; }
+.company-journey-source-details summary small { display:block; margin-top:6px; font-size:12px; color:#687c7e; line-height:1.6; }
+.company-journey-sources { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 24px; border-block:1px solid #d4e0e1; padding:16px 0; }
+.company-journey-sources div { display:grid; align-content:start; gap:5px; min-width:0; font-size:13px; }
+.company-journey-sources span { color:#52686c; }
+.company-journey-sources small { color:#687c7e; line-height:1.5; }
+.company-journey-events { list-style:none; padding:0; margin:0; }
+.company-journey-events li { display:grid; grid-template-columns:105px minmax(0,1fr) minmax(130px,180px); gap:16px; border-bottom:1px solid #d4e0e1; padding:20px 0; }
+.company-journey-event-date,.company-journey-event-amount { display:flex; flex-direction:column; gap:7px; font-size:14px; }
+.company-journey-event-date span { color:#687c7e; font-size:12px; }
+.company-journey-event-body { min-width:0; overflow-wrap:anywhere; }
+.company-journey-event-body p { font-size:14px; line-height:1.5; margin:8px 0; white-space:pre-wrap; }
+.company-journey-event-body small,.company-journey-event-amount small { display:block; color:#687c7e; font-size:12px; line-height:1.5; }
+.company-journey-event-body a { display:inline-flex; align-items:center; gap:5px; font-size:13px; margin-top:8px; color:#096c75; }
+.company-journey-state { display:block; color:#896222; font-size:12px; margin-top:5px; }
+.company-journey-event-amount { text-align:right; overflow-wrap:anywhere; }
+@media(max-width:640px) {
+  .company-journey h2 { font-size:20px; }
+  .company-journey-filters > label { width:100%; }
+  .company-journey-sources { grid-template-columns:minmax(0,1fr); }
+  .company-journey-events li { grid-template-columns:minmax(0,1fr); gap:10px; }
+  .company-journey-event-date { flex-direction:row; justify-content:space-between; }
+  .company-journey-event-amount { text-align:left; }
+}

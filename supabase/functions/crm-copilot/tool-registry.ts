@@ -33,6 +33,7 @@ import { salesProjectionTool } from "./sales-projection.ts";
 import { customerProfitabilityTool } from "./customer-profitability.ts";
 import { identifiedCompany, uniqueCompanyTaxId, companyPurchaseHistory } from "./company-evidence.ts";
 import { customerTaxId } from "../_shared/invoice-customers.ts";
+import { customerJourneyTool } from "./customer-journey.ts";
 
 const string = { type: ["string", "null"], maxLength: 160 };
 const integer = (min: number, max: number) => ({
@@ -242,6 +243,9 @@ export class ToolRegistry {
     });
   }
   private registerTools() {
+    this.add("get_customer_journey", "customers", "Historial de UNA empresa por company_id: pedidos Tiendanube, documentos Facto, referencias manuales de cotizacion y actividad CRM. Incluye seguimientos pendientes, fechas de evidencia y fuentes no disponibles. Pedidos y facturas pueden ser la misma venta: NO sumarlos ni inferir conversiones. No incluye chats historicos del WhatsApp de Tiendanube, no envia mensajes ni acredita consentimiento. Respeta permisos de ventas. Comercial es responsable del seguimiento; Finanzas de utilidad y margen.",
+      { company_id: string, ...period, ...paging, section: choice("all", "orders", "documents", "quotes", "activity") },
+      args => customerJourneyTool(this.source, args));
     this.add("get_customer_profitability", "finance",
       "Rentabilidad por cliente: ventas netas sin IVA, costo vinculado, utilidad bruta CLP y margen. sort_by=sales para rentabilidad de los clientes/empresas de MAYOR VENTA o facturacion: selecciona primero por ventas, conserva costos pendientes con margen null. gross_profit para mayor utilidad, margin para mayor porcentaje: solo costos/reversas verificados. limit=10 para top 10, period=this_year para este ano, query=null salvo cliente/RUT pedido. Devuelve universo, cobertura global, fuentes/frescura y pendientes por documento con accion y enlace. cohort=pending y offset para revisar todos los pendientes sin truncarlos; cohort=all para universo paginado. Los costos actuales de catalogo/importacion no reemplazan costos historicos. Devuelve cobertura y totales ponderados de la seleccion. No es utilidad neta ni descuento autorizado. Mismo calculo del dashboard.",
       { ...period, company_id: string, query: paging.query, offset: paging.offset, cohort: choice("all", "verified", "provisional", "uncalculated", "pending"), limit: integer(1, 100), sort_by: choice("gross_profit", "margin", "sales") },

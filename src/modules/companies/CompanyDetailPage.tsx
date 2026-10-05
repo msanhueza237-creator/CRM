@@ -6,9 +6,14 @@ import { useCompanyStore } from "./CompanyStore";
 import type { Interaction } from "../../types/crm";
 import { useAuth } from "../auth/AuthContext";
 import { CompanyInsights } from "./CompanyInsights";
+import { CompanyJourney } from "./CompanyJourney";
 
 const interactionTypes: Interaction["type"][] = ["Llamada", "Correo", "WhatsApp", "Reunion", "Cotizacion", "Nota"];
 const today = new Date().toISOString().slice(0, 10);
+function referenceUrl(value: string | undefined) {
+  try { const url = new URL(value || ""); return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password ? url.href : undefined; }
+  catch { return undefined; }
+}
 
 const emptyInteraction: Omit<Interaction, "id" | "companyId"> = {
   date: today,
@@ -44,6 +49,10 @@ export function CompanyDetailPage() {
   const [emailMessages, setEmailMessages] = useState<EmailMessageRow[]>([]);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState("");
+  const [interactionError, setInteractionError] = useState("");
+  const [savingInteraction, setSavingInteraction] = useState(false);
+  const [historyRevision, setHistoryRevision] = useState(0);
+  const [quoteFolio, setQuoteFolio] = useState("");
 
   const company = companyId ? getCompany(companyId) : undefined;
 
@@ -102,26 +111,32 @@ export function CompanyDetailPage() {
       const whatsappUrl = `https://api.whatsapp.com/send?phone=${cleanPhone}&text=${encodeURIComponent(previewMessage)}`;
       window.open(whatsappUrl, "_blank");
       
-      updateInteractionField("result", `Mensaje enviado por WhatsApp${catalogObj ? ` con ${catalogObj.label}` : ""}`);
+      updateInteractionField("result", "Borrador abierto en WhatsApp; envio no confirmado");
       updateInteractionField("nextAction", "Hacer seguimiento por WhatsApp");
     } else {
       const subject = `Contacto Climactiva - ${company!.name}`;
       const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${company!.email}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(previewMessage)}`;
       window.open(gmailUrl, "_blank");
       
-      updateInteractionField("result", `Correo enviado por Gmail${catalogObj ? ` con ${catalogObj.label}` : ""}`);
+      updateInteractionField("result", "Borrador abierto en Gmail; envio no confirmado");
       updateInteractionField("nextAction", "Esperar respuesta de correo");
     }
   }
 
-  function handleInteractionSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleInteractionSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    createInteraction({
-      ...interactionForm,
-      companyId: company!.id,
-    });
-    setInteractionForm(emptyInteraction);
-    setShowInteractionForm(false);
+    if (savingInteraction) return;
+    setInteractionError("");
+    if (interactionForm.relatedUrl && !referenceUrl(interactionForm.relatedUrl)) {
+      setInteractionError("El enlace debe ser una direccion web http o https sin credenciales."); return;
+    }
+    setSavingInteraction(true);
+    try {
+      await createInteraction({ ...interactionForm, companyId: company!.id,
+        description: interactionForm.type === "Cotizacion" && quoteFolio.trim() ? `Cotizacion Facto ${quoteFolio.trim()} · ${interactionForm.description}` : interactionForm.description });
+      setInteractionForm(emptyInteraction); setQuoteFolio(""); setShowInteractionForm(false); setHistoryRevision(v => v + 1);
+    } catch (error) { setInteractionError(error instanceof Error ? error.message : "No se pudo guardar la interaccion."); }
+    finally { setSavingInteraction(false); }
   }
 
   async function handleDeleteCompany() {
@@ -164,6 +179,12 @@ export function CompanyDetailPage() {
       </div>
 
       <CompanyInsights key={company.id} companyId={company.id} />
+      <CompanyJourney key={`journey-${company.id}`} companyId={company.id} revision={historyRevision}
+        onRegisterQuote={user && ["administrador", "vendedor"].includes(user.role) ? () => {
+          setInteractionForm({ ...emptyInteraction, type: "Cotizacion", date: new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santiago" }).format(new Date()) });
+          setQuoteFolio(""); setInteractionError(""); setShowInteractionForm(true);
+          requestAnimationFrame(() => document.getElementById("interaction-editor")?.scrollIntoView({ behavior: "smooth", block: "start" }));
+        } : undefined} />
 
       <div className="panel company-description">
         <div className="panel-heading">
@@ -204,17 +225,17 @@ export function CompanyDetailPage() {
         </div>
       </div>
 
-      <div className="panel">
+      <div className="panel" id="interaction-editor">
         <div className="panel-heading">
-          <h2>Historial comercial</h2>
-          <button className="ghost-button" type="button" onClick={() => setShowInteractionForm((current) => !current)}>
+          <h2>Interacciones registradas</h2>
+          {user && ["administrador", "vendedor"].includes(user.role) && <button className="ghost-button" type="button" onClick={() => { setInteractionError(""); setShowInteractionForm((current) => !current); }}>
             <Plus size={16} />
             Registrar interaccion
-          </button>
+          </button>}
         </div>
 
         {showInteractionForm ? (
-          <form className="interaction-form" onSubmit={handleInteractionSubmit}>
+          <form className="interaction-form" onSubmit={event => void handleInteractionSubmit(event)}>
             <label>
               Fecha
               <input type="date" value={interactionForm.date} onChange={(event) => updateInteractionField("date", event.target.value)} />
@@ -240,6 +261,9 @@ export function CompanyDetailPage() {
               Responsable
               <input value={interactionForm.owner} onChange={(event) => updateInteractionField("owner", event.target.value)} />
             </label>
+            {interactionForm.type === "Cotizacion" && <label>Folio de cotizacion Facto<input required value={quoteFolio} maxLength={80} onChange={e => setQuoteFolio(e.target.value)} /></label>}
+            <label className="wide-field">Enlace de referencia (opcional)<input type="url" value={interactionForm.relatedUrl || ""} onChange={e => updateInteractionField("relatedUrl", e.target.value)} /></label>
+            {interactionForm.type === "Cotizacion" && <p className="wide-field muted">Referencia manual. No emite ni modifica la cotizacion en Facto.</p>}
             <label className="wide-field">
               Descripcion / Mensaje
               <textarea
@@ -326,16 +350,17 @@ export function CompanyDetailPage() {
                     onClick={handleSendRealContact}
                     disabled={!interactionForm.description.trim()}
                   >
-                    Enviar Mensaje Real ({selectedChannel})
+                    Abrir borrador en {selectedChannel}
                   </button>
                 </div>
               </div>
             )}
 
             <div className="form-actions wide-field" style={{ gridColumn: "span 3" }}>
-              <button className="ghost-button" type="button" onClick={() => setShowInteractionForm(false)}>Cancelar</button>
-              <button className="primary-button" type="submit">Guardar interaccion</button>
+              <button className="ghost-button" type="button" disabled={savingInteraction} onClick={() => setShowInteractionForm(false)}>Cancelar</button>
+              <button className="primary-button" type="submit" disabled={savingInteraction}>{savingInteraction ? "Guardando..." : "Guardar interaccion"}</button>
             </div>
+            {interactionError && <p className="wide-field company-insight-warning" role="alert">{interactionError}</p>}
           </form>
         ) : null}
 
@@ -346,10 +371,10 @@ export function CompanyDetailPage() {
               <h3 style={{ whiteSpace: "pre-wrap" }}>{interaction.description}</h3>
               <p>{interaction.result}</p>
               <strong>{interaction.nextAction}</strong>
-              {interaction.relatedUrl ? (
+              {referenceUrl(interaction.relatedUrl) ? (
                 <p>
-                  <a href={interaction.relatedUrl} target="_blank" rel="noreferrer">
-                    Abrir hilo en Gmail
+                  <a href={referenceUrl(interaction.relatedUrl)} target="_blank" rel="noreferrer">
+                    Abrir referencia
                   </a>
                 </p>
               ) : null}

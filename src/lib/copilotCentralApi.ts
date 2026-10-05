@@ -38,6 +38,13 @@ export interface CopilotReadResult {
 export interface CompanyInsights {
   profile: CopilotReadResult; profitability: CopilotReadResult; products: CopilotReadResult; traceId: string;
 }
+export async function getCompanyHistory(companyId: string, period: string, section: string, query: string, offset: number, signal?: AbortSignal): Promise<CopilotReadResult> {
+  const params = new URLSearchParams({ companyId, period, section, query, offset: String(offset) });
+  const response = await fetch(getSupabaseFunctionUrl("crm-copilot", `company-history?${params}`), { headers: await headers(), signal, cache: "no-store" });
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.error || "No se pudo consultar el historial comercial.");
+  return data.result;
+}
 export interface CustomerClassificationPreview {
   fingerprint: string; asOf: string;
   plan: Array<{ companyId: string | null; companyName: string; taxId: string; previousStatus: string | null;

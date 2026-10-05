@@ -13,7 +13,7 @@ interface CompanyStoreValue {
   interactions: Interaction[];
   createCompany: (company: Omit<Company, "id">, options?: { localOnly?: boolean }) => Company;
   createCompanies: (companies: Array<Omit<Company, "id">>) => Promise<Company[]>;
-  createInteraction: (interaction: Omit<Interaction, "id">) => Interaction;
+  createInteraction: (interaction: Omit<Interaction, "id">) => Promise<Interaction>;
   updateCompany: (id: string, company: Omit<Company, "id">) => Promise<Company>;
   deleteCompany: (id: string) => Promise<void>;
   getCompany: (id: string) => Company | undefined;
@@ -158,14 +158,18 @@ export function CompanyStoreProvider({ children }: { children: React.ReactNode }
         });
         return created;
       },
-      createInteraction: (interaction) => {
+      createInteraction: async (interaction) => {
         const created = { ...interaction, id: crypto.randomUUID() };
-        const nextInteractions = [created, ...interactions];
-        setInteractions(nextInteractions);
-        saveInteractions(nextInteractions);
-        if (isSupabaseConfigured && supabase && user) {
-          void supabase.from("interactions").insert(mapInteractionToSupabase(created));
+        if (isSupabaseConfigured) {
+          if (!supabase || !user) throw new Error("Inicia sesion para guardar el seguimiento.");
+          const { data, error } = await supabase.from("interactions").insert(mapInteractionToSupabase(created)).select("id").single();
+          if (error || data?.id !== created.id) throw new Error("No se confirmo el guardado. Revisa el historial antes de reintentar.");
         }
+        setInteractions(current => {
+          const next = [created, ...current];
+          saveInteractions(next);
+          return next;
+        });
         return created;
       },
       updateCompany: async (id, company) => {

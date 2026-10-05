@@ -46,6 +46,16 @@ export async function centralHandler(
       headers: { ...cors, "Content-Type": "application/json", "Cache-Control": "no-store" },
     });
   if (route === "models") return json(await modelCatalog(source, settings));
+  if (route === "company-history") {
+    if (req.method !== "GET") return json({ error: "Metodo no permitido" }, 405);
+    const params = new URL(req.url).searchParams;
+    const result = await new ToolRegistry(source).execute("get_customer_journey", {
+      company_id: params.get("companyId"), period: params.get("period") || "all",
+      section: params.get("section") || "all", query: params.get("query"),
+      offset: Number(params.get("offset") || 0), limit: 20,
+    });
+    return json({ result, traceId });
+  }
   if (route === "company-insights") {
     if (req.method !== "GET") return json({ error: "Metodo no permitido." }, 405);
     const args: Row = { company_id: url.searchParams.get("companyId"), period: "custom", from: url.searchParams.get("from"), to: url.searchParams.get("to") };
