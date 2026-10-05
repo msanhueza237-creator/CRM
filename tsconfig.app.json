@@ -4,7 +4,11 @@
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
     "target": "ES2020",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "allowJs": false,
     "skipLibCheck": true,
     "esModuleInterop": true,
@@ -19,5 +23,12 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src", "supabase/functions/_shared/prospecting-quality.ts", "supabase/functions/_shared/customer-profitability-contract.ts", "supabase/functions/_shared/facto-posting-contract.ts", "supabase/functions/_shared/facto-cost-return-contract.ts", "supabase/functions/_shared/market-study-contract.ts"]
+  "include": [
+    "src",
+    "supabase/functions/_shared/prospecting-quality.ts",
+    "supabase/functions/_shared/customer-profitability-contract.ts",
+    "supabase/functions/_shared/facto-posting-contract.ts",
+    "supabase/functions/_shared/facto-cost-return-contract.ts",
+    "supabase/functions/_shared/market-study-contract.ts"
+  ]
 }

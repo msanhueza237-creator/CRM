@@ -1,0 +1,112 @@
+import assert from 'node:assert/strict';
+import { readFile, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { PGlite } from '@electric-sql/pglite';
+import { createResearchHandler } from '../supabase/functions/market-research/handler.ts';
+import { createMarketHandler } from '../supabase/functions/market-study/handler.ts';
+import { validateExtraction, validateAttributes } from '../supabase/functions/market-research/extraction.ts';
+import { encryptApiKey } from '../supabase/functions/prospecting-integrations/deepseek.ts';
+const db=new PGlite(),admin='11111111-1111-4111-8111-111111111111',key='22222222-2222-4222-8222-222222222222',integration='33333333-3333-4333-8333-333333333333';
+const encryption='synthetic-encryption-only-'.repeat(3),secret='synthetic-worker',checks=[];let sent=0,mode='ok',hold,entered,role='administrador';
+const vars={PROSPECTING_SECRET_ENCRYPTION_KEY:encryption,MARKET_EXTRACTION_ENABLED:'true',MARKET_EXTRACTION_DEEPSEEK_RATE_DATE:new Date().toISOString().slice(0,10)};
+const readEnv=k=>vars[k];
+const input=(n=1,batch=1)=>({schema_version:1,batch_id:`aaaaaaaa-aaaa-4aaa-8aaa-${String(batch).padStart(12,'0')}`,selection_revision:1,job_id:`bbbbbbbb-bbbb-4bbb-8bbb-${String(n).padStart(12,'0')}`,provider:'synthetic-research',sku:'SYN-A',source:{url:'https://competidor.example/producto',observed_at:new Date().toISOString(),public_product_page:true,text:'Bomba Modelo ABC. Precio 11900 CLP IVA incluido. Unidad.'}});
+const json=(x,status=200)=>new Response(JSON.stringify(x),{status,headers:{'Content-Type':'application/json'}});
+const sql=async(text,args=[])=>{await db.exec('reset role');return db.query(text,args);};
+const fetcher=async(url,options={})=>{
+ const u=new URL(url);
+ if(['api.deepseek.com','api.openai.com'].includes(u.hostname)){
+  sent++;assert.equal(u.pathname,u.hostname==='api.deepseek.com'?'/responses':'/v1/responses');assert.equal(options.headers.Authorization,u.hostname==='api.deepseek.com'?'Bearer synthetic-provider':'Bearer synthetic-openai');
+  const body=JSON.parse(options.body);assert.equal(body.max_output_tokens,1024);assert.deepEqual(body.tools,[]);assert.equal(body.text.format.type,'json_object');
+  if(mode==='hold'){entered();await hold;}
+  if(mode==='timeout')throw new DOMException('synthetic timeout','TimeoutError');
+  const attributes=mode==='hallucination'?[{field:'price',value:'999',quote:'No such quote'}]:[{field:'model',value:'ABC',quote:'Modelo ABC'},{field:'price',value:'11900',quote:'Precio 11900 CLP'}];
+  return json({status:'completed',output:[],output_text:JSON.stringify({attributes}),...(mode==='unknownusage'?{}:{usage:{input_tokens:150,output_tokens:50}})});
+ }
+ assert.equal(u.hostname,'synthetic.test','No external network allowed');
+ if(u.pathname==='/auth/v1/user')return json({id:admin});
+ if(u.pathname.includes('/rpc/')){
+  const fn=u.pathname.split('/').at(-1),args=JSON.parse(options.body);const names=Object.keys(args);
+  try{await db.exec('set role service_role');const call=`public.${fn}(${names.map((n,i)=>`${n} => $${i+1}`).join(',')})`;
+   const result=await db.query(fn==='validate_agent_api_key'?`select to_jsonb(t) value from ${call} t`:`select ${call} value`,names.map(n=>args[n]!==null&&typeof args[n]==='object'?JSON.stringify(args[n]):args[n]));
+   if(fn==='market_extraction_finish'&&mode==='finishlost')return new Response('synthetic lost acknowledgement',{status:503});
+   return json(fn==='validate_agent_api_key'?result.rows.map(r=>r.value):result.rows[0].value);
+  }catch(e){return json({code:e.code,message:'synthetic database rejection'},400);}finally{await db.exec('reset role');}
+ }
+ const table=u.pathname.split('/').at(-1),fields=u.searchParams.get('select');
+ assert.ok(['prospecting_ai_integrations','market_extraction_policy','profiles'].includes(table));
+ if(table==='profiles')return json([{id:admin,role,active:true}]);
+ assert.ok(fields.split(',').every(f=>/^[a-z_]+$/.test(f)));
+ const result=await sql(`select ${fields} from ${table}`);return json(result.rows);
+};
+const handler=createResearchHandler({url:'https://synthetic.test',serviceRoleKey:'synthetic-service',readEnv},fetcher);
+const request=async(body,keyHeader=secret)=>{const response=await handler(new Request('https://synthetic.test/functions/v1/market-research/extract',{method:'POST',headers:{'content-type':'application/json',...(keyHeader?{'x-climactiva-api-key':keyHeader}:{})},body:JSON.stringify(body)}));return {status:response.status,body:await response.json()};};
+const mark=name=>{checks.push({name,passed:true});console.log('PASS '+name);};
+try{
+ await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
+ create table profiles(id uuid primary key,role text,active boolean);insert into profiles values('${admin}','administrador',true);
+ create table agent_api_keys(id uuid primary key default gen_random_uuid(),name text,key_prefix text,key_hash text,scopes text[],active boolean default true,expires_at timestamptz,revoked_at timestamptz,last_used_at timestamptz,created_by uuid,created_at timestamptz default now());
+ create table content_products(id uuid primary key,sku text,name text,brand text,product_url text,last_synced_at timestamptz,source_status text,sync_status text,paused boolean,variants jsonb);
+ create table prospecting_ai_integrations(provider text,status text,models jsonb,api_key_encrypted text);
+ create schema extensions;create function extensions.digest(value text,algorithm text) returns bytea language sql as 'select sha256(convert_to(value,''UTF8''))';
+ grant select,update on agent_api_keys to service_role;grant select on profiles,prospecting_ai_integrations to service_role;`);
+ await db.exec(`create schema auth;create function auth.uid() returns uuid language sql as 'select null::uuid';create function public.current_role() returns text language sql as 'select ''administrador''::text';create function extensions.gen_random_bytes(n integer) returns bytea language sql as 'select sha256(convert_to(gen_random_uuid()::text,''UTF8''))';`);
+ const keySql=await readFile('supabase/agent_api_keys.sql','utf8');await db.exec(keySql.slice(keySql.indexOf('create or replace function public.create_agent_api_key(')));
+ for(const path of ['market_study.sql','market_research_api.sql','market_extraction.sql'])await db.exec(await readFile('supabase/'+path,'utf8'));
+ await sql(`insert into content_products(id,sku,name,source_status,sync_status,paused,variants) values(gen_random_uuid(),'SYN-ADMIN','Synthetic','active','synced',false,'[]')`);
+ await sql("update market_extraction_policy set daily_usd=.25,pilot_usd=.25,daily_jobs=10,public_hosts=array['synthetic.example'],approved_until=now()+interval '1 hour'");
+ const adminRpc=async(action,config={})=>{await db.exec('set role service_role');try{return (await db.query('select market_research_admin($1,$2,$3) value',[admin,action,JSON.stringify(config)])).rows[0].value;}finally{await db.exec('reset role');}};
+ const access=await adminRpc('list');assert.equal(JSON.stringify(access).includes('key_hash'),false);
+ const end=new Date(Math.min(Date.now()+120000,Date.parse(new Date().toISOString().slice(0,10)+'T00:00:00Z')+86400000-1000)).toISOString();
+ const cfg={request_id:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',provider:'market-worker-synthetic',skus:['SYN-ADMIN'],expires_at:end,policy:access.policy,secure_destination_ready:true,confirm:'CREATE'};
+ for(const patch of [{confirm:'NO'},{secure_destination_ready:false},{policy:{...access.policy,pilot_usd:5}},{skus:['MISSING']},{expires_at:new Date(Date.now()+7200000).toISOString()},{scopes:['crm:read']}])await assert.rejects(adminRpc('create',{...cfg,...patch}));
+ const issued=await adminRpc('create',cfg);assert.ok(issued.api_key);await assert.rejects(adminRpc('create',cfg));
+ const listing=await adminRpc('list');assert.equal(JSON.stringify(listing).includes(issued.api_key),false);assert.equal(listing.integrations.length,1);
+ await adminRpc('revoke',{id:issued.id,confirm:'REVOKE'});assert.equal((await adminRpc('list')).integrations[0].active,false);
+ for(const dbRole of ['anon','authenticated']){await db.exec('set role '+dbRole);await assert.rejects(db.query("select market_research_admin($1,'list','{}')",[admin]),e=>e.code==='42501');await db.exec('reset role');}
+ await sql('update profiles set active=false');await assert.rejects(adminRpc('list'));await sql('update profiles set active=true');
+ mark('admin lifecycle: explicit consent, fixed scopes, policy snapshot, SKU/expiry, duplicate prevention, secret-free listing, revoke, inactive admin and SQL role denial');
+ await sql("update market_extraction_policy set daily_usd=1,pilot_usd=5,daily_jobs=50,public_hosts='{}',approved_until=null");
+ await sql('insert into agent_api_keys(id,name,key_hash,scopes,expires_at) values($1,$2,$3,$4,now()+interval \'1 day\')',[key,'synthetic',createHash('sha256').update(secret).digest('hex'),['market-research:extract']]);
+ await sql(`insert into market_research_integrations(id,api_key_id,provider,allowed_skus,active,expires_at,authorized_by) values($1,$2,'synthetic-research',array['SYN-A'],true,now()+interval '1 day',$3)`,[integration,key,admin]);
+ await sql(`insert into prospecting_ai_integrations values('deepseek','verified','["deepseek-flash","deepseek-v4-pro"]',$1)`,[await encryptApiKey('synthetic-provider',encryption)]);
+ const initial=input();assert.equal((await request(initial)).status,503);assert.equal(sent,0);mark('migration defaults disabled; no provider call');
+ for(const patch of [{prompt:'arbitrary'},{source:{...initial.source,url:'https://127.0.0.1/'}},{source:{...initial.source,url:'https://localhost/'}},{source:{...initial.source,text:'Cliente: private CRM record'}},{source:{...initial.source,observed_at:'2000-01-01T00:00:00Z'}}])assert.throws(()=>validateExtraction({...initial,...patch}));
+ assert.throws(()=>validateAttributes({attributes:[{field:'cost',value:'11900',quote:'11900'}]},initial.source.text));mark('strict request, internal URLs, private fields, stale data and unsupported evidence rejected');
+ await sql("update market_extraction_policy set enabled=true,approved_until=now()+interval '1 hour',public_hosts=array['competidor.example']");
+ vars.MARKET_EXTRACTION_ENABLED='false';assert.equal((await request(initial)).status,503);vars.MARKET_EXTRACTION_ENABLED='true';
+ assert.equal((await request({...initial,source:{...initial.source,url:'https://unapproved.example/product'}})).status,403);assert.equal(sent,0);mark('runtime kill switch and approved-host boundary block inference');
+ assert.equal((await request(initial,null)).status,401);assert.equal((await request({...initial,sku:'OTHER'})).status,403);assert.equal(sent,0);mark('worker requires dedicated credential and authorized SKU');
+ const first=await request(initial);assert.equal(first.status,200,JSON.stringify(first));assert.equal(first.body.state,'completed',JSON.stringify(first));assert.equal(first.body.selection.model,'deepseek-flash');assert.equal(first.body.attributes.length,2);assert.equal(first.body.usage.estimated_usd,0.000105);assert.equal(first.body.requires_review,true);
+ assert.deepEqual((await request(initial)).body,first.body);assert.equal(sent,1);assert.equal((await request({...initial,source:{...initial.source,text:initial.source.text+' Changed.'}})).status,409);mark('successful evidence, usage, exact replay and conflicting identity; only one provider call');
+ await sql('select market_extraction_select($1,1,$2)',[admin,'deepseek:deepseek-v4-pro']);
+ const oldBatch=await request(input(2));assert.equal(oldBatch.body.selection.model,'deepseek-flash');
+ assert.equal((await request(input(3,2))).status,409);
+ const newBatch=await request({...input(3,2),selection_revision:2});assert.equal(newBatch.body.selection.model,'deepseek-v4-pro');mark('manual selection version; old batch pinned, stale new batch rejected');
+ mode='timeout';const uncertain=input(4);const timeout=await request(uncertain);assert.equal(timeout.body.state,'unknown');assert.equal(timeout.body.usage.estimated_usd,null);const calls=sent;assert.deepEqual((await request(uncertain)).body,timeout.body);assert.equal(sent,calls);mark('timeout keeps reservation; retry returns receipt without new inference');
+ mode='hallucination';const bad=await request(input(5));assert.equal(bad.body.state,'failed');assert.deepEqual(bad.body.attributes,[]);assert.equal(bad.body.usage.estimated_usd,null);mark('invented evidence rejected and ambiguous cost retained');
+ mode='unknownusage';const unknown=await request(input(6));assert.equal(unknown.body.state,'completed');assert.equal(unknown.body.usage.estimated_usd,null);assert.equal(unknown.body.usage.input_tokens,null);mark('missing provider usage is unknown, never zero/free');
+ mode='finishlost';const lostInput=input(10);assert.equal((await request(lostInput)).status,503);const lostCount=sent;mode='ok';assert.equal((await request(lostInput)).body.state,'completed');assert.equal(sent,lostCount);mark('lost finish acknowledgement recovered from ledger without duplicate inference');
+ mode='hold';let release;hold=new Promise(r=>release=r);let started;const enteredPromise=new Promise(r=>started=r);entered=started;
+ const concurrentInput=input(7),pending=request(concurrentInput);await enteredPromise;
+ assert.equal((await request(concurrentInput)).status,202);assert.equal((await request(input(8))).status,429);release();await pending;mode='ok';mark('in-flight replay 202 and single global concurrent inference');
+ await sql("update market_extraction_jobs set state='running',created_at=now()-interval '3 minutes',estimated_usd=null where job_id=$1",[lostInput.job_id]);const expiredCalls=sent;const expired=await request(lostInput);assert.equal(expired.body.state,'unknown');assert.equal(expired.body.error_code,'LEASE_EXPIRED');assert.equal(sent,expiredCalls);mark('abandoned reservation becomes unknown without dispatch');
+ await sql('update market_extraction_policy set daily_usd=0.000001');const count=sent;assert.equal((await request(input(9))).status,429);assert.equal(sent,count);await sql('update market_extraction_policy set daily_usd=1');mark('durable reservation budget denies new provider calls');
+ await sql('update market_extraction_policy set pilot_usd=0.000001');assert.equal((await request(input(9))).status,429);await sql('update market_extraction_policy set pilot_usd=5,daily_jobs=1');assert.equal((await request(input(9))).status,429);await sql("update market_extraction_policy set daily_jobs=50,approved_until=now()-interval '1 second'");assert.equal((await request(input(9))).status,503);await sql("update market_extraction_policy set approved_until=now()+interval '1 hour'");assert.equal(sent,count);mark('pilot-total budget, job quota and pilot expiry also block inference');
+ for(const dbRole of ['anon','authenticated']){await db.exec('set role '+dbRole);await assert.rejects(db.query('select * from market_extraction_jobs'),e=>e.code==='42501');await assert.rejects(db.query('select market_extraction_select($1,2,$2)',[admin,'deepseek:deepseek-flash']),e=>e.code==='42501');await db.exec('reset role');}mark('database roles cannot read ledger or change selection');
+ const adminHandler=createMarketHandler({rest:{url:'https://synthetic.test',anonKey:'synthetic-anon',serviceRoleKey:'synthetic-service'},origin:'https://synthetic.test',readEnv},fetcher);
+ const accessRequest=(headers={authorization:'Bearer synthetic-user'},body)=>adminHandler(new Request('https://synthetic.test/market-study/research-access',{method:body?'POST':'GET',headers,...(body?{body:JSON.stringify(body)}:{})}));
+ assert.equal((await accessRequest({'x-climactiva-api-key':secret})).status,401);
+ role='vendedor';assert.equal((await accessRequest()).status,403);role='administrador';
+ const accessResponse=await accessRequest();assert.equal(accessResponse.status,200);assert.equal(accessResponse.headers.get('cache-control'),'no-store');const status=await accessResponse.json();assert.ok(status.usage.jobs>0);assert.ok(status.usage.held_usd>0);assert.equal(JSON.stringify(status).includes('api_key'),false);
+ assert.equal((await accessRequest(undefined,{action:'create',config:{...cfg,confirm:'NO'}})).status,409);
+ mark('human-only administrative HTTP, safe no-store status/ledger and rejected creation');
+ const configRequest=(body)=>adminHandler(new Request('https://synthetic.test/market-study/extraction-settings',{method:body?'POST':'GET',headers:{authorization:'Bearer synthetic-user'},...(body?{body:JSON.stringify(body)}:{})}));
+ role='vendedor';assert.equal((await configRequest()).status,403);role='administrador';assert.equal((await configRequest()).status,200);assert.equal((await configRequest({revision:2,choice:'deepseek:arbitrary'})).status,422);assert.equal((await configRequest({revision:2,choice:'deepseek:deepseek-flash',enabled:true})).status,422);assert.equal((await configRequest({revision:1,choice:'deepseek:deepseek-flash'})).status,409);mark('administrative selector enforces role, model allowlist, revision and no activation field');
+ vars.OPENAI_API_KEY='synthetic-openai';vars.OPENAI_DEFAULT_MODEL='synthetic-model';vars.MARKET_EXTRACTION_OPENAI_RATE_DATE=new Date().toISOString().slice(0,10);
+ assert.equal((await configRequest({revision:2,choice:'openai:synthetic-model'})).status,200);
+ const alternate=await request({...input(11,3),selection_revision:3});assert.equal(alternate.body.state,'completed');assert.equal(alternate.body.selection.provider,'openai');assert.equal(alternate.body.selection.model,'synthetic-model');mark('explicit manual alternative uses configured OpenAI text transport; no automatic fallback');
+ await sql('update market_research_integrations set active=false');assert.equal((await request(initial)).status,403);mark('revocation blocks even cached receipts');
+ await writeFile('outputs/market-extraction/tests.json',JSON.stringify({passed:true,checks,providerCalls:sent,network:'injected synthetic fetch only; no external connections',database:'ephemeral PGlite; real migration/RPC, digest shim for existing validator'},null,2));
+ await writeFile('outputs/market-extraction/request.json',JSON.stringify(initial,null,2));await writeFile('outputs/market-extraction/response.json',JSON.stringify(first.body,null,2));
+}finally{await db.close();}

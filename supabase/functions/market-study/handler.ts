@@ -1,10 +1,12 @@
+import { researchAdmin } from './research-admin.ts';
+import { extractionChoices, extractionPolicy, ExtractionError, type ExtractionEnv } from '../market-research/extraction.ts';
 import { assertMarketAccess, normalizeMarketReview, previewMarketImport } from "../_shared/market-study-contract.ts";
 import { CopilotSources } from "../crm-copilot/sources.ts";
 import { inventoryValuation } from "../crm-copilot/inventory-valuation.ts";
 import { factoCurrencies } from "../crm-copilot/product-prices.ts";
 import { inventoryCatalogFields } from "../crm-copilot/product-resolution.ts";
 import { object, CopilotDataError, type RestConfig } from "../crm-copilot/contracts.ts";
-export interface MarketEnvironment { rest: RestConfig; origin: string; currencyMap?: string }
+export interface MarketEnvironment { rest: RestConfig; origin: string; currencyMap?: string; readEnv?: ExtractionEnv }
 class HttpError extends Error { constructor(public status: number,message: string) {super(message);} }
 async function readBody(req: Request) {
   const reader=req.body?.getReader();if(!reader)throw new HttpError(400,"Falta JSON.");
@@ -28,9 +30,30 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
    const source=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},req.signal,fetcher);
    const profiles=await source.select(`profiles?select=id,role,active&id=eq.${user.id}&limit=1`);
    try{assertMarketAccess(profiles[0]?{role:String(profiles[0].role),active:profiles[0].active===true}:null);}catch(e){throw new HttpError(403,(e as Error).message);}
+   if(route==='research-access') {
+    if(req.method!=='GET'&&req.method!=='POST')throw new HttpError(405,'Método no permitido.');
+    try {
+     const body=req.method==='GET'?{action:'list',config:{}}:object(await readBody(req));
+     if(Object.keys(body).sort().join(',')!=='action,config'||!['list','create','revoke'].includes(String(body.action)))throw new Error('Invalid request');
+     const result=await researchAdmin(env.rest,user.id,String(body.action),body.config,fetcher);
+     return json(result);
+    } catch { throw new HttpError(409,'Operación no confirmada. Actualiza el listado antes de reintentar; revoca cualquier credencial sin entregar.'); }
+   }
+   if(route==='extraction-settings') {
+    const ctx={url:env.rest.url,serviceRoleKey:env.rest.serviceRoleKey,readEnv:env.readEnv||(()=>undefined),fetcher};
+    const choices=await extractionChoices(ctx);
+    if(req.method==='GET')return json({policy:await extractionPolicy(ctx),choices});
+    if(req.method==='POST') {
+     const body=object(await readBody(req));
+     if(Object.keys(body).sort().join(',')!=='choice,revision'||!Number.isInteger(body.revision)||!choices.some(c=>c.choice===body.choice))throw new HttpError(422,'Selecciona un modelo compatible y configurado; no hay cambio automatico.');
+     try{await source.rpc('market_extraction_select',{p_actor:user.id,p_revision:body.revision,p_choice:body.choice},false);}catch{throw new HttpError(409,'La seleccion cambio; actualiza antes de guardar.');}
+     return json({policy:await extractionPolicy(ctx),choices});
+    }
+    throw new HttpError(405,'Metodo no permitido.');
+   }
    if(route==='health'&&req.method==='GET')return json({ok:true,service:'market-study',schemaVersion:1});
    if(route==='bootstrap'&&req.method==='GET'){
-    const [observations,reviews]=await Promise.all([source.all('market_study_observations?select=id,payload,created_at,created_by&order=created_at.asc,id.asc',5000),source.all('market_study_reviews?select=id,observation_id,payload,created_at,created_by&order=created_at.asc,id.asc',10000)]);
+    const [observations,reviews]=await Promise.all([source.all('market_study_observations?select=id,payload,created_at,created_by,origin_integration_id,origin_api_key_id&order=created_at.asc,id.asc',5000),source.all('market_study_reviews?select=id,observation_id,payload,created_at,created_by&order=created_at.asc,id.asc',10000)]);
     const warnings:string[]=[];
     const inventory=async()=>{try{
      const [snapshots,details,catalog,entity]=await Promise.all([source.records('inventory_snapshots'),source.records('product_details'),source.all(`content_products?select=${inventoryCatalogFields}&order=id.asc`),source.entity()]);
@@ -43,7 +66,7 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
      return {details,complete:true};
     }catch{warnings.push('No se pudo verificar cobertura de productos por llegar.');return {details:[],complete:false};}};
     const [stock,incoming]=await Promise.all([inventory(),imports()]);
-    return json({observations,reviews,inventory:stock?.records||[],inventoryAvailable:stock!==null,inventoryWarnings:stock?.warnings||[],imports:incoming.details,importsComplete:incoming.complete,warnings,readAt:new Date().toISOString()});
+    return json({observations:observations.map(row=>({...row,created_by:row.created_by??`API ${row.origin_integration_id}`})),reviews,inventory:stock?.records||[],inventoryAvailable:stock!==null,inventoryWarnings:stock?.warnings||[],imports:incoming.details,importsComplete:incoming.complete,warnings,readAt:new Date().toISOString()});
    }
    if(route==='imports/preview'&&req.method==='POST')return json(previewMarketImport(await readBody(req)));
    if(route==='imports/commit'&&req.method==='POST'){
@@ -59,6 +82,6 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
     catch{throw new HttpError(409,'La revisión cambió o no pudo guardarse. Actualiza antes de reintentar.');}
    }
    throw new HttpError(404,'Ruta no disponible. No existe una operación para cambiar precios.');
-  }catch(e){return json({error:e instanceof HttpError?e.message:e instanceof Error&&!(e instanceof CopilotDataError)?e.message:'Estudio de Mercado no está disponible en este entorno. No se generaron resultados con datos incompletos.'},e instanceof HttpError?e.status:e instanceof CopilotDataError?503:400);}
+  }catch(e){if(e instanceof ExtractionError)return json({error:e.code},e.status);return json({error:e instanceof HttpError?e.message:e instanceof Error&&!(e instanceof CopilotDataError)?e.message:'Estudio de Mercado no está disponible en este entorno. No se generaron resultados con datos incompletos.'},e instanceof HttpError?e.status:e instanceof CopilotDataError?503:400);}
  };
 }

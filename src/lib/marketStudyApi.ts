@@ -15,3 +15,19 @@ export const getMarketBootstrap=(signal?:AbortSignal)=>request<MarketBootstrap>(
 export const previewMarketResearch=(body:unknown)=>request<ReturnType<typeof previewMarketImport>>('imports/preview',body);
 export const importMarketResearch=(body:unknown)=>request<{inserted:number;duplicates:number}>('imports/commit',body);
 export const reviewMarketResearch=(body:MarketReviewInput)=>request<MarketReview>('reviews',body);
+export interface MarketExtractionSettingsData {
+ policy:{enabled:boolean;revision:number;choice:string;daily_usd:number;pilot_usd:number;daily_jobs:number;public_hosts:string[]};
+ choices:{choice:string;provider:string;model:string;input_usd_per_million:number;output_usd_per_million:number;rate_source:string;rate_checked_at:string}[];
+}
+export const getMarketExtractionSettings=()=>request<MarketExtractionSettingsData>('extraction-settings');
+export const saveMarketExtractionSettings=(body:{revision:number;choice:string})=>request<MarketExtractionSettingsData>('extraction-settings',body);
+export interface ResearchAccessData {
+ schema_version:1;
+ usage?:{jobs:number;unknown_jobs:number;estimated_usd:number;held_usd:number;last_job_at:string|null;skus:string[]};
+ policy:MarketExtractionSettingsData['policy'] & {approved_until:string|null};
+ scopes:string[];
+ integrations:{id:string;provider:string;skus:string[];expires_at:string;active:boolean;key_prefix:string}[];
+}
+export const getResearchAccess=()=>request<ResearchAccessData>('research-access');
+export const createResearchAccess=(config:unknown)=>request<{id:string;api_key:string;expires_at:string}>('research-access',{action:'create',config});
+export const revokeResearchAccess=(id:string)=>request<{revoked:boolean}>('research-access',{action:'revoke',config:{id,confirm:'REVOKE'}});

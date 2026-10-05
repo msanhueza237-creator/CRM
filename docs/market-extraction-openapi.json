@@ -1,0 +1,815 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Market extraction extension",
+    "version": "1.0.0",
+    "description": "Local implementation; pilot disabled. Backend owns all inference reservations and accounting."
+  },
+  "servers": [
+    {
+      "url": "https://supabase.latinchile.cl/functions/v1"
+    }
+  ],
+  "security": [
+    {
+      "IntegrationKey": []
+    }
+  ],
+  "paths": {
+    "/market-research/extraction-policy": {
+      "get": {
+        "x-required-scope": "market-research:extract",
+        "responses": {
+          "200": {
+            "description": "Policy, no credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "enabled",
+                    "revision",
+                    "choice",
+                    "daily_usd",
+                    "pilot_usd",
+                    "daily_jobs",
+                    "public_hosts"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "const": 1
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "choice": {
+                      "type": "string"
+                    },
+                    "daily_usd": {
+                      "type": "number"
+                    },
+                    "pilot_usd": {
+                      "type": "number"
+                    },
+                    "daily_jobs": {
+                      "type": "integer"
+                    },
+                    "public_hosts": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/market-research/extract": {
+      "post": {
+        "x-required-scope": "market-research:extract",
+        "description": "One immutable job per integration/job_id. Max request 28000 bytes. New batch pins current selection revision; subsequent jobs retain it. No source downloading or automatic observations.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "schema_version",
+                  "batch_id",
+                  "selection_revision",
+                  "job_id",
+                  "provider",
+                  "sku",
+                  "source"
+                ],
+                "properties": {
+                  "schema_version": {
+                    "const": 1
+                  },
+                  "batch_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "selection_revision": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "job_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "provider": {
+                    "type": "string",
+                    "maxLength": 80
+                  },
+                  "sku": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 150
+                  },
+                  "source": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "url",
+                      "observed_at",
+                      "public_product_page",
+                      "text"
+                    ],
+                    "properties": {
+                      "url": {
+                        "type": "string",
+                        "format": "uri",
+                        "maxLength": 1500
+                      },
+                      "observed_at": {
+                        "type": "string",
+                        "format": "date-time"
+                      },
+                      "public_product_page": {
+                        "const": true
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 10,
+                        "description": "Public product text only; <=20000 UTF-8 bytes and serialized text <=23904 bytes; no private/contact data or instructions"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Terminal receipt; inspect state, never auto-retry with new ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "job_id",
+                    "batch_id",
+                    "state",
+                    "selection",
+                    "sku",
+                    "source_url",
+                    "attributes",
+                    "usage",
+                    "error_code",
+                    "requires_review"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "const": 1
+                    },
+                    "job_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "batch_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "enum": [
+                        "running",
+                        "completed",
+                        "failed",
+                        "unknown"
+                      ]
+                    },
+                    "selection": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "revision",
+                        "provider",
+                        "model",
+                        "input_usd_per_million",
+                        "output_usd_per_million",
+                        "rate_source",
+                        "rate_checked_at"
+                      ],
+                      "properties": {
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "provider": {
+                          "enum": [
+                            "deepseek",
+                            "openai"
+                          ]
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "input_usd_per_million": {
+                          "type": "number"
+                        },
+                        "output_usd_per_million": {
+                          "type": "number"
+                        },
+                        "rate_source": {
+                          "type": "string"
+                        },
+                        "rate_checked_at": {
+                          "type": "string",
+                          "format": "date"
+                        }
+                      }
+                    },
+                    "sku": {
+                      "type": "string"
+                    },
+                    "source_url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "attributes": {
+                      "type": "array",
+                      "maxItems": 9,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "field",
+                          "value",
+                          "quote"
+                        ],
+                        "properties": {
+                          "field": {
+                            "enum": [
+                              "title",
+                              "brand",
+                              "model",
+                              "price",
+                              "currency",
+                              "vat",
+                              "unit",
+                              "package_quantity",
+                              "availability"
+                            ]
+                          },
+                          "value": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "quote": {
+                            "type": "string",
+                            "maxLength": 500
+                          }
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "estimated_usd",
+                        "reserved_usd"
+                      ],
+                      "properties": {
+                        "input_tokens": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "output_tokens": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "estimated_usd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "reserved_usd": {
+                          "type": "number"
+                        }
+                      }
+                    },
+                    "error_code": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "requires_review": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Existing job running; resend identical request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "schema_version",
+                    "job_id",
+                    "batch_id",
+                    "state",
+                    "selection",
+                    "sku",
+                    "source_url",
+                    "attributes",
+                    "usage",
+                    "error_code",
+                    "requires_review"
+                  ],
+                  "properties": {
+                    "schema_version": {
+                      "const": 1
+                    },
+                    "job_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "batch_id": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "state": {
+                      "enum": [
+                        "running",
+                        "completed",
+                        "failed",
+                        "unknown"
+                      ]
+                    },
+                    "selection": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "revision",
+                        "provider",
+                        "model",
+                        "input_usd_per_million",
+                        "output_usd_per_million",
+                        "rate_source",
+                        "rate_checked_at"
+                      ],
+                      "properties": {
+                        "revision": {
+                          "type": "integer"
+                        },
+                        "provider": {
+                          "enum": [
+                            "deepseek",
+                            "openai"
+                          ]
+                        },
+                        "model": {
+                          "type": "string"
+                        },
+                        "input_usd_per_million": {
+                          "type": "number"
+                        },
+                        "output_usd_per_million": {
+                          "type": "number"
+                        },
+                        "rate_source": {
+                          "type": "string"
+                        },
+                        "rate_checked_at": {
+                          "type": "string",
+                          "format": "date"
+                        }
+                      }
+                    },
+                    "sku": {
+                      "type": "string"
+                    },
+                    "source_url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "attributes": {
+                      "type": "array",
+                      "maxItems": 9,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "field",
+                          "value",
+                          "quote"
+                        ],
+                        "properties": {
+                          "field": {
+                            "enum": [
+                              "title",
+                              "brand",
+                              "model",
+                              "price",
+                              "currency",
+                              "vat",
+                              "unit",
+                              "package_quantity",
+                              "availability"
+                            ]
+                          },
+                          "value": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 160
+                          },
+                          "quote": {
+                            "type": "string",
+                            "maxLength": 500
+                          }
+                        }
+                      }
+                    },
+                    "usage": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "input_tokens",
+                        "output_tokens",
+                        "estimated_usd",
+                        "reserved_usd"
+                      ],
+                      "properties": {
+                        "input_tokens": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "output_tokens": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "estimated_usd": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "reserved_usd": {
+                          "type": "number"
+                        }
+                      }
+                    },
+                    "error_code": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "requires_review": {
+                      "const": true
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Rejected (400); see contract retry rules"
+          },
+          "401": {
+            "description": "Rejected (401); see contract retry rules"
+          },
+          "403": {
+            "description": "Rejected (403); see contract retry rules"
+          },
+          "409": {
+            "description": "Rejected (409); see contract retry rules"
+          },
+          "413": {
+            "description": "Rejected (413); see contract retry rules"
+          },
+          "415": {
+            "description": "Rejected (415); see contract retry rules"
+          },
+          "422": {
+            "description": "Rejected (422); see contract retry rules"
+          },
+          "429": {
+            "description": "Rejected (429); see contract retry rules"
+          },
+          "503": {
+            "description": "Rejected (503); see contract retry rules"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "IntegrationKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Climactiva-Api-Key"
+      }
+    },
+    "schemas": {
+      "ExtractRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "batch_id",
+          "selection_revision",
+          "job_id",
+          "provider",
+          "sku",
+          "source"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "batch_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "selection_revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "sku": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "source": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "url",
+              "observed_at",
+              "public_product_page",
+              "text"
+            ],
+            "properties": {
+              "url": {
+                "type": "string",
+                "format": "uri",
+                "maxLength": 1500
+              },
+              "observed_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "public_product_page": {
+                "const": true
+              },
+              "text": {
+                "type": "string",
+                "minLength": 10,
+                "description": "Public product text only; <=20000 UTF-8 bytes and serialized text <=23904 bytes; no private/contact data or instructions"
+              }
+            }
+          }
+        }
+      },
+      "ExtractReceipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "job_id",
+          "batch_id",
+          "state",
+          "selection",
+          "sku",
+          "source_url",
+          "attributes",
+          "usage",
+          "error_code",
+          "requires_review"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "job_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "batch_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "unknown"
+            ]
+          },
+          "selection": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "revision",
+              "provider",
+              "model",
+              "input_usd_per_million",
+              "output_usd_per_million",
+              "rate_source",
+              "rate_checked_at"
+            ],
+            "properties": {
+              "revision": {
+                "type": "integer"
+              },
+              "provider": {
+                "enum": [
+                  "deepseek",
+                  "openai"
+                ]
+              },
+              "model": {
+                "type": "string"
+              },
+              "input_usd_per_million": {
+                "type": "number"
+              },
+              "output_usd_per_million": {
+                "type": "number"
+              },
+              "rate_source": {
+                "type": "string"
+              },
+              "rate_checked_at": {
+                "type": "string",
+                "format": "date"
+              }
+            }
+          },
+          "sku": {
+            "type": "string"
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "attributes": {
+            "type": "array",
+            "maxItems": 9,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "field",
+                "value",
+                "quote"
+              ],
+              "properties": {
+                "field": {
+                  "enum": [
+                    "title",
+                    "brand",
+                    "model",
+                    "price",
+                    "currency",
+                    "vat",
+                    "unit",
+                    "package_quantity",
+                    "availability"
+                  ]
+                },
+                "value": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "quote": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              }
+            }
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "input_tokens",
+              "output_tokens",
+              "estimated_usd",
+              "reserved_usd"
+            ],
+            "properties": {
+              "input_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "output_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "estimated_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "reserved_usd": {
+                "type": "number"
+              }
+            }
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requires_review": {
+            "const": true
+          }
+        }
+      },
+      "ExtractionPolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "schema_version",
+          "enabled",
+          "revision",
+          "choice",
+          "daily_usd",
+          "pilot_usd",
+          "daily_jobs",
+          "public_hosts"
+        ],
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "choice": {
+            "type": "string"
+          },
+          "daily_usd": {
+            "type": "number"
+          },
+          "pilot_usd": {
+            "type": "number"
+          },
+          "daily_jobs": {
+            "type": "integer"
+          },
+          "public_hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}

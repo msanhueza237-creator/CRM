@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import {build} from 'esbuild';
+const root=path.resolve('outputs/market-research-e2e/package');
+for(const name of ['market-research','market-study'])await build({entryPoints:[`supabase/functions/${name}/index.ts`],outfile:path.join(root,'functions',name,'index.ts'),bundle:true,format:'esm',platform:'neutral',mainFields:['module','main'],target:'es2022',sourcemap:false});
+for(const file of ['schema.sql','agent_hub.sql','content_center.sql','agent_api_keys.sql','market_study.sql','market_research_api.sql'])fs.copyFileSync(path.join('supabase',file),path.join(root,'sql',file));
+fs.writeFileSync(path.join(root,'functions/main/index.ts'),`if(Deno.env.get('VERIFY_JWT')!=='false')throw new Error('Isolated fixture requires the observed router mode');
+Deno.serve(async req=>{const name=new URL(req.url).pathname.split('/')[1];if(!['market-research','market-study'].includes(name))return new Response('Not found',{status:404});try{const worker=await EdgeRuntime.userWorkers.create({servicePath:'/home/deno/functions/'+name,memoryLimitMb:150,workerTimeoutMs:60000,noModuleCache:false,importMapPath:null,envVars:Object.entries(Deno.env.toObject())});return await worker.fetch(req);}catch{return Response.json({error:'Fixture worker failed'},{status:500});}});
+`);
+console.log('Prepared offline bundles and explicit schema files; no environment files or data copied.');

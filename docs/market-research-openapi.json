@@ -1,0 +1,990 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "CRM Market Research API",
+    "version": "1.0.0",
+    "description": "LOCAL IMPLEMENTATION ONLY. No external access activated. Server-to-server key authentication. Handler does not set CORS; the existing gateway policy applies. All researched content is untrusted data. No costs, financial records or price writes."
+  },
+  "servers": [
+    {
+      "url": "https://YOUR-APPROVED-EDGE-HOST/functions/v1/market-research",
+      "description": "Placeholder; select/approve deployment destination before use."
+    }
+  ],
+  "paths": {
+    "/catalog": {
+      "get": {
+        "security": [
+          {
+            "IntegrationKey": []
+          }
+        ],
+        "x-required-scope": "market-research:catalog:read",
+        "responses": {
+          "200": {
+            "description": "Success. Research data only; no equivalence approval.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Catalog"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed envelope, JSON or unexpected query parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/expired/revoked key or missing scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Disabled/unbound/expired integration, inactive authorizer, broad key, or provider/SKU outside scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Route unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Payload identity conflict or nonconsecutive revision; atomic rollback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 350000 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid observations; no partial import",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ValidationFailure"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "1000 new observations per UTC day per integration exceeded; atomic rollback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Unavailable dependency or uncertain receipt; retry identical payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/observations/preview": {
+      "post": {
+        "security": [
+          {
+            "IntegrationKey": []
+          }
+        ],
+        "x-required-scope": "market-research:observations:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Batch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success. Research data only; no equivalence approval.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preview"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed envelope, JSON or unexpected query parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/expired/revoked key or missing scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Disabled/unbound/expired integration, inactive authorizer, broad key, or provider/SKU outside scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Route unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Payload identity conflict or nonconsecutive revision; atomic rollback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 350000 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid observations; no partial import",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ValidationFailure"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "1000 new observations per UTC day per integration exceeded; atomic rollback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Unavailable dependency or uncertain receipt; retry identical payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/observations": {
+      "post": {
+        "security": [
+          {
+            "IntegrationKey": []
+          }
+        ],
+        "x-required-scope": "market-research:observations:write",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Batch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success. Research data only; no equivalence approval.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed envelope, JSON or unexpected query parameters",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing/invalid/expired/revoked key or missing scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Disabled/unbound/expired integration, inactive authorizer, broad key, or provider/SKU outside scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Route unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "405": {
+            "description": "Method unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Payload identity conflict or nonconsecutive revision; atomic rollback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds 350000 bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Content-Type must be application/json",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid observations; no partial import",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ValidationFailure"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "1000 new observations per UTC day per integration exceeded; atomic rollback",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Unavailable dependency or uncertain receipt; retry identical payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "IntegrationKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Climactiva-Api-Key",
+        "description": "Existing agent_api_keys identity; must also have an enabled, unexpired provider/SKU binding. Never use administrator JWT or service_role."
+      }
+    },
+    "schemas": {
+      "Observation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "external_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000
+          },
+          "product_label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          },
+          "suggested_sku": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "Required non-null exact SKU in this integration allowlist; a suggestion never approves equivalence."
+          },
+          "seller": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "seller_kind": {
+            "enum": [
+              "competitor",
+              "supplier"
+            ]
+          },
+          "amount": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1000000000000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Z]{3}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "vat_basis": {
+            "enum": [
+              "net",
+              "gross",
+              "exempt",
+              "unknown"
+            ]
+          },
+          "vat_percent": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unit": {
+            "enum": [
+              "unit",
+              "kg",
+              "m",
+              "l"
+            ]
+          },
+          "package_quantity": {
+            "type": "number",
+            "minimum": 0.000001,
+            "maximum": 1000000000
+          },
+          "presentation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "availability": {
+            "enum": [
+              "available",
+              "unavailable",
+              "unknown"
+            ]
+          },
+          "source_url": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://",
+            "maxLength": 1500,
+            "description": "HTTP(S), no embedded credentials. Never fetched by this service."
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 40,
+            "description": "ISO with timezone, real calendar date and not in the future. Normalized to UTC."
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "fx": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{3}$",
+                    "description": "Foreign currency matching the offer; CLP is not valid here."
+                  },
+                  "clp_per_unit": {
+                    "type": "number",
+                    "minimum": 0.000001,
+                    "maximum": 100000000
+                  },
+                  "observed_at": {
+                    "type": "string",
+                    "format": "date-time",
+                    "maxLength": 40,
+                    "description": "ISO with timezone, real calendar date and not in the future. Normalized to UTC."
+                  },
+                  "source": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500
+                  }
+                },
+                "required": [
+                  "currency",
+                  "clp_per_unit",
+                  "observed_at",
+                  "source"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000,
+            "default": ""
+          }
+        },
+        "required": [
+          "provider",
+          "external_id",
+          "revision",
+          "product_label",
+          "suggested_sku",
+          "seller",
+          "seller_kind",
+          "amount",
+          "currency",
+          "vat_basis",
+          "vat_percent",
+          "unit",
+          "package_quantity",
+          "presentation",
+          "availability",
+          "source_url",
+          "observed_at",
+          "confidence"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "vat_basis": {
+                  "const": "gross"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "vat_percent": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "vat_basis": {
+                  "const": "exempt"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "vat_percent": {
+                  "const": 0
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Batch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "observations": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/Observation"
+            }
+          }
+        },
+        "required": [
+          "schema_version",
+          "observations"
+        ]
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ]
+      },
+      "ValidationFailure": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "canImport": {
+            "const": false
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "row": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "row",
+                "message"
+              ]
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        },
+        "required": [
+          "schema_version",
+          "canImport",
+          "errors",
+          "total"
+        ]
+      },
+      "Catalog": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "catalog_scope": {
+            "const": "authorized_published_catalog"
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sku": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "name": {
+                  "type": "string"
+                },
+                "brand": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "product_url": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "catalog_observed_at": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "sku",
+                "name",
+                "brand",
+                "product_url",
+                "catalog_observed_at"
+              ]
+            }
+          },
+          "unavailable_skus": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 500
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "schema_version",
+          "provider",
+          "catalog_scope",
+          "items",
+          "unavailable_skus",
+          "fetched_at"
+        ]
+      },
+      "Preview": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/Observation"
+            }
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "row": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "row",
+                "message"
+              ]
+            },
+            "maxItems": 0
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          },
+          "canImport": {
+            "const": true
+          },
+          "equivalence_approved_by_api": {
+            "const": false
+          }
+        },
+        "required": [
+          "schema_version",
+          "items",
+          "errors",
+          "total",
+          "canImport",
+          "equivalence_approved_by_api"
+        ]
+      },
+      "Receipt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema_version": {
+            "const": 1
+          },
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "inserted": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200
+          },
+          "duplicates": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200
+          },
+          "receipts": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "observation_id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "external_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "revision": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "disposition": {
+                  "enum": [
+                    "inserted",
+                    "duplicate"
+                  ]
+                }
+              },
+              "required": [
+                "observation_id",
+                "external_id",
+                "revision",
+                "disposition"
+              ]
+            }
+          },
+          "equivalence_approved_by_api": {
+            "const": false
+          }
+        },
+        "required": [
+          "schema_version",
+          "provider",
+          "inserted",
+          "duplicates",
+          "receipts",
+          "equivalence_approved_by_api"
+        ]
+      }
+    }
+  }
+}
