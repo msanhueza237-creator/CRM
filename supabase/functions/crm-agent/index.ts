@@ -8,6 +8,9 @@ import { retainedDiscoveryHint, publicResearchContext } from "./prospecting-enri
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
 import { dispatchWhatsAppCampaign, getWhatsAppTemplates } from "./whatsapp-dispatch.ts";
+import { getWhatsAppConversation, sendWhatsAppReply } from "./whatsapp-conversation.ts";
+import { splitWhatsAppEvents, whatsappMessageBody, whatsappPhone, metaMessage } from "../_shared/whatsapp-content.ts";
+import { whatsappDispatchId } from "./whatsapp-meta.ts";
 
 type ApiKeyValidation = {
   valid: boolean;
@@ -83,6 +86,18 @@ Deno.serve(async (req) => {
 
     if (route === "meta-whatsapp-status" && req.method === "POST") {
       return await handleMetaWhatsAppStatus({ req, url, supabase });
+    }
+
+    if ((route === "meta-whatsapp-conversation" && req.method === "GET") || (route === "meta-whatsapp-reply" && req.method === "POST")) {
+      const admin = await requireCrmAdmin(req, supabase);
+      if (!admin.authorized) return json({ error: admin.error }, admin.status);
+      try {
+        if (route === "meta-whatsapp-conversation") return json(await getWhatsAppConversation(supabase, firstEnvValue,
+          url.searchParams.get("companyId") || "", url.searchParams.get("phone") || "", Number(url.searchParams.get("offset") || 0)));
+        return json(await sendWhatsAppReply(supabase, firstEnvValue, await readJsonObject(req), admin.userId!));
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : "No se pudo completar la conversacion." }, 400);
+      }
     }
 
     if ((route === "meta-whatsapp-templates" && req.method === "GET") ||
@@ -2200,6 +2215,18 @@ async function validateWebhookApiKey(
 }
 
 async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyValidation) {
+  const payload = await readJsonObject(context.req);
+  const events = splitWhatsAppEvents(payload);
+  if (!events.length) return json({ success: true, ignored: true });
+  for (const event of events) {
+    const req = new Request(context.req.url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(event) });
+    const result = await handleWhatsAppWebhookEvent({ ...context, req }, validation);
+    if (!result.ok) return result;
+  }
+  return json({ success: true, processed: events.length });
+}
+
+async function handleWhatsAppWebhookEvent(context: RouteContext, validation: ApiKeyValidation) {
   let sender = "";
   let message = "";
   let metaMessageId = "";
@@ -2243,6 +2270,13 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
     return json({ error: "Missing sender or message content" }, 400);
   }
 
+  if (metaMessageId) {
+    const { data: existing, error } = await context.supabase.from("whatsapp_messages").select("id")
+      .eq("meta_message_id", metaMessageId).limit(1).maybeSingle();
+    if (error) return json({ error: "Could not verify incoming message" }, 500);
+    if (existing) return json({ success: true, duplicate: true });
+  }
+
   const normalizedSender = normalizeWhatsAppPhone(sender);
   const cleanSender = normalizedSender.replace(/\D/g, "");
 
@@ -2255,16 +2289,11 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
   let matchedCompanyId = "";
 
   for (const c of companies || []) {
-    const cWhatsapp = (c.whatsapp || "").replace(/\D/g, "");
-    const cWhatsappNumber = (c.whatsapp_number || "").replace(/\D/g, "");
-    const cPhone = (c.phone || "").replace(/\D/g, "");
+    const cWhatsapp = whatsappPhone(c.whatsapp);
+    const cWhatsappNumber = whatsappPhone(c.whatsapp_number);
+    const cPhone = whatsappPhone(c.phone);
     if (
-      (cWhatsapp && cleanSender.endsWith(cWhatsapp)) || 
-      (cWhatsappNumber && cleanSender.endsWith(cWhatsappNumber)) ||
-      (cPhone && cleanSender.endsWith(cPhone)) || 
-      (cWhatsapp && cWhatsapp.endsWith(cleanSender)) || 
-      (cWhatsappNumber && cWhatsappNumber.endsWith(cleanSender)) ||
-      (cPhone && cPhone.endsWith(cleanSender))
+      [cWhatsapp, cWhatsappNumber, cPhone].some(phone => phone && phone === cleanSender)
     ) {
       matchedCompanyId = c.id;
       break;
@@ -2278,13 +2307,10 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
     
     if (!contError && contacts) {
       for (const ct of contacts) {
-        const ctWhatsapp = (ct.whatsapp || "").replace(/\D/g, "");
-        const ctPhone = (ct.phone || "").replace(/\D/g, "");
+        const ctWhatsapp = whatsappPhone(ct.whatsapp);
+        const ctPhone = whatsappPhone(ct.phone);
         if (
-          (ctWhatsapp && cleanSender.endsWith(ctWhatsapp)) || 
-          (ctPhone && cleanSender.endsWith(ctPhone)) || 
-          (ctWhatsapp && ctWhatsapp.endsWith(cleanSender)) || 
-          (ctPhone && ctPhone.endsWith(cleanSender))
+          [ctWhatsapp, ctPhone].some(phone => phone && phone === cleanSender)
         ) {
           matchedCompanyId = ct.company_id;
           break;
@@ -2315,20 +2341,6 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
     matchedCompanyId = newCompany.id;
   }
 
-  const { data: interaction, error: intError } = await context.supabase
-    .from("interactions")
-    .insert({
-      company_id: matchedCompanyId,
-      type: "whatsapp",
-      description: contactName ? `${contactName}: ${message}` : message,
-      result: "Mensaje entrante del cliente",
-      next_action: "Responder mensaje"
-    })
-    .select("*")
-    .single();
-
-  if (intError) return json({ error: intError.message }, 500);
-
   const { data: lastOutbound } = await context.supabase
     .from("whatsapp_messages")
     .select("id, whatsapp_campaign_id, recipient_id")
@@ -2348,8 +2360,12 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
     alreadyStoredMessage = Boolean(existingMessage?.id);
   }
 
+  if (alreadyStoredMessage) return json({ success: true, duplicate: true });
+
   if (!alreadyStoredMessage) {
-    await context.supabase.from("whatsapp_messages").insert({
+    const originalTime = Number(metaMessage(rawPayload, metaMessageId)?.message.timestamp) * 1000;
+    const { error: storeError } = await context.supabase.from("whatsapp_messages").insert({
+      ...(metaMessageId ? { id: await whatsappDispatchId("inbound", metaMessageId) } : {}),
       company_id: matchedCompanyId,
       whatsapp_campaign_id: lastOutbound?.whatsapp_campaign_id ?? null,
       recipient_id: lastOutbound?.recipient_id ?? null,
@@ -2359,9 +2375,17 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
       message_type: messageType,
       body: message,
       status: "received",
+      ...(Number.isFinite(originalTime) && originalTime > 0 && originalTime <= Date.now() ? { occurred_at: new Date(originalTime).toISOString() } : {}),
       raw_payload: rawPayload,
     });
+    if (storeError?.code === "23505") return json({ success: true, duplicate: true });
+    if (storeError) return json({ error: "Could not store incoming message" }, 500);
   }
+
+  const { data: interaction } = await context.supabase.from("interactions").insert({
+    company_id: matchedCompanyId, type: "whatsapp", description: contactName ? `${contactName}: ${message}` : message,
+    result: "Mensaje entrante del cliente", next_action: "Responder mensaje",
+  }).select("id").single();
 
   if (lastOutbound?.recipient_id) {
     await context.supabase
@@ -2410,12 +2434,12 @@ async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyVa
     })
     .eq("id", matchedCompanyId);
 
-  await logAgentAction(context.supabase, validation, "interactions", interaction.id, "webhook_received_whatsapp", {
+  await logAgentAction(context.supabase, validation, "interactions", interaction?.id || matchedCompanyId, "webhook_received_whatsapp", {
     sender: normalizedSender || sender,
     metaMessageId,
   });
 
-  return json({ success: true, company_id: matchedCompanyId, interaction_id: interaction.id });
+  return json({ success: true, company_id: matchedCompanyId, interaction_id: interaction?.id });
 }
 
 async function validateMetaWebhookRequest(
@@ -2430,6 +2454,8 @@ async function validateMetaWebhookRequest(
   if (appSecret) {
     const expected = await createMetaSignature(rawBody, appSecret);
     if (signature === expected) {
+      const account = await validateMetaWebhookAccount(rawBody, supabase);
+      if (!account.valid) return account;
       return { valid: true, key_id: null, key_name: "meta-webhook", scopes: ["crm:write"] };
     }
 
@@ -2437,9 +2463,6 @@ async function validateMetaWebhookRequest(
       return { valid: false, key_id: null, key_name: null, scopes: null, error: "Invalid WhatsApp webhook signature" };
     }
   }
-
-  const fallbackValidation = await validateMetaWebhookPayloadFallback(rawBody, supabase);
-  if (fallbackValidation.valid) return fallbackValidation;
 
   if (!appSecret) {
     return { valid: false, key_id: null, key_name: null, scopes: null, error: "Missing META_WHATSAPP_APP_SECRET in Edge Function" };
@@ -2454,7 +2477,7 @@ async function validateMetaWebhookRequest(
   };
 }
 
-async function validateMetaWebhookPayloadFallback(
+async function validateMetaWebhookAccount(
   rawBody: string,
   supabase: ReturnType<typeof createClient>,
 ): Promise<ApiKeyValidation> {
@@ -2493,11 +2516,17 @@ async function validateMetaWebhookPayloadFallback(
     return configuredPhoneId === phoneNumberId && (!configuredBusinessId || configuredBusinessId === businessAccountId);
   });
 
-  if (!matchesSettings && !expectedPhoneNumberId) {
+  if (!matchesSettings) {
     return { valid: false, key_id: null, key_name: null, scopes: null, error: "WhatsApp webhook payload does not match active CRM settings" };
   }
 
-  return { valid: true, key_id: null, key_name: "meta-webhook-fallback", scopes: ["crm:write"] };
+  const events = splitWhatsAppEvents(payload);
+  if (events.some((event) => {
+    const part = event.entry[0];
+    const phone = part.changes[0].value.metadata?.phone_number_id;
+    return phone !== phoneNumberId || part.id !== businessAccountId;
+  })) return { valid: false, key_id: null, key_name: null, scopes: null, error: "Mixed WhatsApp accounts in webhook" };
+  return { valid: true, key_id: null, key_name: "meta-webhook", scopes: ["crm:write"] };
 }
 
 async function createMetaSignature(rawBody: string, appSecret: string) {
@@ -2536,7 +2565,7 @@ function parseMetaWhatsAppWebhook(payload: Record<string, unknown>) {
   const profile = firstContact?.profile as Record<string, unknown> | undefined;
   const type = String(message?.type ?? "text");
 
-  let body = String(text?.body ?? "");
+  let body = message ? whatsappMessageBody(message) : String(text?.body ?? "");
   if (!body && button) body = String(button.text ?? button.payload ?? "");
   if (!body && interactive) body = JSON.stringify(interactive);
   if (!body && image) body = String(image.caption ?? "[imagen recibida]");

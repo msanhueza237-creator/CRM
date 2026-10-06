@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCircle2, Eye, Megaphone, Plus, Send, UserMinus, UserPlus, XCircle } from "lucide-react";
+import { CheckCircle2, Eye, Megaphone, MessageCircle, Plus, Send, UserMinus, UserPlus, XCircle } from "lucide-react";
 import { Link, useSearchParams } from "react-router-dom";
 import { demoCampaigns, demoTemplates } from "../../data/demoData";
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
@@ -8,6 +8,8 @@ import { useCompanyStore } from "../companies/CompanyStore";
 import { useTemplateStore } from "../templates/TemplateStore";
 import { getGmailStatus, sendGmailCampaign, syncGmailReplies } from "../../lib/gmailApi";
 import { MetaCampaignDialog } from "./MetaCampaignDialog";
+import { WhatsAppConversationDialog } from "./WhatsAppConversationDialog";
+import { storedWhatsAppBody } from "../../../supabase/functions/_shared/whatsapp-content";
 import { chileData, normalizeString } from "../../data/chileData";
 import type { Campaign, CampaignStatus, CampaignType, Company, CompanyType, MessageTemplate } from "../../types/crm";
 
@@ -514,6 +516,7 @@ export function CampaignsPage() {
   const [gmailConnected, setGmailConnected] = useState(false);
   const [syncingReplies, setSyncingReplies] = useState(false);
   const [syncingWhatsAppReplies, setSyncingWhatsAppReplies] = useState(false);
+  const [whatsAppConversation, setWhatsAppConversation] = useState<{ companyId: string; phone: string } | null>(null);
   const [campaignFormError, setCampaignFormError] = useState("");
   const [form, setForm] = useState({
     name: "",
@@ -1926,8 +1929,9 @@ export function CampaignsPage() {
 
       const { data, error } = await supabase
         .from("whatsapp_messages")
-        .select("id,company_id,phone_number,body,message_type,occurred_at")
+        .select("id,company_id,phone_number,body,message_type,occurred_at,meta_message_id,raw_payload")
         .eq("direction", "inbound")
+        .in("company_id", Array.from(selectedCompanyIds))
         .order("occurred_at", { ascending: false })
         .limit(200);
 
@@ -1947,7 +1951,7 @@ export function CampaignsPage() {
             (reply.company_id && selectedCompanyIds.has(reply.company_id)
               ? selectedCompanies.find((item) => item.id === reply.company_id)
               : null) || selectedPhones.get(phone);
-          return company ? { ...reply, company, phone } : null;
+          return company ? { ...reply, body: storedWhatsAppBody(reply), company, phone } : null;
         })
         .filter(Boolean) as Array<{
           id: string;
@@ -2469,6 +2473,7 @@ export function CampaignsPage() {
                               Abrir Gmail
                             </a>
                           ) : null}
+                          {recipient.replyChannel === "whatsapp" && company && <button type="button" className="ghost-button" onClick={() => setWhatsAppConversation({ companyId: company.id, phone: recipient.replyPhone || "" })}>Abrir conversacion</button>}
                         </div>
                         <h3 style={{ fontSize: "15px", margin: "12px 0 8px" }}>{recipient.replySubject || selectedCampaign.name}</h3>
                         <p style={{ whiteSpace: "pre-wrap", margin: 0 }}>
@@ -2543,6 +2548,7 @@ export function CampaignsPage() {
                             </td>
                             <td>
                               <div className="recipient-actions">
+                                {["WhatsApp", "mixta"].includes(selectedCampaign.type) && <button type="button" className="ghost-button" title={`Conversacion WhatsApp de ${company.name}`} aria-label={`Conversacion WhatsApp de ${company.name}`} onClick={() => setWhatsAppConversation({ companyId: company.id, phone: row?.replyPhone || "" })}><MessageCircle size={18} /></button>}
                                 <button className={row?.replied ? "mini-toggle active" : "mini-toggle"} type="button" onClick={() => updateRecipient(company.id, "replied")}>respondio</button>
                                 <button className={row?.interested ? "mini-toggle active" : "mini-toggle"} type="button" onClick={() => updateRecipient(company.id, "interested")}>interesado</button>
                                 <button className={row?.discarded ? "mini-toggle active danger" : "mini-toggle"} type="button" onClick={() => updateRecipient(company.id, "discarded")}>descartado</button>
@@ -2841,6 +2847,7 @@ export function CampaignsPage() {
         </div>
       )}
 
+      {whatsAppConversation && <WhatsAppConversationDialog key={`${whatsAppConversation.companyId}:${whatsAppConversation.phone}`} {...whatsAppConversation} onClose={() => setWhatsAppConversation(null)} />}
       {showMetaModal && selectedCampaign && <MetaCampaignDialog
         campaignId={selectedCampaign.id}
         companies={selectedCompanies}

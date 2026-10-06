@@ -68,6 +68,20 @@ Pruebas sin envios reales: `node --experimental-strip-types --test scripts/test-
 
 ## Webhook
 
+### Conversacion manual desde campanas
+
+`Respuestas recibidas > Abrir conversacion` consulta el historial del mismo cliente y numero, con paginacion y actualizacion cada 15 segundos mientras la pagina esta visible. Los pedidos muestran referencia de producto, cantidad, precio y moneda enviados por Meta; no crean una venta, cotizacion, pago ni movimiento de inventario. Los pedidos historicos se interpretan al leer su payload original, sin reescribirlos.
+
+- `GET /meta-whatsapp-conversation?companyId=...&phone=...&offset=0`: administrador activo; no retorna payloads crudos ni credenciales.
+- `POST /meta-whatsapp-reply`: administrador activo, confirmacion manual, UUID por intento, numero con mensaje entrante comprobado y ventana de atencion de 24 horas basada en el timestamp original de Meta. Una respuesta no habilita marketing ni cambia opt-in.
+- Cada envio se reserva antes de contactar Meta. Un timeout conserva el intento pendiente y bloquea nuevos envios hasta revision. Aceptado por Meta no significa entregado.
+- El webhook exige firma HMAC y cuenta configurada. Los identificadores publicos de cuenta/telefono no sustituyen una firma. Se procesan todos los mensajes y estados del lote; cada mensaje entrante usa una clave determinista para evitar duplicados.
+- No requiere migracion. Publicar por separado `crm-agent/index.ts`, `crm-agent/whatsapp-conversation.ts` y `_shared/whatsapp-content.ts`, con respaldo y reinicio autorizado de funciones.
+
+Pruebas: `node --experimental-transform-types --test scripts/test-whatsapp-meta.mjs scripts/test-whatsapp-conversation.mjs`, `node scripts/typecheck-whatsapp.mjs`, `node scripts/test-whatsapp-conversation-browser.mjs` y `npm run build`. Las pruebas de envio usan una respuesta simulada, nunca numeros reales.
+
+Referencia de la ventana de atencion: https://business.whatsapp.com/policy (seccion 2).
+
 La URL del webhook debe apuntar al endpoint del backend:
 
 ```text

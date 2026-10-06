@@ -36,6 +36,21 @@ export function getWhatsAppTemplates() {
   return whatsappRequest<WhatsAppTemplatesResponse>("meta-whatsapp-templates");
 }
 
+export interface WhatsAppConversation {
+  companyId: string; name: string; phone: string; canReply: boolean; reasons: string[]; expiresAt: string | null;
+  nextOffset: number | null;
+  messages: Array<{ id: string; direction: string; body: string; type: string; status: string; occurredAt: string }>;
+}
+
+export function getWhatsAppConversation(companyId: string, phone = "", offset = 0) {
+  const query = new URLSearchParams({ companyId, phone, offset: String(offset) });
+  return whatsappRequest<WhatsAppConversation>(`meta-whatsapp-conversation?${query}`);
+}
+
+export function sendWhatsAppReply(body: { companyId: string; phone: string; text: string; requestId: string; confirmSend: true }) {
+  return whatsappRequest<{ accepted: boolean; id: string; outcome: "accepted" | "rejected" | "uncertain"; warning: string | null }>("meta-whatsapp-reply", body);
+}
+
 export function sendWhatsAppCampaign(body: {
   campaignId: string; templateId: string; language: string; confirmSend: true; thumbnailProductId?: string;
   recipients: Array<{ companyId: string; phone: string; parameters: string[] }>;
