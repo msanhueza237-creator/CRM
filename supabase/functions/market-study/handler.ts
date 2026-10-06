@@ -1,4 +1,5 @@
 import { researchAdmin } from './research-admin.ts';
+import { nativeSettings, nativeStudy } from './native-study.ts';
 import { extractionChoices, extractionPolicy, ExtractionError, type ExtractionEnv } from '../market-research/extraction.ts';
 import { assertMarketAccess, normalizeMarketReview, previewMarketImport } from "../_shared/market-study-contract.ts";
 import { CopilotSources } from "../crm-copilot/sources.ts";
@@ -30,6 +31,21 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
    const source=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},req.signal,fetcher);
    const profiles=await source.select(`profiles?select=id,role,active&id=eq.${user.id}&limit=1`);
    try{assertMarketAccess(profiles[0]?{role:String(profiles[0].role),active:profiles[0].active===true}:null);}catch(e){throw new HttpError(403,(e as Error).message);}
+   if(route==='native-settings'||route==='studies') {
+    const ctx={url:env.rest.url,serviceRoleKey:env.rest.serviceRoleKey,readEnv:env.readEnv||(()=>undefined),fetcher};
+    // Settlement must survive a mobile browser disconnecting after a paid call.
+    const durable=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},AbortSignal.timeout(90000),fetcher);
+    const rpc=(name:string,args:Record<string,unknown>)=>durable.rpc(name,args,false);
+    if(route==='native-settings'&&req.method==='GET')return json(await nativeSettings(ctx,rpc,user.id));
+    if(route==='native-settings'&&req.method==='POST') {
+     const body=object(await readBody(req)),choices=await extractionChoices(ctx,false);
+     if(Object.keys(body).sort().join(',')!=='choice,revision'||!Number.isInteger(body.revision)||!choices.some(c=>c.choice===body.choice))throw new HttpError(422,'Selecciona un modelo configurado.');
+     try{await rpc('market_extraction_select',{p_actor:user.id,p_revision:body.revision,p_choice:body.choice});}catch{throw new HttpError(409,'El modelo cambio. Actualiza antes de guardar.');}
+     return json(await nativeSettings(ctx,rpc,user.id));
+    }
+    if(route==='studies'&&req.method==='POST')return json(await nativeStudy(await readBody(req),ctx,rpc,user.id));
+    throw new HttpError(405,'Metodo no permitido.');
+   }
    if(route==='research-access') {
     if(req.method!=='GET'&&req.method!=='POST')throw new HttpError(405,'Método no permitido.');
     try {
@@ -61,7 +77,7 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
      return inventoryValuation(snapshots,details,catalog,{},factoCurrencies(env.currencyMap),object(settings[0]?.confirmations),true);
     }catch{warnings.push('Inventario/costos no disponibles: no se sustituyen por cero.');return null;}};
     const imports=async()=>{try{
-     const operations=await source.all('foreign_trade_operations?select=id&inventory_mode=eq.future&status=not.in.(received,closed,cancelled)&order=id.asc',50);
+     const operations=await source.all('import_shipments?select=id&inventory_mode=eq.future&status=not.in.(received,closed,cancelled)&order=id.asc',50);
      const details=[];for(const op of operations)details.push(await source.rpc('foreign_trade_operation_detail',{p_operation_id:op.id}));
      return {details,complete:true};
     }catch{warnings.push('No se pudo verificar cobertura de productos por llegar.');return {details:[],complete:false};}};

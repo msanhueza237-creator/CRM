@@ -1,6 +1,7 @@
 import { getSupabaseFunctionUrl, supabase } from './supabase';
 import type { InventoryRecord } from './inventoryApi';
 import type { ForeignTradeOperationDetail } from '../types/foreignTrade';
+import type { NativeStudyJob } from '../../supabase/functions/_shared/market-native-contract';
 import type { MarketReview, MarketReviewInput, StoredMarketObservation, previewMarketImport } from '../../supabase/functions/_shared/market-study-contract';
 export interface MarketBootstrap {observations:StoredMarketObservation[];reviews:MarketReview[];inventory:(InventoryRecord & {stock_warnings?:string[]})[];inventoryAvailable:boolean;inventoryWarnings:string[];imports:ForeignTradeOperationDetail[];importsComplete:boolean;warnings:string[];readAt:string}
 async function request<T>(route:string,body?:unknown,signal?:AbortSignal):Promise<T>{
@@ -31,3 +32,10 @@ export interface ResearchAccessData {
 export const getResearchAccess=()=>request<ResearchAccessData>('research-access');
 export const createResearchAccess=(config:unknown)=>request<{id:string;api_key:string;expires_at:string}>('research-access',{action:'create',config});
 export const revokeResearchAccess=(id:string)=>request<{revoked:boolean}>('research-access',{action:'revoke',config:{id,confirm:'REVOKE'}});
+export interface NativeStudySettings {
+ enabled:boolean;daily_usd:number;daily_jobs:number;spent_usd:number;jobs_today:number;
+ selection:{choice:string;revision:number};choices:MarketExtractionSettingsData['choices'];jobs:NativeStudyJob[];
+}
+export const getNativeStudySettings=()=>request<NativeStudySettings>('native-settings');
+export const selectNativeStudyModel=(body:{choice:string;revision:number})=>request<NativeStudySettings>('native-settings',body);
+export const runNativeStudy=(body:{id:string;sku:string;url:string;revision:number})=>request<NativeStudyJob>('studies',body,AbortSignal.timeout(85000));

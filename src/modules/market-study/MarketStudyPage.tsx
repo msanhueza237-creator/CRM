@@ -1,50 +1,849 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
-import { BarChart3, RefreshCw, Search, Ship, ShieldCheck } from 'lucide-react';
-import { getMarketBootstrap, reviewMarketResearch, type MarketBootstrap } from '../../lib/marketStudyApi';
-import { MARKET_UNITS, normalizeMarketReview, type MarketFx, type MarketReviewInput, type StoredMarketObservation } from '../../../supabase/functions/_shared/market-study-contract';
-import { compareProduct, discountScenario, latestObservations, latestReview, marketTopTen, type MarketProduct } from './marketMath';
-import { marketProducts } from './marketSources';
-import { OpportunityTable } from './OpportunityTable';
-import { MarketImport } from './MarketImport';
-import { MarketResearchAccess } from './MarketResearchAccess';
-import { MarketExtractionSettings } from './MarketExtractionSettings';
-import './market-study.css';
-const marketMoney=(v:number|null|undefined)=>v==null?'Sin dato':v.toLocaleString('es-CL',{style:'currency',currency:'CLP',maximumFractionDigits:2});
-const percent=(v:number|null)=>v==null?'No calculable':`${v.toLocaleString('es-CL',{maximumFractionDigits:2})}%`;
-const date=(v:string|null)=>v?new Date(v.length===10?v+'T12:00:00Z':v).toLocaleString('es-CL',{timeZone:'America/Santiago'}):'Sin fecha';
-const unitLabels={unit:'Unidad',kg:'Kilogramo',m:'Metro',l:'Litro'};
-function safeUrl(value:string){try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password?u.toString():undefined;}catch{return undefined;}}
-function FxFields({value,onChange,prefix}:{value:MarketFx|null;onChange:(v:MarketFx|null)=>void;prefix:string}){
- const [enabled,setEnabled]=useState(!!value),[code,setCode]=useState(value?.currency||'USD'),[rate,setRate]=useState(value?String(value.clp_per_unit):''),[at,setAt]=useState(value?.observed_at.slice(0,16)||''),[source,setSource]=useState(value?.source||'');
- const update=(c:string,r:string,t:string,s:string,on=enabled)=>{onChange(on?{currency:c,clp_per_unit:r===''?NaN:Number(r),observed_at:t?new Date(t+'Z').toISOString():'',source:s}:null);};
- return <fieldset><legend>{prefix}</legend><label className="market-check"><input type="checkbox" checked={enabled} onChange={e=>{setEnabled(e.target.checked);update(code,rate,at,source,e.target.checked);}}/>Registrar cambio para una moneda extranjera</label>{enabled&&<div className="market-form-grid"><label>Moneda ISO<input value={code} maxLength={3} onChange={e=>{const c=e.target.value.toUpperCase();setCode(c);update(c,rate,at,source);}}/></label><label>CLP por unidad<input type="number" min="0.000001" step="any" value={rate} onChange={e=>{setRate(e.target.value);update(code,e.target.value,at,source);}}/></label><label>Fecha y hora del cambio (UTC)<input type="datetime-local" value={at} onChange={e=>{setAt(e.target.value);update(code,rate,e.target.value,source);}}/></label><label>Fuente del cambio<input value={source} onChange={e=>{setSource(e.target.value);update(code,rate,at,e.target.value);}}/></label></div>}</fieldset>;
+import { useEffect, useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { BarChart3, RefreshCw, Search, Ship, ShieldCheck } from "lucide-react";
+import {
+  getMarketBootstrap,
+  reviewMarketResearch,
+  type MarketBootstrap,
+} from "../../lib/marketStudyApi";
+import {
+  MARKET_UNITS,
+  normalizeMarketReview,
+  type MarketFx,
+  type MarketReviewInput,
+  type StoredMarketObservation,
+} from "../../../supabase/functions/_shared/market-study-contract";
+import {
+  compareProduct,
+  discountScenario,
+  latestObservations,
+  latestReview,
+  marketTopTen,
+  type MarketProduct,
+} from "./marketMath";
+import { marketProducts } from "./marketSources";
+import { OpportunityTable } from "./OpportunityTable";
+import { MarketImport } from "./MarketImport";
+import { MarketResearchAccess } from "./MarketResearchAccess";
+import { MarketExtractionSettings } from "./MarketExtractionSettings";
+import { MarketInvestigator } from "./MarketInvestigator";
+import "./market-study.css";
+const marketMoney = (v: number | null | undefined) =>
+  v == null
+    ? "Sin dato"
+    : v.toLocaleString("es-CL", {
+        style: "currency",
+        currency: "CLP",
+        maximumFractionDigits: 2,
+      });
+const percent = (v: number | null) =>
+  v == null
+    ? "No calculable"
+    : `${v.toLocaleString("es-CL", { maximumFractionDigits: 2 })}%`;
+const date = (v: string | null) =>
+  v
+    ? new Date(v.length === 10 ? v + "T12:00:00Z" : v).toLocaleString("es-CL", {
+        timeZone: "America/Santiago",
+      })
+    : "Sin fecha";
+const unitLabels = { unit: "Unidad", kg: "Kilogramo", m: "Metro", l: "Litro" };
+function safeUrl(value: string) {
+  try {
+    const u = new URL(value);
+    return ["http:", "https:"].includes(u.protocol) &&
+      !u.username &&
+      !u.password
+      ? u.toString()
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
-function ReviewForm({observation,products,data,reload}:{observation:StoredMarketObservation;products:MarketProduct[];data:MarketBootstrap;reload:()=>void}){
- const prior=latestReview(data.reviews,observation.id),initial=prior?.payload;
- const [key,setKey]=useState(initial?.product_key||''),[unit,setUnit]=useState(initial?.unit||''),[quantity,setQuantity]=useState(initial?.internal_quantity==null?'':String(initial.internal_quantity));
- const [confirmed,setConfirmed]=useState(false),[costConfirmed,setCostConfirmed]=useState(false),[reason,setReason]=useState(''),[fx,setFx]=useState<MarketFx|null>(initial?.internal_fx||null),[busy,setBusy]=useState(false),[error,setError]=useState('');
- const save=async(decision:MarketReviewInput['decision'])=>{setError('');try{const product=products.find(p=>p.key===key);if(!product)throw new Error('Selecciona una referencia interna inequívoca.');const review=normalizeMarketReview({observation_id:observation.id,request_id:crypto.randomUUID(),expected_review_id:prior?.id||null,decision,product_key:key,sku:product.sku,unit:unit||null,internal_quantity:quantity===''?null:Number(quantity),equivalence_confirmed:confirmed,cost_basis_confirmed:costConfirmed,internal_fx:fx,reason});setBusy(true);await reviewMarketResearch(review);reload();}catch(e){setError(e instanceof Error?e.message:'No se guardó la revisión.');}finally{setBusy(false);}};
- return <div className="market-review"><p>SKU sugerido: <strong>{observation.payload.suggested_sku||'Sin sugerencia'}</strong>. Coincidir en nombre o SKU no confirma marca, modelo, capacidad ni presentación.</p><div className="market-form-grid"><label>Referencia interna<select value={key} onChange={e=>setKey(e.target.value)}><option value="">Seleccionar producto</option>{products.map(p=><option key={p.key} value={p.key}>{p.sku||'Sin SKU'} · {p.name} · {p.mode==='transit'?'Tránsito':'Actual'}</option>)}</select></label><label>Unidad base interna<select value={unit} onChange={e=>setUnit(e.target.value)}><option value="">Por confirmar</option>{MARKET_UNITS.map(u=><option key={u} value={u}>{unitLabels[u]}</option>)}</select></label><label>Unidades base por unidad interna de venta/costo<input type="number" step="any" min="0.000001" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label></div><label className="market-check"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)}/>Verifiqué equivalencia técnica, unidad y presentación del producto.</label><label className="market-check"><input type="checkbox" checked={costConfirmed} onChange={e=>setCostConfirmed(e.target.checked)}/>Verifiqué que el costo registrado corresponde a esa unidad, sin IVA recuperable.</label><FxFields value={fx} onChange={setFx} prefix="Cambio de costo/precio interno (si corresponde)"/><label>Motivo y respaldo de la revisión<textarea value={reason} onChange={e=>setReason(e.target.value)} minLength={12} maxLength={1500}/></label><div className="market-actions"><button disabled={busy} onClick={()=>void save('approved')}>Confirmar equivalencia</button><button className="secondary" disabled={busy} onClick={()=>void save('pending')}>Dejar pendiente</button><button className="secondary" disabled={busy} onClick={()=>void save('rejected')}>Rechazar coincidencia</button></div>{error&&<p role="alert">{error}</p>}</div>;
+function FxFields({
+  value,
+  onChange,
+  prefix,
+}: {
+  value: MarketFx | null;
+  onChange: (v: MarketFx | null) => void;
+  prefix: string;
+}) {
+  const [enabled, setEnabled] = useState(!!value),
+    [code, setCode] = useState(value?.currency || "USD"),
+    [rate, setRate] = useState(value ? String(value.clp_per_unit) : ""),
+    [at, setAt] = useState(value?.observed_at.slice(0, 16) || ""),
+    [source, setSource] = useState(value?.source || "");
+  const update = (c: string, r: string, t: string, s: string, on = enabled) => {
+    onChange(
+      on
+        ? {
+            currency: c,
+            clp_per_unit: r === "" ? NaN : Number(r),
+            observed_at: t ? new Date(t + "Z").toISOString() : "",
+            source: s,
+          }
+        : null,
+    );
+  };
+  return (
+    <fieldset>
+      <legend>{prefix}</legend>
+      <label className="market-check">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => {
+            setEnabled(e.target.checked);
+            update(code, rate, at, source, e.target.checked);
+          }}
+        />
+        Registrar cambio para una moneda extranjera
+      </label>
+      {enabled && (
+        <div className="market-form-grid">
+          <label>
+            Moneda ISO
+            <input
+              value={code}
+              maxLength={3}
+              onChange={(e) => {
+                const c = e.target.value.toUpperCase();
+                setCode(c);
+                update(c, rate, at, source);
+              }}
+            />
+          </label>
+          <label>
+            CLP por unidad
+            <input
+              type="number"
+              min="0.000001"
+              step="any"
+              value={rate}
+              onChange={(e) => {
+                setRate(e.target.value);
+                update(code, e.target.value, at, source);
+              }}
+            />
+          </label>
+          <label>
+            Fecha y hora del cambio (UTC)
+            <input
+              type="datetime-local"
+              value={at}
+              onChange={(e) => {
+                setAt(e.target.value);
+                update(code, rate, e.target.value, source);
+              }}
+            />
+          </label>
+          <label>
+            Fuente del cambio
+            <input
+              value={source}
+              onChange={(e) => {
+                setSource(e.target.value);
+                update(code, rate, at, e.target.value);
+              }}
+            />
+          </label>
+        </div>
+      )}
+    </fieldset>
+  );
 }
-export function MarketSimulator({comparison}:{comparison:ReturnType<typeof compareProduct>}){
- const [discount,setDiscount]=useState('0'),[quantity,setQuantity]=useState('1'),[target,setTarget]=useState(''),[minimum,setMinimum]=useState('');
- const p=comparison.product;let result:ReturnType<typeof discountScenario>|null=null,error='';
- try{result=discountScenario(comparison.price,comparison.cost,quantity===''?NaN:Number(quantity),discount===''?NaN:Number(discount),target===''?null:Number(target),minimum===''?null:Number(minimum));}catch(e){error=e instanceof Error?e.message:'Datos inválidos';}
- return <section className="market-card"><div className="market-section-heading"><div><p className="market-eyebrow">SIMULACIÓN · SIN CAMBIAR PRECIOS</p><h2>{p.name}</h2><p>{p.sku} · {p.mode==='transit'?'Producto por llegar · utilidad estimada':'Existencia registrada · verificar reservas y estado físico'}</p></div><Link to={p.path}>Ver fuente</Link></div><div className="market-kpis"><div><span>Costo por unidad interna</span><strong>{marketMoney(comparison.cost)}</strong><small>{p.costStatus==='estimated'?'Estimado puesto en Chile':comparison.reference?.cost_basis_confirmed?'Registrado; base revisada':'Base del costo pendiente; resultado provisional'}</small></div><div><span>Precio neto actual</span><strong>{marketMoney(comparison.price)}</strong><small>{date(p.priceAt)}</small></div><div><span>Mediana comparable</span><strong>{marketMoney(comparison.median)}</strong><small>{comparison.comparable.length} oferentes vigentes</small></div><div><span>{p.mode==='transit'?'Cantidad planificada':'Stock registrado'}</span><strong>{p.stock??'Sin dato'}</strong><small>{p.mode==='transit'?`ETA ${date(p.eta)}`:date(p.stockAt)}</small></div></div><p className="market-muted">{p.costSource} · fecha costo {date(p.costAt)}. Venta menos costo es utilidad bruta; no descuenta gastos operativos, comerciales ni financieros.</p><div className="market-form-grid"><label>Descuento (%)<input type="number" min="0" max="100" step="any" value={discount} onChange={e=>{setDiscount(e.target.value);setTarget('');}}/></label><label>Precio objetivo neto CLP (opcional)<input type="number" min="0" step="any" value={target} onChange={e=>setTarget(e.target.value)}/></label><label>Cantidad a simular<input type="number" min="0.000001" step="any" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label><label>Margen mínimo elegido (%)<input type="number" min="0" max="99.999" step="any" value={minimum} onChange={e=>setMinimum(e.target.value)}/></label></div>{error&&<p role="alert">{error}</p>}{result&&<><div className="market-table-wrap"><table><thead><tr><th>Escenario</th><th>Precio neto/u.</th><th>Utilidad bruta/u.</th><th>Utilidad bruta total</th><th>Margen sobre venta</th><th>Markup sobre costo</th></tr></thead><tbody>{[['Antes',result.before],['Después',result.after]].map(([label,m])=>{const v=m as typeof result.before;return <tr key={String(label)}><th>{String(label)}</th><td>{marketMoney(v.price)}</td><td>{marketMoney(v.unitProfit)}</td><td>{marketMoney(v.totalProfit)}</td><td>{percent(v.margin)}</td><td>{percent(v.markup)}</td></tr>;})}</tbody></table></div><p>Precio neto mínimo teórico: <strong>{marketMoney(result.netPriceFloor)}</strong> · descuento máximo teórico: <strong>{percent(result.maxDiscount)}</strong>. Solo para el margen elegido en esta simulación; no establece una política.</p>{result.warnings.map(w=><p className="market-warning" key={w}>{w}</p>)}{p.stock!==null&&Number(quantity)>p.stock&&<p className="market-warning">La cantidad simulada supera {p.mode==='transit'?'lo planificado':'el stock registrado'}; no acredita disponibilidad.</p>}</>}{comparison.reasons.length>0&&<details open><summary>Por qué esta referencia no entra al Top 10</summary><ul>{comparison.reasons.map((r,i)=><li key={i}>{r}</li>)}</ul></details>}<h3>Ofertas revisadas</h3>{!comparison.offered.length&&<p>Sin equivalencias aprobadas. Revisa la investigación antes de comparar precios.</p>}{comparison.offered.map(o=><div className="market-offer" key={o.observation.id}><strong>{o.observation.payload.seller}</strong><span>{marketMoney(o.netPerInternalUnit)} netos por unidad interna</span><a href={safeUrl(o.observation.payload.source_url)} target="_blank" rel="noreferrer">Fuente</a><small>{o.comparable?'Comparable':o.reasons.join(' ')} · {date(o.observation.payload.observed_at)}</small></div>)}</section>;
+function ReviewForm({
+  observation,
+  products,
+  data,
+  reload,
+}: {
+  observation: StoredMarketObservation;
+  products: MarketProduct[];
+  data: MarketBootstrap;
+  reload: () => void;
+}) {
+  const prior = latestReview(data.reviews, observation.id),
+    initial = prior?.payload;
+  const suggested = products.filter(p=>p.sku===observation.payload.suggested_sku);
+  const [key, setKey] = useState(initial?.product_key || (suggested.length===1?suggested[0].key:"")),
+    [unit, setUnit] = useState(initial?.unit || ""),
+    [quantity, setQuantity] = useState(
+      initial?.internal_quantity == null
+        ? ""
+        : String(initial.internal_quantity),
+    );
+  const [confirmed, setConfirmed] = useState(false),
+    [costConfirmed, setCostConfirmed] = useState(false),
+    [reason, setReason] = useState(""),
+    [fx, setFx] = useState<MarketFx | null>(initial?.internal_fx || null),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState("");
+  const save = async (decision: MarketReviewInput["decision"]) => {
+    setError("");
+    try {
+      const product = products.find((p) => p.key === key);
+      if (!product)
+        throw new Error("Selecciona una referencia interna inequívoca.");
+      const review = normalizeMarketReview({
+        observation_id: observation.id,
+        request_id: crypto.randomUUID(),
+        expected_review_id: prior?.id || null,
+        decision,
+        product_key: key,
+        sku: product.sku,
+        unit: unit || null,
+        internal_quantity: quantity === "" ? null : Number(quantity),
+        equivalence_confirmed: confirmed,
+        cost_basis_confirmed: costConfirmed,
+        internal_fx: fx,
+        reason,
+      });
+      setBusy(true);
+      await reviewMarketResearch(review);
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "No se guardó la revisión.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="market-review">
+      <p>
+        SKU sugerido:{" "}
+        <strong>{observation.payload.suggested_sku || "Sin sugerencia"}</strong>
+        . Coincidir en nombre o SKU no confirma marca, modelo, capacidad ni
+        presentación.
+      </p>
+      <div className="market-form-grid">
+        <label>
+          Referencia interna
+          <select value={key} onChange={(e) => setKey(e.target.value)}>
+            <option value="">Seleccionar producto</option>
+            {products.map((p) => (
+              <option key={p.key} value={p.key}>
+                {p.sku || "Sin SKU"} · {p.name} ·{" "}
+                {p.mode === "transit" ? "Tránsito" : "Actual"}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Unidad base interna
+          <select value={unit} onChange={(e) => setUnit(e.target.value)}>
+            <option value="">Por confirmar</option>
+            {MARKET_UNITS.map((u) => (
+              <option key={u} value={u}>
+                {unitLabels[u]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Unidades base por unidad interna de venta/costo
+          <input
+            type="number"
+            step="any"
+            min="0.000001"
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+          />
+        </label>
+      </div>
+      <label className="market-check">
+        <input
+          type="checkbox"
+          checked={confirmed}
+          onChange={(e) => setConfirmed(e.target.checked)}
+        />
+        Verifiqué equivalencia técnica, unidad y presentación del producto.
+      </label>
+      <label className="market-check">
+        <input
+          type="checkbox"
+          checked={costConfirmed}
+          onChange={(e) => setCostConfirmed(e.target.checked)}
+        />
+        Verifiqué que el costo registrado corresponde a esa unidad, sin IVA
+        recuperable.
+      </label>
+      <FxFields
+        value={fx}
+        onChange={setFx}
+        prefix="Cambio de costo/precio interno (si corresponde)"
+      />
+      <label>
+        Motivo y respaldo de la revisión
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          minLength={12}
+          maxLength={1500}
+        />
+      </label>
+      <div className="market-actions">
+        <button disabled={busy} onClick={() => void save("approved")}>
+          Confirmar equivalencia
+        </button>
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={() => void save("pending")}
+        >
+          Dejar pendiente
+        </button>
+        <button
+          className="secondary"
+          disabled={busy}
+          onClick={() => void save("rejected")}
+        >
+          Rechazar coincidencia
+        </button>
+      </div>
+      {error && <p role="alert">{error}</p>}
+    </div>
+  );
 }
-export function MarketStudyPage(){
- const [data,setData]=useState<MarketBootstrap|null>(null),[loading,setLoading]=useState(true),[error,setError]=useState(''),[revision,setRevision]=useState(0),[query,setQuery]=useState(''),[mode,setMode]=useState<'all'|'current'|'transit'>('all');
- const [params,setParams]=useSearchParams(),tab=params.get('tab')||'opportunities';
- const reload=()=>setRevision(r=>r+1);
- useEffect(()=>{const abort=new AbortController();setLoading(true);setError('');setData(null);getMarketBootstrap(abort.signal).then(d=>{if(!abort.signal.aborted)setData(d);}).catch(e=>{if(!abort.signal.aborted)setError(e instanceof Error?e.message:'No disponible.');}).finally(()=>{if(!abort.signal.aborted)setLoading(false);});return()=>abort.abort();},[revision]);
- const products=useMemo(()=>data?marketProducts(data):[],[data]),filtered=useMemo(()=>products.filter(p=>(mode==='all'||p.mode===mode)&&`${p.sku} ${p.name}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())),[products,mode,query]);
- const selected=filtered.find(p=>p.key===params.get('product'))||filtered[0],ranking=useMemo(()=>data?marketTopTen(filtered,data.observations,data.reviews,mode):null,[data,filtered,mode]);
- const latest=data?latestObservations(data.observations):[];
- const pending=data?latest.filter(o=>!latestReview(data.reviews,o.id)||latestReview(data.reviews,o.id)?.payload.decision==='pending').length:0;
- const lastObservation=latest.map(o=>o.payload.observed_at).sort().slice(-1)[0]||null;
- const update=(key:string,value:string)=>setParams(p=>{const n=new URLSearchParams(p);n.set(key,value);return n;});
- return <div className="market-page"><MarketExtractionSettings/><MarketResearchAccess/><header className="market-header"><div><p className="market-eyebrow">INTELIGENCIA COMERCIAL</p><h1>Estudio de Mercado</h1><p>Investigación, costo y precio en una misma comparación.</p></div><button className="secondary" onClick={reload} disabled={loading}><RefreshCw size={17}/>Actualizar lectura</button></header><div className="market-boundary"><ShieldCheck size={20}/><span>Las simulaciones no cambian precios, existencias ni registros contables. El tránsito siempre es una estimación.</span></div><nav className="market-tabs" aria-label="Secciones del estudio">{[['opportunities','Oportunidades'],['research','Investigaciones'],['simulator','Simulador']].map(([value,label])=><button className={tab===value?'active':'secondary'} key={value} onClick={()=>update('tab',value)}>{label}</button>)}</nav>{loading&&<p role="status">Leyendo fuentes del CRM…</p>}{error&&<div role="alert" className="market-warning"><strong>No se pudo completar la lectura.</strong><p>{error}</p><button onClick={reload}>Reintentar</button></div>}{data&&<><p className="market-muted">Lectura {date(data.readAt)} · {data.observations.length} versiones de investigación · {latest.length} observaciones actuales · {data.reviews.length} revisiones humanas. {pending} equivalencias pendientes. Última observación: {date(lastObservation)}.</p>{[...data.warnings,...data.inventoryWarnings].map((w,i)=><p className="market-warning" key={i}>{w}</p>)}{!data.importsComplete&&<p className="market-warning">Cobertura de tránsito no verificada.</p>}</>}
- {tab==='research'?<><MarketImport reload={reload}/>{data&&<section className="market-card"><h2>Equivalencias por revisar</h2>{!latest.length&&<p>No hay investigaciones guardadas. Carga un primer lote para revisarlo.</p>}{latest.map(row=>{const review=latestReview(data.reviews,row.id);return <details className="market-research" key={row.id}><summary>{row.payload.product_label} · {row.payload.seller} · {review?.payload.decision==='approved'?'Equivalencia revisada':review?.payload.decision==='rejected'?'Rechazada':'Pendiente'}</summary><p>{row.payload.amount===null?'Precio ausente':`${row.payload.amount} ${row.payload.currency||'moneda sin identificar'}`} · {row.payload.vat_basis} · {row.payload.presentation} · {row.payload.package_quantity} {row.payload.unit} · confianza {percent(row.payload.confidence*100)}</p><p><a href={safeUrl(row.payload.source_url)} target="_blank" rel="noreferrer">Ver fuente</a> · {date(row.payload.observed_at)}</p><p>IVA: {row.payload.vat_percent===null?'tasa no informada':`${row.payload.vat_percent}%`} · disponibilidad: {row.payload.availability}</p>{row.payload.fx&&<p>Cambio: {row.payload.fx.clp_per_unit} CLP/{row.payload.fx.currency} · fuente {row.payload.fx.source} · {date(row.payload.fx.observed_at)}</p>}<p>{row.payload.notes}</p><ReviewForm key={`${row.id}:${review?.id||''}`} observation={row} products={products} data={data} reload={reload}/><details><summary>Historial de origen y revisiones</summary>{data.observations.filter(o=>o.payload.provider===row.payload.provider&&o.payload.external_id===row.payload.external_id).map(o=><div key={o.id}><p>Revisión {o.payload.revision}: {o.payload.amount??'Sin precio'} {o.payload.currency} · observada {date(o.payload.observed_at)} · guardada {date(o.created_at)} por {o.created_by}</p>{data.reviews.filter(r=>r.observation_id===o.id).map(r=><p key={r.id}>{date(r.created_at)} · {r.payload.decision} · {r.payload.reason} · {r.created_by}</p>)}</div>)}</details></details>;})}</section>}</>:data&&<><section className="market-filters"><label><Search size={16}/>Buscar SKU o producto<input value={query} onChange={e=>setQuery(e.target.value)}/></label><label>Disponibilidad<select value={mode} onChange={e=>setMode(e.target.value as typeof mode)}><option value="all">Actual y por llegar</option><option value="current">Existencia actual</option><option value="transit">Por llegar · teórico</option></select></label></section>{tab==='opportunities'&&ranking?<section className="market-card"><h2><BarChart3 size={21}/>Top 10 de oportunidades</h2><OpportunityTable ranking={ranking}/><details><summary>Referencias excluidas ({ranking.considered.length-ranking.eligible})</summary>{ranking.considered.filter(r=>r.score===null).map(r=><p key={r.product.key}><Link to={`/estudio-mercado?tab=simulator&product=${encodeURIComponent(r.product.key)}`}>{r.product.sku} · {r.product.name}</Link>: {r.reasons.join(' ')}</p>)}</details></section>:<><label>Producto para simular<select value={selected?.key||''} onChange={e=>update('product',e.target.value)}><option value="">Seleccionar</option>{filtered.map(p=><option key={p.key} value={p.key}>{p.sku} · {p.name} · {p.mode==='transit'?'Por llegar':'Actual'}</option>)}</select></label>{selected?<MarketSimulator key={selected.key} comparison={compareProduct(selected,data.observations,data.reviews)}/>:<div className="market-empty"><Ship size={28}/><p>No hay referencias en este filtro. Los datos faltantes no se sustituyen por productos ficticios.</p></div>}</>}</>}
- </div>;
+export function MarketSimulator({
+  comparison,
+}: {
+  comparison: ReturnType<typeof compareProduct>;
+}) {
+  const [discount, setDiscount] = useState("0"),
+    [quantity, setQuantity] = useState("1"),
+    [target, setTarget] = useState(""),
+    [minimum, setMinimum] = useState("");
+  const p = comparison.product;
+  let result: ReturnType<typeof discountScenario> | null = null,
+    error = "";
+  try {
+    result = discountScenario(
+      comparison.price,
+      comparison.cost,
+      quantity === "" ? NaN : Number(quantity),
+      discount === "" ? NaN : Number(discount),
+      target === "" ? null : Number(target),
+      minimum === "" ? null : Number(minimum),
+    );
+  } catch (e) {
+    error = e instanceof Error ? e.message : "Datos inválidos";
+  }
+  return (
+    <section className="market-card">
+      <div className="market-section-heading">
+        <div>
+          <p className="market-eyebrow">SIMULACIÓN · SIN CAMBIAR PRECIOS</p>
+          <h2>{p.name}</h2>
+          <p>
+            {p.sku} ·{" "}
+            {p.mode === "transit"
+              ? "Producto por llegar · utilidad estimada"
+              : "Existencia registrada · verificar reservas y estado físico"}
+          </p>
+        </div>
+        <Link to={p.path}>Ver fuente</Link>
+      </div>
+      <div className="market-kpis">
+        <div>
+          <span>Costo por unidad interna</span>
+          <strong>{marketMoney(comparison.cost)}</strong>
+          <small>
+            {p.costStatus === "estimated"
+              ? "Estimado puesto en Chile"
+              : comparison.reference?.cost_basis_confirmed
+                ? "Registrado; base revisada"
+                : "Base del costo pendiente; resultado provisional"}
+          </small>
+        </div>
+        <div>
+          <span>Precio neto actual</span>
+          <strong>{marketMoney(comparison.price)}</strong>
+          <small>{date(p.priceAt)}</small>
+        </div>
+        <div>
+          <span>Mediana comparable</span>
+          <strong>{marketMoney(comparison.median)}</strong>
+          <small>{comparison.comparable.length} oferentes vigentes</small>
+        </div>
+        <div>
+          <span>
+            {p.mode === "transit" ? "Cantidad planificada" : "Stock registrado"}
+          </span>
+          <strong>{p.stock ?? "Sin dato"}</strong>
+          <small>
+            {p.mode === "transit" ? `ETA ${date(p.eta)}` : date(p.stockAt)}
+          </small>
+        </div>
+      </div>
+      <p className="market-muted">
+        {p.costSource} · fecha costo {date(p.costAt)}. Venta menos costo es
+        utilidad bruta; no descuenta gastos operativos, comerciales ni
+        financieros.
+      </p>
+      <div className="market-form-grid">
+        <label>
+          Descuento (%)
+          <input
+            type="number"
+            min="0"
+            max="100"
+            step="any"
+            value={discount}
+            onChange={(e) => {
+              setDiscount(e.target.value);
+              setTarget("");
+            }}
+          />
+        </label>
+        <label>
+          Precio objetivo neto CLP (opcional)
+          <input
+            type="number"
+            min="0"
+            step="any"
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+          />
+        </label>
+        <label>
+          Cantidad a simular
+          <input
+            type="number"
+            min="0.000001"
+            step="any"
+            value={quantity}
+            onChange={(e) => setQuantity(e.target.value)}
+          />
+        </label>
+        <label>
+          Margen mínimo elegido (%)
+          <input
+            type="number"
+            min="0"
+            max="99.999"
+            step="any"
+            value={minimum}
+            onChange={(e) => setMinimum(e.target.value)}
+          />
+        </label>
+      </div>
+      {error && <p role="alert">{error}</p>}
+      {result && (
+        <>
+          <div className="market-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Escenario</th>
+                  <th>Precio neto/u.</th>
+                  <th>Utilidad bruta/u.</th>
+                  <th>Utilidad bruta total</th>
+                  <th>Margen sobre venta</th>
+                  <th>Markup sobre costo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  ["Antes", result.before],
+                  ["Después", result.after],
+                ].map(([label, m]) => {
+                  const v = m as typeof result.before;
+                  return (
+                    <tr key={String(label)}>
+                      <th>{String(label)}</th>
+                      <td>{marketMoney(v.price)}</td>
+                      <td>{marketMoney(v.unitProfit)}</td>
+                      <td>{marketMoney(v.totalProfit)}</td>
+                      <td>{percent(v.margin)}</td>
+                      <td>{percent(v.markup)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Precio neto mínimo teórico:{" "}
+            <strong>{marketMoney(result.netPriceFloor)}</strong> · descuento
+            máximo teórico: <strong>{percent(result.maxDiscount)}</strong>. Solo
+            para el margen elegido en esta simulación; no establece una
+            política.
+          </p>
+          {result.warnings.map((w) => (
+            <p className="market-warning" key={w}>
+              {w}
+            </p>
+          ))}
+          {p.stock !== null && Number(quantity) > p.stock && (
+            <p className="market-warning">
+              La cantidad simulada supera{" "}
+              {p.mode === "transit" ? "lo planificado" : "el stock registrado"};
+              no acredita disponibilidad.
+            </p>
+          )}
+        </>
+      )}
+      {comparison.reasons.length > 0 && (
+        <details open>
+          <summary>Por qué esta referencia no entra al Top 10</summary>
+          <ul>
+            {comparison.reasons.map((r, i) => (
+              <li key={i}>{r}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <h3>Ofertas revisadas</h3>
+      {!comparison.offered.length && (
+        <p>
+          Sin equivalencias aprobadas. Revisa la investigación antes de comparar
+          precios.
+        </p>
+      )}
+      {comparison.offered.map((o) => (
+        <div className="market-offer" key={o.observation.id}>
+          <strong>{o.observation.payload.seller}</strong>
+          <span>
+            {marketMoney(o.netPerInternalUnit)} netos por unidad interna
+          </span>
+          <a
+            href={safeUrl(o.observation.payload.source_url)}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Fuente
+          </a>
+          <small>
+            {o.comparable ? "Comparable" : o.reasons.join(" ")} ·{" "}
+            {date(o.observation.payload.observed_at)}
+          </small>
+        </div>
+      ))}
+    </section>
+  );
+}
+export function MarketStudyPage() {
+  const [data, setData] = useState<MarketBootstrap | null>(null),
+    [loading, setLoading] = useState(true),
+    [error, setError] = useState(""),
+    [revision, setRevision] = useState(0),
+    [query, setQuery] = useState(""),
+    [mode, setMode] = useState<"all" | "current" | "transit">("all");
+  const [params, setParams] = useSearchParams(),
+    tab = params.get("tab") || "research";
+  const reload = () => setRevision((r) => r + 1);
+  useEffect(() => {
+    const abort = new AbortController();
+    setLoading(true);
+    setError("");
+    setData(null);
+    getMarketBootstrap(abort.signal)
+      .then((d) => {
+        if (!abort.signal.aborted) setData(d);
+      })
+      .catch((e) => {
+        if (!abort.signal.aborted)
+          setError(e instanceof Error ? e.message : "No disponible.");
+      })
+      .finally(() => {
+        if (!abort.signal.aborted) setLoading(false);
+      });
+    return () => abort.abort();
+  }, [revision]);
+  const products = useMemo(() => (data ? marketProducts(data) : []), [data]),
+    filtered = useMemo(
+      () =>
+        products.filter(
+          (p) =>
+            (mode === "all" || p.mode === mode) &&
+            `${p.sku} ${p.name}`
+              .toLocaleLowerCase()
+              .includes(query.toLocaleLowerCase()),
+        ),
+      [products, mode, query],
+    );
+  const selected =
+      filtered.find((p) => p.key === params.get("product")) || filtered[0],
+    ranking = useMemo(
+      () =>
+        data
+          ? marketTopTen(filtered, data.observations, data.reviews, mode)
+          : null,
+      [data, filtered, mode],
+    );
+  const latest = data ? latestObservations(data.observations) : [];
+  const pending = data
+    ? latest.filter(
+        (o) =>
+          !latestReview(data.reviews, o.id) ||
+          latestReview(data.reviews, o.id)?.payload.decision === "pending",
+      ).length
+    : 0;
+  const lastObservation =
+    latest
+      .map((o) => o.payload.observed_at)
+      .sort()
+      .slice(-1)[0] || null;
+  const update = (key: string, value: string) =>
+    setParams((p) => {
+      const n = new URLSearchParams(p);
+      n.set(key, value);
+      return n;
+    });
+  return (
+    <div className="market-page">
+      <header className="market-header">
+        <div>
+          <p className="market-eyebrow">INTELIGENCIA COMERCIAL</p>
+          <h1>Estudio de Mercado</h1>
+        </div>
+        <button className="secondary" onClick={reload} disabled={loading}>
+          <RefreshCw size={17} />
+          Actualizar lectura
+        </button>
+      </header>
+      <div className="market-boundary">
+        <ShieldCheck size={20} />
+        <span>
+          Las simulaciones no cambian precios, existencias ni registros
+          contables. El tránsito siempre es una estimación.
+        </span>
+      </div>
+      <nav className="market-tabs" aria-label="Secciones del estudio">
+        {[
+          ["research", "Investigaciones"],
+          ["opportunities", "Oportunidades"],
+          ["simulator", "Simulador"],
+          ["settings", "Integraciones"],
+        ].map(([value, label]) => (
+          <button
+            className={tab === value ? "active" : "secondary"}
+            aria-pressed={tab === value}
+            key={value}
+            onClick={() => update("tab", value)}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+      {loading && <p role="status">Leyendo fuentes del CRM…</p>}
+      {error && (
+        <div role="alert" className="market-warning">
+          <strong>No se pudo completar la lectura.</strong>
+          <p>{error}</p>
+          <button onClick={reload}>Reintentar</button>
+        </div>
+      )}
+      {data && (
+        <>
+          <details className="market-muted"><summary>{products.length} productos · {latest.length} observaciones · {pending} pendientes</summary><p>
+            Lectura {date(data.readAt)} · {data.observations.length} versiones
+            de investigación · {latest.length} observaciones actuales ·{" "}
+            {data.reviews.length} revisiones humanas. {pending} equivalencias
+            pendientes. Última observación: {date(lastObservation)}.
+          </p></details>
+          {(data.warnings.length>0||data.inventoryWarnings.length>0)&&<details><summary>Alertas de cobertura y costos ({data.warnings.length+data.inventoryWarnings.length})</summary>{[...data.warnings, ...data.inventoryWarnings].map((w, i) => (
+            <p className="market-warning" key={i}>
+              {w}
+            </p>
+          ))}</details>}
+          {!data.importsComplete && (
+            <p className="market-warning">
+              Cobertura de tránsito no verificada.
+            </p>
+          )}
+        </>
+      )}
+      {tab === "settings" ? <><MarketExtractionSettings/><MarketResearchAccess/></> : tab === "research" ? (
+        <>
+          <MarketInvestigator products={products} reload={reload} savedJobIds={data?.observations.filter(o=>o.payload.provider==='crm-native').map(o=>o.payload.external_id)||[]}/>
+          {data && (
+            <section className="market-card">
+              <h2>Equivalencias por revisar</h2>
+              {!latest.length && (
+                <p>
+                  Aún no hay ofertas guardadas para comparar.
+                </p>
+              )}
+              {latest.map((row) => {
+                const review = latestReview(data.reviews, row.id);
+                return (
+                  <details className="market-research" key={row.id}>
+                    <summary>
+                      {row.payload.product_label} · {row.payload.seller} ·{" "}
+                      {review?.payload.decision === "approved"
+                        ? "Equivalencia revisada"
+                        : review?.payload.decision === "rejected"
+                          ? "Rechazada"
+                          : "Pendiente"}
+                    </summary>
+                    <p>
+                      {row.payload.amount === null
+                        ? "Precio ausente"
+                        : `${row.payload.amount} ${row.payload.currency || "moneda sin identificar"}`}{" "}
+                      · {row.payload.vat_basis} · {row.payload.presentation} ·{" "}
+                      {row.payload.package_quantity} {row.payload.unit} ·
+                      confianza {percent(row.payload.confidence * 100)}
+                    </p>
+                    <p>
+                      <a
+                        href={safeUrl(row.payload.source_url)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Ver fuente
+                      </a>{" "}
+                      · {date(row.payload.observed_at)}
+                    </p>
+                    <p>
+                      IVA:{" "}
+                      {row.payload.vat_percent === null
+                        ? "tasa no informada"
+                        : `${row.payload.vat_percent}%`}{" "}
+                      · disponibilidad: {row.payload.availability}
+                    </p>
+                    {row.payload.fx && (
+                      <p>
+                        Cambio: {row.payload.fx.clp_per_unit} CLP/
+                        {row.payload.fx.currency} · fuente{" "}
+                        {row.payload.fx.source} ·{" "}
+                        {date(row.payload.fx.observed_at)}
+                      </p>
+                    )}
+                    <p>{row.payload.notes}</p>
+                    <ReviewForm
+                      key={`${row.id}:${review?.id || ""}`}
+                      observation={row}
+                      products={products}
+                      data={data}
+                      reload={reload}
+                    />
+                    <details>
+                      <summary>Historial de origen y revisiones</summary>
+                      {data.observations
+                        .filter(
+                          (o) =>
+                            o.payload.provider === row.payload.provider &&
+                            o.payload.external_id === row.payload.external_id,
+                        )
+                        .map((o) => (
+                          <div key={o.id}>
+                            <p>
+                              Revisión {o.payload.revision}:{" "}
+                              {o.payload.amount ?? "Sin precio"}{" "}
+                              {o.payload.currency} · observada{" "}
+                              {date(o.payload.observed_at)} · guardada{" "}
+                              {date(o.created_at)} por {o.created_by}
+                            </p>
+                            {data.reviews
+                              .filter((r) => r.observation_id === o.id)
+                              .map((r) => (
+                                <p key={r.id}>
+                                  {date(r.created_at)} · {r.payload.decision} ·{" "}
+                                  {r.payload.reason} · {r.created_by}
+                                </p>
+                              ))}
+                          </div>
+                        ))}
+                    </details>
+                  </details>
+                );
+              })}
+            </section>
+          )}
+          <details><summary>Importación avanzada</summary><MarketImport reload={reload}/></details>
+        </>
+      ) : (
+        data && (
+          <>
+            <section className="market-filters">
+              <label>
+                <Search size={16} />
+                Buscar SKU o producto
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </label>
+              <label>
+                Disponibilidad
+                <select
+                  value={mode}
+                  onChange={(e) => setMode(e.target.value as typeof mode)}
+                >
+                  <option value="all">Actual y por llegar</option>
+                  <option value="current">Existencia actual</option>
+                  <option value="transit">Por llegar · teórico</option>
+                </select>
+              </label>
+            </section>
+            {tab === "opportunities" && ranking ? (
+              <section className="market-card">
+                <h2>
+                  <BarChart3 size={21} />
+                  Top 10 de oportunidades
+                </h2>
+                <OpportunityTable ranking={ranking} />
+                <details>
+                  <summary>
+                    Referencias excluidas (
+                    {ranking.considered.length - ranking.eligible})
+                  </summary>
+                  {ranking.considered
+                    .filter((r) => r.score === null)
+                    .map((r) => (
+                      <p key={r.product.key}>
+                        <Link
+                          to={`/estudio-mercado?tab=simulator&product=${encodeURIComponent(r.product.key)}`}
+                        >
+                          {r.product.sku} · {r.product.name}
+                        </Link>
+                        : {r.reasons.join(" ")}
+                      </p>
+                    ))}
+                </details>
+              </section>
+            ) : (
+              <>
+                <label>
+                  Producto para simular
+                  <select
+                    value={selected?.key || ""}
+                    onChange={(e) => update("product", e.target.value)}
+                  >
+                    <option value="">Seleccionar</option>
+                    {filtered.map((p) => (
+                      <option key={p.key} value={p.key}>
+                        {p.sku} · {p.name} ·{" "}
+                        {p.mode === "transit" ? "Por llegar" : "Actual"}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {selected ? (
+                  <MarketSimulator
+                    key={selected.key}
+                    comparison={compareProduct(
+                      selected,
+                      data.observations,
+                      data.reviews,
+                    )}
+                  />
+                ) : (
+                  <div className="market-empty">
+                    <Ship size={28} />
+                    <p>
+                      No hay referencias en este filtro. Los datos faltantes no
+                      se sustituyen por productos ficticios.
+                    </p>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )
+      )}
+    </div>
+  );
 }

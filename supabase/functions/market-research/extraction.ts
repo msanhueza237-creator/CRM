@@ -35,7 +35,7 @@ export async function extractionSelect(ctx:Context,path:string):Promise<Row[]> {
  const r=await ctx.fetcher(`${ctx.url}/rest/v1/${path}`,{headers:{apikey:ctx.serviceRoleKey,Authorization:`Bearer ${ctx.serviceRoleKey}`},signal:AbortSignal.timeout(10000)});
  if(!r.ok)throw new ExtractionError(503,'EXTRACTION_CONFIGURATION_UNAVAILABLE');const v=await limitedJson(r,65536);if(!Array.isArray(v))throw new ExtractionError(503,'INVALID_CONFIGURATION');return v.map(row);
 }
-export async function extractionChoices(ctx:Context):Promise<Selection[]> {
+export async function extractionChoices(ctx:Context,requireRecentTariff=true):Promise<Selection[]> {
  const settings=copilotConfig(ctx.readEnv),choices:Selection[]=[];
  if(settings.deepseek.encryptionSecret){const integration=(await extractionSelect(ctx,'prospecting_ai_integrations?select=status,models&provider=eq.deepseek&limit=1'))[0];
   if(integration?.status==='verified'&&Array.isArray(integration.models))for(const model of settings.deepseek.models.filter(m=>integration.models instanceof Array&&integration.models.includes(m))){
@@ -45,7 +45,7 @@ export async function extractionChoices(ctx:Context):Promise<Selection[]> {
  // Textual OpenAI Responses is already supported by the CRM. It needs an explicitly reviewed extraction tariff date.
  const date=ctx.readEnv('MARKET_EXTRACTION_OPENAI_RATE_DATE');
  if(settings.apiKey&&date)choices.push({choice:`openai:${settings.modelPolicy.defaultModel}`,provider:'openai',model:settings.modelPolicy.defaultModel,input_usd_per_million:settings.modelPolicy.rates.luna.input,output_usd_per_million:settings.modelPolicy.rates.luna.output,rate_source:'CRM configured OpenAI default-model rates',rate_checked_at:date});
- return choices.filter(c=>c.input_usd_per_million>0&&c.output_usd_per_million>0&&Number.isFinite(Date.parse(c.rate_checked_at))&&Date.parse(c.rate_checked_at)<=Date.now()&&Date.parse(c.rate_checked_at)>=Date.now()-8*86400000);
+ return choices.filter(c=>c.input_usd_per_million>0&&c.output_usd_per_million>0&&Number.isFinite(Date.parse(c.rate_checked_at))&&Date.parse(c.rate_checked_at)<=Date.now()&&(!requireRecentTariff||Date.parse(c.rate_checked_at)>=Date.now()-8*86400000));
 }
 export async function extractionPolicy(ctx:Context) {
  const p=(await extractionSelect(ctx,'market_extraction_policy?select=revision,choice,enabled,approved_until,daily_usd,pilot_usd,daily_jobs,public_hosts&limit=1'))[0];

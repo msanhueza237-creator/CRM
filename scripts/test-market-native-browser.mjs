@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {build} from 'esbuild';
+import {chromium} from 'playwright';
+const output=path.resolve(process.argv[2]||'tmp/market-native-browser');await fs.mkdir(output,{recursive:true});
+const source=`import React from 'react';import {createRoot} from 'react-dom/client';import {MemoryRouter} from 'react-router-dom';import {MarketStudyPage} from './src/modules/market-study/MarketStudyPage';createRoot(document.getElementById('root')).render(<MemoryRouter><main style={{padding:16,maxWidth:1120,margin:'auto'}}><MarketStudyPage/></main></MemoryRouter>);`;
+const compiled=await build({stdin:{contents:source,loader:'tsx',resolveDir:process.cwd()},bundle:true,write:false,outfile:output+'/fixture.js',format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"production"'},plugins:[{name:'auth-fixture',setup(b){b.onLoad({filter:/[/\\]lib[/\\]supabase\.ts$/},()=>({loader:'js',contents:`export const supabase={auth:{getSession:async()=>({data:{session:{access_token:'test-only'}}})}};export const getSupabaseFunctionUrl=(s,r)=>'https://fixture.invalid/'+s+'/'+r;`}));}}]});
+const js=compiled.outputFiles.find(f=>f.path.endsWith('.js')).text,css=compiled.outputFiles.filter(f=>f.path.endsWith('.css')).map(f=>f.text).join('\n');
+const now=new Date().toISOString(),choice='deepseek:deepseek-flash';
+const settings={enabled:true,daily_usd:.25,daily_jobs:10,spent_usd:0,jobs_today:0,selection:{choice,revision:1},choices:[{choice,provider:'deepseek',model:'deepseek-flash'},{choice:'openai:configured-test',provider:'openai',model:'configured-test'}],jobs:[]};
+const data={observations:[],reviews:[],inventory:[{sku:'SYN-1',name:'Bomba de prueba',stock:5,stock_updated_at:now,net_price:10000,price_currency:'CLP',price_updated_at:now,unit_cost:7000,cost_currency:'CLP',cost_updated_at:now}],inventoryAvailable:true,inventoryWarnings:[],imports:[],importsComplete:true,warnings:[],readAt:now};
+const calls=[],errors=[],unexpected=[];
+const browser=await chromium.launch({headless:true,channel:'chrome'});const context=await browser.newContext({viewport:{width:1280,height:900},serviceWorkers:'block'});
+await context.route('**/*',async route=>{
+ const request=route.request(),u=new URL(request.url());if(u.href==='https://fixture.invalid/app')return route.fulfill({contentType:'text/html',body:'<html><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div></html>'});
+ calls.push({path:u.pathname,method:request.method()});let response;
+ if(u.origin!=='https://fixture.invalid'){unexpected.push(u.href);return route.abort();}
+ if(u.pathname.endsWith('/bootstrap'))response=data;
+ else if(u.pathname.endsWith('/native-settings')){if(request.method()==='POST'){const p=request.postDataJSON();assert.equal(p.revision,settings.selection.revision);settings.selection={choice:p.choice,revision:p.revision+1};}response=settings;}
+ else if(u.pathname.endsWith('/studies')){const p=request.postDataJSON();assert.equal(p.sku,'SYN-1');assert.equal(p.revision,3);assert.equal(settings.selection.choice,choice);const job={id:p.id,sku:p.sku,source_url:p.url,state:'completed',selection:{choice,provider:'deepseek',model:'deepseek-flash'},created_at:now,finished_at:now,reserved_usd:.01,estimated_usd:.0005,result:{text:'Producto de prueba Precio 11900 CLP',observed_at:now,attributes:[{field:'title',value:'Producto de prueba',quote:'Producto de prueba'},{field:'price',value:'11900',quote:'Precio 11900'},{field:'currency',value:'CLP',quote:'11900 CLP'}]}};settings.jobs=[job];settings.jobs_today=1;settings.spent_usd=.0005;response=job;}
+ else if(u.pathname.endsWith('/imports/preview'))response={canImport:true,items:request.postDataJSON().observations,errors:[]};
+ else if(u.pathname.endsWith('/imports/commit')){const p=request.postDataJSON();assert.equal(p.observations[0].amount,11900);assert.equal(p.observations[0].vat_basis,'gross');assert.equal(p.observations[0].vat_percent,19);data.observations=[{id:crypto.randomUUID(),payload:p.observations[0],created_at:now,created_by:'fixture'}];response={inserted:1,duplicates:0};}
+ else{unexpected.push(u.pathname);return route.abort();}
+ return route.fulfill({contentType:'application/json',body:JSON.stringify(response)});
+});
+const page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageerror',e=>errors.push(e.message));
+try{
+ await page.goto('https://fixture.invalid/app');await page.addStyleTag({content:'*{box-sizing:border-box}body{margin:0;background:#f7f9fa;font-family:Arial,sans-serif}'+css});await page.addScriptTag({content:js});await page.getByRole('heading',{name:'Nueva investigacion'}).waitFor();
+ assert.equal(await page.getByLabel('Modelo de investigacion').inputValue(),choice);
+ await page.getByLabel('Modelo de investigacion').selectOption('openai:configured-test');await page.getByRole('button',{name:'Actualizar historial'}).waitFor({state:'visible'});await page.waitForFunction(()=>!document.querySelector('select').disabled);await page.getByLabel('Modelo de investigacion').selectOption(choice);
+ await page.getByLabel('Buscar producto o SKU').fill('SYN-1');await page.getByRole('combobox',{name:/^Producto/}).selectOption('current:SYN-1');
+ for(const width of [1280,390,320]){await page.setViewportSize({width,height:900});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:path.join(output,`study-${width}.png`),fullPage:true});}
+ await page.getByLabel('Enlace publico de la ficha del competidor').fill('https://www.moretoclima.cl/producto-sintetico');await page.getByRole('button',{name:'Investigar fuente'}).click();await page.getByRole('heading',{name:'Revision de la fuente · SYN-1'}).waitFor();assert.equal(calls.filter(c=>c.path.endsWith('/studies')).length,1);assert.equal(calls.filter(c=>c.path.endsWith('/imports/commit')).length,0);
+ assert.equal(await page.getByLabel('Precio observado').inputValue(),'11900');await page.getByLabel('Base del precio').selectOption('gross');await page.getByLabel('IVA (%)',{exact:true}).fill('19');await page.getByLabel('Unidad base',{exact:true}).selectOption('unit');await page.getByLabel('Cantidad por presentacion').fill('1');await page.getByLabel('Presentacion',{exact:true}).fill('Unidad');assert.equal(await page.getByRole('button',{name:'Guardar para comparar'}).isDisabled(),true);
+ await page.getByLabel('Revise precio, moneda').check();await page.getByLabel('Presentacion',{exact:true}).fill('Una unidad');assert.equal(await page.getByLabel('Revise precio, moneda').isChecked(),false);await page.getByLabel('Revise precio, moneda').check();
+ await page.screenshot({path:path.join(output,'review-320.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.getByRole('button',{name:'Guardar para comparar'}).click();await page.getByRole('button',{name:'Guardado',exact:true}).waitFor();await page.getByText('Producto de prueba · MoretoClima · Pendiente',{exact:true}).waitFor();assert.equal(calls.filter(c=>c.path.endsWith('/reviews')).length,0);
+ await page.getByRole('button',{name:'Oportunidades',exact:true}).click();await page.getByText('Aún no hay oportunidades con respaldo suficiente').waitFor();assert.equal(data.reviews.length,0);assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);
+ await fs.writeFile(path.join(output,'results.json'),JSON.stringify({passed:true,network:'mocked, no production access',checks:['default DeepSeek','manual provider selection','SKU search','desktop/mobile','one extraction','explicit reviewed save','edits reset confirmation','pending technical equivalence','no automatic price/stock changes'],calls},null,2));console.log('PASS native market workflow: source -> grounded draft -> reviewed save -> pending equivalence, desktop/mobile');
+}catch(e){console.error({errors,unexpected,body:(await page.locator('body').innerText()).slice(0,7000)});throw e;}finally{await browser.close();}
