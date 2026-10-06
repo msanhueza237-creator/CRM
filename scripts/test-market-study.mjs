@@ -90,3 +90,9 @@ test('Precio objetivo compara venta neta, IVA y reduccion de costo sin modificar
  const r=marketTarget(100000,70000,90000,30);assert.equal(r.gross,107100);assert.equal(r.priceChange,-10000);assert.equal(r.priceChangePercent,-10);assert.equal(r.maxCost,63000);assert.equal(r.costReduction,7000);assert.equal(r.profit,20000);assert.ok(Math.abs(r.margin-22.222222)<1e-6);
  assert.equal(marketTarget(100000,null,90000,30).margin,null);assert.equal(marketTarget(100000,70000,null,30).margin,null);assert.equal(marketTarget(100000,70000,110000,null).maxCost,null);
 });
+
+test('Perfil de busqueda conserva descripcion publica, no costos ni notas privadas',()=>{
+ const data={inventory:[{sku:'SYN',name:'Difusor circular',description:'Aluminio 10 pulgadas. Costo: 19000 CLP',brand:'Ejemplo',unit_cost:19000}],imports:[{operation:{id:'op',inventory_mode:'future',status:'transit'},scenarios:[],costs:[],lines:[{id:'line',sku:'SYN',product_name:'Difusor circular',description:'Con regulacion de caudal; EXW 4 USD',quantity:10,notes:'privado'}]}]};
+ const [current,incoming]=marketProducts(data);
+ assert.equal(current.description,'Aluminio 10 pulgadas.');assert.equal(incoming.description,'Con regulacion de caudal');assert.equal(current.brand,'Ejemplo');assert.equal(incoming.brand,'Ejemplo');assert.equal(current.cost,19000);
+});

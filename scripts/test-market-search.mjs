@@ -7,6 +7,7 @@ import {publicIPv4,publicFetch} from '../supabase/functions/market-study/public-
 import {searchSources,webOffer,marketSearch,refreshMarketSources} from '../supabase/functions/market-study/market-search.ts';
 import {productText} from '../supabase/functions/market-study/public-source.ts';
 import {encryptApiKey} from '../supabase/functions/prospecting-integrations/deepseek.ts';
+import {matchesMarketProduct,productFeatures,productNameQuery,publicProductDescription} from '../supabase/functions/_shared/market-product-search.ts';
 const actor='11111111-1111-4111-8111-111111111111',id='22222222-2222-4222-8222-222222222222';
 const url='https://otra-tienda.cl/productos/ht-816';
 const choice={choice:'deepseek:deepseek-flash',provider:'deepseek',model:'deepseek-flash',input_usd_per_million:.3,output_usd_per_million:1.2};
@@ -32,7 +33,7 @@ test('Precios se leen de la ficha, no del texto del modelo; IVA/unidad desconoci
  const b=webOffer(url,'HT-816','Precio 123','HT816','Termostato HT816',a.observed_at);assert.equal(b.amount,null);assert.equal(b.currency,null);assert.equal(b.vat,'unknown');assert.equal(b.package_quantity,null);
  const other=webOffer(url,'HT-8160',JSON.stringify({...facts,title:'HT-8160',model:'HT-8160'}),'HT816','Termostato HT816',a.observed_at);assert.equal(other.identity,'possible');
 });
-test('Cada busqueda reserva US$0,25: replay sin gasto nuevo, solo SKU/nombre al proveedor',async()=>{
+test('Cada busqueda reserva US$0,25: replay sin gasto nuevo, solo perfil publico al proveedor',async()=>{
  const secret='test-secret-for-encryption-not-real-32',encrypted=await encryptApiKey('synthetic-provider-key',secret),calls=[],writes=[];
  let replay=false;const job={id,sku:'HT816',source_url:url,state:'running',reserved_usd:.25,selection:choice};
  const ctx={url:'https://fixture.invalid',serviceRoleKey:'fixture-service',readEnv:k=>k==='PROSPECTING_SECRET_ENCRYPTION_KEY'?secret:undefined,fetcher:async(u,o)=>{
@@ -42,11 +43,16 @@ test('Cada busqueda reserva US$0,25: replay sin gasto nuevo, solo SKU/nombre al 
  }};
  const rpc=async(_name,args)=>{writes.push(args);if(args.p_action==='status')return {web_search_supported:true};if(args.p_action==='reserve')return {created:!replay,job,ticket:id};if(args.p_action==='finish')return {...job,state:args.p_data.state,result:args.p_data.result,estimated_usd:args.p_data.cost};};
  const source=async(u,o)=>{assert.equal(o.headers.Authorization,undefined);return String(u).endsWith('robots.txt')?new Response('',{status:404}):new Response('<h1>HT-816</h1><script type="application/ld+json">'+JSON.stringify({'@type':'Product',name:'Termostato HT-816',model:'HT-816',offers:{'@type':'Offer',price:11900,priceCurrency:'CLP'}})+'</script>',{headers:{'content-type':'text/html'}});};
- const result=await marketSearch({id,sku:'HT816',title:'Termostato HT816',revision:1},ctx,rpc,actor,source);
+ const input={id,sku:'HT816',title:'Termostato HT816',description:'Control digital 220 V. Costo: 5000 CLP; Contacto ventas@privado.test',brand:'Ejemplo',revision:1};
+ const result=await marketSearch(input,ctx,rpc,actor,source);
  assert.equal(result.state,'completed');assert.equal(result.result.offers[0].amount,11900);assert.equal(result.result.kind,'market_search');assert.equal(result.estimated_usd,null);
  assert.equal(writes.find(w=>w.p_action==='reserve').p_data.kind,'market_search');
- const request=JSON.parse(calls.find(c=>c.url.includes('/anthropic/')).body);assert.equal(request.tools[0].max_uses,3);assert.equal(request.model,'deepseek-flash');assert.deepEqual(JSON.parse(request.messages[0].content),{sku:'HT816',product:'Termostato HT816',market:'Chile'});
- replay=true;await marketSearch({id,sku:'HT816',title:'Termostato HT816',revision:1},ctx,rpc,actor,source);assert.equal(calls.filter(c=>c.url.includes('/anthropic/')).length,1);
+ const request=JSON.parse(calls.find(c=>c.url.includes('/anthropic/')).body);assert.equal(request.tools[0].max_uses,3);assert.equal(request.model,'deepseek-flash');assert.deepEqual(JSON.parse(request.messages[0].content),{product:'Termostato',description:'Control digital 220 V.',brand:'Ejemplo',sku_reference:'HT816',market:'Chile'});
+ assert.match(request.system,/Prioriza nombre, descripcion/);assert.match(request.system,/sin exigir marca ni codigo/);assert.match(request.system,/site:cl/);assert.doesNotMatch(request.messages[0].content,/5000|privado/);
+ assert.equal(new URL(writes.find(w=>w.p_action==='reserve').p_data.url).searchParams.get('q'),'Termostato precio Chile');
+ assert.equal(result.result.product_profile.description,'Control digital 220 V.');
+ replay=true;await marketSearch(input,ctx,rpc,actor,source);assert.equal(calls.filter(c=>c.url.includes('/anthropic/')).length,1);
+ for(const invalid of [{cost:12},{description:'x'.repeat(1801)},{brand:[]},{title:'   '}])await assert.rejects(marketSearch({...input,...invalid},ctx,rpc,actor,source));
 });
 test('Diez busquedas por dia de Chile: reserva atomica, once bloqueada e historial conservado',async()=>{
  const db=new PGlite();try{
@@ -119,4 +125,26 @@ test('Actualizar fuentes no llama IA ni cambia consulta original; fallos no reut
  const updated=await refreshMarketSources(original,async u=>{calls.push(String(u));return String(u).endsWith('robots.txt')?new Response('',{status:404}):new Response('<h1>HT816</h1><script type="application/ld+json">'+JSON.stringify({'@type':'Product',name:'HT816',offers:{'@type':'Offer',price:11900,priceCurrency:'CLP'}})+'</script>',{headers:{'content-type':'text/html'}});});
  assert.equal(updated.result.offers[0].amount,11900);assert.ok(updated.result.refreshed_at);assert.equal(JSON.stringify(original),before);assert.ok(calls.every(u=>u.startsWith('https://otra-tienda.cl/')));
  const failed=await refreshMarketSources(updated,async()=>{throw Error('Fuente restringida');});assert.equal(failed.result.offers[0].amount,null);assert.equal(failed.result.offers[0].identity,'possible');
+});
+
+test('Descubre difusores por nombre y medidas aunque cambie el SKU; no confirma equivalencia',()=>{
+ const make=(title,description='',sku='OTRO-10')=>webOffer(url,title,JSON.stringify({title,description,sku,price:11900,currency:'CLP',singleProduct:true}),'CD-R250+OBD','Difusor Circular 10"',new Date().toISOString(),{description:'Aluminio blanco. Conexion 10 pulgadas.'});
+ const same=make('Difusor redondo de aire 10 pulgadas','Aluminio blanco');
+ assert.equal(same.identity,'similar');assert.equal(same.amount,11900);assert.equal(same.package_quantity,1);assert.match(same.warning,/no equivalente/);assert.ok(same.match_reasons.some(s=>s.includes('10')));
+ assert.equal(make('Difusor circular 12 pulgadas').identity,'different');
+ assert.equal(make('Difusor circular 12 pulgadas','','CD-R250+OBD').identity,'different');
+ assert.equal(make('Kit difusor circular 10 pulgadas').identity,'different');
+ assert.equal(make('Difusor circular','Producto sin medida').identity,'similar');
+ assert.ok(make('Difusor circular').match_reasons.some(s=>s.includes('Falta verificar')));
+ assert.equal(make('Termostato digital 220 V').identity,'possible');
+ const voltage=webOffer(url,'',JSON.stringify({title:'Termostato digital 110 V',sku:'TERM-220'}),'TERM-220','Termostato digital 220 V',new Date().toISOString());assert.equal(voltage.identity,'different');
+});
+
+test('Filtro local por palabras sin acentos, descripcion y SKU secundario; medidas convertibles',()=>{
+ const p={sku:'CD-R250+OBD',name:'Difusor Circular 10"',description:'Aluminio con regulación de caudal',brand:'Ejemplo'};
+ assert.equal(matchesMarketProduct(p,'regulacion aluminio'),true);assert.equal(matchesMarketProduct(p,'difusor circular'),true);assert.equal(matchesMarketProduct(p,'CD-R250'),true);assert.equal(matchesMarketProduct(p,'termostato'),false);
+ assert.equal(productNameQuery('CD-R250+OBD Difusor Circular 10"',p.sku),'Difusor Circular 10"');
+ assert.equal(productFeatures('10 pulgadas')[0].value,productFeatures('254 mm')[0].value);
+ assert.equal(productFeatures('1/2 pulgadas')[0].value,12.7);
+ assert.equal(publicProductDescription('Aluminio.\nCosto: 19000 CLP; margen:30%; token=abc; EXW 4.50; https://privado.test; ventas@local.cl'),'Aluminio.');
 });

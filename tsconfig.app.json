@@ -30,6 +30,7 @@
     "supabase/functions/_shared/facto-posting-contract.ts",
     "supabase/functions/_shared/facto-cost-return-contract.ts",
     "supabase/functions/_shared/market-study-contract.ts",
-    "supabase/functions/_shared/market-native-contract.ts"
+    "supabase/functions/_shared/market-native-contract.ts",
+    "supabase/functions/_shared/market-product-search.ts"
   ]
 }

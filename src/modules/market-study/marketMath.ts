@@ -1,7 +1,7 @@
 import Decimal from 'decimal.js';
 import type { MarketFx, MarketObservation, MarketReview, StoredMarketObservation } from '../../../supabase/functions/_shared/market-study-contract';
 export interface MarketProduct {
- key:string;sku:string;name:string;mode:'current'|'transit';stock:number|null;stockAt:string|null;eta:string|null;
+ key:string;sku:string;name:string;description?:string;brand?:string;mode:'current'|'transit';stock:number|null;stockAt:string|null;eta:string|null;
  price:number|null;priceCurrency:string|null;priceAt:string|null;cost:number|null;costCurrency:string|null;costAt:string|null;
  costStatus:'recorded'|'estimated'|'missing';costCurrencyAssumed?:boolean;relatedCurrentSku?:string|null;costSource:string;path:string;notices:string[];
 }

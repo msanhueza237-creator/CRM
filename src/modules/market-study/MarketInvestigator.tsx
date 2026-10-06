@@ -23,6 +23,7 @@ import type {
 } from "../../../supabase/functions/_shared/market-study-contract";
 import type { MarketProduct } from "./marketMath";
 import { MarketComparison } from './MarketComparison';
+import { matchesMarketProduct, productNameQuery, publicProductDescription } from '../../../supabase/functions/_shared/market-product-search';
 const label = {
   title: "Producto",
   brand: "Marca",
@@ -81,9 +82,7 @@ export function MarketInvestigator({
   const filtered = products.filter(
     (p) =>
       p.sku &&
-      `${p.sku} ${p.name}`
-        .toLocaleLowerCase()
-        .includes(query.toLocaleLowerCase()),
+      matchesMarketProduct(p,query),
   );
   const product = products.find((p) => p.key === selectedKey);
   const dailyLimitReached = !!settings && settings.jobs_today >= settings.daily_jobs;
@@ -99,7 +98,8 @@ export function MarketInvestigator({
     setDraft(null);
     try {
       if(!webSearch)marketSite(url);
-      const job = webSearch?await searchMarket({id:crypto.randomUUID(),sku:product.sku,title:product.name,revision:settings.selection.revision}):await runNativeStudy({
+      const description=publicProductDescription(product.description),brand=publicProductDescription(product.brand,120);
+      const job = webSearch?await searchMarket({id:crypto.randomUUID(),sku:product.sku,title:product.name,revision:settings.selection.revision,...(description?{description}:{}),...(brand?{brand}:{})}):await runNativeStudy({
         id: crypto.randomUUID(),
         sku: product.sku,
         url: url.trim(),
@@ -152,12 +152,12 @@ export function MarketInvestigator({
       </div>
       <div className="market-form-grid">
         <label>
-          Buscar producto o SKU
+          Buscar producto
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Producto del CRM"
+            placeholder="Nombre, descripción, características o SKU"
           />
         </label>
         <label>
@@ -166,22 +166,23 @@ export function MarketInvestigator({
             <option value="">Seleccionar producto</option>
             {filtered.map((p) => (
               <option key={p.key} value={p.key}>
-                {p.sku} · {p.name}{p.mode==='transit'?' · En importacion':''}
+                {p.name} · {p.sku}{p.mode==='transit'?' · En importacion':''}
               </option>
             ))}
             {product && !filtered.some((p) => p.key === selectedKey) && (
               <option value={selectedKey}>
-                {product.sku} · {product.name}{product.mode==='transit'?' · En importacion':''}
+                {product.name} · {product.sku}{product.mode==='transit'?' · En importacion':''}
               </option>
             )}
           </select>
         </label>
       </div>
+      {product?.description&&<details className="market-muted"><summary>Descripción del producto</summary><p>{product.description}</p></details>}
       <details className="market-muted"><summary>Referencias conocidas</summary><div className="market-source-links" aria-label="Buscar en competidores">
         {MARKET_SITES.map((s) => (
           <a
             key={s.host}
-            href={`https://www.google.com/search?q=${encodeURIComponent(`site:${s.host} ${product?.sku || query}`)}`}
+            href={`https://www.google.com/search?q=${encodeURIComponent(`site:${s.host} ${product?productNameQuery(product.name,product.sku):query}`)}`}
             target="_blank"
             rel="noreferrer"
           >

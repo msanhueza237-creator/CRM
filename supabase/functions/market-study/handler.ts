@@ -7,7 +7,8 @@ import { assertMarketAccess, normalizeMarketReview, previewMarketImport } from "
 import { CopilotSources } from "../crm-copilot/sources.ts";
 import { inventoryValuation } from "../crm-copilot/inventory-valuation.ts";
 import { factoCurrencies } from "../crm-copilot/product-prices.ts";
-import { inventoryCatalogFields } from "../crm-copilot/product-resolution.ts";
+import { inventoryCatalogFields, resolveProducts } from "../crm-copilot/product-resolution.ts";
+import { publicProductDescription } from '../_shared/market-product-search.ts';
 import { object, CopilotDataError, type RestConfig } from "../crm-copilot/contracts.ts";
 export interface MarketEnvironment { rest: RestConfig; origin: string; currencyMap?: string; readEnv?: ExtractionEnv }
 class HttpError extends Error { constructor(public status: number,message: string) {super(message);} }
@@ -85,7 +86,12 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
     const inventory=async()=>{try{
      const [snapshots,details,catalog,entity]=await Promise.all([source.records('inventory_snapshots'),source.records('product_details'),source.all(`content_products?select=${inventoryCatalogFields}&order=id.asc`),source.entity()]);
      const settings=await source.select(`accounting_entities?select=confirmations:settings->copilot_cost_currency_confirmations&id=eq.${entity}`);
-     return inventoryValuation(snapshots,details,catalog,{},factoCurrencies(env.currencyMap),object(settings[0]?.confirmations),true);
+     const stock=inventoryValuation(snapshots,details,catalog,{},factoCurrencies(env.currencyMap),object(settings[0]?.confirmations),true);
+     const descriptions=new Map(resolveProducts(snapshots,details,catalog,false).map(p=>{
+      const values=[...new Set(Array.isArray(p.search_descriptions)?p.search_descriptions:[])];
+      return [p.sku,values.length===1?publicProductDescription(values[0]):''];
+     }));
+     return {...stock,records:stock.records.map(p=>({...p,description:descriptions.get(p.sku)||''}))};
     }catch{warnings.push('Inventario/costos no disponibles: no se sustituyen por cero.');return null;}};
     const imports=async()=>{try{
      const operations=await source.all('import_shipments?select=id&inventory_mode=eq.future&status=not.in.(received,closed,cancelled)&order=id.asc',50);

@@ -11,6 +11,8 @@ export function marketOfferNet(offer:MarketWebOffer) {
   if(offer.identity!=='model_match'||offer.package_quantity!==1)return null;
   return toNetClp(offer.amount,offer.currency,offer.vat,offer.vat_percent,null);
 }
+const publishedUnitNet=(offer:MarketWebOffer)=>offer.package_quantity===1?toNetClp(offer.amount,offer.currency,offer.vat,offer.vat_percent,null):null;
+const identityLabel={model_match:'Modelo coincidente',similar:'Producto similar · por verificar',different:'Diferencias detectadas',possible:'Equivalencia pendiente'};
 export function MarketComparison({product,products,job,onReview}:{product:MarketProduct;products:MarketProduct[];job:NativeStudyJob|null;onReview:(index:number)=>void}) {
   const [query,setQuery]=useState(''),[sort,setSort]=useState('price'),[onlyPrices,setOnlyPrices]=useState(false),[transitKey,setTransitKey]=useState(''),[basis,setBasis]=useState('current'),[targetMode,setTargetMode]=useState('median'),[manual,setManual]=useState(''),[desired,setDesired]=useState('30');
   const linkedSku=product.mode==='transit'&&product.relatedCurrentSku!==undefined?product.relatedCurrentSku:product.sku;
@@ -25,14 +27,14 @@ export function MarketComparison({product,products,job,onReview}:{product:Market
   const target=targetMode==='manual'?manual!==''&&Number.isFinite(Number(manual))&&Number(manual)>0?Number(manual):null:targetMode==='lowest'?eligible[0]??null:median;
   const margin=desired!==''&&Number.isFinite(Number(desired))&&Number(desired)>=0&&Number(desired)<100?Number(desired):null;
   const chosenCost=basis==='current'?cost:future,objective=marketTarget(price,chosenCost,target,margin);
-  const rows=useMemo(()=>offers.map((offer,index)=>({offer,index,net:marketOfferNet(offer)})).filter(({offer})=>(!onlyPrices||known(offer.amount))&&`${offer.seller} ${offer.title}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a,b)=>{
+  const rows=useMemo(()=>offers.map((offer,index)=>({offer,index,net:marketOfferNet(offer),publishedNet:publishedUnitNet(offer)})).filter(({offer})=>(!onlyPrices||known(offer.amount))&&`${offer.seller} ${offer.title}`.toLocaleLowerCase().includes(query.toLocaleLowerCase())).sort((a,b)=>{
     if(sort==='seller')return a.offer.seller.localeCompare(b.offer.seller);
     // Raw prices in different currencies/tax bases never share a numerical rank.
     const av=a.net,bv=b.net;
     return av===null?(bv===null?a.offer.seller.localeCompare(b.offer.seller):1):bv===null?-1:sort==='highest'?bv-av:av-bv;
   }),[offers,query,sort,onlyPrices]);
   return <section className="market-comparison" aria-label="Comparativa de precios">
-    <div className="market-section-heading"><h2>Comparativa · {product.sku}</h2><span className="market-muted">{job?.created_at?new Date(job.result.refreshed_at||job.created_at).toLocaleString('es-CL',{timeZone:'America/Santiago'}):''}</span></div>
+    <div className="market-section-heading"><h2>Comparativa · {product.name}</h2><span className="market-muted">{job?.created_at?new Date(job.result.refreshed_at||job.created_at).toLocaleString('es-CL',{timeZone:'America/Santiago'}):''}</span></div>
     <div className="market-price-summary">
       <div><span>Venta actual · neto CLP</span><strong>{money(price)}</strong><small>{actual?.priceAt?`Fuente ${new Date(actual.priceAt).toLocaleDateString('es-CL')}`:'Precio pendiente de verificar'}</small></div>
       <div><span>Costo actual · Facto</span><strong>{money(cost)}</strong><small>{actual?.costCurrencyAssumed?'CLP supuesto · moneda pendiente de confirmar':'Costo registrado de producto'}</small><small>Margen {actual?.costCurrencyAssumed?'provisional':'calculado'} {percent(today.margin)}</small></div>
@@ -65,13 +67,13 @@ export function MarketComparison({product,products,job,onReview}:{product:Market
     <div className="market-comparison-scroll" tabIndex={0} aria-label="Tabla de ofertas">
       <table><thead><tr><th>Oferente / producto</th><th>Precio publicado</th><th>Neto por unidad CLP</th><th>Diferencia vs. venta actual</th><th>Margen con costo {basis==='current'?'actual':'por llegar'}</th><th>Estado</th><th>Revision</th></tr></thead><tbody>
         <tr className="market-own-price"><th>Climactiva · {product.name}</th><td>{money(price===null?null:new Decimal(price).times('1.19').toNumber())}<small>Con IVA 19% calculado</small></td><td>{money(price)}</td><td>Referencia</td><td>{percent((basis==='current'?today:arrival).margin)}</td><td>{actual?'CRM / Facto':'Sin precio actual'}</td><td><a href={product.path}>Origen <ArrowUpRight size={14}/></a></td></tr>
-        {rows.map(({offer:o,index,net})=><tr key={o.url}>
+        {rows.map(({offer:o,index,net,publishedNet})=><tr key={o.url}>
           <th><a href={o.url} target="_blank" rel="noreferrer">{o.seller} <ArrowUpRight size={14}/></a><small>{o.title}</small></th>
           <td>{o.currency?money(o.amount,o.currency):o.amount===null?'Pendiente':`${o.amount} · moneda pendiente`}<small>{o.vat==='gross'?'IVA incluido':o.vat==='net'?'Neto sin IVA':'IVA por verificar'}{o.vat_assumed?' · 19% supuesto':''}</small>{o.currency_assumed&&<small>CLP supuesto</small>}</td>
-          <td>{money(net)}<small>{net!==null?'Provisional':'Base no comparable'}{o.package_assumed?' · unidad supuesta':''}</small></td>
+          <td>{money(publishedNet)}<small>{net!==null?'Provisional':publishedNet!==null?'Referencia · no equivalente':'Base no comparable'}{o.package_assumed?' · unidad supuesta':''}</small></td>
           <td>{net!==null&&price!==null?money(net-price):'Pendiente'}</td>
           <td>{percent(discountScenario(net,chosenCost,1,0,null,null).before.margin)}<small>Escenario provisional</small></td>
-          <td><span>{o.availability==='available'?'Disponible':o.availability==='unavailable'?'Sin stock':'Stock por verificar'}</span><details><summary>{o.identity==='model_match'?'Modelo coincidente':'Equivalencia pendiente'}</summary><p>{o.warning}</p><small>{new Date(o.observed_at).toLocaleString('es-CL')}</small><pre>{o.evidence}</pre></details></td>
+          <td><span>{o.availability==='available'?'Disponible':o.availability==='unavailable'?'Sin stock':'Stock por verificar'}</span><details><summary>{identityLabel[o.identity]}</summary><p>{o.warning}</p>{o.match_reasons?.map((reason,i)=><p key={i}>{reason}</p>)}<small>{new Date(o.observed_at).toLocaleString('es-CL')}</small><pre>{o.evidence}</pre></details></td>
           <td><button className="secondary market-review-icon" title={`Revisar oferta de ${o.seller}`} aria-label={`Revisar oferta de ${o.seller}`} onClick={()=>onReview(index)}><Eye size={18}/></button></td>
         </tr>)}
       </tbody></table>

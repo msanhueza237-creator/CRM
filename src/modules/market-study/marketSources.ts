@@ -3,8 +3,9 @@ import type { ForeignTradeCostingSettings, ForeignTradeAllocationMethod } from '
 import { calculateForeignTradeCosting } from '../foreign-trade/foreignTradeCostEngine.ts';
 import type { MarketProduct } from './marketMath.ts';
 import { known, fresh, MARKET_RULES } from './marketMath.ts';
+import { publicProductDescription } from '../../../supabase/functions/_shared/market-product-search.ts';
 export function marketProducts(data:MarketBootstrap):MarketProduct[]{
- const current:MarketProduct[]=data.inventory.map(p=>({key:`current:${p.sku}`,sku:p.sku,name:p.name,mode:'current',stock:known(p.stock)?p.stock:null,stockAt:p.stock_updated_at,eta:null,
+ const current:MarketProduct[]=data.inventory.map(p=>({key:`current:${p.sku}`,sku:p.sku,name:p.name,description:publicProductDescription(p.description),brand:publicProductDescription(p.brand,120),mode:'current',stock:known(p.stock)?p.stock:null,stockAt:p.stock_updated_at,eta:null,
   price:p.net_price,priceCurrency:p.price_currency,priceAt:p.price_updated_at,cost:p.unit_cost??null,costCurrency:p.cost_currency??null,costAt:p.cost_updated_at??null,
   costStatus:p.unit_cost!=null&&p.cost_currency?'recorded':'missing',costCurrencyAssumed:!p.cost_currency&&p.assumed_cost_currency==='CLP',costSource:'Facto: costo de producto registrado; no costo histórico de una venta.',path:`/dashboard?inventory_query=${encodeURIComponent(p.sku)}#inventario`,notices:[...(p.stock_warnings||[]),...(!p.cost_currency&&p.assumed_cost_currency==='CLP'?['Costo con moneda pendiente: simulacion en CLP segun moneda de venta; no confirmado.']:[])]}));
  const incoming:MarketProduct[]=[];
@@ -40,7 +41,7 @@ export function marketProducts(data:MarketBootstrap):MarketProduct[]{
    const priced=exact.length===1&&!repeated?exact[0]:null;
    const ambiguous=exact.length>1||repeated;
    const result=calculation && !calculation.missingInputs.length && !scenario?.missing_inputs.length ? calculation.lines.find(r=>r.lineId===line.id) : undefined;
-   incoming.push({key:`transit:${op.id}:${line.id}`,sku:priced?.sku||line.sku||line.supplier_sku||line.supplier_model||'',relatedCurrentSku:priced?.sku??null,name:line.product_name,mode:'transit',stock:known(line.quantity)?line.quantity:null,stockAt:op.updated_at,eta:op.estimated_arrival,
+   incoming.push({key:`transit:${op.id}:${line.id}`,sku:priced?.sku||line.sku||line.supplier_sku||line.supplier_model||'',relatedCurrentSku:priced?.sku??null,name:line.product_name,description:publicProductDescription(line.description)||priced?.description,brand:priced?.brand,mode:'transit',stock:known(line.quantity)?line.quantity:null,stockAt:op.updated_at,eta:op.estimated_arrival,
     price:priced?.price??null,priceCurrency:priced?.priceCurrency??null,priceAt:priced?.priceAt??null,cost:result&&line.quantity>0?result.landedUnitClp:null,costCurrency:result?'CLP':null,costAt:scenario?.calculated_at??null,costStatus:result?'estimated':'missing',
     costSource:scenario?`Comercio Exterior · ${op.reference} · escenario ${scenario.name} · TC ${scenario.exchange_rate_clp} CLP/${op.base_currency}; fuente ${scenario.exchange_rate_source}; fecha TC ${String(scenario.assumptions.fx_observed_at||'no registrada')}; calculado ${scenario.calculated_at||'sin fecha'}`:`Comercio Exterior · ${op.reference} · sin costo puesto en Chile`,
     path:`/comercio-exterior?view=operations&operation=${encodeURIComponent(op.id)}`,notices:[...new Set([...issues,...(!line.sku?[priced?'Coincidencia exacta de codigo proveedor/modelo; vinculo interno pendiente.':ambiguous?'Codigo proveedor ambiguo: no vinculado a un producto actual.':'Sin vinculo exacto con un SKU del inventario actual.']:[]),...(!known(line.quantity)||line.quantity<=0?['Cantidad pendiente.']:[])])]});

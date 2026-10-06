@@ -105,3 +105,21 @@ test('Refresh solo admite ID del historial autenticado; no reserva gasto ni acep
  assert.equal((await call({id},false)).status,401);assert.equal((await call({id,url:'https://bad.cl/'})).status,422);assert.equal(calls.length,0);
  assert.equal((await call({id:crypto.randomUUID()})).status,404);const r=await call({id});assert.equal(r.status,200);assert.ok((await r.json()).result.refreshed_at);assert.ok(calls.every(c=>c.p_action==='status'));assert.equal(job.result.refreshed_at,undefined);
 });
+
+test('Bootstrap enlaza descripcion publica por SKU; no mezcla descripciones contradictorias',async()=>{
+ let ambiguous=false;
+ const handler=createMarketHandler({rest:{url:'https://fixture.invalid',anonKey:'anon',serviceRoleKey:'service'},origin:'https://crm.example'},async u=>{
+  const path=String(u);
+  if(path.includes('/auth/v1/user'))return json({id:actor});
+  if(path.includes('profiles?'))return json([{role:'administrador',active:true}]);
+  if(path.includes('accounting_entities?select=id'))return json([{id}]);
+  if(path.includes('content_products?')){
+   const product={id,sku:'DIF-10',name:'Difusor circular',brand:'Ejemplo',description_text:'Aluminio 10 pulgadas. Costo: 19000 CLP',source_status:'active'};
+   return new Response(JSON.stringify(ambiguous?[product,{...product,id:actor,description_text:'Modelo 12 pulgadas'}]:[product]),{headers:{'Content-Range':ambiguous?'0-1/2':'0-0/1'}});
+  }
+  return new Response('[]',{headers:{'Content-Range':'*/0'}});
+ });
+ const read=async()=>{const response=await handler(new Request('https://fixture.invalid/functions/v1/market-study/bootstrap',{headers:{Authorization:'Bearer synthetic'}}));assert.equal(response.status,200);return response.json();};
+ let data=await read();assert.equal(data.inventoryAvailable,true);assert.equal(data.inventory[0].description,'Aluminio 10 pulgadas.');
+ ambiguous=true;data=await read();assert.equal(data.inventory[0].description,'');
+});
