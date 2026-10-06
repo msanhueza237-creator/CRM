@@ -16,6 +16,7 @@ export interface MarketWebOffer {
   identity:'model_match'|'similar'|'different'|'possible'; evidence:string; warning:string;
   match_reasons?:string[]; conflicts?:string[];
   vat_assumed?:boolean; package_assumed?:boolean; currency_assumed?:boolean;
+  price_error?:string;
 }
 export interface NativeStudyJob {
   id:string; sku:string; source_url:string; state:'running'|'completed'|'failed'|'unknown';

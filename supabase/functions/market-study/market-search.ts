@@ -11,7 +11,7 @@ const row=(v:unknown):Row=>v&&typeof v==='object'&&!Array.isArray(v)?v as Row:{}
 type Context={url:string;serviceRoleKey:string;readEnv:ExtractionEnv;fetcher:typeof fetch};
 type RPC=(name:string,args:Row)=>Promise<unknown>;
 const normalize=(s:string)=>s.normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[\s._-]/g,'');
-export function isProductSearchUrl(u:URL){return !/(?:^|\/)(?:search|buscar|busqueda|result|results|category|categoria)(?:\/|$)/i.test(u.pathname)&&![...u.searchParams.keys()].some(k=>/^(?:s|q|search|query|search_query)$/i.test(k))&&!/product\/search/i.test(u.searchParams.get('route')||'');}
+export function isProductSearchUrl(u:URL){return !/(?:^|\/)(?:search|buscar|busqueda|result|results|category|categoria|product-category|lista|shorts|clips)(?:\/|$)/i.test(u.pathname)&&!/[.](?:pdf|docx?|xlsx?)$/i.test(u.pathname)&&![...u.searchParams.keys()].some(k=>/^(?:s|q|search|query|search_query)$/i.test(k))&&!/product\/search/i.test(u.searchParams.get('route')||'');}
 
 export function searchSources(value:unknown) {
   const body=row(value),blocks=Array.isArray(body.content)?body.content.map(row):[],queries:string[]=[],sources:{url:string;title:string}[]=[];
@@ -57,6 +57,7 @@ export function webOffer(url:string,title:string,text:string,sku:string,productT
   const packageAssumed=!packageText&&facts.singleProduct===true&&!/\b(?:pack|kit|combo|set|juego|caja|rollo)\b/i.test(String(facts.title||title)+' '+String(facts.description||''));
   return {url,seller:new URL(url).hostname.replace(/^www\./,''),title:String(facts.title||title).slice(0,160),observed_at:at,
     amount,currency,vat,vat_percent:vatPercent,package_quantity:packageText||packageAssumed?1:null,vat_assumed:vatAssumed,package_assumed:packageAssumed,currency_assumed:facts.currencyAssumed===true,
+    ...(amount===null?{price_error:'La ficha no entrega un precio unico en un formato verificable.'}:{}),
     availability:/InStock$/.test(String(facts.availability))?'available':/OutOfStock$/.test(String(facts.availability))?'unavailable':'unknown',identity,match_reasons:matchReasons,conflicts:similarity.conflicts,
     evidence:text.slice(0,1500),warning:[identity==='different'?'Diferencias tecnicas detectadas; excluido del precio objetivo.':identity==='similar'?'Producto similar, no equivalente confirmado; excluido del precio objetivo.':identity==='possible'?'Equivalencia por verificar.':'Coincidencia de modelo; equivalencia tecnica pendiente.',...similarity.conflicts,amount===null?'Precio no verificable.':'',!currency?'Moneda no informada.':'',conflict?'Base IVA contradictoria.':vat==='unknown'?'IVA no informado.':vatAssumed?'IVA chileno 19% supuesto; respeta neto explicito.':'',packageAssumed?'Ficha individual: una unidad supuesta; confirmar presentacion.':!packageText?'Presentacion por verificar.':''].filter(Boolean).join(' ')};
 }
@@ -68,7 +69,7 @@ export async function refreshMarketSources(job:NativeStudyJob,readSource:typeof 
     const batch=await Promise.all(sources.slice(i,i+4).map(async s=>{
       try{if(!isProductSearchUrl(publicProductUrl(s.url)))throw new Error('Enlace de busqueda o listado: falta ficha individual.');
         const result=await fetchPublicProduct(s.url,readSource,true);return webOffer(s.url,s.title,result.text,job.sku,job.result.product_title||job.sku,result.observed_at,job.result.product_profile);}
-      catch(e){return {...webOffer(s.url,s.title,'',job.sku,job.result.product_title||job.sku,new Date().toISOString()),identity:'possible' as const,warning:e instanceof Error?e.message:'Fuente no disponible.'};}
+      catch(e){const message=e instanceof Error?e.message:'Fuente no disponible.';return {...webOffer(s.url,s.title,'',job.sku,job.result.product_title||job.sku,new Date().toISOString()),identity:'possible' as const,warning:message,price_error:message};}
     }));offers.push(...batch);
   }
   return {...job,result:{...job.result,offers,refreshed_at:new Date().toISOString()}};
@@ -111,7 +112,7 @@ export async function marketSearch(input:unknown,ctx:Context,rpc:RPC,actor:strin
     for(let i=0;i<discovered.sources.length;i+=4){
       const batch=await Promise.all(discovered.sources.slice(i,i+4).map(async s=>{
         try{const source=await fetchPublicProduct(s.url,readSource,true);return webOffer(s.url,s.title,source.text,String(body.sku),String(body.title),source.observed_at,profile);}
-        catch(e){return {...webOffer(s.url,s.title,'',String(body.sku),String(body.title),new Date().toISOString()),warning:e instanceof Error?e.message:'Fuente no disponible.'};}
+        catch(e){const message=e instanceof Error?e.message:'Fuente no disponible.';return {...webOffer(s.url,s.title,'',String(body.sku),String(body.title),new Date().toISOString()),warning:message,price_error:message};}
       }));offers.push(...batch);
     }
     result.offers=offers;state='completed';

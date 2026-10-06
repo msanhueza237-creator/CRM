@@ -16,6 +16,20 @@ export function publicIPv4(address:string):boolean {
 
 type Connection={read:(b:Uint8Array)=>Promise<number|null>;write:(b:Uint8Array)=>Promise<number>;close:()=>void};
 type NativeNetwork={connect:(o:{hostname:string;port:number})=>Promise<Connection>;startTls:(c:Connection,o:{hostname:string;alpnProtocols:string[]})=>Promise<Connection>};
+async function decodedResponse(bytes:Uint8Array<ArrayBuffer>,status:number,headers:Headers):Promise<Response>{
+  const encoding=(headers.get('content-encoding')||'identity').toLowerCase();
+  if(!['identity','gzip','deflate'].includes(encoding))throw new Error('Compresion de fuente no admitida.');
+  if(encoding!=='identity'){
+    const reader=new Response(bytes).body!.pipeThrough(new DecompressionStream(encoding as 'gzip'|'deflate')).getReader();
+    const parts:Uint8Array[]=[];let size=0;
+    try{while(true){const item=await reader.read();if(item.done)break;size+=item.value.length;
+      if(size>1500000)throw new Error('Fuente descomprimida demasiado grande.');parts.push(item.value);}}
+    finally{await reader.cancel().catch(()=>{});}
+    bytes=new Uint8Array(size);let offset=0;for(const part of parts){bytes.set(part,offset);offset+=part.length;}
+    headers.delete('content-encoding');headers.delete('content-length');
+  }
+  headers.delete('transfer-encoding');return new Response([204,205,304].includes(status)?null:bytes,{status,headers});
+}
 // Edge's node:https does not implement lookup. TCP pins the validated IP while
 // startTls verifies the original hostname. The parser handles HTTP framing.
 export async function pinnedNativeResponse(url:URL,address:string,network:NativeNetwork,signal?:AbortSignal|null):Promise<Response>{
@@ -43,8 +57,7 @@ export async function pinnedNativeResponse(url:URL,address:string,network:Native
       wireSize+=n;if(wireSize>1600000)throw new Error('Fuente demasiado grande.');const result=parser.execute(Buffer.from(bytes.subarray(0,n)));if(result instanceof Error)throw result;}
     if(!done||status<200||status>599)throw new Error('Respuesta HTTP incompleta.');
     const bytes=new Uint8Array(size);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
-    const encoding=headers.get('content-encoding');if(encoding&&encoding!=='identity')throw new Error('Compresion de fuente no admitida.');
-    headers.delete('transfer-encoding');return new Response([204,205,304].includes(status)?null:bytes,{status,headers});
+    return decodedResponse(bytes,status,headers);
   };
   try{return await Promise.race([run(),cancelled]);}finally{clearTimeout(timer);signal?.removeEventListener('abort',abort);close();}
 }
@@ -68,7 +81,7 @@ export const publicFetch:typeof fetch=async(input,init={})=>{
       res.on('error',reject);
       res.on('end',()=>{const bytes=new Uint8Array(size);let offset=0;for(const c of chunks){bytes.set(c,offset);offset+=c.length;}
         const headers=new Headers();for(const [k,v] of Object.entries(res.headers))if(v!==undefined)headers.set(k,Array.isArray(v)?v.join(', '):String(v));
-        resolve(new Response([204,205,304].includes(res.statusCode||200)?null:bytes,{status:res.statusCode||502,headers}));});
+        decodedResponse(bytes,res.statusCode||502,headers).then(resolve,reject);});
     });
     req.setTimeout(12000,()=>req.destroy(new Error('Fuente sin respuesta.')));
     req.on('error',reject);req.end();

@@ -10,7 +10,7 @@ const js=bundle.outputFiles.find(f=>f.path.endsWith('.js')).text,css=bundle.outp
 const choice='deepseek:deepseek-flash',now=new Date().toISOString();
 const settings={enabled:true,web_search_supported:true,daily_usd:2.5,daily_jobs:10,spent_usd:0,jobs_today:0,selection:{choice,revision:1},choices:[{choice,provider:'deepseek',model:'deepseek-flash'}],jobs:[]};
 const offer=(seller,amount,extra={})=>({url:`https://${seller}/ht816`,seller,title:'Termostato HT-816',amount,currency:'CLP',vat:'gross',vat_percent:19,package_quantity:1,availability:'available',identity:'model_match',observed_at:now,evidence:'Precio por unidad con IVA 19%',warning:'Equivalencia tecnica pendiente',...extra});
-const offers=[offer('nuevo-oferente.cl',23800),offer('precio-menor.cl',17850),offer('sin-datos.cl',null,{currency:null,vat:'unknown',package_quantity:null,identity:'possible'}),offer('internacional.com',9,{currency:'USD'}),offer('similar.cl',1190,{identity:'similar',title:'Termostato digital otro codigo',match_reasons:['Nombre/descripcion: termostato, digital.']}),offer('diferente.cl',2380,{identity:'different',title:'Termostato 110 V',conflicts:['voltaje: 220 V / 110 V']})];
+const offers=[offer('nuevo-oferente.cl',23800),offer('precio-menor.cl',17850),offer('sin-datos.cl',null,{currency:null,vat:'unknown',package_quantity:null,identity:'possible',price_error:'Enlace de producto no disponible (HTTP 404).'}),offer('internacional.com',9,{currency:'USD'}),offer('similar.cl',1190,{identity:'similar',title:'Termostato digital otro codigo',match_reasons:['Nombre/descripcion: termostato, digital.']}),offer('diferente.cl',2380,{identity:'different',title:'Termostato 110 V',conflicts:['voltaje: 220 V / 110 V']})];
 const calls=[],errors=[],unexpected=[];
 const browser=await chromium.launch({headless:true,channel:'chrome'}),context=await browser.newContext({viewport:{width:1280,height:1000},serviceWorkers:'block'});
 await context.route('**/*',async route=>{
@@ -19,6 +19,7 @@ await context.route('**/*',async route=>{
  calls.push({route:u.pathname,method:req.method()});let response;
  if(u.pathname.endsWith('/native-settings'))response=settings;
  else if(u.pathname.endsWith('/search')){const p=req.postDataJSON();assert.deepEqual(Object.keys(p).sort(),p.description?['description','id','revision','sku','title']:['id','revision','sku','title']);if(p.description)assert.equal(p.description,'Regulación digital de temperatura 220 V');assert.equal(p.sku,'HT816');assert.equal(p.title,'Termostato HT-816');const j={id:p.id,sku:p.sku,source_url:'https://www.google.com/search?q=HT816',state:'completed',selection:{choice,model:'deepseek-flash'},reserved_usd:.25,estimated_usd:null,created_at:now,result:{kind:'market_search',offers,queries:['HT816 precio Chile'],coverage:'Web indexada, no censo exhaustivo.'}};settings.jobs=[j];settings.spent_usd=.25;settings.jobs_today=1;response=j;}
+ else if(u.pathname.endsWith('/sources/refresh')){const p=req.postDataJSON();assert.deepEqual(Object.keys(p),['id']);const job=settings.jobs.find(j=>j.id===p.id);assert.ok(job);response={...job,result:{...job.result,refreshed_at:now,offers:job.result.offers.map(o=>o.seller==='sin-datos.cl'?offer('sin-datos.cl',115000):o)}};}
  else if(u.pathname.endsWith('/bootstrap'))response={observations:[],reviews:[],inventory:[{sku:'OTHER',name:'Otro producto'},{sku:'HT816',name:'Termostato HT-816',description:'Regulación digital de temperatura 220 V',net_price:20000,price_currency:'CLP'}],inventoryAvailable:true,imports:[],importsComplete:true,inventoryWarnings:[],warnings:[],readAt:now};
  else{unexpected.push(u.pathname);return route.abort();}
  return route.fulfill({contentType:'application/json',body:JSON.stringify(response)});
@@ -35,6 +36,8 @@ try{
  assert.match(await page.getByRole('row').filter({hasText:'similar.cl'}).innerText(),/Producto similar/);
  assert.doesNotMatch(await page.getByRole('row').filter({hasText:'similar.cl'}).innerText(),/\d+%/);
  assert.match(await page.getByRole('row').filter({hasText:'diferente.cl'}).innerText(),/Diferencias detectadas/);
+ assert.match(await page.getByRole('row').filter({hasText:'sin-datos.cl'}).innerText(),/Sin precio verificable[\s\S]*HTTP 404/);
+ await page.getByText('5 de 6 fuentes con precio publicado',{exact:true}).waitFor();
  await page.getByLabel('Referencia objetivo').selectOption('manual');await page.getByLabel('Objetivo neto CLP').fill('15000');await page.getByLabel('Margen deseado (%)').fill('20');assert.match(await objective.innerText(),/17\.850/);assert.match(await objective.innerText(),/20%/);
  const table=page.getByRole('region',{name:'Comparativa de precios'}).getByRole('table');
  assert.match(await table.getByRole('row').nth(2).innerText(),/precio-menor/);assert.match(await table.getByRole('row').nth(3).innerText(),/nuevo-oferente/);
@@ -42,6 +45,8 @@ try{
  await page.getByLabel('Oferente o producto').fill('internacional');assert.equal(await table.getByRole('row').count(),3);assert.match(await table.getByRole('row').last().innerText(),/Base no comparable/);
  await page.getByLabel('Oferente o producto').fill('');await page.getByLabel('Solo con precio publicado').check();assert.equal(await table.getByRole('row').count(),7);await page.getByLabel('Solo con precio publicado').uncheck();
  for(const width of [1280,390,320]){await page.setViewportSize({width,height:950});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:path.join(output,`comparison-${width}.png`),fullPage:true});}
+ await page.getByRole('button',{name:'Actualizar fuentes',exact:true}).click();await page.getByText('6 de 6 fuentes con precio publicado',{exact:true}).waitFor();
+ assert.match(await table.getByRole('row').filter({hasText:'sin-datos.cl'}).innerText(),/115\.000/);assert.equal(calls.filter(c=>c.route.endsWith('/search')).length,1);assert.equal(settings.spent_usd,.25);
  await page.getByLabel('Margen con costo',{exact:true}).selectOption('transit');assert.match(await table.getByRole('row').filter({hasText:'precio-menor.cl'}).innerText(),/40%/);
  await table.getByRole('row').filter({hasText:'nuevo-oferente.cl'}).getByRole('button',{name:'Revisar oferta de nuevo-oferente.cl',exact:true}).click();await page.getByRole('heading',{name:'Revision de la fuente · HT816'}).waitFor();assert.equal(await page.getByLabel('Precio observado').inputValue(),'23800');assert.equal(await page.getByRole('button',{name:'Guardar para comparar'}).isDisabled(),true);
  assert.equal(calls.some(c=>c.route.includes('/imports/commit')||c.route.endsWith('/reviews')),false);

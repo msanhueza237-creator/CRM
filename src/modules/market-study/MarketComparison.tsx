@@ -69,7 +69,7 @@ export function MarketComparison({product,products,job,onReview}:{product:Market
         <tr className="market-own-price"><th>Climactiva · {product.name}</th><td>{money(price===null?null:new Decimal(price).times('1.19').toNumber())}<small>Con IVA 19% calculado</small></td><td>{money(price)}</td><td>Referencia</td><td>{percent((basis==='current'?today:arrival).margin)}</td><td>{actual?'CRM / Facto':'Sin precio actual'}</td><td><a href={product.path}>Origen <ArrowUpRight size={14}/></a></td></tr>
         {rows.map(({offer:o,index,net,publishedNet})=><tr key={o.url}>
           <th><a href={o.url} target="_blank" rel="noreferrer">{o.seller} <ArrowUpRight size={14}/></a><small>{o.title}</small></th>
-          <td>{o.currency?money(o.amount,o.currency):o.amount===null?'Pendiente':`${o.amount} · moneda pendiente`}<small>{o.vat==='gross'?'IVA incluido':o.vat==='net'?'Neto sin IVA':'IVA por verificar'}{o.vat_assumed?' · 19% supuesto':''}</small>{o.currency_assumed&&<small>CLP supuesto</small>}</td>
+          <td>{o.currency?money(o.amount,o.currency):o.amount===null?'Sin precio verificable':`${o.amount} · moneda pendiente`}<small>{o.vat==='gross'?'IVA incluido':o.vat==='net'?'Neto sin IVA':'IVA por verificar'}{o.vat_assumed?' · 19% supuesto':''}</small>{o.currency_assumed&&<small>CLP supuesto</small>}{o.amount===null&&<small>{o.price_error||o.warning}</small>}</td>
           <td>{money(publishedNet)}<small>{net!==null?'Provisional':publishedNet!==null?'Referencia · no equivalente':'Base no comparable'}{o.package_assumed?' · unidad supuesta':''}</small></td>
           <td>{net!==null&&price!==null?money(net-price):'Pendiente'}</td>
           <td>{percent(discountScenario(net,chosenCost,1,0,null,null).before.margin)}<small>Escenario provisional</small></td>
@@ -78,6 +78,7 @@ export function MarketComparison({product,products,job,onReview}:{product:Market
         </tr>)}
       </tbody></table>
     </div>
+    {offers.length>0&&<p role="status" className="market-muted">{offers.filter(o=>known(o.amount)).length} de {offers.length} fuentes con precio publicado</p>}
     {job&&offers.length===0&&<p role="status">La busqueda no encontro fichas publicas verificables para este producto.</p>}
     {offers.length>0&&rows.length===0&&<p role="status">Ninguna oferta coincide con los filtros.</p>}
     {job&&<details className="market-muted"><summary>{offers.length} fuentes · Cobertura de la busqueda</summary><p>{job.result.coverage}</p>{job.result.queries?.map(q=><p key={q}>{q}</p>)}<p>{job.result.usage_note}</p></details>}

@@ -2,6 +2,7 @@
 import { parseHTML } from 'linkedom/worker';
 import robotsParser from 'robots-parser';
 import { marketSite, publicProductUrl } from '../_shared/market-native-contract.ts';
+import { commerceProduct, isMarketplaceSource, marketplaceOffer, singleOffer } from './product-price.ts';
 const agent='ClimactivaResearch';
 async function read(response:Response,max:number) {
   const reader=response.body?.getReader();if(!reader)throw new Error('La fuente no entrego contenido.');
@@ -16,22 +17,28 @@ export function productText(html:string,sourceUrl?:string) {
   const visit=(value:unknown,depth=0)=>{if(depth>12||!value||typeof value!=='object')return;if(Array.isArray(value)){value.forEach(v=>visit(v,depth+1));return;}
     const r=value as Record<string,unknown>;if([r['@type']].flat().includes('Product'))products.push(r);else if(r['@graph'])visit(r['@graph'],depth+1);};
   for(const node of document.querySelectorAll('script[type="application/ld+json"]')){try{visit(JSON.parse(node.textContent||''));}catch{/* Invalid metadata is not evidence. */}}
-  for(const node of document.querySelectorAll('script,style,nav,header,footer,form,aside,iframe,button,[hidden],[aria-hidden="true"]'))node.remove();
   if(products.length>1)throw new Error('La pagina contiene varios productos. Selecciona una ficha individual.');
+  const structuredOffer=products.length===1?(isMarketplaceSource(sourceUrl)?marketplaceOffer(document,products[0],sourceUrl):singleOffer(products[0])):null;
+  for(const node of document.querySelectorAll('script,style,nav,header,footer,form,aside,iframe,button,[hidden],[aria-hidden="true"]'))node.remove();
   const heading=document.querySelector('h1'),cartContext=heading?.parentElement?.querySelector('#product')?heading.parentElement:null;
   const main=document.querySelector('main,[itemtype="https://schema.org/Product"]')||cartContext||document.querySelector('#content')||document.body;
   const clean=(s:unknown)=>{const d=parseHTML(`<html><body>${String(s??'')}</body></html>`) as {document:Document};return (d.document.body.textContent||'').replace(/\s+/g,' ').trim();};
   if(products.length===1){
-    const p=products[0],offers=[p.offers].flat().filter(v=>v&&typeof v==='object') as Record<string,unknown>[];
-    if(offers.length!==1||offers[0]['@type']==='AggregateOffer')throw new Error('Hay variantes o precios multiples; requiere revision manual.');
-    const offer=offers[0],brand=p.brand&&typeof p.brand==='object'?(p.brand as Record<string,unknown>).name:p.brand;
+    const p=products[0];
+    if(!structuredOffer)throw new Error('Hay variantes o precios multiples; requiere revision manual.');
+    const offer=structuredOffer,brand=p.brand&&typeof p.brand==='object'?(p.brand as Record<string,unknown>).name:p.brand;
     const facts={title:clean(p.name).slice(0,160),brand:clean(brand).slice(0,120),model:clean(p.model).slice(0,120),sku:clean(p.sku).slice(0,120),
-      price:offer.price,currency:offer.priceCurrency,availability:offer.availability,priceIncludesTax:offer.valueAddedTaxIncluded,singleProduct:true,description:clean(p.description).slice(0,3000)};
+      price:offer.price,currency:offer.priceCurrency,availability:offer.availability,priceIncludesTax:offer.valueAddedTaxIncluded,singleProduct:true,description:clean(p.description).slice(0,3000),priceEvidence:offer.priceEvidence};
     const taxLines=(main?.textContent||'').split(/\n/).map(s=>s.trim()).filter(s=>s.length<180&&/\bIVA\b|impuesto|por unidad|pack de/i.test(s)).slice(0,6);
     return JSON.stringify(facts)+'\n'+taxLines.join('\n');
   }
   const headings=document.querySelectorAll('h1');
   if(headings.length!==1||!main)throw new Error('No se identifico una ficha individual de producto.');
+  const commerce=commerceProduct(document,sourceUrl);
+  if(commerce){
+    const taxLines=(main.textContent||'').split(/\n/).map(s=>s.trim()).filter(s=>s.length<180&&/\bIVA\b|impuesto|por unidad/i.test(s)).slice(0,6);
+    return JSON.stringify(commerce)+'\n'+taxLines.join('\n');
+  }
   const meta=(key:string)=>document.querySelector(`meta[property="${key}"],meta[name="${key}"]`)?.getAttribute('content');
   const nodes=[...main.querySelectorAll('[itemprop="price"]')];
   const price=meta('product:price:amount')||meta('og:price:amount')||(nodes.length===1?nodes[0].getAttribute('content'):null);
@@ -68,7 +75,7 @@ export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch
   if(parser.isAllowed(url.href,agent)===false||delay>5)throw new Error('El sitio no permite esta consulta automatizada.');
   if(delay>0)await new Promise(r=>setTimeout(r,delay*1000));
   const response=await get(url.href);
-  if(!response.ok){await response.body?.cancel();throw new Error(response.status>=300&&response.status<400?'La fuente redirige. Abre el enlace y utiliza la direccion final.':'La fuente no esta disponible o restringe el acceso.');}
+  if(!response.ok){await response.body?.cancel();throw new Error(response.status===404||response.status===410?'Enlace de producto no disponible (HTTP '+response.status+').':response.status===401||response.status===403?'El sitio restringe la lectura automatica (HTTP '+response.status+').':response.status>=300&&response.status<400?'La fuente redirige. Abre el enlace y utiliza la direccion final.':'La fuente no esta disponible (HTTP '+response.status+').');}
   if(!/^text\/html(?:;|$)/i.test(response.headers.get('content-type')||'')){await response.body?.cancel();throw new Error('La fuente no es una pagina de producto HTML.');}
   const html=await read(response,1500000);
   if(/cf-chl-|verify you are human|access denied|<title>[^<]*(?:captcha|just a moment)/i.test(html))throw new Error('El sitio solicita una verificacion humana. Consulta detenida.');
