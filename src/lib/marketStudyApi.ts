@@ -34,8 +34,10 @@ export const createResearchAccess=(config:unknown)=>request<{id:string;api_key:s
 export const revokeResearchAccess=(id:string)=>request<{revoked:boolean}>('research-access',{action:'revoke',config:{id,confirm:'REVOKE'}});
 export interface NativeStudySettings {
  enabled:boolean;daily_usd:number;daily_jobs:number;spent_usd:number;jobs_today:number;
+ web_search_supported?:boolean;
  selection:{choice:string;revision:number};choices:MarketExtractionSettingsData['choices'];jobs:NativeStudyJob[];
 }
 export const getNativeStudySettings=()=>request<NativeStudySettings>('native-settings');
 export const selectNativeStudyModel=(body:{choice:string;revision:number})=>request<NativeStudySettings>('native-settings',body);
 export const runNativeStudy=(body:{id:string;sku:string;url:string;revision:number})=>request<NativeStudyJob>('studies',body,AbortSignal.timeout(85000));
+export const searchMarket=(body:{id:string;sku:string;title:string;revision:number})=>request<NativeStudyJob>('search',body,AbortSignal.timeout(115000));

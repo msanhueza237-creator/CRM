@@ -1,7 +1,7 @@
 // Worker build avoids Node-only canvas dependencies in the Edge runtime.
 import { parseHTML } from 'linkedom/worker';
 import robotsParser from 'robots-parser';
-import { marketSite } from '../_shared/market-native-contract.ts';
+import { marketSite, publicProductUrl } from '../_shared/market-native-contract.ts';
 const agent='ClimactivaResearch';
 async function read(response:Response,max:number) {
   const reader=response.body?.getReader();if(!reader)throw new Error('La fuente no entrego contenido.');
@@ -35,8 +35,8 @@ export function productText(html:string) {
   if(new TextEncoder().encode(text).length>20000)throw new Error('La ficha contiene demasiada informacion; no se enviara una lectura parcial.');
   return text;
 }
-export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch) {
-  const {url}=marketSite(value),signal=AbortSignal.timeout(22000);
+export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch,openMarket=false) {
+  const url=openMarket?publicProductUrl(value):marketSite(value).url,signal=AbortSignal.timeout(openMarket?8000:16000);
   const get=async(target:string)=>fetcher(target,{redirect:'manual',signal,headers:{'User-Agent':agent,Accept:'text/html,text/plain','Cache-Control':'no-cache'}});
   const robots=await get(url.origin+'/robots.txt');
   let rules='';if(robots.status!==404){if(!robots.ok){await robots.body?.cancel();throw new Error('No se pudo verificar el permiso de lectura del sitio.');}rules=await read(robots,100000);}else await robots.body?.cancel();

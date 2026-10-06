@@ -74,7 +74,8 @@ test('research API: binding must be enabled/unexpired, admin active, finite key 
 test('research API: catalog whitelist, variant SKU, ambiguity, URL sanitation and cross-client isolation',async()=>{
  const response=await request('catalog'),body=await response.json();assert.equal(response.status,200);assert.deepEqual(body.items.map(r=>r.sku),['SYN-A','VAR-A']);assert.equal(body.unavailable_skus,2);
  for(const item of body.items)assert.deepEqual(Object.keys(item).sort(),['sku','name','brand','product_url','catalog_observed_at'].sort());
- assert.equal(body.items[0].product_url,'https://climactiva.cl/productos/a/');assert.ok(!JSON.stringify(body).includes('private'));assert.ok(!JSON.stringify(body).includes('999'));
+ assert.equal(body.items[0].product_url,'https://climactiva.cl/productos/a/');assert.ok(!JSON.stringify(body).includes('private'));
+ for(const item of body.items){assert.ok(!Object.hasOwn(item,'price'));assert.ok(!Object.hasOwn(item,'unit_cost'));}
  const second=await (await request('catalog',undefined,'synthetic-b')).json();assert.deepEqual(second.items.map(r=>r.sku),['SYN-B']);
  assert.equal((await request('catalog?sku=SYN-B')).status,400);
  await db.exec("update content_products set source_status='unpublished' where sku='SYN-A'");assert.equal((await (await request('catalog')).json()).items.length,0);await db.exec("update content_products set source_status='active' where sku='SYN-A'");

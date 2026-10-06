@@ -38,7 +38,7 @@ begin
     where state='running' and created_at<now()-interval '2 minutes';
   select coalesce(sum(coalesce(estimated_usd,reserved_usd)),0),count(*) into spent,jobs from market_native_jobs where created_at>=day_start;
   if p_action='status' then
-    return jsonb_build_object('enabled',config.enabled,'daily_usd',config.daily_usd,'daily_jobs',config.daily_jobs,'spent_usd',spent,'jobs_today',jobs,
+    return jsonb_build_object('enabled',config.enabled,'web_search_supported',true,'daily_usd',config.daily_usd,'daily_jobs',config.daily_jobs,'spent_usd',spent,'jobs_today',jobs,
       'jobs',coalesce((select jsonb_agg(to_jsonb(j)-'actor'-'input_hash'-'ticket' order by j.created_at desc) from (select * from market_native_jobs order by created_at desc limit 25) j),'[]'::jsonb));
   elsif p_action='reserve' then
     select * into job from market_native_jobs where id=(p_data->>'id')::uuid;
@@ -49,18 +49,27 @@ begin
     if not config.enabled then raise exception 'Study disabled'; end if;
     if not exists(select 1 from market_extraction_policy where revision=(p_data->>'revision')::integer and choice=p_data->'selection'->>'choice') then raise exception 'Model selection changed'; end if;
     if exists(select 1 from market_native_jobs where state='running') then raise exception 'Another study is running'; end if;
-    amount := (30000*(p_data->'selection'->>'input_usd_per_million')::numeric+1024*(p_data->'selection'->>'output_usd_per_million')::numeric)/1000000;
+    if p_data->>'kind'='market_search' then
+      -- Native web search has extra provider-side token usage. Hold the entire
+      -- daily allowance; never refund uncertain usage or dispatch a second search.
+      amount := 0.25;
+      if exists(select 1 from market_native_jobs where created_at>=day_start and selection->>'kind'='market_search') then raise exception 'Daily search already used'; end if;
+    else
+      amount := (30000*(p_data->'selection'->>'input_usd_per_million')::numeric+1024*(p_data->'selection'->>'output_usd_per_million')::numeric)/1000000;
+    end if;
     if amount is null or amount<=0 or amount::text in ('NaN','Infinity','-Infinity') or amount>0.25 then raise exception 'Invalid reservation'; end if;
     if spent+amount>config.daily_usd or jobs>=config.daily_jobs then raise exception 'Daily study budget reached'; end if;
     if length(p_data->>'sku') not between 1 and 120 or length(p_data->>'hash')<>64 or length(p_data->>'url') not between 10 and 1500 then raise exception 'Invalid study'; end if;
     insert into market_native_jobs(id,actor,input_hash,sku,source_url,selection,reserved_usd)
-      values((p_data->>'id')::uuid,p_actor,p_data->>'hash',p_data->>'sku',p_data->>'url',p_data->'selection',amount) returning * into job;
+      values((p_data->>'id')::uuid,p_actor,p_data->>'hash',p_data->>'sku',p_data->>'url',
+        (p_data->'selection')||jsonb_build_object('kind',case when p_data->>'kind'='market_search' then 'market_search' else 'source' end),amount) returning * into job;
     return jsonb_build_object('created',true,'ticket',job.ticket,'job',to_jsonb(job)-'actor'-'input_hash'-'ticket');
   elsif p_action='finish' then
     select * into job from market_native_jobs where id=(p_data->>'id')::uuid and actor=p_actor and ticket=(p_data->>'ticket')::uuid;
     if not found then raise exception 'Study receipt unavailable'; end if;
     if job.state='running' then
       cost := (p_data->>'cost')::numeric;
+      if job.selection->>'kind'='market_search' then cost:=null; end if;
       if cost is not null and (cost<0 or cost>job.reserved_usd or cost::text in ('NaN','Infinity','-Infinity')) then raise exception 'Invalid study charge'; end if;
       if octet_length((p_data->'result')::text)>35000 or jsonb_typeof(p_data->'result')<>'object' then raise exception 'Invalid study result'; end if;
       update market_native_jobs set state=p_data->>'state',estimated_usd=cost,result=p_data->'result',finished_at=now()

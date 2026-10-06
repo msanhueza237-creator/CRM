@@ -1,5 +1,6 @@
 import { researchAdmin } from './research-admin.ts';
 import { nativeSettings, nativeStudy } from './native-study.ts';
+import { marketSearch } from './market-search.ts';
 import { extractionChoices, extractionPolicy, ExtractionError, type ExtractionEnv } from '../market-research/extraction.ts';
 import { assertMarketAccess, normalizeMarketReview, previewMarketImport } from "../_shared/market-study-contract.ts";
 import { CopilotSources } from "../crm-copilot/sources.ts";
@@ -31,10 +32,10 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
    const source=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},req.signal,fetcher);
    const profiles=await source.select(`profiles?select=id,role,active&id=eq.${user.id}&limit=1`);
    try{assertMarketAccess(profiles[0]?{role:String(profiles[0].role),active:profiles[0].active===true}:null);}catch(e){throw new HttpError(403,(e as Error).message);}
-   if(route==='native-settings'||route==='studies') {
+   if(route==='native-settings'||route==='studies'||route==='search') {
     const ctx={url:env.rest.url,serviceRoleKey:env.rest.serviceRoleKey,readEnv:env.readEnv||(()=>undefined),fetcher};
     // Settlement must survive a mobile browser disconnecting after a paid call.
-    const durable=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},AbortSignal.timeout(90000),fetcher);
+    const durable=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},AbortSignal.timeout(route==='search'?120000:90000),fetcher);
     const rpc=(name:string,args:Record<string,unknown>)=>durable.rpc(name,args,false);
     if(route==='native-settings'&&req.method==='GET')return json(await nativeSettings(ctx,rpc,user.id));
     if(route==='native-settings'&&req.method==='POST') {
@@ -44,6 +45,7 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
      return json(await nativeSettings(ctx,rpc,user.id));
     }
     if(route==='studies'&&req.method==='POST')return json(await nativeStudy(await readBody(req),ctx,rpc,user.id));
+    if(route==='search'&&req.method==='POST')return json(await marketSearch(await readBody(req),ctx,rpc,user.id));
     throw new HttpError(405,'Metodo no permitido.');
    }
    if(route==='research-access') {

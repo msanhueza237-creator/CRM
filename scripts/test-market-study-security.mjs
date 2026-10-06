@@ -49,7 +49,7 @@ test('Health privado y bootstrap sin fuentes: no inventa inventario ni cobertura
    if(u.endsWith('/auth/v1/user'))return new Response(JSON.stringify({id:actor}));
    if(u.includes('profiles?'))return new Response(JSON.stringify([{id:actor,role:'administrador',active:true}]));
    if(u.includes('accounting_entities?'))return new Response(JSON.stringify([{id:actor}]));
-   return new Response('[]',{headers:{'content-range':`*/${overflow&&u.includes('foreign_trade_operations?')?51:0}`}});
+   return new Response('[]',{headers:{'content-range':`*/${overflow&&u.includes('import_shipments?')?51:0}`}});
   });
   const response=await handler(new Request('https://fixture.invalid/functions/v1/market-study/bootstrap',{headers:{Authorization:'Bearer synthetic'}}));
   assert.equal(response.status,200);const body=await response.json();

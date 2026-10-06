@@ -10,7 +10,8 @@ type Context={url:string;serviceRoleKey:string;readEnv:ExtractionEnv;fetcher:typ
 type RPC=(name:string,args:Row)=>Promise<unknown>;
 export async function nativeSettings(ctx:Context,rpc:RPC,actor:string) {
   const choices=await extractionChoices(ctx,false),policy=(await extractionSelect(ctx,'market_extraction_policy?select=revision,choice&limit=1'))[0];
-  return {choices,selection:policy,sites:MARKET_SITES,...row(await rpc('market_native_run',{p_actor:actor,p_action:'status',p_data:{}}))};
+  const status=row(await rpc('market_native_run',{p_actor:actor,p_action:'status',p_data:{}}));
+  return {choices,selection:policy,sites:MARKET_SITES,...status,web_search_supported:status.web_search_supported===true};
 }
 export async function nativeStudy(input:unknown,ctx:Context,rpc:RPC,actor:string):Promise<NativeStudyJob> {
   const body=row(input);

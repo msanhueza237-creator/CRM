@@ -4,6 +4,7 @@ import {
   getNativeStudySettings,
   selectNativeStudyModel,
   runNativeStudy,
+  searchMarket,
   previewMarketResearch,
   importMarketResearch,
   type NativeStudySettings,
@@ -11,6 +12,7 @@ import {
 import {
   MARKET_SITES,
   marketSite,
+  publicProductUrl,
   type NativeStudyJob,
 } from "../../../supabase/functions/_shared/market-native-contract";
 import type {
@@ -18,6 +20,7 @@ import type {
   MarketUnit,
 } from "../../../supabase/functions/_shared/market-study-contract";
 import type { MarketProduct } from "./marketMath";
+import { MarketComparison } from './MarketComparison';
 const label = {
   title: "Producto",
   brand: "Marca",
@@ -39,18 +42,22 @@ export function MarketInvestigator({
   products,
   reload,
   savedJobIds,
+  selectedKey,
+  onSelect,
 }: {
   products: MarketProduct[];
   reload: () => void;
   savedJobIds: string[];
+  selectedKey: string;
+  onSelect: (key:string)=>void;
 }) {
   const [settings, setSettings] = useState<NativeStudySettings | null>(null),
     [query, setQuery] = useState(""),
-    [key, setKey] = useState(""),
     [url, setUrl] = useState(""),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
-    [active, setActive] = useState<NativeStudyJob | null>(null);
+    [active, setActive] = useState<NativeStudyJob | null>(null),
+    [draft,setDraft]=useState<NativeStudyJob|null>(null);
   const refresh = async () => {
     try {
       setSettings(await getNativeStudySettings());
@@ -63,6 +70,7 @@ export function MarketInvestigator({
   useEffect(() => {
     void refresh();
   }, []);
+  useEffect(()=>{setDraft(null);setError('');},[selectedKey]);
   useEffect(() => {
     if (!settings?.jobs.some((j) => j.state === "running")) return;
     const timer = setInterval(() => void refresh(), 12000);
@@ -75,15 +83,17 @@ export function MarketInvestigator({
         .toLocaleLowerCase()
         .includes(query.toLocaleLowerCase()),
   );
-  const product = products.find((p) => p.key === key);
-  const start = async () => {
+  const product = products.find((p) => p.key === selectedKey);
+  const searchJob=(active?.result.kind==='market_search'&&active.sku===product?.sku?active:null)||settings?.jobs.find(j=>j.sku===product?.sku&&j.result.kind==='market_search'&&j.state==='completed')||null;
+  const start = async (webSearch=false) => {
     if (!settings || !product) return;
     setError("");
     setBusy(true);
     setActive(null);
+    setDraft(null);
     try {
-      marketSite(url);
-      const job = await runNativeStudy({
+      if(!webSearch)marketSite(url);
+      const job = webSearch?await searchMarket({id:crypto.randomUUID(),sku:product.sku,title:product.name,revision:settings.selection.revision}):await runNativeStudy({
         id: crypto.randomUUID(),
         sku: product.sku,
         url: url.trim(),
@@ -146,22 +156,22 @@ export function MarketInvestigator({
         </label>
         <label>
           Producto
-          <select aria-label="Producto" value={key} onChange={(e) => setKey(e.target.value)}>
+          <select aria-label="Producto" value={selectedKey} onChange={(e) => onSelect(e.target.value)} disabled={busy}>
             <option value="">Seleccionar producto</option>
             {filtered.map((p) => (
               <option key={p.key} value={p.key}>
                 {p.sku} · {p.name}
               </option>
             ))}
-            {product && !filtered.some((p) => p.key === key) && (
-              <option value={key}>
+            {product && !filtered.some((p) => p.key === selectedKey) && (
+              <option value={selectedKey}>
                 {product.sku} · {product.name}
               </option>
             )}
           </select>
         </label>
       </div>
-      <div className="market-source-links" aria-label="Buscar en competidores">
+      <details className="market-muted"><summary>Referencias conocidas</summary><div className="market-source-links" aria-label="Buscar en competidores">
         {MARKET_SITES.map((s) => (
           <a
             key={s.host}
@@ -173,17 +183,8 @@ export function MarketInvestigator({
             <ArrowUpRight size={14} />
           </a>
         ))}
-      </div>
+      </div></details>
       <div className="market-form-grid">
-        <label>
-          Enlace publico de la ficha del competidor
-          <input
-            type="url"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://..."
-          />
-        </label>
         <label>
           Modelo de investigacion
           <select
@@ -212,17 +213,19 @@ export function MarketInvestigator({
           disabled={
             busy ||
             !product ||
-            !url ||
             !settings?.enabled ||
+            !settings?.web_search_supported ||
+            !settings?.selection.choice.startsWith('deepseek:') ||
+            Number(settings?.spent_usd||0)>0 ||
             !settings?.choices.some(
               (c) => c.choice === settings.selection.choice,
             ) ||
             settings.jobs.some((j) => j.state === "running")
           }
-          onClick={() => void start()}
+          onClick={() => void start(true)}
         >
           <Sparkles size={18} />
-          {busy ? "Procesando…" : "Investigar fuente"}
+          {busy ? "Buscando ofertas…" : "Buscar en el mercado"}
         </button>
         {settings && (
           <span className="market-muted">
@@ -232,19 +235,28 @@ export function MarketInvestigator({
           </span>
         )}
       </div>
+      {settings&&Number(settings.spent_usd)>0&&<p className="market-muted">La busqueda web requiere US$0,25 disponibles. Reserva diaria ocupada; el historial sigue disponible.</p>}
+      {settings&&!settings.selection.choice.startsWith('deepseek:')&&<p role="status">Busqueda web disponible con DeepSeek. Este modelo admite la revision de una fuente.</p>}
+      {settings&&!settings.web_search_supported&&<p role="status">Busqueda automatica pendiente de habilitacion en el servidor.</p>}
+      <details className="market-manual-source"><summary>Consultar un enlace conocido</summary><label>Enlace publico de la ficha del competidor<input type="url" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://..."/></label><button className="secondary" onClick={()=>void start()} disabled={busy||!product||!url||!settings?.enabled||settings.jobs.some(j=>j.state==='running')}><Sparkles size={16}/>Investigar fuente</button></details>
       {error && <p role="alert">{error}</p>}
       {!settings && <p role="status">Consultando configuracion…</p>}
-      {active?.state === "completed" && (
+      {product&&<MarketComparison key={product.key} product={product} products={products} job={searchJob} onReview={index=>{
+        if(!searchJob)return;const o=searchJob.result.offers?.[index];if(!o)return;
+        setDraft({...searchJob,id:`${searchJob.id}-${index}`,source_url:o.url,result:{text:o.evidence,observed_at:o.observed_at,attributes:[{field:'title',value:o.title,quote:o.title},...(o.amount!==null?[{field:'price',value:String(o.amount),quote:String(o.amount)}]:[]),...(o.currency?[{field:'currency',value:o.currency,quote:o.currency}]:[])]}});
+      }}/>}
+      {(draft||active?.state === "completed"&&active.result.kind!=='market_search'&&active.sku===product?.sku) && (
         <StudyDraft
-          key={active.id}
-          job={active}
+          key={(draft||active)!.id}
+          job={(draft||active)!}
           onSaved={() => {
             setActive(null);
+            setDraft(null);
             reload();
           }}
         />
       )}
-      {active && active.state !== "completed" && (
+      {active && active.sku===product?.sku && active.state !== "completed" && (
         <p role="alert">{active.result.error || stateLabel[active.state]}</p>
       )}
       <h3>Consultas recientes</h3>
@@ -263,7 +275,7 @@ export function MarketInvestigator({
                 · {j.selection.model}
               </small>
               <a href={j.source_url} target="_blank" rel="noreferrer">
-                {new URL(j.source_url).hostname}
+                {j.result.kind==='market_search'?'Busqueda de mercado':new URL(j.source_url).hostname}
               </a>
             </div>
             <div>
@@ -276,7 +288,7 @@ export function MarketInvestigator({
             <button
               className="secondary"
               disabled={busy || savedJobIds.includes(j.id)}
-              onClick={() => setActive(j)}
+              onClick={() => {setActive(j);setDraft(null);const p=products.find(p=>p.sku===j.sku);if(p&&p.key!==selectedKey)onSelect(p.key);}}
             >
               {savedJobIds.includes(j.id) ? "Guardado" : j.state === "completed" ? "Revisar" : "Ver detalle"}
             </button>
@@ -321,7 +333,7 @@ function StudyDraft({
         revision: 1,
         product_label: title,
         suggested_sku: job.sku,
-        seller: marketSite(job.source_url).site.name,
+        seller: MARKET_SITES.find(s=>s.host.replace(/^www\./,'')===publicProductUrl(job.source_url).hostname.replace(/^www\./,''))?.name||publicProductUrl(job.source_url).hostname.replace(/^www\./,''),
         seller_kind: "competitor",
         amount: amount === "" ? null : Number(amount),
         currency: currency || null,

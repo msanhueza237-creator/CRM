@@ -657,7 +657,7 @@ export function MarketStudyPage() {
       )}
       {tab === "settings" ? <><MarketExtractionSettings/><MarketResearchAccess/></> : tab === "research" ? (
         <>
-          <MarketInvestigator products={products} reload={reload} savedJobIds={data?.observations.filter(o=>o.payload.provider==='crm-native').map(o=>o.payload.external_id)||[]}/>
+          <MarketInvestigator products={products} selectedKey={selected?.key||''} onSelect={key=>update('product',key)} reload={reload} savedJobIds={data?.observations.filter(o=>o.payload.provider==='crm-native').map(o=>o.payload.external_id)||[]}/>
           {data && (
             <section className="market-card">
               <h2>Equivalencias por revisar</h2>
