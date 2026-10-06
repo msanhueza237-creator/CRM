@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { previewMarketImport, normalizeMarketObservation, normalizeMarketReview, assertMarketAccess } from '../supabase/functions/_shared/market-study-contract.ts';
-import { toNetClp, discountScenario, compareProduct, marketTopTen } from '../src/modules/market-study/marketMath.ts';
+import { toNetClp, discountScenario, compareProduct, marketTopTen, marketTarget } from '../src/modules/market-study/marketMath.ts';
 import { marketProducts } from '../src/modules/market-study/marketSources.ts';
 const now=Date.parse('2026-10-02T12:00:00Z'),at='2026-10-01T12:00:00Z',id='11111111-1111-4111-8111-111111111111';
 const observation=(patch={})=>({provider:'synthetic',external_id:'offer-1',revision:1,product_label:'Bomba sintética',suggested_sku:'SYN-01',seller:'Competidor sintético',seller_kind:'competitor',amount:142800,currency:'CLP',vat_basis:'gross',vat_percent:19,unit:'unit',package_quantity:1,presentation:'Unidad',availability:'available',source_url:'https://example.test/offer',observed_at:at,confidence:.9,fx:null,notes:'Dato sintético, no investigación real.',...patch});
@@ -69,4 +69,24 @@ test('Advertencias de inventario y confirmaciones contradictorias excluyen el ra
  const pendingBasis={...review({cost_basis_confirmed:false}),id:'review-second',observation_id:'second'};
  assert.equal(compareProduct(product(),[stored(),second],[review(),pendingBasis],now).score,null);
  assert.equal(discountScenario(100,0,1,0,null,20).maxDiscount,null,'Zero sale cannot meet a defined margin');
+});
+
+test('Costo de Facto con moneda ausente conserva importe sin afirmar CLP confirmado',()=>{
+ const p=marketProducts({inventory:[{sku:'SYN',unit_cost:35455,cost_currency:null,assumed_cost_currency:'CLP'}],imports:[]})[0];
+ assert.equal(p.cost,35455);assert.equal(p.costCurrency,null);assert.equal(p.costCurrencyAssumed,true);assert.equal(p.costStatus,'missing');assert.ok(p.notices.some(n=>/moneda pendiente/.test(n)));
+});
+
+test('Importacion sin calculo guardado usa parametros activos y no persiste ni vincula codigos ambiguos',()=>{
+ const line={id:'l1',sku:null,supplier_sku:'SYN-01',supplier_model:'SYN-01',product_name:'Fixture',quantity:10,currency:'USD',unit_factory_cost:10,fob_total:100,cif_total:120};
+ const scenario={id:'s1',name:'Base',status:'baseline',exchange_rate_clp:900,exchange_rate_source:'manual',calculated_at:null,allocation_method:'units',missing_inputs:[],assumptions:{}};
+ const data={readAt:at,inventory:[{sku:'SYN-01',net_price:20000,price_currency:'CLP'}],imports:[{operation:{id:'o1',reference:'Synthetic',inventory_mode:'future',status:'production',base_currency:'USD',estimated_arrival:'2026-12-01',updated_at:at},lines:[line],scenarios:[scenario],costs:[]}],costParameters:[['cl_general_ad_valorem',6],['cl_import_vat',19],['cl_sales_vat',19]].map(([code,numeric_value])=>({code,numeric_value,active:true}))};
+ const before=JSON.stringify(data),p=marketProducts(data)[1];assert.equal(p.cost,11448);assert.equal(p.price,20000);assert.equal(p.relatedCurrentSku,'SYN-01');assert.ok(p.notices.some(n=>/no guardada/.test(n)));assert.equal(JSON.stringify(data),before);
+ data.imports[0].lines.push({...line,id:'l2'});assert.equal(marketProducts(data)[1].relatedCurrentSku,null);assert.equal(marketProducts(data)[1].price,null);
+ data.imports[0].lines.pop();data.costParameters[0].active=false;assert.equal(marketProducts(data)[1].cost,null);
+ data.costParameters[0].active=true;data.imports[0].lines[0].currency='EUR';assert.equal(marketProducts(data)[1].cost,null);
+});
+
+test('Precio objetivo compara venta neta, IVA y reduccion de costo sin modificar precios',()=>{
+ const r=marketTarget(100000,70000,90000,30);assert.equal(r.gross,107100);assert.equal(r.priceChange,-10000);assert.equal(r.priceChangePercent,-10);assert.equal(r.maxCost,63000);assert.equal(r.costReduction,7000);assert.equal(r.profit,20000);assert.ok(Math.abs(r.margin-22.222222)<1e-6);
+ assert.equal(marketTarget(100000,null,90000,30).margin,null);assert.equal(marketTarget(100000,70000,null,30).margin,null);assert.equal(marketTarget(100000,70000,110000,null).maxCost,null);
 });

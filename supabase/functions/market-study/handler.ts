@@ -1,6 +1,7 @@
 import { researchAdmin } from './research-admin.ts';
 import { nativeSettings, nativeStudy } from './native-study.ts';
-import { marketSearch } from './market-search.ts';
+import { marketSearch,refreshMarketSources } from './market-search.ts';
+import type { NativeStudyJob } from '../_shared/market-native-contract.ts';
 import { extractionChoices, extractionPolicy, ExtractionError, type ExtractionEnv } from '../market-research/extraction.ts';
 import { assertMarketAccess, normalizeMarketReview, previewMarketImport } from "../_shared/market-study-contract.ts";
 import { CopilotSources } from "../crm-copilot/sources.ts";
@@ -32,12 +33,20 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
    const source=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},req.signal,fetcher);
    const profiles=await source.select(`profiles?select=id,role,active&id=eq.${user.id}&limit=1`);
    try{assertMarketAccess(profiles[0]?{role:String(profiles[0].role),active:profiles[0].active===true}:null);}catch(e){throw new HttpError(403,(e as Error).message);}
-   if(route==='native-settings'||route==='studies'||route==='search') {
+   if(route==='native-settings'||route==='studies'||route==='search'||route==='sources/refresh') {
     const ctx={url:env.rest.url,serviceRoleKey:env.rest.serviceRoleKey,readEnv:env.readEnv||(()=>undefined),fetcher};
     // Settlement must survive a mobile browser disconnecting after a paid call.
     const durable=new CopilotSources(env.rest,{id:user.id,role:'administrador',accessToken:token},AbortSignal.timeout(route==='search'?120000:90000),fetcher);
     const rpc=(name:string,args:Record<string,unknown>)=>durable.rpc(name,args,false);
     if(route==='native-settings'&&req.method==='GET')return json(await nativeSettings(ctx,rpc,user.id));
+    if(route==='sources/refresh'&&req.method==='POST'){
+     const body=object(await readBody(req));if(Object.keys(body).join(',')!=='id'||typeof body.id!=='string'||!/^[0-9a-f-]{36}$/i.test(body.id))throw new HttpError(422,'Selecciona una consulta guardada.');
+     const status=object(await rpc('market_native_run',{p_actor:user.id,p_action:'status',p_data:{}}));
+     const job=(Array.isArray(status.jobs)?status.jobs:[]).find(j=>object(j).id===body.id) as NativeStudyJob|undefined;
+     if(!job)throw new HttpError(404,'Consulta no disponible en el historial.');
+     // Read only existing sources. No AI call, reservation, settlement or price write.
+     return json(await refreshMarketSources(job));
+    }
     if(route==='native-settings'&&req.method==='POST') {
      const body=object(await readBody(req)),choices=await extractionChoices(ctx,false);
      if(Object.keys(body).sort().join(',')!=='choice,revision'||!Number.isInteger(body.revision)||!choices.some(c=>c.choice===body.choice))throw new HttpError(422,'Selecciona un modelo configurado.');
@@ -83,8 +92,9 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
      const details=[];for(const op of operations)details.push(await source.rpc('foreign_trade_operation_detail',{p_operation_id:op.id}));
      return {details,complete:true};
     }catch{warnings.push('No se pudo verificar cobertura de productos por llegar.');return {details:[],complete:false};}};
-    const [stock,incoming]=await Promise.all([inventory(),imports()]);
-    return json({observations:observations.map(row=>({...row,created_by:row.created_by??`API ${row.origin_integration_id}`})),reviews,inventory:stock?.records||[],inventoryAvailable:stock!==null,inventoryWarnings:stock?.warnings||[],imports:incoming.details,importsComplete:incoming.complete,warnings,readAt:new Date().toISOString()});
+    const parameters=async()=>{try{return await source.all('foreign_trade_cost_parameters?select=code,numeric_value,active,valid_from,valid_until&active=eq.true&order=code.asc',200);}catch{warnings.push('Parametros aduaneros no disponibles; no se completaran por suposicion.');return [];}};
+    const [stock,incoming,costParameters]=await Promise.all([inventory(),imports(),parameters()]);
+    return json({observations:observations.map(row=>({...row,created_by:row.created_by??`API ${row.origin_integration_id}`})),reviews,inventory:stock?.records||[],inventoryAvailable:stock!==null,inventoryWarnings:stock?.warnings||[],imports:incoming.details,costParameters,importsComplete:incoming.complete,warnings,readAt:new Date().toISOString()});
    }
    if(route==='imports/preview'&&req.method==='POST')return json(previewMarketImport(await readBody(req)));
    if(route==='imports/commit'&&req.method==='POST'){

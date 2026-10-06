@@ -3,7 +3,17 @@ import type { MarketFx, MarketObservation, MarketReview, StoredMarketObservation
 export interface MarketProduct {
  key:string;sku:string;name:string;mode:'current'|'transit';stock:number|null;stockAt:string|null;eta:string|null;
  price:number|null;priceCurrency:string|null;priceAt:string|null;cost:number|null;costCurrency:string|null;costAt:string|null;
- costStatus:'recorded'|'estimated'|'missing';costSource:string;path:string;notices:string[];
+ costStatus:'recorded'|'estimated'|'missing';costCurrencyAssumed?:boolean;relatedCurrentSku?:string|null;costSource:string;path:string;notices:string[];
+}
+export function marketTarget(price:number|null,cost:number|null,target:number|null,margin:number|null){
+ const simulation=discountScenario(price,cost,1,0,target,margin);
+ const valid=known(target)&&target>0;
+ const maxCost=valid&&margin!==null?out(new Decimal(target).times(new Decimal(1).minus(new Decimal(margin).div(100)))):null;
+ return {margin:valid?simulation.after.margin:null,profit:valid?simulation.after.unitProfit:null,
+  gross:valid?out(new Decimal(target).times('1.19')):null,
+  priceChange:valid&&known(price)?out(new Decimal(target).minus(price)):null,
+  priceChangePercent:valid&&known(price)&&price>0?out(new Decimal(target).minus(price).div(price).times(100)):null,
+  maxCost,costReduction:maxCost!==null&&known(cost)?out(Decimal.max(new Decimal(cost).minus(maxCost),0)):null};
 }
 export const MARKET_RULES={observationDays:30,financialDays:30,stockDays:2,fxDays:7,minConfidence:0.7,version:'market-opportunity-v1'};
 export const known=(v:unknown):v is number=>typeof v==='number'&&Number.isFinite(v)&&v>=0;

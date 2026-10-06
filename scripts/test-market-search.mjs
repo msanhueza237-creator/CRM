@@ -4,7 +4,8 @@ import {readFile} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {publicProductUrl} from '../supabase/functions/_shared/market-native-contract.ts';
 import {publicIPv4,publicFetch} from '../supabase/functions/market-study/public-network.ts';
-import {searchSources,webOffer,marketSearch} from '../supabase/functions/market-study/market-search.ts';
+import {searchSources,webOffer,marketSearch,refreshMarketSources} from '../supabase/functions/market-study/market-search.ts';
+import {productText} from '../supabase/functions/market-study/public-source.ts';
 import {encryptApiKey} from '../supabase/functions/prospecting-integrations/deepseek.ts';
 const actor='11111111-1111-4111-8111-111111111111',id='22222222-2222-4222-8222-222222222222';
 const url='https://otra-tienda.cl/productos/ht-816';
@@ -59,4 +60,37 @@ test('Presupuesto persistente: busqueda reserva US$0,25 y bloquea nuevas consult
  await assert.rejects(call('reserve',{...data,id:crypto.randomUUID(),kind:'source'}),/budget reached/);
  assert.equal(Number((await call('status')).spent_usd),.25);
  }finally{await db.close();}
+});
+
+test('Prioriza .cl y descarta listados sin cambiar la busqueda a una lista cerrada',()=>{
+ const p=structuredClone(payload);p.content[1].content=[
+  {type:'web_search_result',url:'https://example-shop.com/product/a',title:'A'},
+  {type:'web_search_result',url:'https://tienda.cl/index.php?route=product/search&tag=foo',title:'Busqueda'},
+  {type:'web_search_result',url:'https://otra-tienda.cl/producto/a',title:'A'},
+  {type:'web_search_result',url:'https://tercera.cl/search?q=abc',title:'Busqueda'}];
+ assert.deepEqual(searchSources(p).sources.map(s=>new URL(s.url).hostname),['otra-tienda.cl','example-shop.com']);
+});
+
+test('IVA chileno supuesto es visible; neto explicito gana; modelos + y packs no se mezclan',()=>{
+ const facts={title:'Amperimetro UT204+',singleProduct:true,price:11900,currency:'CLP'};
+ const make=(f,extra='',sku='UT204+')=>webOffer(url,'',JSON.stringify(f)+'\n'+extra,sku,'Amperimetro '+sku,new Date().toISOString());
+ const a=make(facts);assert.equal(a.vat,'gross');assert.equal(a.vat_percent,19);assert.equal(a.vat_assumed,true);assert.equal(a.package_assumed,true);assert.equal(a.identity,'model_match');
+ assert.equal(make(facts,'Precio + IVA').vat,'net');assert.equal(make(facts,'IVA incluido y + IVA').vat,'unknown');
+ assert.equal(make(facts,'','UT204').identity,'possible');assert.equal(make({...facts,title:'UT204'},'','UT204+').identity,'possible');assert.equal(make({...facts,title:'Kit UT204+'}).package_quantity,null);
+ const foreign=webOffer('https://tienda.com/producto','',JSON.stringify({...facts,currency:'USD'}),'UT204+','Amperimetro UT204+',new Date().toISOString());assert.equal(foreign.vat,'unknown');assert.equal(foreign.vat_percent,null);
+});
+
+test('Extrae precio en OpenCart solo del producto elegido, concilia neto y descarta relacionados',()=>{
+ const html='<div><h1>Amperimetro UT204+</h1><ul><li>Sin Stock</li><li><h2>$92,858</h2></li><li>Neto: $78,032</li></ul><div id="product">Cantidad <input name="quantity" value="1"></div></div><div class="related"><h2>$3,000</h2></div>';
+ const t=productText(html,'https://tienda.cl/producto'),f=JSON.parse(t.split('\n')[0]);assert.equal(f.price,92858);assert.equal(f.currency,'CLP');assert.equal(f.priceIncludesTax,true);assert.match(f.availability,/OutOfStock/);assert.equal(f.currencyAssumed,true);
+ assert.throws(()=>JSON.parse(productText(html.replace('$78,032','$1,000'),'https://tienda.cl/producto').split('\n')[0]));
+ assert.throws(()=>JSON.parse(productText(html,'https://tienda.com/producto').split('\n')[0]));
+});
+
+test('Actualizar fuentes no llama IA ni cambia consulta original; fallos no reutilizan precios antiguos',async()=>{
+ const original={id,sku:'HT816',state:'completed',result:{kind:'market_search',product_title:'Termostato HT816',offers:[webOffer(url,'HT816','', 'HT816','HT816',new Date().toISOString())]}};
+ const before=JSON.stringify(original),calls=[];
+ const updated=await refreshMarketSources(original,async u=>{calls.push(String(u));return String(u).endsWith('robots.txt')?new Response('',{status:404}):new Response('<h1>HT816</h1><script type="application/ld+json">'+JSON.stringify({'@type':'Product',name:'HT816',offers:{'@type':'Offer',price:11900,priceCurrency:'CLP'}})+'</script>',{headers:{'content-type':'text/html'}});});
+ assert.equal(updated.result.offers[0].amount,11900);assert.ok(updated.result.refreshed_at);assert.equal(JSON.stringify(original),before);assert.ok(calls.every(u=>u.startsWith('https://otra-tienda.cl/')));
+ const failed=await refreshMarketSources(updated,async()=>{throw Error('Fuente restringida');});assert.equal(failed.result.offers[0].amount,null);assert.equal(failed.result.offers[0].identity,'possible');
 });

@@ -28,7 +28,9 @@ async function mount(pageTest=false){await page.goto('https://fixture.invalid/ap
 try{
  await mount();await page.getByRole('button',{name:'Buscar en el mercado',exact:true}).click();await page.getByRole('link',{name:'nuevo-oferente.cl'}).waitFor();
  assert.equal(calls.filter(c=>c.route.endsWith('/search')).length,1);assert.equal(await page.getByRole('button',{name:'Buscar en el mercado',exact:true}).isDisabled(),true);
- const summary=await page.locator('.market-price-summary').innerText();assert.match(summary,/20\.000/);assert.match(summary,/12\.000/);assert.match(summary,/9\.000/);assert.match(summary,/55%/);
+ const summary=await page.locator('.market-price-summary').first().innerText();assert.match(summary,/20\.000/);assert.match(summary,/12\.000/);assert.match(summary,/9\.000/);assert.match(summary,/55%/);
+ const objective=page.getByRole('region',{name:'Precio de mercado objetivo'});assert.match(await objective.innerText(),/17\.500/);
+ await page.getByLabel('Referencia objetivo').selectOption('manual');await page.getByLabel('Objetivo neto CLP').fill('15000');await page.getByLabel('Margen deseado (%)').fill('20');assert.match(await objective.innerText(),/17\.850/);assert.match(await objective.innerText(),/20%/);
  const table=page.getByRole('region',{name:'Comparativa de precios'}).getByRole('table');
  assert.match(await table.getByRole('row').nth(2).innerText(),/precio-menor/);assert.match(await table.getByRole('row').nth(3).innerText(),/nuevo-oferente/);
  await page.getByLabel('Ordenar ofertas',{exact:true}).selectOption('highest');assert.match(await table.getByRole('row').nth(2).innerText(),/nuevo-oferente/);

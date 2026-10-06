@@ -14,6 +14,7 @@ export interface MarketWebOffer {
   amount:number|null; currency:string|null; vat:'gross'|'net'|'unknown';
   vat_percent:number|null; package_quantity:number|null; availability:string;
   identity:'model_match'|'possible'; evidence:string; warning:string;
+  vat_assumed?:boolean; package_assumed?:boolean; currency_assumed?:boolean;
 }
 export interface NativeStudyJob {
   id:string; sku:string; source_url:string; state:'running'|'completed'|'failed'|'unknown';
@@ -21,7 +22,7 @@ export interface NativeStudyJob {
   selection:{choice:string;provider:string;model:string};
   result:{attributes?:MarketAttribute[];text?:string;observed_at?:string;error?:string;
     kind?:'market_search';product_title?:string;queries?:string[];offers?:MarketWebOffer[];
-    source_count?:number;coverage?:string;usage_note?:string};
+    source_count?:number;coverage?:string;usage_note?:string;refreshed_at?:string};
 }
 // Public links from search are not restricted to the example competitor list.
 // Network-level DNS/IP validation is additionally required before fetching them.

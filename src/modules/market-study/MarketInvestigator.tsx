@@ -5,6 +5,7 @@ import {
   selectNativeStudyModel,
   runNativeStudy,
   searchMarket,
+  refreshMarketSources,
   previewMarketResearch,
   importMarketResearch,
   type NativeStudySettings,
@@ -160,12 +161,12 @@ export function MarketInvestigator({
             <option value="">Seleccionar producto</option>
             {filtered.map((p) => (
               <option key={p.key} value={p.key}>
-                {p.sku} · {p.name}
+                {p.sku} · {p.name}{p.mode==='transit'?' · En importacion':''}
               </option>
             ))}
             {product && !filtered.some((p) => p.key === selectedKey) && (
               <option value={selectedKey}>
-                {product.sku} · {product.name}
+                {product.sku} · {product.name}{product.mode==='transit'?' · En importacion':''}
               </option>
             )}
           </select>
@@ -241,6 +242,7 @@ export function MarketInvestigator({
       <details className="market-manual-source"><summary>Consultar un enlace conocido</summary><label>Enlace publico de la ficha del competidor<input type="url" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://..."/></label><button className="secondary" onClick={()=>void start()} disabled={busy||!product||!url||!settings?.enabled||settings.jobs.some(j=>j.state==='running')}><Sparkles size={16}/>Investigar fuente</button></details>
       {error && <p role="alert">{error}</p>}
       {!settings && <p role="status">Consultando configuracion…</p>}
+      {searchJob&&<div className="market-actions"><button className="secondary" disabled={busy} onClick={async()=>{setBusy(true);setError('');setDraft(null);try{setActive(await refreshMarketSources(searchJob.id));}catch(e){setError(e instanceof Error?e.message:'No se actualizaron las fuentes.');}finally{setBusy(false);}}}><RefreshCw size={16}/>Actualizar fuentes</button><span className="market-muted">Lectura publica sin nueva llamada a IA. {searchJob.result.refreshed_at?'Vista actualizada; historial original conservado.':''}</span></div>}
       {product&&<MarketComparison key={product.key} product={product} products={products} job={searchJob} onReview={index=>{
         if(!searchJob)return;const o=searchJob.result.offers?.[index];if(!o)return;
         setDraft({...searchJob,id:`${searchJob.id}-${index}`,source_url:o.url,result:{text:o.evidence,observed_at:o.observed_at,attributes:[{field:'title',value:o.title,quote:o.title},...(o.amount!==null?[{field:'price',value:String(o.amount),quote:String(o.amount)}]:[]),...(o.currency?[{field:'currency',value:o.currency,quote:o.currency}]:[])]}});

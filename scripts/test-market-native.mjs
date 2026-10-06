@@ -92,5 +92,16 @@ test('Bootstrap usa import_shipments real y consulta el detalle de transito con 
   return new Response('[]',{headers:{'Content-Range':'*/0'}});
  });
  const response=await handler(new Request('https://fixture.invalid/functions/v1/market-study/bootstrap',{headers:{Authorization:'Bearer synthetic'}})),body=await response.json();
- assert.equal(response.status,200);assert.equal(body.importsComplete,true);assert.equal(body.imports[0].operation.id,id);assert.ok(calls.some(c=>c.includes('import_shipments?')));assert.equal(calls.some(c=>c.includes('foreign_trade_operations?')),false);
+ assert.equal(response.status,200);assert.equal(body.importsComplete,true);assert.equal(body.imports[0].operation.id,id);assert.ok(calls.some(c=>c.includes('import_shipments?')));assert.ok(calls.some(c=>c.includes('foreign_trade_cost_parameters?')));assert.deepEqual(body.costParameters,[]);assert.equal(calls.some(c=>c.includes('foreign_trade_operations?')),false);
+});
+
+test('Refresh solo admite ID del historial autenticado; no reserva gasto ni acepta URLs del cliente',async()=>{
+ const calls=[],job={id,sku:'HT816',state:'completed',result:{kind:'market_search',offers:[]}};
+ const handler=createMarketHandler({rest:{url:'https://fixture.invalid',anonKey:'anon',serviceRoleKey:'service'},origin:'https://crm.example'},async(u,o)=>{
+  if(String(u).includes('/auth/v1/user'))return json({id:actor});if(String(u).includes('profiles?'))return json([{role:'administrador',active:true}]);
+  if(String(u).endsWith('/rpc/market_native_run')){calls.push(JSON.parse(o.body));return json({jobs:[job]});}throw Error('Unexpected call');
+ });
+ const call=(body,auth=true)=>handler(new Request('https://fixture.invalid/functions/v1/market-study/sources/refresh',{method:'POST',headers:auth?{Authorization:'Bearer synthetic'}:{},body:JSON.stringify(body)}));
+ assert.equal((await call({id},false)).status,401);assert.equal((await call({id,url:'https://bad.cl/'})).status,422);assert.equal(calls.length,0);
+ assert.equal((await call({id:crypto.randomUUID()})).status,404);const r=await call({id});assert.equal(r.status,200);assert.ok((await r.json()).result.refreshed_at);assert.ok(calls.every(c=>c.p_action==='status'));assert.equal(job.result.refreshed_at,undefined);
 });

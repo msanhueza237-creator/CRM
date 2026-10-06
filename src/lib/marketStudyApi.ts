@@ -1,9 +1,9 @@
 import { getSupabaseFunctionUrl, supabase } from './supabase';
 import type { InventoryRecord } from './inventoryApi';
-import type { ForeignTradeOperationDetail } from '../types/foreignTrade';
+import type { ForeignTradeOperationDetail, ForeignTradeCostParameter } from '../types/foreignTrade';
 import type { NativeStudyJob } from '../../supabase/functions/_shared/market-native-contract';
 import type { MarketReview, MarketReviewInput, StoredMarketObservation, previewMarketImport } from '../../supabase/functions/_shared/market-study-contract';
-export interface MarketBootstrap {observations:StoredMarketObservation[];reviews:MarketReview[];inventory:(InventoryRecord & {stock_warnings?:string[]})[];inventoryAvailable:boolean;inventoryWarnings:string[];imports:ForeignTradeOperationDetail[];importsComplete:boolean;warnings:string[];readAt:string}
+export interface MarketBootstrap {observations:StoredMarketObservation[];reviews:MarketReview[];inventory:(InventoryRecord & {stock_warnings?:string[]})[];inventoryAvailable:boolean;inventoryWarnings:string[];imports:ForeignTradeOperationDetail[];costParameters?:ForeignTradeCostParameter[];importsComplete:boolean;warnings:string[];readAt:string}
 async function request<T>(route:string,body?:unknown,signal?:AbortSignal):Promise<T>{
  const token=(await supabase?.auth.getSession())?.data.session?.access_token;
  if(!token)throw new Error('Inicia sesión para usar Estudio de Mercado.');
@@ -41,3 +41,4 @@ export const getNativeStudySettings=()=>request<NativeStudySettings>('native-set
 export const selectNativeStudyModel=(body:{choice:string;revision:number})=>request<NativeStudySettings>('native-settings',body);
 export const runNativeStudy=(body:{id:string;sku:string;url:string;revision:number})=>request<NativeStudyJob>('studies',body,AbortSignal.timeout(85000));
 export const searchMarket=(body:{id:string;sku:string;title:string;revision:number})=>request<NativeStudyJob>('search',body,AbortSignal.timeout(115000));
+export const refreshMarketSources=(id:string)=>request<NativeStudyJob>('sources/refresh',{id},AbortSignal.timeout(45000));
