@@ -32,7 +32,7 @@ test('Precios se leen de la ficha, no del texto del modelo; IVA/unidad desconoci
  const b=webOffer(url,'HT-816','Precio 123','HT816','Termostato HT816',a.observed_at);assert.equal(b.amount,null);assert.equal(b.currency,null);assert.equal(b.vat,'unknown');assert.equal(b.package_quantity,null);
  const other=webOffer(url,'HT-8160',JSON.stringify({...facts,title:'HT-8160',model:'HT-8160'}),'HT816','Termostato HT816',a.observed_at);assert.equal(other.identity,'possible');
 });
-test('Una sola busqueda: reserva diaria completa, replay sin gasto nuevo, solo SKU/nombre al proveedor',async()=>{
+test('Cada busqueda reserva US$0,25: replay sin gasto nuevo, solo SKU/nombre al proveedor',async()=>{
  const secret='test-secret-for-encryption-not-real-32',encrypted=await encryptApiKey('synthetic-provider-key',secret),calls=[],writes=[];
  let replay=false;const job={id,sku:'HT816',source_url:url,state:'running',reserved_usd:.25,selection:choice};
  const ctx={url:'https://fixture.invalid',serviceRoleKey:'fixture-service',readEnv:k=>k==='PROSPECTING_SECRET_ENCRYPTION_KEY'?secret:undefined,fetcher:async(u,o)=>{
@@ -48,17 +48,43 @@ test('Una sola busqueda: reserva diaria completa, replay sin gasto nuevo, solo S
  const request=JSON.parse(calls.find(c=>c.url.includes('/anthropic/')).body);assert.equal(request.tools[0].max_uses,3);assert.equal(request.model,'deepseek-flash');assert.deepEqual(JSON.parse(request.messages[0].content),{sku:'HT816',product:'Termostato HT816',market:'Chile'});
  replay=true;await marketSearch({id,sku:'HT816',title:'Termostato HT816',revision:1},ctx,rpc,actor,source);assert.equal(calls.filter(c=>c.url.includes('/anthropic/')).length,1);
 });
-test('Presupuesto persistente: busqueda reserva US$0,25 y bloquea nuevas consultas de ambos modos',async()=>{
+test('Diez busquedas por dia de Chile: reserva atomica, once bloqueada e historial conservado',async()=>{
  const db=new PGlite();try{
  await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;create table profiles(id uuid primary key,role text,active boolean);insert into profiles values('${actor}','administrador',true);grant select on profiles to service_role;create table market_extraction_policy(revision int,choice text);insert into market_extraction_policy values(1,'${choice.choice}');grant select on market_extraction_policy to service_role;`);
- await db.exec(await readFile(new URL('../supabase/market_native_studies.sql',import.meta.url),'utf8'));await db.exec('set role service_role');
+ const ddl=await readFile(new URL('../supabase/market_native_studies.sql',import.meta.url),'utf8');
+ await db.exec(ddl);await db.exec('set role service_role');
  const call=async(action,data={})=>(await db.query('select market_native_run($1,$2,$3) r',[actor,action,JSON.stringify(data)])).rows[0].r;
  const data={id,hash:'a'.repeat(64),sku:'HT816',url,revision:1,selection:choice,kind:'market_search'};
  assert.equal((await call('status')).web_search_supported,true);const r=await call('reserve',data);assert.equal(Number(r.job.reserved_usd),.25);assert.equal((await call('reserve',data)).created,false);
+ await assert.rejects(call('reserve',{...data,id:crypto.randomUUID()}),/Another study/);
  await call('finish',{id,ticket:r.ticket,state:'completed',cost:null,result:{kind:'market_search',offers:[]}});
- await assert.rejects(call('reserve',{...data,id:crypto.randomUUID()}),/Daily search/);
+ // Recreate the prior policy to exercise the same approved upgrade as production.
+ await db.exec('reset role');
+ const receipt=(await db.query('select to_jsonb(j) receipt from market_native_jobs j')).rows[0].receipt;
+ await db.exec(`update market_native_policy set daily_usd=.25;alter table market_native_policy drop constraint market_native_policy_daily_usd_check;alter table market_native_policy add constraint market_native_policy_daily_usd_check check(daily_usd>0 and daily_usd<=.25);`);
+ await db.exec(ddl);await db.exec(ddl);
+ assert.deepEqual((await db.query('select to_jsonb(j) receipt from market_native_jobs j')).rows[0].receipt,receipt);
+ await db.exec('set role service_role');
+ let status=await call('status');assert.equal(Number(status.daily_usd),2.5);assert.equal(status.jobs_today,1);assert.equal(Number(status.spent_usd),.25);
+ for(let i=2;i<=10;i++){
+   const next=await call('reserve',{...data,id:crypto.randomUUID()});
+   await call('finish',{id:next.job.id,ticket:next.ticket,state:i===2?'unknown':i===3?'failed':'completed',cost:0,result:{kind:'market_search',offers:[]}});
+   status=await call('status');assert.equal(status.jobs_today,i);assert.equal(Number(status.spent_usd),i*.25);
+ }
+ await assert.rejects(call('reserve',{...data,id:crypto.randomUUID()}),/budget reached/);
  await assert.rejects(call('reserve',{...data,id:crypto.randomUUID(),kind:'source'}),/budget reached/);
- assert.equal(Number((await call('status')).spent_usd),.25);
+ assert.equal((await call('reserve',data)).created,false);
+ assert.equal(Number((await call('status')).spent_usd),2.5);
+ await db.exec('reset role');await db.exec('update market_native_jobs set estimated_usd=0');await db.exec('set role service_role');
+ await assert.rejects(call('reserve',{...data,id:crypto.randomUUID()}),/budget reached/);
+ await db.exec('reset role');await db.exec('update market_native_jobs set estimated_usd=null');await db.exec('set role service_role');
+ await db.exec('reset role');await assert.rejects(db.exec('update market_native_policy set daily_usd=2.51'),/check constraint/);
+ await assert.rejects(db.exec('update market_native_policy set daily_jobs=11'),/check constraint/);
+ await db.exec("update market_native_jobs set created_at=(date_trunc('day',now() at time zone 'America/Santiago') at time zone 'America/Santiago')-interval '1 second'");
+ await db.exec('set role service_role');status=await call('status');assert.equal(status.jobs_today,0);assert.equal(Number(status.spent_usd),0);assert.equal(status.jobs.length,10);
+ const nextDay=await call('reserve',{...data,id:crypto.randomUUID()});assert.equal(nextDay.created,true);
+ await db.exec('reset role');await assert.rejects(db.exec(ddl),/market study is running/);await db.exec('rollback');
+ assert.equal((await db.query('select count(*) n from market_native_jobs')).rows[0].n,11);
  }finally{await db.close();}
 });
 

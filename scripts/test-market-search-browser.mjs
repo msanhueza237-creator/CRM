@@ -8,7 +8,7 @@ const source=`import React,{useState} from 'react';import {createRoot} from 'rea
 const bundle=await build({stdin:{contents:source,loader:'tsx',resolveDir:process.cwd()},bundle:true,write:false,outfile:output+'/fixture.js',format:'iife',jsx:'automatic',define:{'process.env.NODE_ENV':'"production"'},plugins:[{name:'auth-fixture',setup(b){b.onLoad({filter:/[/\\]lib[/\\]supabase\.ts$/},()=>({loader:'js',contents:`export const supabase={auth:{getSession:async()=>({data:{session:{access_token:'synthetic-only'}}})}};export const getSupabaseFunctionUrl=(s,r)=>'https://fixture.invalid/'+s+'/'+r;`}));}}]});
 const js=bundle.outputFiles.find(f=>f.path.endsWith('.js')).text,css=bundle.outputFiles.filter(f=>f.path.endsWith('.css')).map(f=>f.text).join('\n');
 const choice='deepseek:deepseek-flash',now=new Date().toISOString();
-const settings={enabled:true,web_search_supported:true,daily_usd:.25,daily_jobs:10,spent_usd:0,jobs_today:0,selection:{choice,revision:1},choices:[{choice,provider:'deepseek',model:'deepseek-flash'}],jobs:[]};
+const settings={enabled:true,web_search_supported:true,daily_usd:2.5,daily_jobs:10,spent_usd:0,jobs_today:0,selection:{choice,revision:1},choices:[{choice,provider:'deepseek',model:'deepseek-flash'}],jobs:[]};
 const offer=(seller,amount,extra={})=>({url:`https://${seller}/ht816`,seller,title:'Termostato HT-816',amount,currency:'CLP',vat:'gross',vat_percent:19,package_quantity:1,availability:'available',identity:'model_match',observed_at:now,evidence:'Precio por unidad con IVA 19%',warning:'Equivalencia tecnica pendiente',...extra});
 const offers=[offer('nuevo-oferente.cl',23800),offer('precio-menor.cl',17850),offer('sin-datos.cl',null,{currency:null,vat:'unknown',package_quantity:null,identity:'possible'}),offer('internacional.com',9,{currency:'USD'})];
 const calls=[],errors=[],unexpected=[];
@@ -27,7 +27,8 @@ const page=await context.newPage();page.setDefaultTimeout(15000);page.on('pageer
 async function mount(pageTest=false){await page.goto('https://fixture.invalid/app');if(pageTest)await page.evaluate(()=>window.pageTest=true);await page.addStyleTag({content:'*{box-sizing:border-box}body{margin:0;background:#f7f9fa;font-family:Arial,sans-serif}'+css});await page.addScriptTag({content:js});await page.getByRole('heading',{name:'Nueva investigacion'}).waitFor();}
 try{
  await mount();await page.getByRole('button',{name:'Buscar en el mercado',exact:true}).click();await page.getByRole('link',{name:'nuevo-oferente.cl'}).waitFor();
- assert.equal(calls.filter(c=>c.route.endsWith('/search')).length,1);assert.equal(await page.getByRole('button',{name:'Buscar en el mercado',exact:true}).isDisabled(),true);
+ assert.equal(calls.filter(c=>c.route.endsWith('/search')).length,1);assert.equal(await page.getByRole('button',{name:'Buscar en el mercado',exact:true}).isDisabled(),false);
+ assert.match(await page.locator('.market-actions').first().innerText(),/9 búsquedas disponibles/);
  const summary=await page.locator('.market-price-summary').first().innerText();assert.match(summary,/20\.000/);assert.match(summary,/12\.000/);assert.match(summary,/9\.000/);assert.match(summary,/55%/);
  const objective=page.getByRole('region',{name:'Precio de mercado objetivo'});assert.match(await objective.innerText(),/17\.500/);
  await page.getByLabel('Referencia objetivo').selectOption('manual');await page.getByLabel('Objetivo neto CLP').fill('15000');await page.getByLabel('Margen deseado (%)').fill('20');assert.match(await objective.innerText(),/17\.850/);assert.match(await objective.innerText(),/20%/);
@@ -41,6 +42,15 @@ try{
  await table.getByRole('row').filter({hasText:'nuevo-oferente.cl'}).getByRole('button',{name:'Revisar oferta de nuevo-oferente.cl',exact:true}).click();await page.getByRole('heading',{name:'Revision de la fuente · HT816'}).waitFor();assert.equal(await page.getByLabel('Precio observado').inputValue(),'23800');assert.equal(await page.getByRole('button',{name:'Guardar para comparar'}).isDisabled(),true);
  assert.equal(calls.some(c=>c.route.includes('/imports/commit')||c.route.endsWith('/reviews')),false);
  await mount(true);assert.equal(await page.getByRole('combobox',{name:'Producto',exact:true}).inputValue(),'current:HT816');
+ const searchButton=page.getByRole('button',{name:'Buscar en el mercado',exact:true});
+ async function updateBudget(spent,jobs){settings.spent_usd=spent;settings.jobs_today=jobs;await page.getByRole('button',{name:'Actualizar historial',exact:true}).click();await page.getByText(`${jobs}/10 consultas`,{exact:false}).waitFor();}
+ await updateBudget(2.25,9);assert.equal(await searchButton.isDisabled(),false);assert.match(await page.locator('.market-actions').first().innerText(),/1 búsquedas disponibles/);
+ await updateBudget(2.5,10);assert.equal(await searchButton.isDisabled(),true);await page.getByText('Limite diario de consultas alcanzado.',{exact:false}).waitFor();
+ await updateBudget(.1,10);assert.equal(await searchButton.isDisabled(),true);
+ await updateBudget(2.25001,8);assert.equal(await searchButton.isDisabled(),true);await page.getByText('Presupuesto diario insuficiente:',{exact:false}).waitFor();
+ await updateBudget(0,0);assert.equal(await searchButton.isDisabled(),false);
+ settings.jobs=[{id:'running-fixture',state:'running',sku:'HT816',created_at:now,source_url:'https://fixture.invalid/product',selection:{model:'deepseek-flash'},result:{},reserved_usd:.25}];
+ await page.getByRole('button',{name:'Actualizar historial',exact:true}).click();await page.getByText('Consultando',{exact:true}).waitFor();assert.equal(await searchButton.isDisabled(),true);
  assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);await fs.writeFile(path.join(output,'results.json'),JSON.stringify({passed:true,network:'mocked',checks:['automatic search without URL','unknown competitor domain','current and incoming costs','sorting and filtering','currency isolation','no automatic price changes or equivalence approval','320/390/1280 layout','URL product selection preserved']},null,2));
  console.log('PASS automatic market search and comparative table, desktop/mobile');
 }finally{await browser.close();}

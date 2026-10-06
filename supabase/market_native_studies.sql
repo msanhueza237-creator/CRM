@@ -1,12 +1,15 @@
 -- Isolated administrator workflow. No business data, legacy keys or pilot settings are changed.
 begin;
+set local lock_timeout='5s';
+set local statement_timeout='30s';
+select pg_advisory_xact_lock(81734001);
 create table if not exists public.market_native_policy (
   id boolean primary key default true check(id),
   enabled boolean not null default true,
-  daily_usd numeric not null default 0.25 check(daily_usd>0 and daily_usd<=0.25),
+  daily_usd numeric not null default 2.50 check(daily_usd>0 and daily_usd<=2.50),
   daily_jobs integer not null default 10 check(daily_jobs between 1 and 10)
 );
-insert into public.market_native_policy(id) values(true) on conflict do nothing;
+insert into public.market_native_policy(id,daily_usd) values(true,0.25) on conflict do nothing;
 create table if not exists public.market_native_jobs (
   id uuid primary key, actor uuid not null references public.profiles(id),
   input_hash text not null, sku text not null, source_url text not null,
@@ -17,6 +20,20 @@ create table if not exists public.market_native_jobs (
   result jsonb not null default '{}', created_at timestamptz not null default now(), finished_at timestamptz
 );
 create index if not exists market_native_jobs_created_idx on public.market_native_jobs(created_at);
+-- Approved 2026-10-06: upgrade the native module only; preserve every receipt.
+do $$
+begin
+  if exists(select 1 from public.market_native_jobs where state='running') then
+    raise exception 'A market study is running; apply the limit change after it finishes';
+  end if;
+  if exists(select 1 from public.market_native_policy where daily_usd not in (0.25,2.50) or daily_jobs<>10) then
+    raise exception 'Market policy changed; review before applying the approved limit';
+  end if;
+end $$;
+alter table public.market_native_policy drop constraint market_native_policy_daily_usd_check;
+alter table public.market_native_policy add constraint market_native_policy_daily_usd_check check(daily_usd>0 and daily_usd<=2.50);
+alter table public.market_native_policy alter column daily_usd set default 2.50;
+update public.market_native_policy set daily_usd=2.50 where id=true and daily_usd=0.25;
 alter table public.market_native_jobs enable row level security;
 alter table public.market_native_policy enable row level security;
 revoke all on public.market_native_jobs,public.market_native_policy from public,anon,authenticated,service_role;
@@ -50,10 +67,9 @@ begin
     if not exists(select 1 from market_extraction_policy where revision=(p_data->>'revision')::integer and choice=p_data->'selection'->>'choice') then raise exception 'Model selection changed'; end if;
     if exists(select 1 from market_native_jobs where state='running') then raise exception 'Another study is running'; end if;
     if p_data->>'kind'='market_search' then
-      -- Native web search has extra provider-side token usage. Hold the entire
-      -- daily allowance; never refund uncertain usage or dispatch a second search.
+      -- Hold USD 0.25 per search, including uncertain provider-side web usage.
+      -- The shared daily amount and attempt limits below remain authoritative.
       amount := 0.25;
-      if exists(select 1 from market_native_jobs where created_at>=day_start and selection->>'kind'='market_search') then raise exception 'Daily search already used'; end if;
     else
       amount := (30000*(p_data->'selection'->>'input_usd_per_million')::numeric+1024*(p_data->'selection'->>'output_usd_per_million')::numeric)/1000000;
     end if;

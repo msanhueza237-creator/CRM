@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight, Check, RefreshCw, Search, Sparkles } from "lucide-react";
+import Decimal from 'decimal.js';
 import {
   getNativeStudySettings,
   selectNativeStudyModel,
@@ -85,6 +86,10 @@ export function MarketInvestigator({
         .includes(query.toLocaleLowerCase()),
   );
   const product = products.find((p) => p.key === selectedKey);
+  const dailyLimitReached = !!settings && settings.jobs_today >= settings.daily_jobs;
+  const availableBudget = new Decimal(settings?.daily_usd || 0).minus(settings?.spent_usd || 0);
+  const searchBudgetReached = availableBudget.lt('0.25');
+  const searchesRemaining = settings ? Math.max(0, Math.min(settings.daily_jobs-settings.jobs_today, availableBudget.div('0.25').floor().toNumber())) : 0;
   const searchJob=(active?.result.kind==='market_search'&&active.sku===product?.sku?active:null)||settings?.jobs.find(j=>j.sku===product?.sku&&j.result.kind==='market_search'&&j.state==='completed')||null;
   const start = async (webSearch=false) => {
     if (!settings || !product) return;
@@ -217,7 +222,7 @@ export function MarketInvestigator({
             !settings?.enabled ||
             !settings?.web_search_supported ||
             !settings?.selection.choice.startsWith('deepseek:') ||
-            Number(settings?.spent_usd||0)>0 ||
+            dailyLimitReached || searchBudgetReached ||
             !settings?.choices.some(
               (c) => c.choice === settings.selection.choice,
             ) ||
@@ -232,11 +237,12 @@ export function MarketInvestigator({
           <span className="market-muted">
             US${Number(settings.spent_usd).toFixed(4)} / US$
             {Number(settings.daily_usd).toFixed(2)} hoy · {settings.jobs_today}/
-            {settings.daily_jobs} consultas
+            {settings.daily_jobs} consultas · {searchesRemaining} búsquedas disponibles · día de Chile
           </span>
         )}
       </div>
-      {settings&&Number(settings.spent_usd)>0&&<p className="market-muted">La busqueda web requiere US$0,25 disponibles. Reserva diaria ocupada; el historial sigue disponible.</p>}
+      {dailyLimitReached&&<p className="market-muted">Limite diario de consultas alcanzado. Se renueva a las 00:00, hora de Chile.</p>}
+      {settings&&!dailyLimitReached&&searchBudgetReached&&<p className="market-muted">Presupuesto diario insuficiente: cada busqueda reserva US$0,25. El historial sigue disponible.</p>}
       {settings&&!settings.selection.choice.startsWith('deepseek:')&&<p role="status">Busqueda web disponible con DeepSeek. Este modelo admite la revision de una fuente.</p>}
       {settings&&!settings.web_search_supported&&<p role="status">Busqueda automatica pendiente de habilitacion en el servidor.</p>}
       <details className="market-manual-source"><summary>Consultar un enlace conocido</summary><label>Enlace publico de la ficha del competidor<input type="url" value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://..."/></label><button className="secondary" onClick={()=>void start()} disabled={busy||!product||!url||!settings?.enabled||settings.jobs.some(j=>j.state==='running')}><Sparkles size={16}/>Investigar fuente</button></details>

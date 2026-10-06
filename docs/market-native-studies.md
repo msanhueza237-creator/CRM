@@ -55,7 +55,8 @@ independent selector that could display a different product.
 `market_native_studies.sql` adds only two market-owned tables and one service-only
 RPC. The user explicitly approved this isolated schema addition on 2026-10-06.
 It leaves customers, products, accounting tables and external pilot configuration
-unchanged. Native limits are USD 0.25/day and 10 attempts/day, America/Santiago.
+unchanged. The user approved USD 2.50/day and 10 attempts/day on 2026-10-06,
+America/Santiago. Search and manual-source attempts share these limits.
 
 Reservations serialize under the existing market advisory lock. One native job
 can run at a time. A request UUID plus canonical input hash prevents duplicate
@@ -69,16 +70,18 @@ Tariffs must still be maintained when a provider changes prices.
 
 ## Open Search Budget Gate
 
-The open-search change reserves USD 0.25, the entire current daily allowance, for
-one user-triggered request. It never releases that reservation from incomplete
+Open search reserves USD 0.25 per user-triggered request, allowing up to ten
+searches in the USD 2.50 daily reservation. It never releases that reservation from incomplete
 provider token reports: native web search includes extra summarization usage.
-At most one open search per Santiago day is permitted, sharing the existing budget
+Searches serialize one at a time and share the daily budget and attempt count
 with manual source extractions. Existing receipts remain readable and duplicate IDs
 never trigger another call. The updated service RPC reports `web_search_supported`;
 old deployments keep the new paid action disabled. This control is a CRM reservation,
 NOT a provider-enforced hard monetary billing cap. The user explicitly approved
 publishing this change and one paid production test on 2026-10-06 after being told
-the destination, affected module, daily reservation and billing limitation.
+the destination, affected module, daily reservation and billing limitation. The later
+increase to ten searches does not clear existing receipts or authorize automatic
+paid tests. The first day's previously used search still counts toward ten.
 Production's existing Edge worker lifetime is 60 seconds: provider search is
 bounded to 30 seconds, followed by two batches of at most four source reads with
 8-second deadlines. The shared Edge runtime configuration is unchanged.
@@ -112,8 +115,11 @@ grounded draft -> reviewed import -> pending equivalence, existing simulation,
 Dashboard and permission failures. PostgreSQL tests use an isolated local PGlite
 database, including budget, role grants, idempotence and interrupted jobs.
 
-Deployment is separate: backup the affected market schema/data and current Edge
-bundle, apply the additive migration, deploy the standalone market-study bundle,
+Deployment is separate: backup the affected market schema/data, service RPC and current Edge
+bundle. Apply `supabase/market_native_studies.sql` only with the approved budget change:
+it upgrades the native policy constraint/default and RPC atomically, aborts if a job is
+running or policy limits differ from the reviewed values, and leaves receipts unchanged.
+It is idempotent for the approved USD 2.50 / ten-attempt policy. Deploy the standalone market-study bundle,
 then publish frontend through the existing main/Dokploy pipeline. Do not recreate
 the Supabase stack, alter credentials, change other functions or delete resources.
 Live production verification must use the normal authenticated UI, not minted

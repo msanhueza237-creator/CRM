@@ -86,7 +86,7 @@ export async function marketSearch(input:unknown,ctx:Context,rpc:RPC,actor:strin
   const sourceUrl='https://www.google.com/search?q='+encodeURIComponent(body.sku+' '+body.title+' precio Chile');
   let reservation:Row;
   try{reservation=row(await rpc('market_native_run',{p_actor:actor,p_action:'reserve',p_data:{id:body.id,hash,sku:body.sku,url:sourceUrl,revision:body.revision,selection:choice,kind:'market_search'}}));}
-  catch{throw new Error('No se inicio la busqueda: actualiza el historial. Requiere la reserva diaria completa de US$0,25 y no admite otra consulta en curso.');}
+  catch{throw new Error('No se inicio la busqueda: actualiza el historial. Requiere US$0,25 disponibles, un cupo diario y ninguna otra consulta en curso.');}
   if(reservation.created!==true)return reservation.job as NativeStudyJob;
   let state='unknown';const result:NativeStudyJob['result']={kind:'market_search',product_title:body.title,coverage:'Web publica indexada, orientada a ofertas en Chile. Hasta tres consultas y ocho sitios por estudio, sin lista cerrada de comercios. No representa todo el mercado. Fuentes inaccesibles o ambiguas quedan pendientes.',usage_note:'Reserva conservadora de US$0,25 por busqueda; incluye consumo web no conciliado con la factura del proveedor.'};
   try{
