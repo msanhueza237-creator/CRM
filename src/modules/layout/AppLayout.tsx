@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   LogOut,
   Megaphone,
+  MessageCircle,
   Menu,
   Palette,
   Radar,
@@ -17,10 +18,12 @@ import {
   WalletCards,
 } from "lucide-react";
 import { useAuth, type AppRole } from "../auth/AuthContext";
+import { useWhatsAppInbox } from "../messages/useWhatsAppInbox";
 
 const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard; roles?: AppRole[] }> = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/empresas", label: "Empresas", icon: Building2 },
+  { to: "/mensajes", label: "Mensajes", icon: MessageCircle, roles: ["administrador"] },
   { to: "/prospeccion", label: "Prospeccion", icon: Radar },
   { to: "/agentes", label: "Agentes", icon: Bot },
   { to: "/campanas", label: "Campanas", icon: Megaphone },
@@ -36,6 +39,7 @@ const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard;
 
 export function AppLayout() {
   const { user, signOut, isDemoMode } = useAuth();
+  const inbox = useWhatsAppInbox(user?.role === "administrador" && !isDemoMode, "", "all", 0, 0);
   const { pathname } = useLocation();
   const navigationRef = useRef<HTMLElement>(null);
 
@@ -69,6 +73,7 @@ export function AppLayout() {
             >
               <item.icon size={19} />
               <span>{item.label}</span>
+              {item.to === "/mensajes" && !!inbox.data?.summary.unreadMessages && <em className="messages-nav-badge" aria-label={`${inbox.data.summary.unreadMessages} mensajes no leidos`}>{inbox.data.summary.unreadMessages > 99 ? "99+" : inbox.data.summary.unreadMessages}</em>}
             </NavLink>
           ))}
         </nav>
@@ -84,8 +89,8 @@ export function AppLayout() {
           <div className="topbar-title">
             <Menu size={22} />
             <div>
-              <strong>{pathname === "/dashboard" ? "Centro de gestión" : "Pipeline comercial"}</strong>
-              <span>{pathname === "/dashboard" ? "Latin Chile · Visión integral del negocio" : "Distribuidores, tiendas e instaladores grandes"}</span>
+              <strong>{pathname === "/dashboard" ? "Centro de gestión" : pathname === "/mensajes" ? "Atencion al cliente" : "Pipeline comercial"}</strong>
+              <span>{pathname === "/dashboard" ? "Latin Chile · Visión integral del negocio" : pathname === "/mensajes" ? "Climactiva · WhatsApp" : "Distribuidores, tiendas e instaladores grandes"}</span>
             </div>
           </div>
           <div className="topbar-user">

@@ -13,6 +13,7 @@ const browser=await chromium.launch({headless:true,channel:'chrome'}),context=aw
 const sent=[],errors=[],unexpected=[];let failing=false;
 await context.route('**/*',async route=>{const r=route.request(),u=new URL(r.url());if(u.origin!=='https://fixture.invalid'){unexpected.push(u.href);return route.abort()}
  if(u.pathname==='/app')return route.fulfill({contentType:'text/html',body:'<html lang="es"><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div></html>'});
+ if(u.pathname.endsWith('/whatsapp-read'))return route.fulfill({contentType:'application/json',body:JSON.stringify({updated:JSON.parse(r.postData()).messageIds.length})});
  if(u.pathname.endsWith('/meta-whatsapp-conversation')){if(failing)return route.fulfill({status:503,body:JSON.stringify({error:'Sin conexion al historial'})});return route.fulfill({contentType:'application/json',body:JSON.stringify(data)})}
  if(u.pathname.endsWith('/meta-whatsapp-reply')){const form=await new Response(r.postDataBuffer(),{headers:{'content-type':r.headers()['content-type']}}).formData();const p=JSON.parse(form.get('message'));sent.push(p);assert.equal(p.confirmSend,true);assert.equal(p.phone,data.phone);assert.ok(p.requestId);data.messages.push({id:'4',direction:'outbound',body:p.text,status:'sent',occurredAt:now,type:'text'});return route.fulfill({contentType:'application/json',body:JSON.stringify({accepted:true,id:'4',outcome:'accepted',warning:null})})}
  unexpected.push(u.href);return route.abort();

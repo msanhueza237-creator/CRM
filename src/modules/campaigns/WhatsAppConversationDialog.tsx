@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { MessageCircle, RefreshCw, Send, X } from "lucide-react";
 import { getWhatsAppConversation, getWhatsAppTemplates, type MetaTemplate, type WhatsAppConversation } from "../../lib/whatsappApi";
 import { sendDirectMessage } from "../../lib/directMessageApi";
+import { notifyInboxChanged, setWhatsAppRead } from "../../lib/whatsappInboxApi";
 import { MessageAttachments } from "./MessageAttachments";
 import "./whatsapp-conversation.css";
 
@@ -22,6 +23,9 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   const [templateError, setTemplateError] = useState("");
   const [uncertain, setUncertain] = useState(false);
   const [now, setNow] = useState(Date.now());
+  const [readError, setReadError] = useState("");
+  const acknowledged = useRef(new Set<string>());
+  const marking = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const busy = useRef(false);
   const requestId = useRef<string | null>(null);
@@ -53,6 +57,28 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   }, [companyId, phone, contactId]);
 
   useEffect(() => {
+    if (!data) return;
+    let current = true;
+    const markLoaded = async () => {
+      if (document.hidden || marking.current || !current) return;
+      const ids = data.messages.filter(m => m.direction === "inbound" && !acknowledged.current.has(m.id)).map(m => m.id);
+      if (!ids.length) return;
+      marking.current = true;
+      try {
+        for (let i = 0; i < ids.length && current; i += 50) {
+          const batch = ids.slice(i, i + 50);
+          await setWhatsAppRead(companyId || null, data.phone, batch, true);
+          batch.forEach(id => acknowledged.current.add(id));
+        }
+        if (current) setReadError("");
+      } catch { if (current) setReadError("No se pudo guardar la lectura. Se reintentara al actualizar."); }
+      finally { marking.current = false; }
+    };
+    void markLoaded(); document.addEventListener("visibilitychange", markLoaded);
+    return () => { current = false; document.removeEventListener("visibilitychange", markLoaded); };
+  }, [data, companyId]);
+
+  useEffect(() => {
     if (mode !== "template") return;
     let current = true; setTemplateError(""); setTemplates([]);
     getWhatsAppTemplates().then(result => { if (current) {
@@ -76,7 +102,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
       else if (result.outcome === "rejected") requestId.current = null;
       else setUncertain(true);
     } catch (err) { setNotice(err instanceof Error ? err.message : "No se pudo confirmar el envio. No lo repitas sin revisar el historial."); setUncertain(true); }
-    finally { busy.current = false; setSending(false); await load(); }
+    finally { busy.current = false; setSending(false); notifyInboxChanged(); await load(); }
   }
 
   const open = Boolean(data?.canReply && data.expiresAt && Date.parse(data.expiresAt) > now);
@@ -86,6 +112,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
     <div className="wa-toolbar"><span>{open ? `Atencion abierta hasta ${new Date(data!.expiresAt!).toLocaleString("es-CL")}` : "Respuesta libre no disponible"}</span>
       <button type="button" className="ghost-button" aria-label="Actualizar conversacion" title="Actualizar conversacion" disabled={loading || sending} onClick={() => void load()}><RefreshCw size={18} /></button></div>
     {error && <p className="wa-alert" role="alert">{error}</p>}
+    {readError && <p className="wa-alert" role="status">{readError}</p>}
     <div ref={history} className="wa-history" role="log" aria-label="Historial WhatsApp" aria-busy={loading}>
       {data?.nextOffset !== null && data?.nextOffset !== undefined && <button className="ghost-button" disabled={loading || sending} onClick={() => void load(true)}>Mensajes anteriores</button>}
       {!data && loading && <p>Cargando mensajes...</p>}

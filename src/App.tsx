@@ -18,6 +18,7 @@ import { ReportsPage } from "./modules/reports/ReportsPage";
 import { ContentCenterPage } from "./modules/content/ContentCenterPage";
 import { ForeignTradeCenterPage } from "./modules/foreign-trade/ForeignTradeCenterPage";
 import { AccountingCenterPage } from "./modules/accounting/AccountingCenterPage";
+import { MessagesPage } from "./modules/messages/MessagesPage";
 
 const MarketStudyPage = lazy(() => import("./modules/market-study/MarketStudyPage").then(module => ({ default: module.MarketStudyPage })));
 
@@ -41,6 +42,7 @@ export function App() {
         <Route path="/empresas/:companyId" element={<CompanyDetailPage />} />
         <Route path="/empresas/:companyId/editar" element={<CompanyFormPage />} />
         <Route path="/campanas" element={<CampaignsPage />} />
+        <Route path="/mensajes" element={<RoleProtectedRoute roles={["administrador"]}><MessagesPage /></RoleProtectedRoute>} />
         <Route path="/contenido" element={<ContentCenterPage />} />
         <Route path="/comercio-exterior" element={<RoleProtectedRoute roles={["administrador"]}><ForeignTradeCenterPage /></RoleProtectedRoute>} />
         <Route path="/finanzas-contabilidad" element={<RoleProtectedRoute roles={["administrador", "finanzas"]}><AccountingCenterPage /></RoleProtectedRoute>} />

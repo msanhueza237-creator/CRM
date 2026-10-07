@@ -10,6 +10,7 @@ import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
 import { dispatchWhatsAppCampaign, getWhatsAppTemplates } from "./whatsapp-dispatch.ts";
 import { getWhatsAppConversation, sendWhatsAppReply } from "./whatsapp-conversation.ts";
 import { getMessageRecipients } from "./message-recipients.ts";
+import { getWhatsAppInbox, setWhatsAppRead } from "./whatsapp-inbox.ts";
 import { readMessageForm } from "../_shared/direct-message.ts";
 import { splitWhatsAppEvents, whatsappMessageBody, whatsappPhone, metaMessage } from "../_shared/whatsapp-content.ts";
 import { whatsappDispatchId } from "./whatsapp-meta.ts";
@@ -90,10 +91,12 @@ Deno.serve(async (req) => {
       return await handleMetaWhatsAppStatus({ req, url, supabase });
     }
 
-    if ((["meta-whatsapp-conversation", "message-recipients"].includes(route) && req.method === "GET") || (route === "meta-whatsapp-reply" && req.method === "POST")) {
+    if ((["meta-whatsapp-conversation", "message-recipients", "whatsapp-inbox"].includes(route) && req.method === "GET") || (["meta-whatsapp-reply", "whatsapp-read"].includes(route) && req.method === "POST")) {
       const admin = await requireCrmAdmin(req, supabase);
       if (!admin.authorized) return json({ error: admin.error }, admin.status);
       try {
+        if (route === "whatsapp-inbox") return json(await getWhatsAppInbox(supabase, admin.userId!, url.searchParams));
+        if (route === "whatsapp-read") return json(await setWhatsAppRead(supabase, admin.userId!, await readJsonObject(req)));
         if (route === "message-recipients") return json(await getMessageRecipients(supabase));
         if (route === "meta-whatsapp-conversation") return json(await getWhatsAppConversation(supabase, firstEnvValue,
           url.searchParams.get("companyId") || "", url.searchParams.get("phone") || "", Number(url.searchParams.get("offset") || 0), url.searchParams.get("contactId") || ""));

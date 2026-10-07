@@ -42,6 +42,18 @@ async function conversationContext(db: SupabaseClient, env: Env, companyId: stri
 
 export async function getWhatsAppConversation(db: SupabaseClient, env: Env, companyId: string, phone = "", offset = 0, contactId = "") {
   if (!Number.isSafeInteger(offset) || offset < 0 || offset > 10000) throw new Error("Pagina no valida.");
+  if (!companyId && !contactId) {
+    const number = whatsappPhone(phone);
+    if (!/^[1-9]\d{7,14}$/.test(number)) throw new Error("Numero no valido.");
+    const { data, error } = await db.from("whatsapp_messages").select(fields).is("company_id", null)
+      .in("phone_number", [number, `+${number}`, ...(number.startsWith("569") && number.length === 11 ? [number.slice(2)] : [])])
+      .order("occurred_at", { ascending: false }).order("id", { ascending: false }).range(offset, offset + 49);
+    if (error) throw new Error("No se pudo recuperar el historial WhatsApp.");
+    const reasons = ["Conversacion sin ficha vinculada. El historial se conserva; el envio requiere un contacto registrado."];
+    return { companyId: "", name: "Sin ficha vinculada", phone: number, canReply: false, canTemplate: false, templateReasons: reasons, reasons,
+      expiresAt: null, nextOffset: data?.length === 50 ? offset + 50 : null,
+      messages: (data || []).map((row: Row) => ({ id: row.id, direction: row.direction, body: storedWhatsAppBody(row), type: row.message_type, status: row.status, occurredAt: row.occurred_at })).reverse() };
+  }
   const context = await conversationContext(db, env, companyId, phone, contactId);
   const { data, error } = await db.from("whatsapp_messages").select(fields).eq("company_id", companyId)
     .in("phone_number", [context.phone, `+${context.phone}`]).order("occurred_at", { ascending: false }).order("id", { ascending: false }).range(offset, offset + 49);

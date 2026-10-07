@@ -20,7 +20,7 @@ export interface WhatsAppDispatchResult {
   error?: string;
 }
 
-async function whatsappRequest<T>(route: string, body?: unknown): Promise<T> {
+export async function whatsappRequest<T>(route: string, body?: unknown): Promise<T> {
   const token = await getSessionToken();
   const response = await fetch(getSupabaseFunctionUrl("crm-agent", route), {
     method: body ? "POST" : "GET",
