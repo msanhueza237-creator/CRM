@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import fs from 'node:fs';
 import ts from 'typescript';
-import {whatsappMessageBody,storedWhatsAppBody,replyWindow,splitWhatsAppEvents} from '../supabase/functions/_shared/whatsapp-content.ts';
+import {whatsappMessageBody,storedWhatsAppBody,replyWindow,splitWhatsAppEvents,metaMessage} from '../supabase/functions/_shared/whatsapp-content.ts';
+import {whatsappDispatchId} from '../supabase/functions/crm-agent/whatsapp-meta.ts';
 import {getWhatsAppConversation,sendWhatsAppReply} from '../supabase/functions/crm-agent/whatsapp-conversation.ts';
 import {getWhatsAppConfig} from '../supabase/functions/crm-agent/whatsapp-dispatch.ts';
 import {validWhatsAppWebhookAccount} from '../supabase/functions/crm-agent/whatsapp-policy.ts';
 import {whatsAppConsentLabel,whatsAppContactBlocked} from '../src/lib/whatsappConsent.ts';
+import {resolveIncomingWhatsAppRecipient} from '../supabase/functions/crm-agent/whatsapp-incoming.ts';
 const companyId='00000000-0000-4000-8000-000000000001', phone='56912345678';
 const envelope=(message,extra={})=>({object:'whatsapp_business_account',entry:[{id:'b1',changes:[{field:'messages',value:{metadata:{phone_number_id:'p1'},messages:[message],...extra}}]}]});
 const inbound=(extra={})=>({id:'in1',company_id:companyId,direction:'inbound',phone_number:'+'+phone,meta_message_id:'wamid.in1',message_type:'text',status:'received',occurred_at:new Date().toISOString(),body:'Hola',raw_payload:envelope({id:'wamid.in1',from:phone,type:'text',text:{body:'Hola'},timestamp:String(Math.floor(Date.now()/1000)-60)}),...extra});
@@ -14,14 +16,14 @@ const defaults={META_GRAPH_API_VERSION:'v26.0',META_WHATSAPP_ACCESS_TOKEN:'priva
 const env=(keys)=>keys.map(k=>defaults[k]).find(Boolean)||'';
 const request=()=>({companyId,phone,text:'Gracias por tu consulta',requestId:crypto.randomUUID(),confirmSend:true});
 function dbFixture(extra={}) {
- const tables={companies:[{id:companyId,name:'Cliente prueba',whatsapp_status:'sin_consentimiento'}],whatsapp_settings:[{active:true,phone_number_id:'p1',business_account_id:'b1'}],whatsapp_messages:[inbound()],content_products:[],...extra};
+ const tables={companies:[{id:companyId,name:'Cliente prueba',whatsapp_status:'sin_consentimiento'}],contacts:[],whatsapp_settings:[{active:true,phone_number_id:'p1',business_account_id:'b1'}],whatsapp_messages:[inbound()],content_products:[],...extra};
  return {tables,from(name){let filters=[],order=[],start=0,end=Infinity,op='select',value;const q={
   select(){return q},eq(k,v){filters.push(r=>r[k]===v);return q},in(k,v){filters.push(r=>v.includes(r[k]));return q},
   contains(k,json){const values=JSON.parse(json);filters.push(r=>values.every(v=>r[k].some(item=>Object.entries(v).every(([key,value])=>item[key]===value))));return q},
   order(k,o={ascending:true}){order.push([k,o.ascending]);return q},limit(n){end=n;return q},range(a,b){start=a;end=b+1;return q},
   insert(v){op='insert';value=v;return q},update(v){op='update';value=v;return q},single(){return q.maybeSingle()},maybeSingle(){return q.then(r=>({...r,data:r.data?.[0]||null}))},
   then(resolve,reject){return Promise.resolve().then(()=>{
-   if(op==='insert'){if(tables[name].some(r=>r.id===value.id))return {error:{code:'23505'},data:null};tables[name].push({...value,occurred_at:new Date().toISOString()});return {error:null,data:null}}
+   if(op==='insert'){if(tables[name].some(r=>r.id===value.id))return {error:{code:'23505'},data:null};tables[name].push({occurred_at:new Date().toISOString(),...value});return {error:null,data:null}}
    let rows=tables[name].filter(r=>filters.every(f=>f(r)));if(op==='update')rows.forEach(r=>Object.assign(r,value));
    rows.sort((a,b)=>{for(const [k,asc] of order){const n=String(a[k]).localeCompare(String(b[k]));if(n)return asc?n:-n}return 0});
    return {data:rows.slice(start,end).map(r=>({...r})),error:null};
@@ -60,6 +62,88 @@ test('history exposes older pages without truncation presented as complete',asyn
  const db=dbFixture({whatsapp_messages:Array.from({length:55},(_,i)=>inbound({id:`in${i}`,occurred_at:new Date(Date.now()-i*1000).toISOString()}))});
  const first=await getWhatsAppConversation(db,env,companyId,phone);assert.equal(first.messages.length,50);assert.equal(first.nextOffset,50);
  const next=await getWhatsAppConversation(db,env,companyId,phone,50);assert.equal(next.messages.length,5);assert.equal(next.nextOffset,null);
+});
+
+test('invalid or foreign latest receipt never hides a valid five-minute inbound window',async()=>{
+ const valid=inbound({occurred_at:new Date(Date.now()-300000).toISOString()});
+ valid.raw_payload.entry[0].changes[0].value.messages[0].timestamp=String(Math.floor(Date.now()/1000)-300);
+ const foreign=inbound({id:'foreign',raw_payload:{entry:[{changes:[{value:{metadata:{phone_number_id:'other'},messages:[{id:'wamid.in1',from:phone,timestamp:String(Math.floor(Date.now()/1000))}]}}]}]}});
+ const db=dbFixture({whatsapp_messages:[foreign,valid]});
+ const data=await getWhatsAppConversation(db,env,companyId,phone);assert.equal(data.canReply,true);assert.equal(data.policy.state,'OPEN');
+ assert.equal(data.lastInboundAt,new Date(Number(valid.raw_payload.entry[0].changes[0].value.messages[0].timestamp)*1000).toISOString());
+ valid.raw_payload.entry[0].changes[0].value.messages[0].timestamp=String(Math.floor(Date.now()/1000)-86401);
+ assert.equal((await getWhatsAppConversation(db,env,companyId,phone)).canReply,false);
+ db.tables.whatsapp_messages.push(inbound({id:'new-reply'}));
+ assert.equal((await getWhatsAppConversation(db,env,companyId,phone)).canReply,true);
+});
+
+test('profile last outbound is independent of the displayed history page',async()=>{
+ const sentAt=new Date(Date.now()+1000).toISOString();
+ const rows=Array.from({length:55},(_,i)=>inbound({id:`in${i}`,occurred_at:new Date(Date.now()-i*1000).toISOString()}));
+ const db=dbFixture({whatsapp_messages:[...rows,{id:'sent',company_id:companyId,phone_number:phone,direction:'outbound',occurred_at:sentAt,status:'read',body:'Respuesta'}]});
+ assert.equal((await getWhatsAppConversation(db,env,companyId,phone,50)).lastOutboundAt,sentAt);
+});
+
+test('contact withdrawal cannot be bypassed from the company or inbox without contactId',async()=>{
+ const db=dbFixture({contacts:[{id:'withdrawn',company_id:companyId,phone,whatsapp_status:'opt_out',whatsapp_opt_in:false,whatsapp_opt_in_source:'CLIENTE'}]});
+ const data=await getWhatsAppConversation(db,env,companyId,phone);
+ assert.equal(data.consent.status,'opt_out');assert.equal(data.canReply,false);assert.equal(data.canTemplate,false);
+ await assert.rejects(sendWhatsAppReply(db,env,request(),'user',()=>{throw Error('No network')}),/No contactable/);
+});
+
+test('incoming matching reads later pages and preserves existing contact notes and phone',async()=>{
+ const companies=Array.from({length:1001},(_,i)=>({id:`company-${String(i).padStart(5,'0')}`,phone:i===1000?phone:`561${String(i).padStart(8,'0')}`}));
+ const contact={id:'saved-contact',company_id:companies[1000].id,phone:'9 1234 5678',notes:'No sobrescribir',full_name:'Nombre CRM'};
+ const db=dbFixture({companies,contacts:[contact]});const before=structuredClone(contact);
+ const result=await resolveIncomingWhatsAppRecipient(db,phone,'Nombre Meta');
+ assert.equal(result.companyId,companies[1000].id);assert.equal(result.contactId,contact.id);assert.deepEqual(contact,before);
+ assert.equal(db.tables.companies.length,1001);assert.equal(db.tables.contacts.length,1);
+});
+
+test('ambiguous shared numbers stay unlinked instead of choosing an arbitrary company',async()=>{
+ const db=dbFixture({companies:[{id:'a',phone},{id:'b',whatsapp:phone}]});
+ assert.deepEqual(await resolveIncomingWhatsAppRecipient(db,phone,'Cliente'),{companyId:null,contactId:null,ambiguous:true});
+ assert.equal(db.tables.companies.length,2);assert.equal(db.tables.contacts.length,0);
+});
+
+test('concurrent new senders create one CRM company and one contact without opt-in',async()=>{
+ const db=dbFixture({companies:[],contacts:[]});
+ const results=await Promise.all([1,2].map(()=>resolveIncomingWhatsAppRecipient(db,phone,'Cliente')));
+ assert.deepEqual(results[0],results[1]);assert.equal(db.tables.companies.length,1);assert.equal(db.tables.contacts.length,1);
+ assert.notEqual(db.tables.companies[0].whatsapp_opt_in,true);assert.notEqual(db.tables.contacts[0].whatsapp_opt_in,true);
+});
+
+test('failed directory read never creates a second client',async()=>{
+ const db=dbFixture();const base=db.from.bind(db);let inserted=false;
+ db.from=table=>{const q=base(table);if(table==='contacts')q.range=()=>Promise.resolve({error:{message:'private error'},data:null});const insert=q.insert;q.insert=v=>{inserted=true;return insert(v)};return q};
+ await assert.rejects(resolveIncomingWhatsAppRecipient(db,phone,'Cliente'),/No se pudo verificar/);assert.equal(inserted,false);
+});
+
+test('real inbound handler persists batches and retries once, without overwriting contacts or crossing phones',async()=>{
+ const source=fs.readFileSync('supabase/functions/crm-agent/index.ts','utf8');
+ const ast=ts.createSourceFile('index.ts',source,ts.ScriptTarget.Latest,true);
+ const names=['handleWhatsAppWebhook','handleWhatsAppWebhookEvent','parseMetaWhatsAppWebhook','normalizeWhatsAppPhone','logAgentAction'];
+ const functions=ast.statements.filter(node=>ts.isFunctionDeclaration(node)&&names.includes(node.name?.text)).map(node=>node.getText(ast)).join('\n');
+ assert.equal(ast.statements.filter(node=>ts.isFunctionDeclaration(node)&&names.includes(node.name?.text)).length,names.length);
+ const compiled=ts.transpileModule(functions,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
+ const handle=new Function('readJsonObject','json','processTemplateWebhook','firstEnvValue','splitWhatsAppEvents','whatsappDispatchId','resolveIncomingWhatsAppRecipient','metaMessage','whatsappMessageBody',`${compiled};return handleWhatsAppWebhook;`)(
+  req=>req.json(),(data,status=200)=>Response.json(data,{status}),async()=>{},env,splitWhatsAppEvents,whatsappDispatchId,resolveIncomingWhatsAppRecipient,metaMessage,whatsappMessageBody);
+ const contact={id:'existing',company_id:companyId,phone,notes:'Notas del vendedor',full_name:'Nombre CRM'};
+ const db=dbFixture({companies:[{id:companyId,phone}],contacts:[contact],whatsapp_messages:[{id:'other-phone',company_id:companyId,phone_number:'56922222222',direction:'outbound',recipient_id:'foreign-recipient',whatsapp_campaign_id:'foreign-campaign'}],whatsapp_webhook_events:[],interactions:[],activity_logs:[],whatsapp_campaign_recipients:[]});
+ const from=db.from.bind(db);db.from=table=>{const query=from(table),insert=query.insert;query.insert=value=>insert({...value,id:value.id||value.event_key||crypto.randomUUID()});return query};
+ const message={id:'wamid.real-path',from:phone,type:'text',text:{body:'Hola'},timestamp:String(Math.floor(Date.now()/1000)-300)};
+ const payload=envelope(message,{contacts:[{profile:{name:'Nombre Meta'}}]});
+ const invoke=()=>handle({supabase:db,req:new Request('https://fixture.invalid/whatsapp-webhook',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(payload)})},{key_id:null,key_name:'meta'});
+ assert.equal((await invoke()).status,200);assert.equal((await invoke()).status,200);
+ assert.equal(db.tables.whatsapp_messages.length,2);assert.equal(db.tables.whatsapp_webhook_events.length,1);assert.equal(db.tables.interactions.length,1);
+ const incoming=db.tables.whatsapp_messages.find(row=>row.meta_message_id===message.id);
+ assert.equal(incoming.contact_id,contact.id);assert.equal(incoming.recipient_id,null);assert.equal(incoming.whatsapp_campaign_id,null);
+ assert.equal(incoming.occurred_at,new Date(Number(message.timestamp)*1000).toISOString());
+ assert.equal(db.tables.whatsapp_webhook_events[0].processed,true);assert.equal(contact.notes,'Notas del vendedor');assert.equal(contact.full_name,'Nombre CRM');
+ assert.equal((await getWhatsAppConversation(db,env,companyId,phone)).canReply,true);
+ db.tables.companies.push({id:'ambiguous',phone});payload.entry[0].changes[0].value.messages[0].id='wamid.ambiguous';
+ assert.equal((await invoke()).status,200);assert.equal(db.tables.whatsapp_messages.at(-1).company_id,null);assert.equal(db.tables.interactions.length,1);
+ assert.match(db.tables.whatsapp_webhook_events.at(-1).processing_error,/sin vincular/);
 });
 
 test('conversation exposes sanitized catalog detail through the existing authenticated history',async()=>{
@@ -108,7 +192,7 @@ test('pending evidence is distinct from withdrawal, invalid or blocked number',(
 test('manual reply sends exact text only after confirmation and keeps marketing opt-in unchanged',async()=>{
  const db=dbFixture(),p=request(),calls=[];
  const out=await sendWhatsAppReply(db,env,p,'u1',async(url,options)=>{calls.push(JSON.parse(options.body));return Response.json({messages:[{id:'wamid.out'}]})});
- assert.equal(out.accepted,true);assert.equal(calls[0].to,phone);assert.equal(calls[0].text.body,p.text);assert.equal(calls[0].type,'text');
+ assert.equal(out.accepted,true);assert.equal(calls[0].to,'+'+phone);assert.equal(calls[0].text.body,p.text);assert.equal(calls[0].type,'text');
  assert.equal(db.tables.whatsapp_messages.at(-1).status,'accepted');assert.equal(db.tables.companies[0].whatsapp_status,'sin_consentimiento');
  await assert.rejects(sendWhatsAppReply(db,env,p,'u1',()=>{throw Error('must not send')}),/intento registrado/);
 });

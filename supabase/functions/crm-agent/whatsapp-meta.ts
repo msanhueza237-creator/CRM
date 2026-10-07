@@ -106,7 +106,7 @@ export function buildMetaTemplateMessage(template: MetaTemplate, phone: string, 
     type: "button", sub_type: "CATALOG", index,
     ...(thumbnail ? { parameters: [{ type: "action", action: { thumbnail_product_retailer_id: thumbnail } }] } : {}),
   });
-  return { messaging_product: "whatsapp", recipient_type: "individual", to: phone, type: "template", template: {
+  return { messaging_product: "whatsapp", recipient_type: "individual", to: `+${phone}`, type: "template", template: {
     name: template.name, language: { code: template.language }, ...(components.length ? { components } : {}),
   } };
 }
@@ -127,7 +127,8 @@ export async function enrichWhatsAppTemplates(db: SupabaseClient, templates: Met
   if(error) throw new Error("No se pudo verificar el estado local de las plantillas.");
   return templates.map(template=>{
     const local=data?.find((item:Row)=>item.meta_template_id===template.id);
-    return {...template,bindings:local?.variable_bindings || template.variables.map(key=>({key,field:"manual",example:""})),
+    const bindings = Array.isArray(local?.variable_bindings) ? local.variable_bindings : [];
+    return {...template,bindings:template.variables.map(key=>bindings.find((binding:{key:string})=>binding.key===key) || {key,field:"manual",example:""}),
       blockedReason:local && (local.active===false || ["SUBMITTING","UNCERTAIN"].includes(String(local.local_state)))?"Plantilla archivada o con aprobación por verificar en el CRM.":template.blockedReason};
   });
 }

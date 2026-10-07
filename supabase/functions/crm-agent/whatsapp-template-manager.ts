@@ -2,7 +2,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4
 import { getWhatsAppConfig } from "./whatsapp-dispatch.ts";
 import { describeMetaTemplate, whatsappDispatchId } from "./whatsapp-meta.ts";
 import { metaFunctionalError, redactMeta, templateWebhookFields } from "./whatsapp-policy.ts";
-import { compileTemplateDraft, validateTemplatePolicy, templateVariableFields } from "./whatsapp-template-model.ts";
+import { compileTemplateDraft, validateTemplatePolicy, templateVariableFields, templateEditBlocker } from "./whatsapp-template-model.ts";
 // Supabase's existing ungenerated JSON rows are validated at each API boundary.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
@@ -92,7 +92,7 @@ export async function templateManagement(db:SupabaseClient,env:Env,actor:string,
       if(!manage) query=query.eq("status","APPROVED").eq("active",true).in("local_state",["SYNCED","DRAFT"]);
       const {data,error}=await query.range(offset,offset+499);
       if(error) throw new Error("No se pudieron leer las plantillas.");
-      templates.push(...(data || []).map(row=>manage?row:{...row,draft:null,local_state:"SYNCED"}));
+      templates.push(...(data || []).map(row=>manage?{...row,editBlockedReason:row.meta_template_id?templateEditBlocker(row):null}:{...row,draft:null,local_state:"SYNCED"}));
       if((data || []).length<500) break;
       if(offset===9500) throw new Error("La lista supera el límite de consulta; no se mostrará incompleta.");
     }
@@ -113,6 +113,10 @@ export async function templateManagement(db:SupabaseClient,env:Env,actor:string,
     if(Number(input.revision)!==data.revision) throw new Error("La plantilla cambió. Actualiza antes de continuar.");
   }
   if(operation==="save") {
+    if(existing?.meta_template_id) {
+      const blocker=templateEditBlocker(existing);
+      if(blocker) throw new Error(blocker);
+    }
     const payload=compileTemplateDraft(input.draft,policy);
     if(existing && ["SUBMITTING","UNCERTAIN"].includes(existing.local_state)) throw new Error("Sincroniza y revisa el envío anterior antes de editar.");
     if(existing?.meta_template_id && (payload.name!==existing.meta_template_name || payload.language!==existing.language)) throw new Error("Para cambiar nombre o idioma crea otro borrador.");
@@ -128,7 +132,7 @@ export async function templateManagement(db:SupabaseClient,env:Env,actor:string,
   if(operation==="archive") {
     if(["SUBMITTING","UNCERTAIN"].includes(existing.local_state)) throw new Error("Revisa primero el envío pendiente.");
     await whatsappAudit(db,actor,"template_archived_locally",existing.id,{metaId:existing.meta_template_id});
-    const {error}=await db.from("whatsapp_templates").update({active:false,local_state:"ARCHIVED",revision:existing.revision+1,updated_at:new Date().toISOString()}).eq("id",existing.id).eq("revision",existing.revision);
+    const {error}=await db.from("whatsapp_templates").update({active:false,local_state:"ARCHIVED",revision:existing.revision+1,updated_at:new Date().toISOString()}).eq("id",existing.id).eq("revision",existing.revision).select("id").single();
     if(error) throw new Error("No se pudo archivar."); return {ok:true};
   }
   if(operation!=="submit" || input.confirmSubmit!==true || !existing.draft || existing.local_state!=="DRAFT" || !existing.active) throw new Error("Revisa y confirma el borrador antes de enviarlo a aprobación.");
@@ -139,13 +143,17 @@ export async function templateManagement(db:SupabaseClient,env:Env,actor:string,
   const remote=current.find(t=>t.name===payload.name && t.language===payload.language);
   if(!existing.meta_template_id && remote) throw new Error("Esta plantilla ya existe en Meta. Sincroniza primero; no se creará otra.");
   if(existing.meta_template_id && (!remote || String(remote.id)!==existing.meta_template_id || !["APPROVED","REJECTED"].includes(remote.status))) throw new Error("Meta no permite editar esta plantilla en su estado actual. Sincroniza primero.");
+  if(remote) {
+    const blocker=templateEditBlocker(remote);
+    if(blocker) throw new Error(blocker);
+  }
   const submission=crypto.randomUUID();
   const {data:locked,error:lockError}=await db.from("whatsapp_templates").update({local_state:"SUBMITTING",submission_id:submission,revision:existing.revision+1}).eq("id",existing.id).eq("revision",existing.revision).eq("local_state","DRAFT").select("id").maybeSingle();
   if(lockError || !locked) throw new Error("Otro usuario modificó o está enviando esta plantilla.");
   try { await whatsappAudit(db,actor,"template_submission_requested",existing.id,{submission,payload,graphVersion:config.version}); }
   catch(error) { await db.from("whatsapp_templates").update({local_state:"DRAFT"}).eq("id",existing.id).eq("submission_id",submission); throw error; }
   try {
-    const result=await metaCall(config,existing.meta_template_id || `${config.wabaId}/message_templates`,request,existing.meta_template_id?{category:payload.category,components:payload.components,parameter_format:payload.parameter_format}:payload);
+    const result=await metaCall(config,existing.meta_template_id || `${config.wabaId}/message_templates`,request,existing.meta_template_id?{category:payload.category,components:payload.components}:payload);
     if(!existing.meta_template_id && !/^\d+$/.test(String(result.id))) throw new Error("Respuesta Meta incierta.");
     const {error}=await db.from("whatsapp_templates").update({meta_template_id:existing.meta_template_id || String(result.id),status:result.status || "PENDING",category:result.category || payload.category,
       components:payload.components,variable_bindings:existing.draft.bindings,preview_body:existing.draft.body,draft:null,local_state:"SYNCED",last_synced_at:new Date().toISOString(),meta_snapshot:redactMeta(result,[config.token]),rejected_reason:null}).eq("id",existing.id).eq("submission_id",submission);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import fs from 'node:fs';
 import {PGlite} from '@electric-sql/pglite';
-import {compileTemplateDraft,resolveTemplateValues,validateTemplatePolicy} from '../supabase/functions/crm-agent/whatsapp-template-model.ts';
+import {compileTemplateDraft,resolveTemplateValues,validateTemplatePolicy,templateEditBlocker} from '../supabase/functions/crm-agent/whatsapp-template-model.ts';
 import {redactMeta,metaFunctionalError,validWhatsAppWebhookAccount,whatsappRoleAllowed} from '../supabase/functions/crm-agent/whatsapp-policy.ts';
 import {templateManagement,processTemplateWebhook,syncWhatsAppTemplates} from '../supabase/functions/crm-agent/whatsapp-template-manager.ts';
 
@@ -66,6 +66,38 @@ test('template status webhook is idempotent and fetches authoritative state',asy
 });
 test('invalid token is controlled and never exposes provider details',async()=>{
   await assert.rejects(syncWhatsAppTemplates(memory(),env,id(1),async()=>new Response(JSON.stringify({error:{code:190,message:'test-secret'}}),{status:401})),e=>/token.*revisión/i.test(e.message)&&!e.message.includes('test-secret')&&!JSON.stringify(e).includes('test-secret'));
+});
+
+test('imported media, named variables, catalog and unknown components cannot be silently lost',async()=>{
+ const supported={...remote,parameter_format:'POSITIONAL'};
+ assert.equal(templateEditBlocker(supported),null);
+ for(const change of [
+  {parameter_format:'NAMED'}, {category:'AUTHENTICATION'},
+  {components:[...remote.components,{type:'HEADER',format:'IMAGE',example:{header_handle:['sample']}}]},
+  {components:[...remote.components,{type:'HEADER',format:'TEXT',text:'Hola {{1}}'}]},
+  {components:[...remote.components,{type:'BUTTONS',buttons:[{type:'CATALOG',text:'Ver catálogo'}]}]},
+  {components:[...remote.components,{type:'BUTTONS',buttons:[{type:'URL',text:'Ver',url:'https://example.cl/{{1}}'}]}]},
+  {components:[...remote.components,{type:'CAROUSEL',cards:[]}]},
+ ]) {
+  const imported={...supported,...change};assert.match(templateEditBlocker(imported),/conservar/);
+  const db=memory();await syncWhatsAppTemplates(db,env,id(1),async()=>Response.json({data:[imported]}));
+  const saved=db.tables.whatsapp_templates[0],before=structuredClone(saved);
+  await assert.rejects(templateManagement(db,env,id(1),true,'save',{id:saved.id,revision:saved.revision,draft}),/conservar/);
+  assert.deepEqual(saved,before);
+  const listed=await templateManagement(db,env,id(1),true,'list');assert.match(listed.templates[0].editBlockedReason,/conservar/);
+ }
+});
+
+test('changed remote components block approval before any Meta POST; text edit uses supported fields',async()=>{
+ const db=memory();await syncWhatsAppTemplates(db,env,id(1),request);const saved=db.tables.whatsapp_templates[0];
+ await templateManagement(db,env,id(1),true,'save',{id:saved.id,revision:saved.revision,draft:{...draft,purposeConfirmed:true}});
+ let writes=0;
+ const changed=async(_url,options={})=>{if(options.method==='POST'){writes++;throw Error('Unexpected POST')}return Response.json({data:[{...remote,components:[...remote.components,{type:'HEADER',format:'IMAGE'}]}]})};
+ await assert.rejects(templateManagement(db,env,id(1),true,'submit',{id:saved.id,revision:saved.revision,confirmSubmit:true},changed),/conservar/);
+ assert.equal(writes,0);assert.equal(saved.local_state,'DRAFT');
+ const supported=async(url,options={})=>{if(options.method!=='POST')return request(url,options);writes++;assert.equal(url,'https://graph.facebook.com/v26.0/789');assert.deepEqual(Object.keys(JSON.parse(options.body)).sort(),['category','components']);return Response.json({success:true})};
+ await templateManagement(db,env,id(1),true,'submit',{id:saved.id,revision:saved.revision,confirmSubmit:true},supported);
+ assert.equal(writes,1);assert.equal(saved.status,'PENDING');
 });
 test('explicit mocked approval uses WABA endpoint; timeout stays uncertain and cannot resubmit',async()=>{
   for(const uncertain of [false,true]) {

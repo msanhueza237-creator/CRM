@@ -46,7 +46,7 @@ export function replyWindow(row: Row | null, phoneId: string, now = Date.now()) 
     whatsappPhone(original?.message.from) === whatsappPhone(row.phone_number) &&
     Number.isFinite(timestamp) && timestamp > 0 && timestamp <= now;
   const expiresAt = valid ? new Date(timestamp + 24 * 60 * 60 * 1000).toISOString() : null;
-  return { expiresAt, open: Boolean(expiresAt && Date.parse(expiresAt) > now) };
+  return { lastInboundAt: valid ? new Date(timestamp).toISOString() : null, expiresAt, open: Boolean(expiresAt && Date.parse(expiresAt) > now) };
 }
 
 export function splitWhatsAppEvents(payload: Row) {

@@ -55,3 +55,31 @@ export function resolveTemplateValues(bindings: TemplateBinding[], context: Reco
     return value.trim();
   });
 }
+// Editing replaces the entire components array in Meta; never silently drop a format.
+export function templateEditBlocker(template: Record<string, unknown>): string | null {
+  const unsupported = "Esta plantilla contiene componentes que el editor de texto no puede conservar. Edítala en Meta y sincroniza nuevamente.";
+  if (template.parameter_format && template.parameter_format !== "POSITIONAL") return unsupported;
+  if (!["MARKETING", "UTILITY"].includes(String(template.category))) return unsupported;
+  if (!Array.isArray(template.components) || !template.components.length) return unsupported;
+  const types = new Set<string>();
+  for (const component of template.components) {
+    if (!component || typeof component !== "object" || types.has(component.type)) return unsupported;
+    types.add(component.type);
+    const allowed = component.type === "HEADER" ? ["type", "format", "text", "example"]
+      : ["BODY", "FOOTER"].includes(component.type) ? ["type", "text", "example"]
+      : component.type === "BUTTONS" ? ["type", "buttons"] : [];
+    if (!allowed.length || Object.keys(component).some(key => !allowed.includes(key))) return unsupported;
+    if (component.type === "HEADER" && (component.format !== "TEXT" || /[{}]/.test(component.text || ""))) return unsupported;
+    if (component.type === "FOOTER" && /[{}]/.test(component.text || "")) return unsupported;
+    if (component.type === "BUTTONS") {
+      if (!Array.isArray(component.buttons)) return unsupported;
+      for (const button of component.buttons) {
+        const keys = button?.type === "URL" ? ["type", "text", "url"]
+          : button?.type === "PHONE_NUMBER" ? ["type", "text", "phone_number"]
+          : button?.type === "QUICK_REPLY" ? ["type", "text"] : [];
+        if (!button || !keys.length || Object.keys(button).some(key => !keys.includes(key)) || /[{}]/.test(button.url || "")) return unsupported;
+      }
+    }
+  }
+  return types.has("BODY") ? null : unsupported;
+}

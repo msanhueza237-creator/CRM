@@ -9,6 +9,7 @@ import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
 import { dispatchWhatsAppCampaign, getWhatsAppTemplates, getWhatsAppConfig } from "./whatsapp-dispatch.ts";
 import { templateManagement, processTemplateWebhook } from "./whatsapp-template-manager.ts";
+import { resolveIncomingWhatsAppRecipient } from "./whatsapp-incoming.ts";
 import { validWhatsAppWebhookAccount, whatsappRoleAllowed, metaFunctionalError } from "./whatsapp-policy.ts";
 import { getWhatsAppConversation, sendWhatsAppReply } from "./whatsapp-conversation.ts";
 import { getMessageRecipients } from "./message-recipients.ts";
@@ -2292,7 +2293,12 @@ async function handleWhatsAppWebhookEvent(context: RouteContext, validation: Api
     return json({ success: true, event_type: eventType, meta_message_id: metaMessageId });
   }
 
-  await context.supabase.from("whatsapp_webhook_events").insert({
+  if (!sender || !message || !metaMessageId) {
+    return json({ error: "Missing sender, message content or Meta ID" }, 400);
+  }
+  const eventKey = await whatsappDispatchId("incoming-event", metaMessageId);
+  const { error: eventError } = await context.supabase.from("whatsapp_webhook_events").insert({
+    event_key: eventKey,
     event_type: eventType,
     meta_message_id: metaMessageId || null,
     phone_number: sender || null,
@@ -2300,107 +2306,39 @@ async function handleWhatsAppWebhookEvent(context: RouteContext, validation: Api
     processed: false,
   });
 
-  if (!sender || !message) {
-    return json({ error: "Missing sender or message content" }, 400);
-  }
+  if (eventError && eventError.code !== "23505") return json({ error: "Could not record incoming event" }, 500);
 
   if (metaMessageId) {
     const { data: existing, error } = await context.supabase.from("whatsapp_messages").select("id")
       .eq("meta_message_id", metaMessageId).limit(1).maybeSingle();
     if (error) return json({ error: "Could not verify incoming message" }, 500);
-    if (existing) return json({ success: true, duplicate: true });
+    if (existing) {
+      await context.supabase.from("whatsapp_webhook_events").update({ processed: true }).eq("event_key", eventKey);
+      return json({ success: true, duplicate: true });
+    }
   }
 
   const normalizedSender = normalizeWhatsAppPhone(sender);
   const cleanSender = normalizedSender.replace(/\D/g, "");
 
-  const { data: companies, error: compError } = await context.supabase
-    .from("companies")
-    .select("id, name, whatsapp, whatsapp_number, phone");
-
-  if (compError) return json({ error: compError.message }, 500);
-
-  let matchedCompanyId = "";
-
-  for (const c of companies || []) {
-    const cWhatsapp = whatsappPhone(c.whatsapp);
-    const cWhatsappNumber = whatsappPhone(c.whatsapp_number);
-    const cPhone = whatsappPhone(c.phone);
-    if (
-      [cWhatsapp, cWhatsappNumber, cPhone].some(phone => phone && phone === cleanSender)
-    ) {
-      matchedCompanyId = c.id;
-      break;
-    }
-  }
-
-  if (!matchedCompanyId) {
-    const { data: contacts, error: contError } = await context.supabase
-      .from("contacts")
-      .select("id, company_id, phone, whatsapp");
-    
-    if (!contError && contacts) {
-      for (const ct of contacts) {
-        const ctWhatsapp = whatsappPhone(ct.whatsapp);
-        const ctPhone = whatsappPhone(ct.phone);
-        if (
-          [ctWhatsapp, ctPhone].some(phone => phone && phone === cleanSender)
-        ) {
-          matchedCompanyId = ct.company_id;
-          break;
-        }
-      }
-    }
-  }
-
-  if (!matchedCompanyId) {
-    const newCompanyName = `Contacto WhatsApp (${sender})`;
-    const { data: newCompany, error: createError } = await context.supabase
-      .from("companies")
-      .insert({
-        name: newCompanyName,
-        whatsapp: normalizedSender || sender,
-        whatsapp_number: normalizedSender || null,
-        phone: normalizedSender || sender,
-        status: "prospecto",
-        source: "whatsapp_webhook",
-        description: "Creado automáticamente mediante webhook de WhatsApp al recibir un mensaje."
-      })
-      .select("id")
-      .single();
-
-    if (createError) {
-      return json({ error: `Could not match nor create company: ${createError.message}` }, 500);
-    }
-    matchedCompanyId = newCompany.id;
-  }
-
-  const { data: lastOutbound } = await context.supabase
+  const recipient = await resolveIncomingWhatsAppRecipient(context.supabase, cleanSender, contactName);
+  const matchedCompanyId = recipient.companyId;
+  const { data: lastOutbound } = matchedCompanyId ? await context.supabase
     .from("whatsapp_messages")
     .select("id, whatsapp_campaign_id, recipient_id")
     .eq("company_id", matchedCompanyId)
+    .in("phone_number", [cleanSender, `+${cleanSender}`])
     .eq("direction", "outbound")
     .order("created_at", { ascending: false })
     .limit(1)
-    .maybeSingle();
+    .maybeSingle() : { data: null };
 
-  let alreadyStoredMessage = false;
-  if (metaMessageId) {
-    const { data: existingMessage } = await context.supabase
-      .from("whatsapp_messages")
-      .select("id")
-      .eq("meta_message_id", metaMessageId)
-      .maybeSingle();
-    alreadyStoredMessage = Boolean(existingMessage?.id);
-  }
-
-  if (alreadyStoredMessage) return json({ success: true, duplicate: true });
-
-  if (!alreadyStoredMessage) {
+  {
     const originalTime = Number(metaMessage(rawPayload, metaMessageId)?.message.timestamp) * 1000;
     const { error: storeError } = await context.supabase.from("whatsapp_messages").insert({
       ...(metaMessageId ? { id: await whatsappDispatchId("inbound", metaMessageId) } : {}),
       company_id: matchedCompanyId,
+      contact_id: recipient.contactId,
       whatsapp_campaign_id: lastOutbound?.whatsapp_campaign_id ?? null,
       recipient_id: lastOutbound?.recipient_id ?? null,
       direction: "inbound",
@@ -2412,14 +2350,17 @@ async function handleWhatsAppWebhookEvent(context: RouteContext, validation: Api
       ...(Number.isFinite(originalTime) && originalTime > 0 && originalTime <= Date.now() ? { occurred_at: new Date(originalTime).toISOString() } : {}),
       raw_payload: rawPayload,
     });
-    if (storeError?.code === "23505") return json({ success: true, duplicate: true });
+    if (storeError?.code === "23505") {
+      await context.supabase.from("whatsapp_webhook_events").update({ processed: true }).eq("event_key", eventKey);
+      return json({ success: true, duplicate: true });
+    }
     if (storeError) return json({ error: "Could not store incoming message" }, 500);
   }
 
-  const { data: interaction } = await context.supabase.from("interactions").insert({
+  const { data: interaction } = matchedCompanyId ? await context.supabase.from("interactions").insert({
     company_id: matchedCompanyId, type: "whatsapp", description: contactName ? `${contactName}: ${message}` : message,
     result: "Mensaje entrante del cliente", next_action: "Responder mensaje",
-  }).select("id").single();
+  }).select("id").single() : { data: null };
 
   if (lastOutbound?.recipient_id) {
     await context.supabase
@@ -2428,45 +2369,21 @@ async function handleWhatsAppWebhookEvent(context: RouteContext, validation: Api
       .eq("id", lastOutbound.recipient_id);
   }
 
-  const contactPhone = normalizedSender || sender;
-  const { data: existingContact } = await context.supabase
-    .from("contacts")
-    .select("id")
-    .eq("company_id", matchedCompanyId)
-    .eq("whatsapp", contactPhone)
-    .maybeSingle();
-
-  if (existingContact?.id) {
-    await context.supabase
-      .from("contacts")
-      .update({ phone: contactPhone, notes: "Detectado por respuesta entrante de WhatsApp Meta." })
-      .eq("id", existingContact.id);
-  } else {
-    await context.supabase.from("contacts").insert({
-      company_id: matchedCompanyId,
-      full_name: contactName || "Contacto WhatsApp",
-      phone: contactPhone,
-      whatsapp: contactPhone,
-      is_primary: false,
-      notes: "Detectado por respuesta entrante de WhatsApp Meta.",
-    });
-  }
-
   if (metaMessageId) {
     await context.supabase
       .from("whatsapp_webhook_events")
-      .update({ processed: true, company_id: matchedCompanyId })
-      .eq("meta_message_id", metaMessageId);
+      .update({ processed: true, company_id: matchedCompanyId, processing_error: recipient.ambiguous ? "El número coincide con más de una empresa; conversación sin vincular." : null })
+      .eq("event_key", eventKey);
   }
 
-  await context.supabase
+  if (matchedCompanyId) await context.supabase
     .from("companies")
     .update({
       last_whatsapp_message_at: new Date().toISOString(),
     })
     .eq("id", matchedCompanyId);
 
-  await logAgentAction(context.supabase, validation, "interactions", interaction?.id || matchedCompanyId, "webhook_received_whatsapp", {
+  await logAgentAction(context.supabase, validation, "interactions", interaction?.id || matchedCompanyId || eventKey, "webhook_received_whatsapp", {
     sender: normalizedSender || sender,
     metaMessageId,
   });
