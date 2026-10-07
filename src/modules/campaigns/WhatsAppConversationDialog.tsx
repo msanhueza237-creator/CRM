@@ -6,6 +6,7 @@ import { notifyInboxChanged, setWhatsAppRead } from "../../lib/whatsappInboxApi"
 import { MessageAttachments } from "./MessageAttachments";
 import { useAuth } from "../auth/AuthContext";
 import { WhatsAppConsent } from "../messages/WhatsAppConsent";
+import { whatsAppContactBlocked } from "../../lib/whatsappConsent";
 import "./whatsapp-conversation.css";
 
 const statusLabels: Record<string, string> = { received: "Recibido", sent: "Aceptado por Meta", delivered: "Entregado", read: "Leido", failed: "No enviado", pending: "Pendiente de confirmar" };
@@ -111,6 +112,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
 
   const open = Boolean(data?.canReply && data.expiresAt && Date.parse(data.expiresAt) > now);
   const windowOpen = Boolean(data?.expiresAt && Date.parse(data.expiresAt)>now);
+  const contactBlocked = whatsAppContactBlocked(data?.consent);
   const minutes = data?.expiresAt ? Math.max(0, Math.floor((Date.parse(data.expiresAt)-now)/60000)) : 0;
   return <dialog ref={dialog} className="wa-conversation" aria-labelledby="wa-title" onCancel={event => { event.preventDefault(); if (!busy.current) onClose(); }}>
     <header><div><h2 id="wa-title"><MessageCircle size={20} /> {data?.name || "Conversacion WhatsApp"}</h2>{data && <p>+{data.phone}</p>}</div>
@@ -119,6 +121,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
       <button type="button" className="ghost-button" aria-label="Actualizar conversacion" title="Actualizar conversacion" disabled={loading || sending} onClick={() => void load()}><RefreshCw size={18} /></button></div>
     {error && <p className="wa-alert" role="alert">{error}</p>}
     {readError && <p className="wa-alert" role="status">{readError}</p>}
+    {contactBlocked && <p className="wa-alert" role="status"><strong>No contactable por WhatsApp</strong>{data?.consent?.status === "opt_out" ? ". Baja registrada. No se permiten mensajes ni plantillas." : ". Los envíos están bloqueados."}</p>}
     <div ref={history} className="wa-history" role="log" aria-label="Historial WhatsApp" aria-busy={loading}>
       {data?.nextOffset !== null && data?.nextOffset !== undefined && <button className="ghost-button" disabled={loading || sending} onClick={() => void load(true)}>Mensajes anteriores</button>}
       {!data && loading && <p>Cargando mensajes...</p>}
@@ -128,7 +131,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
       </article>)}
     </div>
     <footer>
-      {!windowOpen && mode!=="template" && <button className="ghost-button" disabled={sending||uncertain} onClick={()=>setMode("template")}>Seleccionar plantilla</button>}
+      {!windowOpen && !contactBlocked && mode!=="template" && <button className="ghost-button" disabled={sending||uncertain} onClick={()=>setMode("template")}>Seleccionar plantilla</button>}
       <div className="direct-channels" role="group" aria-label="Tipo de mensaje WhatsApp"><button type="button" aria-pressed={mode === "reply"} disabled={sending || uncertain} onClick={() => setMode("reply")}>Mensaje</button><button type="button" aria-pressed={mode === "template"} disabled={sending || uncertain} onClick={() => setMode("template")}>Plantilla aprobada</button></div>
       {(mode === "template" ? data?.templateReasons : data?.reasons)?.map(reason => <p className="wa-alert" key={reason}>{reason}</p>)}
       {notice && <p className="wa-alert" role="status">{notice}</p>}

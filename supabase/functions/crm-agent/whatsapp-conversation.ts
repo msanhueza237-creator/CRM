@@ -36,9 +36,12 @@ async function conversationContext(db: SupabaseClient, env: Env, companyId: stri
     if(result.error) throw new Error("No se pudo verificar el consentimiento del contacto.");
     consent = result.data;
   }
+  // A newly linked contact must not bypass a withdrawal recorded for this number.
+  const companyConsentPhone = whatsappPhone(company.whatsapp_opt_in_phone || company.whatsapp_number || company.whatsapp || company.phone);
+  if (company.whatsapp_status === "opt_out" && companyConsentPhone === actualPhone) consent = company;
+  const optedOut = consent.whatsapp_status === "opt_out" || Boolean(incoming && /^(salir|stop|baja|no m[aá]s mensajes)$/i.test(storedWhatsAppBody(incoming).trim()));
   const blockers = [...config.blockers];
-  if (["opt_out", "bloqueado", "invalido", "no_contactar"].includes(consent.whatsapp_status) ||
-    (incoming && /^(salir|stop|baja|no mas mensajes)$/i.test(storedWhatsAppBody(incoming).trim()))) blockers.push("Contacto marcado para no recibir mensajes.");
+  if (optedOut || ["bloqueado", "invalido", "no_contactar"].includes(consent.whatsapp_status)) blockers.push("No contactable por WhatsApp. El contacto tiene los envíos bloqueados.");
   const { data: pending, error: pendingError } = await db.from("whatsapp_messages").select("id")
     .eq("company_id", companyId).in("phone_number", [actualPhone, `+${actualPhone}`]).eq("direction", "outbound").eq("status", "pending").limit(2);
   if (pendingError) throw new Error("No se pudo verificar si hay envios pendientes.");
@@ -47,7 +50,7 @@ async function conversationContext(db: SupabaseClient, env: Env, companyId: stri
   try { validateWhatsAppRecipient(consent, actualPhone); } catch { templateReasons.push("Este número no tiene consentimiento vigente y trazable para iniciar mensajes con plantilla."); }
   const reasons = [...blockers];
   if (!window.open) reasons.push(CLOSED_WINDOW_MESSAGE);
-  return { config, company, consent, phone: actualPhone, incoming, window, reasons, templateReasons, name: target?.recipient.name || company.contact_name || company.name };
+  return { config, company, consent, optedOut, phone: actualPhone, incoming, window, reasons, templateReasons, name: target?.recipient.name || company.contact_name || company.name };
 }
 
 export async function getWhatsAppConversation(db: SupabaseClient, env: Env, companyId: string, phone = "", offset = 0, contactId = "") {
@@ -70,7 +73,8 @@ export async function getWhatsAppConversation(db: SupabaseClient, env: Env, comp
   if (error) throw new Error("No se pudo recuperar el historial WhatsApp.");
   return { companyId, name: context.name, phone: context.phone, canReply: context.reasons.length === 0,
     policy: context.window, variableContext: { nombre_cliente: context.name, empresa: context.company.name },
-    consent: { allowed: context.consent.whatsapp_opt_in === true, date: context.consent.whatsapp_opt_in_date || null, source: context.consent.whatsapp_opt_in_source || null },
+    consent: { allowed: !context.optedOut && context.consent.whatsapp_opt_in === true, status: context.optedOut ? "opt_out" : context.consent.whatsapp_status || null,
+      date: context.consent.whatsapp_opt_in_date || null, source: context.consent.whatsapp_opt_in_source || null },
     lastInboundAt: context.incoming?.occurred_at || null, lastOutboundAt: (data || []).find((m:Row)=>m.direction==="outbound")?.occurred_at || null,
     canTemplate: context.templateReasons.length === 0, templateReasons: context.templateReasons,
     reasons: context.reasons, expiresAt: context.window.expiresAt, nextOffset: data?.length === 50 ? offset + 50 : null,

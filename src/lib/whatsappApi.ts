@@ -1,4 +1,5 @@
 import { getSupabaseFunctionUrl, isSupabaseConfigured, supabase } from "./supabase";
+import type { WhatsAppConsentState } from "./whatsappConsent";
 export interface MetaTemplate {
   id: string; name: string; language: string; status: string; category: string;
   body: string; header: string; footer: string; variables: string[];
@@ -42,7 +43,7 @@ export interface WhatsAppConversation {
   companyId: string; name: string; phone: string; canReply: boolean; reasons: string[]; expiresAt: string | null;
   canTemplate: boolean; templateReasons: string[];
   variableContext?: Record<string,string>;
-  consent?: {allowed:boolean;date:string|null;source:string|null};
+  consent?: WhatsAppConsentState;
   lastInboundAt?:string|null;lastOutboundAt?:string|null;
   nextOffset: number | null;
   messages: Array<{ id: string; direction: string; body: string; type: string; status: string; occurredAt: string }>;

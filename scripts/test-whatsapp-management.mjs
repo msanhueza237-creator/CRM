@@ -113,7 +113,12 @@ test('exact migration: eight drafts, seller RPCs, consent audit, persistent opt-
     await db.query("insert into whatsapp_messages(company_id,phone_number,direction,body,meta_message_id) values($1,'56912345678','inbound','SALIR','in-1')",[id(10)]);
     await db.query("insert into whatsapp_messages(company_id,phone_number,direction,body,meta_message_id) values($1,'56912345678','inbound','Hola','in-2')",[id(10)]);
     assert.equal((await db.query('select whatsapp_opt_in from companies')).rows[0].whatsapp_opt_in,false);
+    assert.equal((await db.query('select whatsapp_status from companies')).rows[0].whatsapp_status,'opt_out');
+    assert.equal((await db.query("select count(*)::int n from activity_logs where action='customer_opt_out'")).rows[0].n,1);
     assert.equal((await db.query('select whatsapp_opt_in from contacts')).rows[0].whatsapp_opt_in,true);
+    await db.query("insert into whatsapp_messages(company_id,phone_number,direction,body,meta_message_id) values($1,'+56911111111','inbound',' salir ','in-contact-stop')",[id(10)]);
+    const withdrawn=(await db.query('select whatsapp_status,whatsapp_opt_in,whatsapp_opt_in_source from contacts')).rows[0];
+    assert.deepEqual(withdrawn,{whatsapp_status:'opt_out',whatsapp_opt_in:false,whatsapp_opt_in_source:'CLIENTE'});
     await db.query("insert into whatsapp_messages(company_id,phone_number,direction,body,meta_message_id,status,raw_payload) values($1,'56912345678','outbound','Ejemplo','out-1','sent','{\"request_id\":\"preserved\"}')",[id(10)]);
     for(const status of ['read','delivered','sent','failed'])await db.query('select crm_whatsapp_message_status($1,$2)', ['out-1',{entry:[{changes:[{value:{statuses:[{id:'out-1',status,timestamp:'1791340000',pricing:{category:'utility'}}]}}]}]}]);
     const saved=(await db.query("select status,raw_payload from whatsapp_messages where meta_message_id='out-1'")).rows[0];assert.equal(saved.status,'read');assert.equal(saved.raw_payload.request_id,'preserved');

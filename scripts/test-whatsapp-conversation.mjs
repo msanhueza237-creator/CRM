@@ -6,6 +6,7 @@ import {whatsappMessageBody,storedWhatsAppBody,replyWindow,splitWhatsAppEvents} 
 import {getWhatsAppConversation,sendWhatsAppReply} from '../supabase/functions/crm-agent/whatsapp-conversation.ts';
 import {getWhatsAppConfig} from '../supabase/functions/crm-agent/whatsapp-dispatch.ts';
 import {validWhatsAppWebhookAccount} from '../supabase/functions/crm-agent/whatsapp-policy.ts';
+import {whatsAppConsentLabel,whatsAppContactBlocked} from '../src/lib/whatsappConsent.ts';
 const companyId='00000000-0000-4000-8000-000000000001', phone='56912345678';
 const envelope=(message,extra={})=>({object:'whatsapp_business_account',entry:[{id:'b1',changes:[{field:'messages',value:{metadata:{phone_number_id:'p1'},messages:[message],...extra}}]}]});
 const inbound=(extra={})=>({id:'in1',company_id:companyId,direction:'inbound',phone_number:'+'+phone,meta_message_id:'wamid.in1',message_type:'text',status:'received',occurred_at:new Date().toISOString(),body:'Hola',raw_payload:envelope({id:'wamid.in1',from:phone,type:'text',text:{body:'Hola'},timestamp:String(Math.floor(Date.now()/1000)-60)}),...extra});
@@ -17,7 +18,7 @@ function dbFixture(extra={}) {
  return {tables,from(name){let filters=[],order=[],start=0,end=Infinity,op='select',value;const q={
   select(){return q},eq(k,v){filters.push(r=>r[k]===v);return q},in(k,v){filters.push(r=>v.includes(r[k]));return q},
   order(k,o){order.push([k,o.ascending]);return q},limit(n){end=n;return q},range(a,b){start=a;end=b+1;return q},
-  insert(v){op='insert';value=v;return q},update(v){op='update';value=v;return q},maybeSingle(){return q.then(r=>({...r,data:r.data?.[0]||null}))},
+  insert(v){op='insert';value=v;return q},update(v){op='update';value=v;return q},single(){return q.maybeSingle()},maybeSingle(){return q.then(r=>({...r,data:r.data?.[0]||null}))},
   then(resolve,reject){return Promise.resolve().then(()=>{
    if(op==='insert'){if(tables[name].some(r=>r.id===value.id))return {error:{code:'23505'},data:null};tables[name].push({...value,occurred_at:new Date().toISOString()});return {error:null,data:null}}
    let rows=tables[name].filter(r=>filters.every(f=>f(r)));if(op==='update')rows.forEach(r=>Object.assign(r,value));
@@ -58,6 +59,40 @@ test('history exposes older pages without truncation presented as complete',asyn
  const db=dbFixture({whatsapp_messages:Array.from({length:55},(_,i)=>inbound({id:`in${i}`,occurred_at:new Date(Date.now()-i*1000).toISOString()}))});
  const first=await getWhatsAppConversation(db,env,companyId,phone);assert.equal(first.messages.length,50);assert.equal(first.nextOffset,50);
  const next=await getWhatsAppConversation(db,env,companyId,phone,50);assert.equal(next.messages.length,5);assert.equal(next.nextOffset,null);
+});
+
+test('withdrawal stays visible and blocks replies and templates after a later incoming hello',async()=>{
+ const at='2026-10-07T10:00:00Z';
+ const company={id:companyId,name:'Cliente prueba',whatsapp_status:'opt_out',whatsapp_opt_in:false,whatsapp_opt_in_date:at,whatsapp_opt_in_source:'CLIENTE',whatsapp_opt_in_phone:phone};
+ const db=dbFixture({companies:[company]});
+ const data=await getWhatsAppConversation(db,env,companyId,phone);
+ assert.equal(data.canReply,false);assert.equal(data.canTemplate,false);
+ assert.deepEqual(data.consent,{allowed:false,status:'opt_out',date:at,source:'CLIENTE'});
+ assert.equal(whatsAppConsentLabel(data.consent),'No contactable por WhatsApp');
+ for(const mode of ['reply','template'])await assert.rejects(sendWhatsAppReply(db,env,{...request(),mode},'user',()=>{throw Error('No provider request allowed')}),/No contactable/);
+ assert.equal(db.tables.whatsapp_messages.length,1);
+});
+
+test('new contact for opted-out company number cannot bypass withdrawal; other numbers stay independent',async()=>{
+ const contactId='00000000-0000-4000-8000-000000000002';
+ const company={id:companyId,name:'Cliente',phone,whatsapp_status:'opt_out',whatsapp_opt_in:false,whatsapp_opt_in_phone:phone,whatsapp_opt_in_date:'2026-10-07T10:00:00Z',whatsapp_opt_in_source:'CLIENTE'};
+ const contact={id:contactId,company_id:companyId,full_name:'Contacto nuevo',phone,whatsapp_opt_in:false};
+ const db=dbFixture({companies:[company],contacts:[contact]});
+ const data=await getWhatsAppConversation(db,env,companyId,phone,0,contactId);
+ assert.equal(data.consent.status,'opt_out');assert.equal(data.canReply,false);assert.equal(data.canTemplate,false);
+ const other='56922222222';db.tables.contacts[0].phone=other;
+ const incoming=inbound({phone_number:other});incoming.raw_payload.entry[0].changes[0].value.messages[0].from=other;db.tables.whatsapp_messages=[incoming];
+ const separate=await getWhatsAppConversation(db,env,companyId,other,0,contactId);
+ assert.equal(separate.canReply,true);assert.equal(separate.consent.status,null);
+});
+
+test('pending evidence is distinct from withdrawal, invalid or blocked number',()=>{
+ assert.equal(whatsAppConsentLabel(undefined),'Pendiente de acreditar');
+ assert.equal(whatsAppContactBlocked({allowed:false,date:null,source:null}),false);
+ for(const status of ['opt_out','no_contactar','bloqueado','invalido']){
+  const consent={allowed:false,status,date:null,source:null};assert.equal(whatsAppContactBlocked(consent),true);assert.equal(whatsAppConsentLabel(consent),'No contactable por WhatsApp');
+ }
+ assert.equal(whatsAppConsentLabel({allowed:true,status:'opt_in',date:'2026-10-07',source:'CLIENTE'}),'Consentimiento registrado');
 });
 test('manual reply sends exact text only after confirmation and keeps marketing opt-in unchanged',async()=>{
  const db=dbFixture(),p=request(),calls=[];
