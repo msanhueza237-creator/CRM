@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { whatsappDispatchId } from "./whatsapp-meta.ts";
 
 export type DeliveryRow = {
   id: string; meta_message_id: string | null; phone_number: string; status: string;
@@ -37,14 +38,20 @@ export async function getWhatsAppDelivery(db: SupabaseClient, campaignId: string
   const {data: campaign, error} = await db.from("campaigns").select("id").eq("id",campaignId).maybeSingle();
   if (error || !campaign) throw new Error("No se pudo consultar la campaña.");
   const rows: DeliveryRow[] = [];
-  for (let offset=0; ; offset+=500) {
-    const {data,error: readError} = await db.from("whatsapp_messages")
-      .select("id,meta_message_id,phone_number,status,template_name,template_language,template_meta_id,sent_at,delivered_at,read_at,failed_at")
-      .eq("direction","outbound").eq("message_type","template").contains("raw_payload",{campaign_id:campaignId})
-      .order("id").range(offset,offset+499);
-    if(readError) throw new Error("No se pudieron consultar las confirmaciones de Meta.");
-    rows.push(...(data || []));
-    if(!data || data.length<500) break;
+  for (const legacy of [false, true]) {
+    for (let offset=0; ; offset+=500) {
+      let query = db.from("whatsapp_messages")
+        .select("id,meta_message_id,phone_number,status,template_name,template_language,template_meta_id,sent_at,delivered_at,read_at,failed_at")
+        .eq("direction","outbound").eq("message_type","template");
+      query = legacy ? query.is("raw_payload->>campaign_id",null) : query.contains("raw_payload",{campaign_id:campaignId});
+      const {data,error: readError} = await query.order("id").range(offset,offset+499);
+      if(readError) throw new Error("No se pudieron consultar las confirmaciones de Meta.");
+      for (const row of data || []) {
+        // Older webhooks replaced raw_payload. Only the original dispatch ID proves campaign membership.
+        if (!legacy || row.id === await whatsappDispatchId(campaignId, row.phone_number)) rows.push(row);
+      }
+      if(!data || data.length<500) break;
+    }
   }
   return {...summarizeWhatsAppDelivery(rows), checkedAt:new Date().toISOString()};
 }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { PGlite } from '@electric-sql/pglite';
 import { summarizeWhatsAppDelivery, getWhatsAppDelivery } from '../supabase/functions/crm-agent/whatsapp-delivery.ts';
+import { whatsappDispatchId } from '../supabase/functions/crm-agent/whatsapp-meta.ts';
 import { splitWhatsAppEvents } from '../supabase/functions/_shared/whatsapp-content.ts';
 
 const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
@@ -98,4 +99,33 @@ test('campaign reader rejects invalid identity and partial/failed reads',async()
   await assert.rejects(getWhatsAppDelivery({},'invalid'));
   const db={from:()=>({select(){return this},eq(){return this},maybeSingle:async()=>({data:{id:id(1)}}),contains(){return this},order(){return this},range:async()=>({error:{message:'db failure'}})})};
   await assert.rejects(getWhatsAppDelivery(db,id(1)),/confirmaciones/);
+});
+
+test('legacy campaign membership requires the exact dispatch ID, including later pages',async()=>{
+  const campaignId=id(1), phone='56912345678';
+  const base={meta_message_id:'legacy',phone_number:phone,status:'read',template_name:'offer',template_language:null,template_meta_id:null,sent_at:null,delivered_at:null,read_at:'2026-10-07T10:00:00Z',failed_at:null};
+  const legacyRows=Array.from({length:500},(_,n)=>({...base,id:id(n+100),meta_message_id:`unrelated-${n}`}));
+  legacyRows.push({...base,id:await whatsappDispatchId(campaignId,phone)});
+  legacyRows.push({...base,id:await whatsappDispatchId(id(2),phone),meta_message_id:'other-campaign'});
+  const modernRows=[{...base,id:id(3),meta_message_id:'modern',template_language:'es_CL'}];
+  const reads=[];
+  let failLegacy=false;
+  const db={from(table){
+    let legacy=false;
+    return {
+      select(){return this},
+      eq(column,value){if(table==='whatsapp_messages')assert.ok((column==='direction' && value==='outbound') || (column==='message_type' && value==='template'));return this},
+      maybeSingle:async()=>({data:{id:campaignId}}),
+      contains(column,value){assert.equal(column,'raw_payload');assert.deepEqual(value,{campaign_id:campaignId});return this},
+      is(column,value){assert.equal(column,'raw_payload->>campaign_id');assert.equal(value,null);legacy=true;return this},
+      order(){return this},
+      async range(from,to){reads.push({legacy,from,to});return legacy && failLegacy ? {error:{message:'failed'}} : {data:(legacy ? legacyRows : modernRows).slice(from,to+1)}}
+    };
+  }};
+  const result=await getWhatsAppDelivery(db,campaignId);
+  assert.equal(result.accepted,2);assert.equal(result.read,2);assert.equal(result.readRecipients,1);
+  assert.equal(result.templates.find(t=>t.language==='Sin idioma').read,1);
+  assert.deepEqual(reads,[{legacy:false,from:0,to:499},{legacy:true,from:0,to:499},{legacy:true,from:500,to:999}]);
+  failLegacy=true;
+  await assert.rejects(getWhatsAppDelivery(db,campaignId),/confirmaciones/);
 });
