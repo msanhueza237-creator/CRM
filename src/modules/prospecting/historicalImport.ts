@@ -1,8 +1,8 @@
 import { isSupabaseConfigured, supabase } from "../../lib/supabase";
 import type { HistoricalImportBatch, HistoricalImportPreview } from "../../types/crm";
+import { requestHistoricalPreview } from "./historicalImportTransport";
 
 const BATCH_STORAGE_KEY = "climactiva_historical_batches_v1";
-const AGENT_URL = (import.meta.env.VITE_AGENT_LOCAL_URL as string | undefined) ?? "http://localhost:8000";
 
 function readLocal<T>(key: string, fallback: T): T {
   try {
@@ -13,18 +13,14 @@ function readLocal<T>(key: string, fallback: T): T {
 }
 
 export async function previewHistoricalFile(file: File, relationshipDate: string): Promise<HistoricalImportPreview> {
-  const body = new FormData();
-  body.append("file", file);
-  const query = relationshipDate ? `?relationship_date=${encodeURIComponent(relationshipDate)}` : "";
-  let response: Response;
-  try {
-    response = await fetch(`${AGENT_URL}/api/historical-imports/preview${query}`, { method: "POST", body });
-  } catch {
-    throw new Error("No fue posible conectar con el agente local. Inícialo para analizar CSV o Excel.");
+  if (!isSupabaseConfigured || !supabase) {
+    throw new Error("Inicia sesión en el CRM conectado para importar archivos históricos.");
   }
-  const payload = (await response.json().catch(() => ({}))) as HistoricalImportPreview & { detail?: string };
-  if (!response.ok) throw new Error(payload.detail ?? "El agente no pudo analizar el archivo.");
-  return payload;
+  const { data, error } = await supabase.auth.getSession();
+  if (error || !data.session) throw new Error("La sesión expiró. Vuelve a iniciar sesión.");
+  return requestHistoricalPreview({ file, relationshipDate,
+    serviceUrl: import.meta.env.VITE_HISTORICAL_IMPORT_URL as string | undefined,
+    accessToken: data.session.access_token });
 }
 
 export async function listHistoricalBatches(): Promise<HistoricalImportBatch[]> {
