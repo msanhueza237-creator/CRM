@@ -32,6 +32,7 @@
     "supabase/functions/_shared/market-study-contract.ts",
     "supabase/functions/_shared/market-native-contract.ts",
     "supabase/functions/_shared/market-product-search.ts",
-    "supabase/functions/_shared/whatsapp-content.ts"
+    "supabase/functions/_shared/whatsapp-content.ts",
+    "supabase/functions/_shared/direct-message.ts"
   ]
 }

@@ -1,17 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle, RefreshCw, Send, X } from "lucide-react";
-import { getWhatsAppConversation, sendWhatsAppReply, type WhatsAppConversation } from "../../lib/whatsappApi";
+import { getWhatsAppConversation, getWhatsAppTemplates, type MetaTemplate, type WhatsAppConversation } from "../../lib/whatsappApi";
+import { sendDirectMessage } from "../../lib/directMessageApi";
+import { MessageAttachments } from "./MessageAttachments";
 import "./whatsapp-conversation.css";
 
 const statusLabels: Record<string, string> = { received: "Recibido", sent: "Aceptado por Meta", delivered: "Entregado", read: "Leido", failed: "No enviado", pending: "Pendiente de confirmar" };
 
-export function WhatsAppConversationDialog({ companyId, phone, onClose }: { companyId: string; phone?: string; onClose: () => void }) {
+export function WhatsAppConversationDialog({ companyId, phone, contactId = "", onClose }: { companyId: string; phone?: string; contactId?: string; onClose: () => void }) {
   const [data, setData] = useState<WhatsAppConversation | null>(null);
   const [text, setText] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [files, setFiles] = useState<File[]>([]);
+  const [mode, setMode] = useState<"reply" | "template">("reply");
+  const [templates, setTemplates] = useState<MetaTemplate[]>([]);
+  const [templateId, setTemplateId] = useState("");
+  const [parameters, setParameters] = useState<string[]>([]);
+  const [templateError, setTemplateError] = useState("");
+  const [uncertain, setUncertain] = useState(false);
   const [now, setNow] = useState(Date.now());
   const dialog = useRef<HTMLDialogElement>(null);
   const busy = useRef(false);
@@ -26,14 +35,14 @@ export function WhatsAppConversationDialog({ companyId, phone, onClose }: { comp
     const serial = ++generation.current;
     if (!quiet) setLoading(true);
     try {
-      const result = await getWhatsAppConversation(companyId, phone, older ? data?.nextOffset || 0 : 0);
+      const result = await getWhatsAppConversation(companyId, phone, older ? data?.nextOffset || 0 : 0, contactId);
       if (!active.current || serial !== generation.current) return;
       olderLoaded.current = older;
       setData(previous => ({ ...result, messages: older ? [...result.messages, ...(previous?.messages || [])].filter((m, i, all) => all.findIndex(v => v.id === m.id) === i) : result.messages }));
       setError("");
       if (!older && !quiet) requestAnimationFrame(() => history.current?.scrollTo({ top: history.current.scrollHeight }));
     } catch (err) {
-      if (active.current && serial === generation.current) { setError(err instanceof Error ? err.message : "No se pudo leer la conversacion."); setData(previous => previous ? { ...previous, canReply: false } : null); }
+      if (active.current && serial === generation.current) { setError(err instanceof Error ? err.message : "No se pudo leer la conversacion."); setData(previous => previous ? { ...previous, canReply: false, canTemplate: false } : null); }
     } finally { if (active.current && serial === generation.current) setLoading(false); }
   }
 
@@ -41,18 +50,32 @@ export function WhatsAppConversationDialog({ companyId, phone, onClose }: { comp
     active.current = true; dialog.current?.showModal(); void load();
     const timer = window.setInterval(() => { setNow(Date.now()); if (!document.hidden && !busy.current) void load(false, true); }, 15000);
     return () => { active.current = false; window.clearInterval(timer); };
-  }, [companyId, phone]);
+  }, [companyId, phone, contactId]);
+
+  useEffect(() => {
+    if (mode !== "template") return;
+    let current = true; setTemplateError(""); setTemplates([]);
+    getWhatsAppTemplates().then(result => { if (current) {
+      if (!result.ready) setTemplateError(result.blockers.join(" "));
+      setTemplates(result.templates.filter(t => t.status === "APPROVED" && !t.blockedReason));
+    } }).catch(err => { if (current) setTemplateError(err.message); });
+    return () => { current = false; };
+  }, [mode]);
+  const template = templates.find(t => `${t.id}:${t.language}` === templateId);
+  const templateReady = Boolean(template && template.variables.every((_, i) => parameters[i]?.trim()) && data?.canTemplate && !templateError);
 
   async function send() {
-    if (!data || !text.trim() || busy.current || !data.canReply || !data.expiresAt || Date.parse(data.expiresAt) <= Date.now()) return;
+    if (!data || busy.current || uncertain || (mode === "template" ? !templateReady : (!text.trim() && !files.length) || !data.canReply || !data.expiresAt || Date.parse(data.expiresAt) <= Date.now() || text.length > (files.length ? 1024 : 4096))) return;
     busy.current = true; setSending(true); setNotice(""); setError("");
     requestId.current ||= crypto.randomUUID();
     try {
-      const result = await sendWhatsAppReply({ companyId, phone: data.phone, text: text.trim(), requestId: requestId.current, confirmSend: true });
+      const result = await sendDirectMessage("whatsapp", { companyId, contactId, phone: data.phone, text: text.trim(), mode,
+        templateId: template?.id, language: template?.language, parameters, requestId: requestId.current, confirmSend: true }, mode === "template" ? [] : files);
       setNotice(result.warning || "Mensaje aceptado por Meta.");
-      if (result.accepted) { setText(""); requestId.current = null; }
+      if (result.accepted) { setText(""); setFiles([]); requestId.current = null; }
       else if (result.outcome === "rejected") requestId.current = null;
-    } catch (err) { setNotice(err instanceof Error ? err.message : "No se pudo confirmar el envio. No lo repitas sin revisar el historial."); }
+      else setUncertain(true);
+    } catch (err) { setNotice(err instanceof Error ? err.message : "No se pudo confirmar el envio. No lo repitas sin revisar el historial."); setUncertain(true); }
     finally { busy.current = false; setSending(false); await load(); }
   }
 
@@ -71,11 +94,21 @@ export function WhatsAppConversationDialog({ companyId, phone, onClose }: { comp
         <p>{message.body}</p><small>{new Date(message.occurredAt).toLocaleString("es-CL")} · {statusLabels[message.status] || message.status}</small>
       </article>)}
     </div>
-    <footer>{data?.reasons.map(reason => <p className="wa-alert" key={reason}>{reason}</p>)}
+    <footer>
+      <div className="direct-channels" role="group" aria-label="Tipo de mensaje WhatsApp"><button type="button" aria-pressed={mode === "reply"} disabled={sending || uncertain} onClick={() => setMode("reply")}>Mensaje</button><button type="button" aria-pressed={mode === "template"} disabled={sending || uncertain} onClick={() => setMode("template")}>Plantilla aprobada</button></div>
+      {(mode === "template" ? data?.templateReasons : data?.reasons)?.map(reason => <p className="wa-alert" key={reason}>{reason}</p>)}
       {notice && <p className="wa-alert" role="status">{notice}</p>}
-      <form onSubmit={event => { event.preventDefault(); void send(); }}><label htmlFor="wa-reply">Respuesta</label>
-        <textarea id="wa-reply" rows={3} maxLength={4096} value={text} disabled={!open || sending || loading} onChange={event => setText(event.target.value)} />
-        <div className="wa-send"><span>{text.length}/4096</span><button className="primary-button" type="submit" disabled={!open || sending || loading || !text.trim()}><Send size={18} /> {sending ? "Enviando..." : "Enviar respuesta"}</button></div>
+      <form onSubmit={event => { event.preventDefault(); void send(); }}>
+        {mode === "template" ? <div className="wa-template">
+          <label>Plantilla<select value={templateId} disabled={sending || uncertain} onChange={event => { setTemplateId(event.target.value); setParameters([]); }}><option value="">Seleccionar plantilla aprobada</option>{templates.map(t => <option key={`${t.id}:${t.language}`} value={`${t.id}:${t.language}`}>{t.name} · {t.language}</option>)}</select></label>
+          {templateError && <p className="wa-alert" role="alert">{templateError}</p>}
+          {template?.variables.map((name, index) => <label key={name}>Variable {name}<input value={parameters[index] || ""} maxLength={1024} disabled={sending || uncertain} onChange={event => setParameters(previous => { const next = [...previous]; next[index] = event.target.value; return next; })} /></label>)}
+          {template && <div className="wa-template-preview"><strong>{template.header}</strong><p>{template.body.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (match, name) => parameters[template.variables.indexOf(name)] || match)}</p><small>{template.footer}</small><small>Meta puede cobrar este mensaje.</small></div>}
+        </div> : <><label htmlFor="wa-reply">Respuesta</label>
+          <textarea id="wa-reply" rows={3} maxLength={files.length ? 1024 : 4096} value={text} disabled={!open || sending || loading || uncertain} onChange={event => setText(event.target.value)} />
+          <MessageAttachments files={files} onChange={setFiles} disabled={!open || sending || loading || uncertain} maximum={1} />
+        </>}
+        <div className="wa-send"><span>{mode === "reply" ? `${text.length}/${files.length ? 1024 : 4096}` : "Consentimiento verificado al enviar"}</span><button className="primary-button" type="submit" disabled={sending || loading || uncertain || (mode === "template" ? !templateReady : !open || (!text.trim() && !files.length) || text.length > (files.length ? 1024 : 4096))}><Send size={18} /> {sending ? "Enviando..." : mode === "template" ? "Enviar plantilla" : "Enviar respuesta"}</button></div>
       </form>
     </footer>
   </dialog>;

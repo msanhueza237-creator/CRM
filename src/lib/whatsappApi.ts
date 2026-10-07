@@ -38,12 +38,13 @@ export function getWhatsAppTemplates() {
 
 export interface WhatsAppConversation {
   companyId: string; name: string; phone: string; canReply: boolean; reasons: string[]; expiresAt: string | null;
+  canTemplate: boolean; templateReasons: string[];
   nextOffset: number | null;
   messages: Array<{ id: string; direction: string; body: string; type: string; status: string; occurredAt: string }>;
 }
 
-export function getWhatsAppConversation(companyId: string, phone = "", offset = 0) {
-  const query = new URLSearchParams({ companyId, phone, offset: String(offset) });
+export function getWhatsAppConversation(companyId: string, phone = "", offset = 0, contactId = "") {
+  const query = new URLSearchParams({ companyId, phone, offset: String(offset), contactId });
   return whatsappRequest<WhatsAppConversation>(`meta-whatsapp-conversation?${query}`);
 }
 

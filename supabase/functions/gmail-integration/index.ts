@@ -1,5 +1,8 @@
 type SupabaseClient = ReturnType<typeof createSupabaseRestClient>;
 
+import { readMessageForm } from "../_shared/direct-message.ts";
+import { sendDirectEmail } from "./direct-email.ts";
+
 type AuthenticatedUser = {
   id: string;
   email: string;
@@ -240,6 +243,15 @@ Deno.serve(async (req) => {
     if (route === "disconnect" && req.method === "POST") return handleDisconnect(supabase, user, req);
     if ((route === "send-test" || route === "test-send") && req.method === "POST") return handleSendTest(req, supabase, user);
     if (route === "send-campaign" && req.method === "POST") return handleSendCampaign(req, supabase, user);
+    if (route === "send-direct" && req.method === "POST") {
+      const { payload, files } = await readMessageForm(req, "email");
+      return json(await sendDirectEmail(supabase, payload, files, user.id, async () => {
+        const integration = await prepareIntegrationForSend(supabase);
+        const accessToken = await refreshAccessToken(await decryptSecret(integration.refresh_token_encrypted || ""));
+        return { accessToken, sender: requiredEnv("GOOGLE_GMAIL_SENDER"), dailyLimit: integration.daily_limit,
+          recordSent: () => incrementSentToday(supabase, integration) };
+      }), 200, req);
+    }
     if (route === "sync-replies" && req.method === "POST") return handleSyncReplies(supabase, user, req);
     if (route === "sync-customs-references" && req.method === "POST") return handleSyncCustomsReferences(supabase, user, req);
 
@@ -1222,12 +1234,12 @@ async function requireAdmin(req: Request, supabase: SupabaseClient): Promise<Aut
 
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
-    .select("role")
+    .select("role,active")
     .eq("id", authData.user.id)
     .maybeSingle();
 
-  const role = String(profile?.role || authData.user.user_metadata?.role || "");
-  if (profileError || role !== "administrador") throw new HttpError("Solo administradores pueden usar Gmail.", 403);
+  const role = String(profile?.role || "");
+  if (profileError || role !== "administrador" || profile?.active !== true) throw new HttpError("Solo administradores activos pueden usar Gmail.", 403);
 
   return {
     id: authData.user.id,

@@ -9,6 +9,7 @@ import { useTemplateStore } from "../templates/TemplateStore";
 import { getGmailStatus, sendGmailCampaign, syncGmailReplies } from "../../lib/gmailApi";
 import { MetaCampaignDialog } from "./MetaCampaignDialog";
 import { WhatsAppConversationDialog } from "./WhatsAppConversationDialog";
+import { DirectMessageDialog } from "./DirectMessageDialog";
 import { storedWhatsAppBody } from "../../../supabase/functions/_shared/whatsapp-content";
 import { chileData, normalizeString } from "../../data/chileData";
 import type { Campaign, CampaignStatus, CampaignType, Company, CompanyType, MessageTemplate } from "../../types/crm";
@@ -495,6 +496,7 @@ function renderCampaignMessage(message: string, company: Company | undefined, ca
 }
 
 export function CampaignsPage() {
+  const [directMessage, setDirectMessage] = useState(false);
   const { user } = useAuth();
   const { companies } = useCompanyStore();
   const [searchParams] = useSearchParams();
@@ -2044,6 +2046,7 @@ export function CampaignsPage() {
           <p>Email y WhatsApp con confirmacion manual</p>
           <h1>Campanas</h1>
         </div>
+        {user?.role === "administrador" && <button type="button" className="ghost-button" onClick={() => setDirectMessage(true)}><MessageCircle size={18} /> Nuevo mensaje</button>}
         {!showSuggestions && (
           <button className="primary-button" type="button" onClick={() => setShowForm((current) => !current)}>
             <Plus size={18} />
@@ -2848,6 +2851,7 @@ export function CampaignsPage() {
       )}
 
       {whatsAppConversation && <WhatsAppConversationDialog key={`${whatsAppConversation.companyId}:${whatsAppConversation.phone}`} {...whatsAppConversation} onClose={() => setWhatsAppConversation(null)} />}
+      {directMessage && <DirectMessageDialog onClose={() => setDirectMessage(false)} />}
       {showMetaModal && selectedCampaign && <MetaCampaignDialog
         campaignId={selectedCampaign.id}
         companies={selectedCompanies}

@@ -7,6 +7,7 @@ import type { Interaction } from "../../types/crm";
 import { useAuth } from "../auth/AuthContext";
 import { CompanyInsights } from "./CompanyInsights";
 import { CompanyJourney } from "./CompanyJourney";
+import { DirectMessageDialog } from "../campaigns/DirectMessageDialog";
 
 const interactionTypes: Interaction["type"][] = ["Llamada", "Correo", "WhatsApp", "Reunion", "Cotizacion", "Nota"];
 const today = new Date().toISOString().slice(0, 10);
@@ -53,6 +54,7 @@ export function CompanyDetailPage() {
   const [savingInteraction, setSavingInteraction] = useState(false);
   const [historyRevision, setHistoryRevision] = useState(0);
   const [quoteFolio, setQuoteFolio] = useState("");
+  const [directChannel, setDirectChannel] = useState<"email" | "whatsapp" | null>(null);
 
   const company = companyId ? getCompany(companyId) : undefined;
 
@@ -71,7 +73,7 @@ export function CompanyDetailPage() {
     }
 
     void loadEmailMessages();
-  }, [companyId]);
+  }, [companyId, historyRevision]);
 
   if (!company) return <Navigate to="/empresas" replace />;
 
@@ -173,8 +175,10 @@ export function CompanyDetailPage() {
         </div>
         <div className="quick-actions">
           <a href={`tel:${company.phone}`} aria-label="Llamar"><Phone size={20} /></a>
-          <a href={`mailto:${company.email}`} aria-label="Email"><Mail size={20} /></a>
-          <a href={`https://wa.me/${company.whatsapp.replace(/\D/g, "")}`} aria-label="WhatsApp"><MessageCircle size={20} /></a>
+          {user?.role === "administrador" ? <>
+            <button type="button" className="ghost-button" title="Enviar correo desde el CRM" aria-label="Enviar correo desde el CRM" onClick={() => setDirectChannel("email")}><Mail size={20} /></button>
+            <button type="button" className="ghost-button" title="Conversacion WhatsApp en CRM" aria-label="Conversacion WhatsApp en CRM" onClick={() => setDirectChannel("whatsapp")}><MessageCircle size={20} /></button>
+          </> : <><a href={`mailto:${company.email}`} aria-label="Email"><Mail size={20} /></a><a href={`https://wa.me/${company.whatsapp.replace(/\D/g, "")}`} aria-label="WhatsApp"><MessageCircle size={20} /></a></>}
         </div>
       </div>
 
@@ -282,7 +286,8 @@ export function CompanyDetailPage() {
               <input value={interactionForm.nextAction} onChange={(event) => updateInteractionField("nextAction", event.target.value)} />
             </label>
 
-            {["WhatsApp", "Correo", "Cotizacion"].includes(interactionForm.type) && (
+            {["WhatsApp", "Correo", "Cotizacion"].includes(interactionForm.type) && user?.role === "administrador" && <div className="wide-field"><button type="button" className="ghost-button" onClick={() => setDirectChannel(interactionForm.type === "WhatsApp" ? "whatsapp" : "email")}><MessageCircle size={18} /> Nuevo mensaje con adjuntos</button></div>}
+            {["WhatsApp", "Correo", "Cotizacion"].includes(interactionForm.type) && user?.role !== "administrador" && (
               <div className="real-contact-panel">
                 <h3>Generar Contacto Real con Cliente</h3>
                 
@@ -427,6 +432,7 @@ export function CompanyDetailPage() {
         </div>
         <p className="muted">{company.notes}</p>
       </div>
+      {directChannel && <DirectMessageDialog companyId={company.id} initialChannel={directChannel} onClose={() => { setDirectChannel(null); setHistoryRevision(v => v + 1); }} />}
     </section>
   );
 }
