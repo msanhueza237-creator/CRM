@@ -14,10 +14,11 @@ const defaults={META_GRAPH_API_VERSION:'v26.0',META_WHATSAPP_ACCESS_TOKEN:'priva
 const env=(keys)=>keys.map(k=>defaults[k]).find(Boolean)||'';
 const request=()=>({companyId,phone,text:'Gracias por tu consulta',requestId:crypto.randomUUID(),confirmSend:true});
 function dbFixture(extra={}) {
- const tables={companies:[{id:companyId,name:'Cliente prueba',whatsapp_status:'sin_consentimiento'}],whatsapp_settings:[{active:true,phone_number_id:'p1',business_account_id:'b1'}],whatsapp_messages:[inbound()],...extra};
+ const tables={companies:[{id:companyId,name:'Cliente prueba',whatsapp_status:'sin_consentimiento'}],whatsapp_settings:[{active:true,phone_number_id:'p1',business_account_id:'b1'}],whatsapp_messages:[inbound()],content_products:[],...extra};
  return {tables,from(name){let filters=[],order=[],start=0,end=Infinity,op='select',value;const q={
   select(){return q},eq(k,v){filters.push(r=>r[k]===v);return q},in(k,v){filters.push(r=>v.includes(r[k]));return q},
-  order(k,o){order.push([k,o.ascending]);return q},limit(n){end=n;return q},range(a,b){start=a;end=b+1;return q},
+  contains(k,values){filters.push(r=>values.every(v=>r[k].some(item=>Object.entries(v).every(([key,value])=>item[key]===value))));return q},
+  order(k,o={ascending:true}){order.push([k,o.ascending]);return q},limit(n){end=n;return q},range(a,b){start=a;end=b+1;return q},
   insert(v){op='insert';value=v;return q},update(v){op='update';value=v;return q},single(){return q.maybeSingle()},maybeSingle(){return q.then(r=>({...r,data:r.data?.[0]||null}))},
   then(resolve,reject){return Promise.resolve().then(()=>{
    if(op==='insert'){if(tables[name].some(r=>r.id===value.id))return {error:{code:'23505'},data:null};tables[name].push({...value,occurred_at:new Date().toISOString()});return {error:null,data:null}}
@@ -59,6 +60,16 @@ test('history exposes older pages without truncation presented as complete',asyn
  const db=dbFixture({whatsapp_messages:Array.from({length:55},(_,i)=>inbound({id:`in${i}`,occurred_at:new Date(Date.now()-i*1000).toISOString()}))});
  const first=await getWhatsAppConversation(db,env,companyId,phone);assert.equal(first.messages.length,50);assert.equal(first.nextOffset,50);
  const next=await getWhatsAppConversation(db,env,companyId,phone,50);assert.equal(next.messages.length,5);assert.equal(next.nextOffset,null);
+});
+
+test('conversation exposes sanitized catalog detail through the existing authenticated history',async()=>{
+ const message={id:'wamid.in1',from:phone,timestamp:String(Math.floor(Date.now()/1000)-60),type:'order',order:{catalog_id:'c1',product_items:[{product_retailer_id:'100',quantity:1,item_price:34500,currency:'CLP'}]}};
+ const db=dbFixture({whatsapp_messages:[inbound({message_type:'order',raw_payload:envelope(message)})],content_products:[{id:'p1',source_provider:'tiendanube',name:'Manometro',variants:[{id:100,sku:'LX1030',cost:20000,stock:4}],images:[]}]});
+ const data=await getWhatsAppConversation(db,env,companyId,phone);
+ assert.equal(data.messages[0].catalogSelection.items[0].product.sku,'LX1030');
+ assert.equal(data.messages[0].catalogSelection.items[0].unitPrice,34500);
+ assert.equal('raw_payload' in data.messages[0],false);assert.equal(JSON.stringify(data.messages).includes('cost'),false);
+ assert.equal(data.canReply,true);assert.equal(db.tables.whatsapp_messages.length,1);
 });
 
 test('withdrawal stays visible and blocks replies and templates after a later incoming hello',async()=>{

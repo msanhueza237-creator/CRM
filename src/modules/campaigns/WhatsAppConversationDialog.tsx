@@ -6,6 +6,7 @@ import { notifyInboxChanged, setWhatsAppRead } from "../../lib/whatsappInboxApi"
 import { MessageAttachments } from "./MessageAttachments";
 import { useAuth } from "../auth/AuthContext";
 import { WhatsAppConsent } from "../messages/WhatsAppConsent";
+import { WhatsAppCatalogSelection } from "./WhatsAppCatalogSelection";
 import { whatsAppContactBlocked } from "../../lib/whatsappConsent";
 import "./whatsapp-conversation.css";
 
@@ -127,7 +128,8 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
       {!data && loading && <p>Cargando mensajes...</p>}
       {data?.messages.map(message => <article key={message.id} className={`wa-message wa-${message.direction}`}>
         <strong>{message.direction === "inbound" ? "Cliente" : "Climactiva"}{message.type === "order" ? " · Pedido" : ""}</strong>
-        <p>{message.body}</p><small>{new Date(message.occurredAt).toLocaleString("es-CL")} · {statusLabels[message.status] || message.status}</small>
+        {message.catalogSelection ? <>{message.catalogSelection.kind !== "order" && <p>{message.body}</p>}<WhatsAppCatalogSelection selection={message.catalogSelection} /></> : <p>{message.body}</p>}
+        <small>{new Date(message.occurredAt).toLocaleString("es-CL")} · {statusLabels[message.status] || message.status}</small>
       </article>)}
     </div>
     <footer>

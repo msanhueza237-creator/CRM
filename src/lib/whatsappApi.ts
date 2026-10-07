@@ -39,6 +39,16 @@ export function getWhatsAppTemplates() {
   return whatsappRequest<WhatsAppTemplatesResponse>("meta-whatsapp-templates");
 }
 
+export interface WhatsAppCatalogSelection {
+  kind: "order" | "enquiry"; catalogId: string; text: string;
+  items: Array<{
+    retailerId: string; quantity: number | null; unitPrice: number | null; currency: string | null; total: number | null;
+    resolution: "matched" | "not_found" | "ambiguous" | "unavailable";
+    product: { name: string; sku: string | null; variant: string | null; imageUrl: string | null; url: string | null;
+      source: "tiendanube"; matchedBy: "variant_id" | "sku"; sourceUpdatedAt: string | null } | null;
+  }>;
+}
+
 export interface WhatsAppConversation {
   companyId: string; name: string; phone: string; canReply: boolean; reasons: string[]; expiresAt: string | null;
   canTemplate: boolean; templateReasons: string[];
@@ -46,7 +56,7 @@ export interface WhatsAppConversation {
   consent?: WhatsAppConsentState;
   lastInboundAt?:string|null;lastOutboundAt?:string|null;
   nextOffset: number | null;
-  messages: Array<{ id: string; direction: string; body: string; type: string; status: string; occurredAt: string }>;
+  messages: Array<{ id: string; direction: string; body: string; type: string; status: string; occurredAt: string; catalogSelection?: WhatsAppCatalogSelection }>;
 }
 
 export function getWhatsAppConversation(companyId: string, phone = "", offset = 0, contactId = "") {

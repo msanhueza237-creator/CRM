@@ -11,6 +11,20 @@
 .wa-outbound { margin-left: auto; background: #e4f4ee; border-color: #c4ded2; }
 .wa-message p { white-space: pre-wrap; margin: 8px 0; }
 .wa-message small { font-size: 12px; color: #546b71; }
+.wa-catalog-selection { margin: 10px 0; min-width: 0; }
+.wa-catalog-items { list-style: none; padding: 0; margin: 0; }
+.wa-catalog-items li { padding: 10px 0; border-block-end: 1px solid #dde7e9; }
+.wa-product-heading { display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: start; gap: 10px; }
+.wa-product-heading span, .wa-product-heading small { display: block; margin-top: 4px; }
+.wa-product-image { width: 72px; height: 72px; display: grid; place-items: center; background: #f5f7f8; color: #587079; }
+.wa-product-image img { width: 100%; height: 100%; object-fit: contain; }
+.wa-product-amounts { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin: 12px 0; }
+.wa-product-amounts dt { font-size: 12px; color: #546b71; }
+.wa-product-amounts dd { margin: 3px 0 0; font-weight: 600; }
+.wa-product-source { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.wa-product-source a { display: inline-flex; align-items: center; gap: 5px; min-height: 32px; color: #086d77; }
+.wa-message .wa-product-unresolved { color: #785117; font-size: 13px; }
+.wa-message .wa-order-note { font-size: 12px; color: #546b71; }
 .wa-conversation footer { padding: 12px 18px; border-top: 1px solid #dde7e9; max-height: 45%; overflow-y: auto; }
 .wa-conversation textarea { display: block; width: 100%; min-height: 70px; resize: vertical; padding: 10px; margin-top: 6px; border: 1px solid #acbfc4; border-radius: 6px; font: inherit; box-sizing: border-box; }
 .wa-send { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; }

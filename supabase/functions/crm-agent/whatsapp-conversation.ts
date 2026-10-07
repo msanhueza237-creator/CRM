@@ -5,6 +5,7 @@ import { storedWhatsAppBody, whatsappPhone } from "../_shared/whatsapp-content.t
 import { WhatsAppConversationPolicyService, CLOSED_WINDOW_MESSAGE, metaFunctionalError, redactMeta } from "./whatsapp-policy.ts";
 import { resolveTemplateValues } from "./whatsapp-template-model.ts";
 import { resolveMessageRecipient, messageFileMetadata, validateMessageFile, type MessageFile } from "../_shared/direct-message.ts";
+import { getWhatsAppCatalogSelections } from "./whatsapp-catalog.ts";
 
 // Existing Supabase JSON rows are validated before a send is attempted.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -62,15 +63,18 @@ export async function getWhatsAppConversation(db: SupabaseClient, env: Env, comp
       .in("phone_number", [number, `+${number}`, ...(number.startsWith("569") && number.length === 11 ? [number.slice(2)] : [])])
       .order("occurred_at", { ascending: false }).order("id", { ascending: false }).range(offset, offset + 49);
     if (error) throw new Error("No se pudo recuperar el historial WhatsApp.");
+    const catalog = await getWhatsAppCatalogSelections(db, data || []);
     const reasons = ["Conversacion sin ficha vinculada. El historial se conserva; el envio requiere un contacto registrado."];
     return { companyId: "", name: "Sin ficha vinculada", phone: number, canReply: false, canTemplate: false, templateReasons: reasons, reasons,
       expiresAt: null, nextOffset: data?.length === 50 ? offset + 50 : null,
-      messages: (data || []).map((row: Row) => ({ id: row.id, direction: row.direction, body: storedWhatsAppBody(row), type: row.message_type, status: row.status, occurredAt: row.occurred_at })).reverse() };
+      messages: (data || []).map((row: Row) => ({ id: row.id, direction: row.direction, body: storedWhatsAppBody(row), type: row.message_type, status: row.status, occurredAt: row.occurred_at,
+        ...(catalog.has(row.id) ? { catalogSelection: catalog.get(row.id) } : {}) })).reverse() };
   }
   const context = await conversationContext(db, env, companyId, phone, contactId);
   const { data, error } = await db.from("whatsapp_messages").select(fields).eq("company_id", companyId)
     .in("phone_number", [context.phone, `+${context.phone}`]).order("occurred_at", { ascending: false }).order("id", { ascending: false }).range(offset, offset + 49);
   if (error) throw new Error("No se pudo recuperar el historial WhatsApp.");
+  const catalog = await getWhatsAppCatalogSelections(db, data || []);
   return { companyId, name: context.name, phone: context.phone, canReply: context.reasons.length === 0,
     policy: context.window, variableContext: { nombre_cliente: context.name, empresa: context.company.name },
     consent: { allowed: !context.optedOut && context.consent.whatsapp_opt_in === true, status: context.optedOut ? "opt_out" : context.consent.whatsapp_status || null,
@@ -79,7 +83,8 @@ export async function getWhatsAppConversation(db: SupabaseClient, env: Env, comp
     canTemplate: context.templateReasons.length === 0, templateReasons: context.templateReasons,
     reasons: context.reasons, expiresAt: context.window.expiresAt, nextOffset: data?.length === 50 ? offset + 50 : null,
     messages: (data || []).map((row: Row) => ({ id: row.id, direction: row.direction, body: storedWhatsAppBody(row),
-      type: row.message_type, status: row.status, occurredAt: row.occurred_at })).reverse() };
+      type: row.message_type, status: row.status, occurredAt: row.occurred_at,
+      ...(catalog.has(row.id) ? { catalogSelection: catalog.get(row.id) } : {}) })).reverse() };
 }
 
 export async function sendWhatsAppReply(db: SupabaseClient, env: Env, payload: Row, userId: string, request: typeof fetch = fetch, files: MessageFile[] = []) {
