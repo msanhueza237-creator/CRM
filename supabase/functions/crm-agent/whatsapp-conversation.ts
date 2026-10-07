@@ -1,9 +1,13 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { getWhatsAppConfig } from "./whatsapp-dispatch.ts";
-import { whatsappDispatchId, buildMetaTemplateMessage, listMetaTemplates, validateWhatsAppRecipient } from "./whatsapp-meta.ts";
-import { replyWindow, storedWhatsAppBody, whatsappPhone } from "../_shared/whatsapp-content.ts";
+import { whatsappDispatchId, buildMetaTemplateMessage, listMetaTemplates, enrichWhatsAppTemplates, validateWhatsAppRecipient } from "./whatsapp-meta.ts";
+import { storedWhatsAppBody, whatsappPhone } from "../_shared/whatsapp-content.ts";
+import { WhatsAppConversationPolicyService, CLOSED_WINDOW_MESSAGE, metaFunctionalError, redactMeta } from "./whatsapp-policy.ts";
+import { resolveTemplateValues } from "./whatsapp-template-model.ts";
 import { resolveMessageRecipient, messageFileMetadata, validateMessageFile, type MessageFile } from "../_shared/direct-message.ts";
 
+// Existing Supabase JSON rows are validated before a send is attempted.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Row = Record<string, any>;
 type Env = (names: string[]) => string;
 const fields = "id,company_id,direction,phone_number,meta_message_id,message_type,template_name,body,status,occurred_at,raw_payload";
@@ -12,7 +16,7 @@ const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 async function conversationContext(db: SupabaseClient, env: Env, companyId: string, requestedPhone: string, contactId = "", ownAttempt = "") {
   if (!uuid.test(companyId)) throw new Error("Empresa no valida.");
   const config = await getWhatsAppConfig(db, env);
-  const { data: company, error } = await db.from("companies").select("id,name,whatsapp_status,whatsapp_opt_in,whatsapp_number,whatsapp,phone").eq("id", companyId).maybeSingle();
+  const { data: company, error } = await db.from("companies").select("id,name,contact_name,whatsapp_status,whatsapp_opt_in,whatsapp_number,whatsapp,phone,whatsapp_opt_in_date,whatsapp_opt_in_source,whatsapp_opt_in_phone").eq("id", companyId).maybeSingle();
   if (error || !company) throw new Error("Empresa no disponible.");
   const target = contactId ? await resolveMessageRecipient(db, companyId, contactId) : null;
   const phone = whatsappPhone(requestedPhone || target?.recipient.phone || company.whatsapp_number || company.whatsapp || company.phone);
@@ -25,19 +29,25 @@ async function conversationContext(db: SupabaseClient, env: Env, companyId: stri
   const actualPhone = whatsappPhone(incoming?.phone_number) || phone;
   const knownPhones = [company.whatsapp_number, company.whatsapp, company.phone, target?.recipient.phone].map(whatsappPhone);
   if (!/^[1-9]\d{7,14}$/.test(actualPhone) || (!incoming && !knownPhones.includes(actualPhone))) throw new Error("No hay mensajes ni numero registrado para este contacto.");
-  const window = replyWindow(incoming, config.phoneId);
+  const window = WhatsAppConversationPolicyService.evaluate(incoming, config.phoneId);
+  let consent: Row = company;
+  if (contactId) {
+    const result = await db.from("contacts").select("whatsapp_opt_in,whatsapp_status,whatsapp,phone,whatsapp_opt_in_date,whatsapp_opt_in_source,whatsapp_opt_in_phone").eq("id", contactId).eq("company_id",companyId).single();
+    if(result.error) throw new Error("No se pudo verificar el consentimiento del contacto.");
+    consent = result.data;
+  }
   const blockers = [...config.blockers];
-  if (["opt_out", "bloqueado", "invalido", "no_contactar"].includes(company.whatsapp_status) ||
+  if (["opt_out", "bloqueado", "invalido", "no_contactar"].includes(consent.whatsapp_status) ||
     (incoming && /^(salir|stop|baja|no mas mensajes)$/i.test(storedWhatsAppBody(incoming).trim()))) blockers.push("Contacto marcado para no recibir mensajes.");
   const { data: pending, error: pendingError } = await db.from("whatsapp_messages").select("id")
     .eq("company_id", companyId).in("phone_number", [actualPhone, `+${actualPhone}`]).eq("direction", "outbound").eq("status", "pending").limit(2);
   if (pendingError) throw new Error("No se pudo verificar si hay envios pendientes.");
   if (pending?.some((p: Row) => p.id !== ownAttempt)) blockers.push("Hay un envio pendiente o de resultado incierto. Revisa su estado antes de enviar otro.");
   const templateReasons = [...blockers];
-  try { validateWhatsAppRecipient(company, actualPhone); } catch { templateReasons.push("Este numero no tiene consentimiento vigente verificado para iniciar mensajes con plantilla."); }
+  try { validateWhatsAppRecipient(consent, actualPhone); } catch { templateReasons.push("Este número no tiene consentimiento vigente y trazable para iniciar mensajes con plantilla."); }
   const reasons = [...blockers];
-  if (!window.open) reasons.push("Ventana de 24 horas cerrada o sin fecha verificable. Espera una respuesta del cliente o usa una plantilla aprobada con consentimiento vigente.");
-  return { config, company, phone: actualPhone, incoming, window, reasons, templateReasons, name: target?.recipient.name || company.name };
+  if (!window.open) reasons.push(CLOSED_WINDOW_MESSAGE);
+  return { config, company, consent, phone: actualPhone, incoming, window, reasons, templateReasons, name: target?.recipient.name || company.contact_name || company.name };
 }
 
 export async function getWhatsAppConversation(db: SupabaseClient, env: Env, companyId: string, phone = "", offset = 0, contactId = "") {
@@ -59,6 +69,9 @@ export async function getWhatsAppConversation(db: SupabaseClient, env: Env, comp
     .in("phone_number", [context.phone, `+${context.phone}`]).order("occurred_at", { ascending: false }).order("id", { ascending: false }).range(offset, offset + 49);
   if (error) throw new Error("No se pudo recuperar el historial WhatsApp.");
   return { companyId, name: context.name, phone: context.phone, canReply: context.reasons.length === 0,
+    policy: context.window, variableContext: { nombre_cliente: context.name, empresa: context.company.name },
+    consent: { allowed: context.consent.whatsapp_opt_in === true, date: context.consent.whatsapp_opt_in_date || null, source: context.consent.whatsapp_opt_in_source || null },
+    lastInboundAt: context.incoming?.occurred_at || null, lastOutboundAt: (data || []).find((m:Row)=>m.direction==="outbound")?.occurred_at || null,
     canTemplate: context.templateReasons.length === 0, templateReasons: context.templateReasons,
     reasons: context.reasons, expiresAt: context.window.expiresAt, nextOffset: data?.length === 50 ? offset + 50 : null,
     messages: (data || []).map((row: Row) => ({ id: row.id, direction: row.direction, body: storedWhatsAppBody(row),
@@ -77,11 +90,19 @@ export async function sendWhatsAppReply(db: SupabaseClient, env: Env, payload: R
   const reasons = templateMode ? context.templateReasons : context.reasons;
   if (reasons.length) throw new Error(reasons.join(" "));
   let body: Row = { messaging_product: "whatsapp", recipient_type: "individual", to: context.phone, type: "text", text: { preview_url: false, body: text } };
-  let storedBody = text; let templateName: string | null = null;
+  let storedBody = text; let templateName: string | null = null; let selectedTemplate: Row | null = null;
   if (templateMode) {
-    const template = (await listMetaTemplates(context.config, request)).find(t => t.id === payload.templateId && t.language === payload.language);
+    const template = (await enrichWhatsAppTemplates(db, await listMetaTemplates(context.config, request), context.config.wabaId)).find(t => t.id === payload.templateId && t.language === payload.language);
     if (!template) throw new Error("La plantilla ya no esta disponible en Meta.");
+    if (payload.templateVersion && payload.templateVersion !== template.versionKey) throw new Error("La plantilla cambió en Meta. Actualiza y revisa la vista previa antes de enviarla.");
+    if (template.bindings?.length) {
+      const { data: profile } = await db.from("profiles").select("full_name").eq("id",userId).maybeSingle();
+      const supplied = Object.fromEntries(template.variables.map((key,i)=>[key,payload.parameters?.[i]]));
+      const resolved = resolveTemplateValues(template.bindings,{nombre_cliente:context.name,empresa:context.company.name,nombre_vendedor:String(profile?.full_name || "")},supplied);
+      if (JSON.stringify(resolved)!==JSON.stringify(payload.parameters)) throw new Error("Los datos del cliente o vendedor cambiaron. Revisa nuevamente la vista previa.");
+    }
     body = buildMetaTemplateMessage(template, context.phone, payload.parameters, "");
+    selectedTemplate = template;
     templateName = template.name;
     storedBody = template.body.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_match, name) => String(payload.parameters[template.variables.indexOf(name)] || ""));
   }
@@ -91,7 +112,10 @@ export async function sendWhatsAppReply(db: SupabaseClient, env: Env, payload: R
   const id = await whatsappDispatchId(`reply:${payload.companyId}:${payload.requestId}`, context.phone);
   const { error: reservationError } = await db.from("whatsapp_messages").insert({ id, company_id: payload.companyId,
     direction: "outbound", phone_number: context.phone, message_type: messageType, template_name: templateName, body: storedBody, status: "pending",
-    raw_payload: { kind: "manual_reply", user_id: userId, contact_id: payload.contactId || null, reply_to: context.incoming?.meta_message_id || null, request_id: payload.requestId, attachments: metadata } });
+    actor_id: userId, template_meta_id: selectedTemplate?.id || null, template_language: selectedTemplate?.language || null, template_category: selectedTemplate?.category || null,
+    recipient_country: context.phone.startsWith("56") ? "CL" : null,
+    raw_payload: { kind: "manual_reply", user_id: userId, contact_id: payload.contactId || null, reply_to: context.incoming?.meta_message_id || null, request_id: payload.requestId, attachments: metadata,
+      template_version: selectedTemplate?.versionKey || null, parameters: templateMode ? payload.parameters : null, graph_version: context.config.version, window_expires_at: context.window.expiresAt } });
   if (reservationError) throw new Error(reservationError.code === "23505" ? "Este envio ya tiene un intento registrado. Actualiza el historial; no lo repitas." : "No se pudo reservar el envio. No se contacto a Meta.");
   // Media is uploaded privately only after the user confirms this exact send.
   try {
@@ -121,13 +145,13 @@ export async function sendWhatsAppReply(db: SupabaseClient, env: Env, payload: R
     });
     const data = await response.json();
     if (!response.ok && response.status < 500 && response.status !== 408) {
-      const { error } = await db.from("whatsapp_messages").update({ status: "failed" }).eq("id", id);
-      return { accepted: false, id, outcome: "rejected", warning: `Meta rechazo el mensaje (codigo ${Number(data.error?.code) || response.status}).${error ? " El estado local requiere revision." : ""}` };
+      const { error } = await db.from("whatsapp_messages").update({ status: "failed", provider_error: redactMeta(data,[context.config.token]) }).eq("id", id);
+      return { accepted: false, id, outcome: "rejected", warning: `${metaFunctionalError(data)}${error ? " El estado local requiere revision." : ""}` };
     }
     if (!response.ok) throw new Error("uncertain-send");
     const messageId = data.messages?.[0]?.id;
     if (typeof messageId !== "string" || !messageId) throw new Error("missing-message-id");
-    const { error } = await db.from("whatsapp_messages").update({ meta_message_id: messageId, status: "sent" }).eq("id", id);
+    const { error } = await db.from("whatsapp_messages").update({ meta_message_id: messageId, status: "sent", provider_response: redactMeta(data,[context.config.token]) }).eq("id", id);
     return { accepted: true, id, outcome: "accepted", warning: error ? "Meta acepto el mensaje; el registro local requiere revision. No reenviar." : null };
   } catch {
     return { accepted: false, id, outcome: "uncertain", warning: "Resultado incierto. Se conserva el intento para evitar duplicados. Actualiza el historial; no reenvies el mensaje." };

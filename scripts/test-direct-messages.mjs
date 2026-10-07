@@ -8,14 +8,14 @@ import {getMessageRecipients} from '../supabase/functions/crm-agent/message-reci
 
 const companyId='00000000-0000-4000-8000-000000000001', contactId='00000000-0000-4000-8000-000000000002', phone='56912345678';
 const pdf={name:'cotizacion.pdf',type:'application/pdf',bytes:new TextEncoder().encode('%PDF-1.7 test')};
-const env=keys=>keys.map(k=>({META_WHATSAPP_ACCESS_TOKEN:'synthetic-token',META_WHATSAPP_PHONE_NUMBER_ID:'p1',META_WHATSAPP_BUSINESS_ACCOUNT_ID:'b1',META_WHATSAPP_PRODUCTION_APPROVED:'true',META_WHATSAPP_APP_SECRET:'synthetic',META_WHATSAPP_WEBHOOK_VERIFY_TOKEN:'synthetic'})[k]).find(Boolean)||'';
+const env=keys=>keys.map(k=>({META_GRAPH_API_VERSION:'v26.0',META_WHATSAPP_ACCESS_TOKEN:'synthetic-token',META_WHATSAPP_PHONE_NUMBER_ID:'p1',META_WHATSAPP_BUSINESS_ACCOUNT_ID:'b1',META_WHATSAPP_PRODUCTION_APPROVED:'true',META_WHATSAPP_APP_SECRET:'synthetic',META_WHATSAPP_WEBHOOK_VERIFY_TOKEN:'synthetic'})[k]).find(Boolean)||'';
 const inbound=()=>({id:'in1',meta_message_id:'in1',company_id:companyId,phone_number:phone,direction:'inbound',status:'received',occurred_at:new Date().toISOString(),raw_payload:{entry:[{changes:[{value:{metadata:{phone_number_id:'p1'},messages:[{id:'in1',from:phone,type:'text',text:{body:'Cotizacion por favor'},timestamp:String(Math.floor(Date.now()/1000)-30)}]}}]}]}});
 function fixture(extra={}) {
- const tables={companies:[{id:companyId,name:'Cliente prueba',email:'cliente@example.com',phone,whatsapp_opt_in:true,whatsapp_status:'opt_in'}],contacts:[{id:contactId,company_id:companyId,full_name:'Contacto prueba',email:'contacto@example.com',phone:'56922222222'}],email_messages:[],interactions:[],whatsapp_settings:[{active:true,phone_number_id:'p1',business_account_id:'b1'}],whatsapp_messages:[inbound()],...extra};
+ const tables={companies:[{id:companyId,name:'Cliente prueba',email:'cliente@example.com',phone,whatsapp_opt_in:true,whatsapp_status:'opt_in',whatsapp_opt_in_date:'2026-10-01',whatsapp_opt_in_source:'CLIENTE',whatsapp_opt_in_phone:phone}],contacts:[{id:contactId,company_id:companyId,full_name:'Contacto prueba',email:'contacto@example.com',phone:'56922222222'}],email_messages:[],interactions:[],whatsapp_settings:[{active:true,phone_number_id:'p1',business_account_id:'b1'}],whatsapp_messages:[inbound()],...extra};
  const db={tables,from(name){let filters=[],start=0,end=Infinity,op='select',value;const q={
   select(){return q},eq(k,v){filters.push(r=>r[k]===v);return q},in(k,v){filters.push(r=>v.includes(r[k]));return q},gte(k,v){filters.push(r=>r[k]>=v);return q},
   order(){return q},limit(n){end=n;return q},range(a,b){start=a;end=b+1;return q},insert(v){op='insert';value=v;return q},update(v){op='update';value=v;return q},
-  maybeSingle(){return q.then(r=>({...r,data:r.data?.[0]||null}))},then(resolve,reject){return Promise.resolve().then(()=>{
+  single(){return q.maybeSingle()},maybeSingle(){return q.then(r=>({...r,data:r.data?.[0]||null}))},then(resolve,reject){return Promise.resolve().then(()=>{
    if(op==='insert'){if(value.id&&tables[name].some(r=>r.id===value.id))return{error:{code:'23505'}};tables[name].push({...value,created_at:new Date().toISOString()});return{error:null}}
    const rows=tables[name].filter(r=>filters.every(f=>f(r)));if(op==='update')rows.forEach(r=>Object.assign(r,value));return{data:rows.slice(start,end).map(r=>({...r})),count:rows.length,error:null};
   }).then(resolve,reject)}

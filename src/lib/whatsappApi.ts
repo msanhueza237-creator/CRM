@@ -3,6 +3,8 @@ export interface MetaTemplate {
   id: string; name: string; language: string; status: string; category: string;
   body: string; header: string; footer: string; variables: string[];
   named: boolean; catalogIndexes: number[]; blockedReason: string | null;
+  versionKey?: string;
+  bindings?: Array<{ key: string; field: string; example: string }>;
 }
 
 export interface WhatsAppTemplatesResponse {
@@ -39,6 +41,9 @@ export function getWhatsAppTemplates() {
 export interface WhatsAppConversation {
   companyId: string; name: string; phone: string; canReply: boolean; reasons: string[]; expiresAt: string | null;
   canTemplate: boolean; templateReasons: string[];
+  variableContext?: Record<string,string>;
+  consent?: {allowed:boolean;date:string|null;source:string|null};
+  lastInboundAt?:string|null;lastOutboundAt?:string|null;
   nextOffset: number | null;
   messages: Array<{ id: string; direction: string; body: string; type: string; status: string; occurredAt: string }>;
 }

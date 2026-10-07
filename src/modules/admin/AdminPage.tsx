@@ -22,7 +22,6 @@ interface WhatsAppSettingsForm {
   phoneNumberId: string;
   businessAccountId: string;
   officialPhoneNumber: string;
-  accessTokenHint: string;
   active: boolean;
   lastConnectionStatus: string;
   lastConnectionCheckedAt: string;
@@ -43,7 +42,6 @@ const emptyWhatsAppSettings: WhatsAppSettingsForm = {
   phoneNumberId: "",
   businessAccountId: "",
   officialPhoneNumber: "",
-  accessTokenHint: "",
   active: false,
   lastConnectionStatus: "sin_configurar",
   lastConnectionCheckedAt: "",
@@ -117,7 +115,7 @@ export function AdminPage() {
     async function loadWhatsAppSettings() {
       const { data, error } = await supabase!
         .from("whatsapp_settings")
-        .select("*")
+        .select("id,phone_number_id,business_account_id,official_phone_number,active,last_connection_status,last_connection_checked_at,last_error")
         .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -133,7 +131,6 @@ export function AdminPage() {
           phoneNumberId: String(data.phone_number_id ?? ""),
           businessAccountId: String(data.business_account_id ?? ""),
           officialPhoneNumber: String(data.official_phone_number ?? ""),
-          accessTokenHint: String(data.access_token_hint ?? ""),
           active: Boolean(data.active),
           lastConnectionStatus: String(data.last_connection_status ?? "sin_probar"),
           lastConnectionCheckedAt: String(data.last_connection_checked_at ?? ""),
@@ -352,7 +349,6 @@ export function AdminPage() {
       phone_number_id: whatsappSettings.phoneNumberId,
       business_account_id: whatsappSettings.businessAccountId,
       official_phone_number: whatsappSettings.officialPhoneNumber || null,
-      access_token_hint: whatsappSettings.accessTokenHint || null,
       active: whatsappSettings.active,
       last_connection_status: whatsappSettings.lastConnectionStatus,
       updated_by: user?.id,
@@ -360,8 +356,8 @@ export function AdminPage() {
     };
 
     const request = whatsappSettings.id
-      ? supabase.from("whatsapp_settings").update(payload).eq("id", whatsappSettings.id).select("*").single()
-      : supabase.from("whatsapp_settings").insert(payload).select("*").single();
+      ? supabase.from("whatsapp_settings").update(payload).eq("id", whatsappSettings.id).select("id").single()
+      : supabase.from("whatsapp_settings").insert(payload).select("id").single();
 
     const { data, error } = await request;
     setSavingWhatsApp(false);
@@ -714,14 +710,6 @@ export function AdminPage() {
             <input
               value={whatsappSettings.officialPhoneNumber}
               onChange={(event) => setWhatsappSettings({ ...whatsappSettings, officialPhoneNumber: event.target.value })}
-            />
-          </label>
-          <label>
-            Hint token
-            <input
-              placeholder="Ej: termina en ...ABCD"
-              value={whatsappSettings.accessTokenHint}
-              onChange={(event) => setWhatsappSettings({ ...whatsappSettings, accessTokenHint: event.target.value })}
             />
           </label>
           <label className="checkbox-field">

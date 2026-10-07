@@ -4,10 +4,12 @@ import fs from 'node:fs';
 import ts from 'typescript';
 import {whatsappMessageBody,storedWhatsAppBody,replyWindow,splitWhatsAppEvents} from '../supabase/functions/_shared/whatsapp-content.ts';
 import {getWhatsAppConversation,sendWhatsAppReply} from '../supabase/functions/crm-agent/whatsapp-conversation.ts';
+import {getWhatsAppConfig} from '../supabase/functions/crm-agent/whatsapp-dispatch.ts';
+import {validWhatsAppWebhookAccount} from '../supabase/functions/crm-agent/whatsapp-policy.ts';
 const companyId='00000000-0000-4000-8000-000000000001', phone='56912345678';
-const envelope=(message,extra={})=>({object:'whatsapp_business_account',entry:[{id:'b1',changes:[{value:{metadata:{phone_number_id:'p1'},messages:[message],...extra}}]}]});
+const envelope=(message,extra={})=>({object:'whatsapp_business_account',entry:[{id:'b1',changes:[{field:'messages',value:{metadata:{phone_number_id:'p1'},messages:[message],...extra}}]}]});
 const inbound=(extra={})=>({id:'in1',company_id:companyId,direction:'inbound',phone_number:'+'+phone,meta_message_id:'wamid.in1',message_type:'text',status:'received',occurred_at:new Date().toISOString(),body:'Hola',raw_payload:envelope({id:'wamid.in1',from:phone,type:'text',text:{body:'Hola'},timestamp:String(Math.floor(Date.now()/1000)-60)}),...extra});
-const defaults={META_WHATSAPP_ACCESS_TOKEN:'private-token',META_WHATSAPP_PHONE_NUMBER_ID:'p1',META_WHATSAPP_BUSINESS_ACCOUNT_ID:'b1',META_WHATSAPP_PRODUCTION_APPROVED:'true',META_WHATSAPP_APP_SECRET:'private-secret',META_WHATSAPP_WEBHOOK_VERIFY_TOKEN:'verify'};
+const defaults={META_GRAPH_API_VERSION:'v26.0',META_WHATSAPP_ACCESS_TOKEN:'private-token',META_WHATSAPP_PHONE_NUMBER_ID:'p1',META_WHATSAPP_BUSINESS_ACCOUNT_ID:'b1',META_WHATSAPP_PRODUCTION_APPROVED:'true',META_WHATSAPP_APP_SECRET:'private-secret',META_WHATSAPP_WEBHOOK_VERIFY_TOKEN:'verify'};
 const env=(keys)=>keys.map(k=>defaults[k]).find(Boolean)||'';
 const request=()=>({companyId,phone,text:'Gracias por tu consulta',requestId:crypto.randomUUID(),confirmSend:true});
 function dbFixture(extra={}) {
@@ -87,14 +89,14 @@ test('uncertain send persists reservation and blocks retries with any key',async
 });
 test('Meta rejection is not represented as accepted',async()=>{
  const db=dbFixture();const out=await sendWhatsAppReply(db,env,request(),'u1',async()=>Response.json({error:{code:131047}},{status:400}));
- assert.equal(out.accepted,false);assert.match(out.warning,/131047/);assert.equal(db.tables.whatsapp_messages.at(-1).status,'failed');
+ assert.equal(out.accepted,false);assert.match(out.warning,/ventana.*cerrada/);assert.doesNotMatch(out.warning,/131047/);assert.equal(db.tables.whatsapp_messages.at(-1).status,'failed');
 });
 test('conversation routes require active administrator; unsigned webhooks cannot fallback to public IDs',()=>{
  const source=fs.readFileSync(new URL('../supabase/functions/crm-agent/index.ts',import.meta.url),'utf8');
  const ast=ts.createSourceFile('index.ts',source,ts.ScriptTarget.Latest,true);
  const validation=ast.statements.find(n=>ts.isFunctionDeclaration(n)&&n.name?.text==='validateMetaWebhookRequest').getText(ast);
  assert.doesNotMatch(validation,/fallbackValidation/);
- assert.match(source,/route === "meta-whatsapp-conversation"[\s\S]+?requireCrmAdmin\(req, supabase\)/);
+ assert.match(source,/requireCrmAdmin\(req, supabase, true\)/);
 });
 
 test('webhook validates signature and configured account before accepting a batch',async()=>{
@@ -103,7 +105,7 @@ test('webhook validates signature and configured account before accepting a batc
  const names=['validateMetaWebhookRequest','validateMetaWebhookAccount','createMetaSignature'];
  const sourceFunctions=ast.statements.filter(n=>ts.isFunctionDeclaration(n)&&names.includes(n.name?.text)).map(n=>n.getText(ast)).join('\n');
  const compiled=ts.transpileModule(sourceFunctions,{compilerOptions:{target:ts.ScriptTarget.ES2022}}).outputText;
- const api=new Function('Deno','stripOptionalQuotes','splitWhatsAppEvents',`${compiled};return {validateMetaWebhookRequest,createMetaSignature};`)({env:{get:k=>defaults[k]}},v=>String(v||'').trim(),splitWhatsAppEvents);
+ const api=new Function('Deno','stripOptionalQuotes','getWhatsAppConfig','firstEnvValue','validWhatsAppWebhookAccount',`${compiled};return {validateMetaWebhookRequest,createMetaSignature};`)({env:{get:k=>defaults[k]}},v=>String(v||'').trim(),getWhatsAppConfig,env,validWhatsAppWebhookAccount);
  const body=JSON.stringify(envelope({id:'in1',type:'text',text:{body:'hello'}}));
  const signature=await api.createMetaSignature(body,defaults.META_WHATSAPP_APP_SECRET);
  for(const supplied of ['', 'sha256=bad']){

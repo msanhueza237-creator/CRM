@@ -35,7 +35,7 @@ function mapSession(session: Session | null): AppUser | null {
     id: session.user.id,
     email: session.user.email ?? "",
     name: session.user.user_metadata?.full_name ?? "Usuario Climactiva",
-    role: session.user.user_metadata?.role ?? "vendedor",
+    role: "visualizador",
   };
 }
 
@@ -45,10 +45,11 @@ async function mapSessionWithProfile(session: Session | null): Promise<AppUser |
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("full_name, role")
+    .select("full_name, role, active")
     .eq("id", fallback.id)
     .maybeSingle();
   if (error || !data) return fallback;
+  if (data.active !== true) return { ...fallback, role: "visualizador" };
 
   const role = ["administrador", "finanzas", "vendedor", "visualizador"].includes(String(data.role))
     ? (String(data.role) as AppUser["role"])

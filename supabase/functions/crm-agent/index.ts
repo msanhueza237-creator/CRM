@@ -7,7 +7,9 @@ import { executeResearch, RESEARCH_CAPABILITY } from "./prospecting-research.ts"
 import { retainedDiscoveryHint, publicResearchContext } from "./prospecting-enrichment.ts";
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
-import { dispatchWhatsAppCampaign, getWhatsAppTemplates } from "./whatsapp-dispatch.ts";
+import { dispatchWhatsAppCampaign, getWhatsAppTemplates, getWhatsAppConfig } from "./whatsapp-dispatch.ts";
+import { templateManagement, processTemplateWebhook } from "./whatsapp-template-manager.ts";
+import { validWhatsAppWebhookAccount, whatsappRoleAllowed, metaFunctionalError } from "./whatsapp-policy.ts";
 import { getWhatsAppConversation, sendWhatsAppReply } from "./whatsapp-conversation.ts";
 import { getMessageRecipients } from "./message-recipients.ts";
 import { getWhatsAppInbox, setWhatsAppRead } from "./whatsapp-inbox.ts";
@@ -91,8 +93,27 @@ Deno.serve(async (req) => {
       return await handleMetaWhatsAppStatus({ req, url, supabase });
     }
 
+    if (["whatsapp-template-management", "whatsapp-consent"].includes(route)) {
+      const session = await requireCrmAdmin(req, supabase, true);
+      if (!session.authorized) return json({ error: session.error }, session.status);
+      if (!["GET", "POST"].includes(req.method)) return json({ error: "Método no permitido." }, 405);
+      const input = req.method === "POST" ? await readJsonObject(req) : {};
+      try {
+        if (route === "whatsapp-consent") {
+          if (req.method !== "POST") return json({ error: "Método no permitido." }, 405);
+          const { error } = await supabase.rpc("crm_whatsapp_consent", { p_user_id: session.userId, p_company_id: input.companyId,
+            p_contact_id: input.contactId || null, p_phone: whatsappPhone(input.phone), p_allowed: input.allowed, p_source: input.source, p_evidence: input.evidence });
+          if (error) throw new Error("No se pudo registrar el consentimiento. Verifica destinatario, fuente y evidencia.");
+          return json({ ok: true });
+        }
+        const operation = req.method === "GET" ? "list" : String(input.operation || "");
+        if (operation !== "list" && session.role !== "administrador") return json({ error: "Solo administradores pueden gestionar plantillas." }, 403);
+        return json(await templateManagement(supabase, firstEnvValue, session.userId!, session.role === "administrador", operation, input));
+      } catch (error) { return json({ error: error instanceof Error ? error.message : "No se pudo completar la operación." }, 400); }
+    }
+
     if ((["meta-whatsapp-conversation", "message-recipients", "whatsapp-inbox"].includes(route) && req.method === "GET") || (["meta-whatsapp-reply", "whatsapp-read"].includes(route) && req.method === "POST")) {
-      const admin = await requireCrmAdmin(req, supabase);
+      const admin = await requireCrmAdmin(req, supabase, true);
       if (!admin.authorized) return json({ error: admin.error }, admin.status);
       try {
         if (route === "whatsapp-inbox") return json(await getWhatsAppInbox(supabase, admin.userId!, url.searchParams));
@@ -112,12 +133,12 @@ Deno.serve(async (req) => {
 
     if ((route === "meta-whatsapp-templates" && req.method === "GET") ||
       (["meta-whatsapp-send", "send-campaign"].includes(route) && req.method === "POST")) {
-      const admin = await requireCrmAdmin(req, supabase);
+      const admin = await requireCrmAdmin(req, supabase, route === "meta-whatsapp-templates");
       if (!admin.authorized) return json({ error: admin.error }, admin.status);
       try {
         if (route === "meta-whatsapp-templates") return json(await getWhatsAppTemplates(supabase, firstEnvValue));
         const payload = await readJsonObject(req);
-        const result = await dispatchWhatsAppCampaign(supabase, firstEnvValue, payload);
+        const result = await dispatchWhatsAppCampaign(supabase, firstEnvValue, payload, fetch, admin.userId!);
         await logAgentAction(supabase, { valid: true, key_id: null, key_name: "CRM administrador", scopes: [] },
           "campaigns", String(payload.campaignId), "dispatched_meta_campaign", {
             user_id: admin.userId, template_id: payload.templateId, language: payload.language,
@@ -2226,6 +2247,7 @@ async function validateWebhookApiKey(
 
 async function handleWhatsAppWebhook(context: RouteContext, validation: ApiKeyValidation) {
   const payload = await readJsonObject(context.req);
+  await processTemplateWebhook(context.supabase, firstEnvValue, payload);
   const events = splitWhatsAppEvents(payload);
   if (!events.length) return json({ success: true, ignored: true });
   for (const event of events) {
@@ -2439,8 +2461,6 @@ async function handleWhatsAppWebhookEvent(context: RouteContext, validation: Api
     .from("companies")
     .update({
       last_whatsapp_message_at: new Date().toISOString(),
-      whatsapp: normalizedSender || sender,
-      whatsapp_number: normalizedSender || null,
     })
     .eq("id", matchedCompanyId);
 
@@ -2502,40 +2522,12 @@ async function validateMetaWebhookAccount(
     return { valid: false, key_id: null, key_name: null, scopes: null, error: "Webhook payload is not WhatsApp Business Account" };
   }
 
-  const entry = Array.isArray(payload.entry) ? payload.entry[0] as Record<string, unknown> : undefined;
-  const changes = Array.isArray(entry?.changes) ? entry?.changes[0] as Record<string, unknown> : undefined;
-  const value = changes?.value as Record<string, unknown> | undefined;
-  const metadata = value?.metadata as Record<string, unknown> | undefined;
-  const phoneNumberId = String(metadata?.phone_number_id ?? "");
-  const businessAccountId = String(entry?.id ?? "");
-  const expectedPhoneNumberId = stripOptionalQuotes(Deno.env.get("META_WHATSAPP_PHONE_NUMBER_ID"));
-
-  if (expectedPhoneNumberId && phoneNumberId !== expectedPhoneNumberId) {
-    return { valid: false, key_id: null, key_name: null, scopes: null, error: "WhatsApp Phone Number ID does not match Edge Function env" };
-  }
-
-  const { data: settings } = await supabase
-    .from("whatsapp_settings")
-    .select("phone_number_id,business_account_id,active")
-    .eq("active", true)
-    .limit(10);
-
-  const matchesSettings = (settings ?? []).some((row) => {
-    const configuredPhoneId = String(row.phone_number_id ?? "");
-    const configuredBusinessId = String(row.business_account_id ?? "");
-    return configuredPhoneId === phoneNumberId && (!configuredBusinessId || configuredBusinessId === businessAccountId);
-  });
-
-  if (!matchesSettings) {
+  let matches = false;
+  try { const config = await getWhatsAppConfig(supabase, firstEnvValue); matches = validWhatsAppWebhookAccount(payload, config.wabaId, config.phoneId); } catch { /* Fail closed on an account configuration mismatch. */ }
+  if (!matches) {
     return { valid: false, key_id: null, key_name: null, scopes: null, error: "WhatsApp webhook payload does not match active CRM settings" };
   }
 
-  const events = splitWhatsAppEvents(payload);
-  if (events.some((event) => {
-    const part = event.entry[0];
-    const phone = part.changes[0].value.metadata?.phone_number_id;
-    return phone !== phoneNumberId || part.id !== businessAccountId;
-  })) return { valid: false, key_id: null, key_name: null, scopes: null, error: "Mixed WhatsApp accounts in webhook" };
   return { valid: true, key_id: null, key_name: "meta-webhook", scopes: ["crm:write"] };
 }
 
@@ -2623,18 +2615,8 @@ async function updateWhatsAppMessageStatus(
   metaMessageId: string,
   rawPayload: Record<string, unknown>,
 ) {
-  const parsed = parseMetaWhatsAppWebhook(rawPayload);
-  const status = parsed.message;
-  const now = new Date().toISOString();
-  const updates: Record<string, unknown> = { status };
-
-  if (status === "sent") updates.sent_at = now;
-  if (status === "delivered") updates.delivered_at = now;
-  if (status === "read") updates.read_at = now;
-  if (status === "failed") updates.failed_at = now;
-
-  await supabase.from("whatsapp_campaign_recipients").update(updates).eq("meta_message_id", metaMessageId);
-  await supabase.from("whatsapp_messages").update({ status, raw_payload: rawPayload }).eq("meta_message_id", metaMessageId);
+  const { error } = await supabase.rpc("crm_whatsapp_message_status", { p_meta_id: metaMessageId, p_payload: rawPayload });
+  if (error) throw new Error("No se pudo registrar el estado de entrega WhatsApp.");
   await supabase.from("whatsapp_webhook_events").update({ processed: true }).eq("meta_message_id", metaMessageId);
 }
 
@@ -2643,7 +2625,8 @@ async function handleMetaWhatsAppStatus(context: RouteContext) {
   if (!admin.authorized) return json({ error: admin.error }, admin.status);
 
   const checkedAt = new Date().toISOString();
-  const graphVersion = firstEnvValue(["META_GRAPH_API_VERSION"]) || "v25.0";
+  const graphVersion = firstEnvValue(["META_GRAPH_API_VERSION"]);
+  if (!/^v\d+\.0$/.test(graphVersion)) return json({ error: "Configura META_GRAPH_API_VERSION en el backend." }, 400);
   const accessToken = firstEnvValue(["META_WHATSAPP_ACCESS_TOKEN", "WHATSAPP_ACCESS_TOKEN"]);
   const envPhoneNumberId = firstEnvValue(["META_WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_PHONE_NUMBER_ID"]);
   const envBusinessAccountId = firstEnvValue([
@@ -2784,7 +2767,7 @@ async function handleMetaWhatsAppStatus(context: RouteContext) {
   });
 }
 
-async function requireCrmAdmin(req: Request, supabase: ReturnType<typeof createClient>) {
+async function requireCrmAdmin(req: Request, supabase: ReturnType<typeof createClient>, allowSeller = false) {
   const authHeader = req.headers.get("authorization") || "";
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
   if (!token) return { authorized: false, status: 401, error: "Sesion requerida." };
@@ -2798,18 +2781,14 @@ async function requireCrmAdmin(req: Request, supabase: ReturnType<typeof createC
     .eq("id", authData.user.id)
     .maybeSingle();
   const role = String(profile?.role || "");
-  if (profileError || role !== "administrador" || profile?.active !== true) {
+  if (profileError || !whatsappRoleAllowed(role, profile?.active, !allowSeller)) {
     return { authorized: false, status: 403, error: "Solo administradores activos pueden operar Meta." };
   }
-  return { authorized: true, status: 200, error: "", userId: authData.user.id };
+  return { authorized: true, status: 200, error: "", userId: authData.user.id, role };
 }
 
 function extractMetaError(payload: unknown) {
-  if (!payload || typeof payload !== "object") return "Meta rechazo la comprobacion.";
-  const error = (payload as Record<string, unknown>).error;
-  if (!error || typeof error !== "object") return "Meta rechazo la comprobacion.";
-  const message = String((error as Record<string, unknown>).message || "").trim();
-  return message ? `Meta: ${message}` : "Meta rechazo la comprobacion.";
+  return metaFunctionalError(payload);
 }
 
 function handleWhatsAppWebhookVerification(url: URL) {

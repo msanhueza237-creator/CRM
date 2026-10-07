@@ -8,6 +8,7 @@ import { useAuth } from "../auth/AuthContext";
 import { CompanyInsights } from "./CompanyInsights";
 import { CompanyJourney } from "./CompanyJourney";
 import { DirectMessageDialog } from "../campaigns/DirectMessageDialog";
+import { CompanyWhatsAppSummary } from "../messages/CompanyWhatsAppSummary";
 
 const interactionTypes: Interaction["type"][] = ["Llamada", "Correo", "WhatsApp", "Reunion", "Cotizacion", "Nota"];
 const today = new Date().toISOString().slice(0, 10);
@@ -183,6 +184,7 @@ export function CompanyDetailPage() {
       </div>
 
       <CompanyInsights key={company.id} companyId={company.id} />
+      {user && ["administrador", "vendedor"].includes(user.role) && <CompanyWhatsAppSummary companyId={company.id} phone={company.whatsapp || company.phone} />}
       <CompanyJourney key={`journey-${company.id}`} companyId={company.id} revision={historyRevision}
         onRegisterQuote={user && ["administrador", "vendedor"].includes(user.role) ? () => {
           setInteractionForm({ ...emptyInteraction, type: "Cotizacion", date: new Intl.DateTimeFormat("en-CA", { timeZone: "America/Santiago" }).format(new Date()) });

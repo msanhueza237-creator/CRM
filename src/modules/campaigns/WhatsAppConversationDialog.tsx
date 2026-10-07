@@ -4,11 +4,14 @@ import { getWhatsAppConversation, getWhatsAppTemplates, type MetaTemplate, type 
 import { sendDirectMessage } from "../../lib/directMessageApi";
 import { notifyInboxChanged, setWhatsAppRead } from "../../lib/whatsappInboxApi";
 import { MessageAttachments } from "./MessageAttachments";
+import { useAuth } from "../auth/AuthContext";
+import { WhatsAppConsent } from "../messages/WhatsAppConsent";
 import "./whatsapp-conversation.css";
 
 const statusLabels: Record<string, string> = { received: "Recibido", sent: "Aceptado por Meta", delivered: "Entregado", read: "Leido", failed: "No enviado", pending: "Pendiente de confirmar" };
 
 export function WhatsAppConversationDialog({ companyId, phone, contactId = "", onClose }: { companyId: string; phone?: string; contactId?: string; onClose: () => void }) {
+  const { user } = useAuth();
   const [data, setData] = useState<WhatsAppConversation | null>(null);
   const [text, setText] = useState("");
   const [error, setError] = useState("");
@@ -35,14 +38,15 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   const history = useRef<HTMLDivElement>(null);
 
   async function load(older = false, quiet = false) {
-    if (quiet && olderLoaded.current) return;
     const serial = ++generation.current;
     if (!quiet) setLoading(true);
     try {
       const result = await getWhatsAppConversation(companyId, phone, older ? data?.nextOffset || 0 : 0, contactId);
       if (!active.current || serial !== generation.current) return;
-      olderLoaded.current = older;
-      setData(previous => ({ ...result, messages: older ? [...result.messages, ...(previous?.messages || [])].filter((m, i, all) => all.findIndex(v => v.id === m.id) === i) : result.messages }));
+      const mergeHistory = older || (quiet && olderLoaded.current);
+      if (!quiet) olderLoaded.current = older;
+      setData(previous => ({ ...result, nextOffset: quiet && olderLoaded.current ? previous?.nextOffset ?? result.nextOffset : result.nextOffset,
+        messages: mergeHistory ? [...result.messages, ...(previous?.messages || []).filter(m => !result.messages.some(v => v.id === m.id))].sort((a,b)=>Date.parse(a.occurredAt)-Date.parse(b.occurredAt)) : result.messages }));
       setError("");
       if (!older && !quiet) requestAnimationFrame(() => history.current?.scrollTo({ top: history.current.scrollHeight }));
     } catch (err) {
@@ -96,7 +100,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
     requestId.current ||= crypto.randomUUID();
     try {
       const result = await sendDirectMessage("whatsapp", { companyId, contactId, phone: data.phone, text: text.trim(), mode,
-        templateId: template?.id, language: template?.language, parameters, requestId: requestId.current, confirmSend: true }, mode === "template" ? [] : files);
+        templateId: template?.id, language: template?.language, templateVersion: template?.versionKey, parameters, requestId: requestId.current, confirmSend: true }, mode === "template" ? [] : files);
       setNotice(result.warning || "Mensaje aceptado por Meta.");
       if (result.accepted) { setText(""); setFiles([]); requestId.current = null; }
       else if (result.outcome === "rejected") requestId.current = null;
@@ -106,10 +110,12 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   }
 
   const open = Boolean(data?.canReply && data.expiresAt && Date.parse(data.expiresAt) > now);
+  const windowOpen = Boolean(data?.expiresAt && Date.parse(data.expiresAt)>now);
+  const minutes = data?.expiresAt ? Math.max(0, Math.floor((Date.parse(data.expiresAt)-now)/60000)) : 0;
   return <dialog ref={dialog} className="wa-conversation" aria-labelledby="wa-title" onCancel={event => { event.preventDefault(); if (!busy.current) onClose(); }}>
     <header><div><h2 id="wa-title"><MessageCircle size={20} /> {data?.name || "Conversacion WhatsApp"}</h2>{data && <p>+{data.phone}</p>}</div>
       <button type="button" className="ghost-button" aria-label="Cerrar conversacion" title="Cerrar conversacion" disabled={sending} onClick={onClose}><X size={20} /></button></header>
-    <div className="wa-toolbar"><span>{open ? `Atencion abierta hasta ${new Date(data!.expiresAt!).toLocaleString("es-CL")}` : "Respuesta libre no disponible"}</span>
+    <div className="wa-toolbar"><span className={`wa-window-status ${windowOpen?"wa-window-open":"wa-window-closed"}`}><strong>{windowOpen?"VENTANA ABIERTA":"VENTANA CERRADA"}</strong><small>{windowOpen?`Quedan aproximadamente ${Math.floor(minutes/60)} h ${minutes%60} min`:"Se requiere plantilla aprobada por Meta."}</small></span>
       <button type="button" className="ghost-button" aria-label="Actualizar conversacion" title="Actualizar conversacion" disabled={loading || sending} onClick={() => void load()}><RefreshCw size={18} /></button></div>
     {error && <p className="wa-alert" role="alert">{error}</p>}
     {readError && <p className="wa-alert" role="status">{readError}</p>}
@@ -122,14 +128,15 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
       </article>)}
     </div>
     <footer>
+      {!windowOpen && mode!=="template" && <button className="ghost-button" disabled={sending||uncertain} onClick={()=>setMode("template")}>Seleccionar plantilla</button>}
       <div className="direct-channels" role="group" aria-label="Tipo de mensaje WhatsApp"><button type="button" aria-pressed={mode === "reply"} disabled={sending || uncertain} onClick={() => setMode("reply")}>Mensaje</button><button type="button" aria-pressed={mode === "template"} disabled={sending || uncertain} onClick={() => setMode("template")}>Plantilla aprobada</button></div>
       {(mode === "template" ? data?.templateReasons : data?.reasons)?.map(reason => <p className="wa-alert" key={reason}>{reason}</p>)}
       {notice && <p className="wa-alert" role="status">{notice}</p>}
       <form onSubmit={event => { event.preventDefault(); void send(); }}>
         {mode === "template" ? <div className="wa-template">
-          <label>Plantilla<select value={templateId} disabled={sending || uncertain} onChange={event => { setTemplateId(event.target.value); setParameters([]); }}><option value="">Seleccionar plantilla aprobada</option>{templates.map(t => <option key={`${t.id}:${t.language}`} value={`${t.id}:${t.language}`}>{t.name} · {t.language}</option>)}</select></label>
+          <label>Plantilla<select value={templateId} disabled={sending || uncertain} onChange={event => { setTemplateId(event.target.value); const selected=templates.find(t=>`${t.id}:${t.language}`===event.target.value); setParameters(selected?.variables.map(key=>{const field=selected.bindings?.find(b=>b.key===key)?.field || "manual";return field==="nombre_vendedor"?user?.name || "":data?.variableContext?.[field] || "";}) || []); }}><option value="">Seleccionar plantilla aprobada</option>{templates.map(t => <option key={`${t.id}:${t.language}`} value={`${t.id}:${t.language}`}>{t.name} · {t.language}</option>)}</select></label>
           {templateError && <p className="wa-alert" role="alert">{templateError}</p>}
-          {template?.variables.map((name, index) => <label key={name}>Variable {name}<input value={parameters[index] || ""} maxLength={1024} disabled={sending || uncertain} onChange={event => setParameters(previous => { const next = [...previous]; next[index] = event.target.value; return next; })} /></label>)}
+          {template?.variables.map((name, index) => <label key={name}>Variable {name} · {template.bindings?.find(b=>b.key===name)?.field || "manual"}<input value={parameters[index] || ""} maxLength={1024} disabled={sending || uncertain || ["nombre_cliente","empresa","nombre_vendedor"].includes(template.bindings?.find(b=>b.key===name)?.field || "")} onChange={event => setParameters(previous => { const next = [...previous]; next[index] = event.target.value; return next; })} /></label>)}
           {template && <div className="wa-template-preview"><strong>{template.header}</strong><p>{template.body.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (match, name) => parameters[template.variables.indexOf(name)] || match)}</p><small>{template.footer}</small><small>Meta puede cobrar este mensaje.</small></div>}
         </div> : <><label htmlFor="wa-reply">Respuesta</label>
           <textarea id="wa-reply" rows={3} maxLength={files.length ? 1024 : 4096} value={text} disabled={!open || sending || loading || uncertain} onChange={event => setText(event.target.value)} />
@@ -137,6 +144,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
         </>}
         <div className="wa-send"><span>{mode === "reply" ? `${text.length}/${files.length ? 1024 : 4096}` : "Consentimiento verificado al enviar"}</span><button className="primary-button" type="submit" disabled={sending || loading || uncertain || (mode === "template" ? !templateReady : !open || (!text.trim() && !files.length) || text.length > (files.length ? 1024 : 4096))}><Send size={18} /> {sending ? "Enviando..." : mode === "template" ? "Enviar plantilla" : "Enviar respuesta"}</button></div>
       </form>
+      {data && companyId && <WhatsAppConsent companyId={companyId} contactId={contactId} phone={data.phone} consent={data.consent} disabled={sending} onSaved={()=>void load()}/>}
     </footer>
   </dialog>;
 }

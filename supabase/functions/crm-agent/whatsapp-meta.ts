@@ -1,4 +1,7 @@
 type Row = Record<string, unknown>;
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { whatsappPhone } from "../_shared/whatsapp-content.ts";
+import { metaFunctionalError } from "./whatsapp-policy.ts";
 
 export interface MetaTemplate {
   id: string;
@@ -13,6 +16,8 @@ export interface MetaTemplate {
   named: boolean;
   catalogIndexes: number[];
   blockedReason: string | null;
+  versionKey: string;
+  bindings?: Array<{ key: string; field: string; example: string }>;
 }
 
 function row(value: unknown): Row {
@@ -36,7 +41,7 @@ export function describeMetaTemplate(value: unknown): MetaTemplate {
       for (const [index, value] of component.buttons.entries()) {
         const button = row(value);
         if (button.type === "CATALOG") catalogIndexes.push(index);
-        else if (!["URL", "PHONE_NUMBER"].includes(String(button.type)) || String(button.url || "").includes("{{")) {
+        else if (!["URL", "PHONE_NUMBER", "QUICK_REPLY"].includes(String(button.type)) || String(button.url || "").includes("{{")) {
           blockedReason = "Esta plantilla requiere configurar botones adicionales.";
         }
       }
@@ -52,7 +57,7 @@ export function describeMetaTemplate(value: unknown): MetaTemplate {
     status: String(source.status || "UNKNOWN"), category: String(source.category || ""), body,
     header: String(components.find((c) => c.type === "HEADER")?.text || ""),
     footer: String(components.find((c) => c.type === "FOOTER")?.text || ""),
-    variables, named, catalogIndexes, blockedReason,
+    variables, named, catalogIndexes, blockedReason, versionKey: JSON.stringify({ language: source.language, category: source.category, components }),
   };
 }
 
@@ -70,8 +75,7 @@ export async function listMetaTemplates(config: { token: string; wabaId: string;
     });
     const payload = row(await response.json());
     if (!response.ok) {
-      const code = row(payload.error).code;
-      throw new Error(`No se pudieron consultar las plantillas en Meta${code ? ` (codigo ${code})` : ""}. Revisa token y permisos.`);
+      throw new Error(metaFunctionalError(payload));
     }
     if (!Array.isArray(payload.data)) throw new Error("Meta devolvio una lista de plantillas incompleta.");
     templates.push(...payload.data.map(describeMetaTemplate));
@@ -112,8 +116,20 @@ export function validateWhatsAppRecipient(company: Row | undefined, phone: strin
   if (company.whatsapp_opt_in !== true || (company.whatsapp_status && company.whatsapp_status !== "opt_in")) {
     throw new Error("El destinatario no tiene consentimiento WhatsApp vigente.");
   }
-  const registered = [company.whatsapp_number, company.whatsapp, company.phone].map((p) => String(p || "").replace(/\D/g, ""));
+  if (!company.whatsapp_opt_in_date || !company.whatsapp_opt_in_source || whatsappPhone(company.whatsapp_opt_in_phone) !== phone) throw new Error("Falta registrar fecha, fuente y teléfono del consentimiento WhatsApp.");
+  const registered = [company.whatsapp_number, company.whatsapp, company.phone].map(whatsappPhone);
   if (!phone || !registered.includes(phone)) throw new Error("El numero no coincide con la ficha de la empresa.");
+}
+
+export async function enrichWhatsAppTemplates(db: SupabaseClient, templates: MetaTemplate[], wabaId: string) {
+  if(!templates.length) return templates;
+  const {data,error}=await db.from("whatsapp_templates").select("meta_template_id,variable_bindings,active,local_state").eq("waba_id",wabaId).in("meta_template_id",templates.map(t=>t.id));
+  if(error) throw new Error("No se pudo verificar el estado local de las plantillas.");
+  return templates.map(template=>{
+    const local=data?.find((item:Row)=>item.meta_template_id===template.id);
+    return {...template,bindings:local?.variable_bindings || template.variables.map(key=>({key,field:"manual",example:""})),
+      blockedReason:local && (local.active===false || ["SUBMITTING","UNCERTAIN"].includes(String(local.local_state)))?"Plantilla archivada o con aprobación por verificar en el CRM.":template.blockedReason};
+  });
 }
 
 export async function whatsappDispatchId(campaignId: string, phone: string) {

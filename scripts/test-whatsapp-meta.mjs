@@ -4,17 +4,18 @@ import fs from "node:fs";
 import ts from "typescript";
 import { describeMetaTemplate, buildMetaTemplateMessage, listMetaTemplates, whatsappDispatchId } from "../supabase/functions/crm-agent/whatsapp-meta.ts";
 import { dispatchWhatsAppCampaign, getWhatsAppTemplates } from "../supabase/functions/crm-agent/whatsapp-dispatch.ts";
+import { whatsappRoleAllowed } from "../supabase/functions/crm-agent/whatsapp-policy.ts";
 
 const rawTemplate = { id: "t1", name: "super_stars_catalogo", language: "es_CL", status: "APPROVED", category: "MARKETING",
   components: [{ type: "BODY", text: "Herramientas Super Stars" }, { type: "BUTTONS", buttons: [{ type: "CATALOG", text: "Ver catalogo" }] }] };
 const campaignId = "00000000-0000-4000-8000-000000000001";
-const company = { id: "c1", whatsapp: "+56912345678", whatsapp_opt_in: true, whatsapp_status: "opt_in" };
+const company = { id: "c1", whatsapp: "+56912345678", whatsapp_opt_in: true, whatsapp_status: "opt_in", whatsapp_opt_in_date:"2026-10-01",whatsapp_opt_in_source:"CLIENTE",whatsapp_opt_in_phone:"56912345678" };
 const payload = { campaignId, templateId: "t1", language: "es_CL", confirmSend: true, recipients: [{ companyId: "c1", phone: company.whatsapp, parameters: [] }] };
-const defaultEnv = { META_WHATSAPP_ACCESS_TOKEN: "private-test", META_WHATSAPP_PHONE_NUMBER_ID: "p1", META_WHATSAPP_BUSINESS_ACCOUNT_ID: "b1", META_WHATSAPP_PRODUCTION_APPROVED: "true", META_WHATSAPP_APP_SECRET: "test", META_WHATSAPP_WEBHOOK_VERIFY_TOKEN: "test" };
+const defaultEnv = { META_GRAPH_API_VERSION:"v26.0", META_WHATSAPP_ACCESS_TOKEN: "private-test", META_WHATSAPP_PHONE_NUMBER_ID: "p1", META_WHATSAPP_BUSINESS_ACCOUNT_ID: "b1", META_WHATSAPP_PRODUCTION_APPROVED: "true", META_WHATSAPP_APP_SECRET: "test", META_WHATSAPP_WEBHOOK_VERIFY_TOKEN: "test" };
 const env = (overrides = {}) => (names) => names.map((n) => ({ ...defaultEnv, ...overrides })[n]).find(Boolean) || "";
 
 function fakeDb(overrides = {}) {
-  const tables = { whatsapp_settings: [{ active: true, phone_number_id: "p1", business_account_id: "b1" }], companies: [{ ...company }], campaigns: [{ id: campaignId, type: "whatsapp", status: "borrador" }], whatsapp_messages: [], interactions: [], ...overrides };
+  const tables = { whatsapp_templates:[],whatsapp_settings: [{ active: true, phone_number_id: "p1", business_account_id: "b1" }], companies: [{ ...company }], campaigns: [{ id: campaignId, type: "whatsapp", status: "borrador" }], whatsapp_messages: [], interactions: [], ...overrides };
   return { tables, from(table) {
     const filters = []; let op = "select", value;
     const q = { select() { return q; }, order() { return q; }, limit() { return q; },
@@ -101,7 +102,7 @@ test("persistent reservation prevents sequential and concurrent duplicates", asy
   assert.equal(db.tables.companies[0].whatsapp_status, "opt_in");
 });
 test("timeout remains reserved; does not retry or send remaining recipients", async () => {
-  const db = fakeDb({ companies: [company, { ...company, id: "c2", whatsapp: "56922222222" }] });
+  const db = fakeDb({ companies: [company, { ...company, id: "c2", whatsapp: "56922222222",whatsapp_opt_in_phone:"56922222222" }] });
   const api = graph(rawTemplate, () => { throw new Error("network uncertain"); });
   const p = { ...payload, recipients: [...payload.recipients, { companyId: "c2", phone: "56922222222", parameters: [] }] };
   const result = await dispatchWhatsAppCampaign(db, env(), p, api.request);
@@ -110,7 +111,7 @@ test("timeout remains reserved; does not retry or send remaining recipients", as
   await dispatchWhatsAppCampaign(db, env(), payload, api.request); assert.equal(api.posts.length, 1);
 });
 test("partial failures report only actual successes", async () => {
-  const db = fakeDb({ companies: [company, { ...company, id: "c2", whatsapp: "56922222222" }] });
+  const db = fakeDb({ companies: [company, { ...company, id: "c2", whatsapp: "56922222222",whatsapp_opt_in_phone:"56922222222" }] });
   const api = graph(rawTemplate, (n) => n === 1 ? Response.json({ messages: [{ id: "wamid.1" }] }) : Response.json({ error: { code: 100 } }, { status: 400 }));
   const result = await dispatchWhatsAppCampaign(db, env(), { ...payload, recipients: [...payload.recipients, { companyId: "c2", phone: "56922222222", parameters: [] }] }, api.request);
   assert.deepEqual(result.results.map((r) => r.success), [true, false]);
@@ -120,7 +121,7 @@ test("admin authorization ignores user-editable metadata and inactive profiles",
   const ast = ts.createSourceFile("index.ts", source, ts.ScriptTarget.Latest, true);
   const fn = ast.statements.find((n) => ts.isFunctionDeclaration(n) && n.name?.text === "requireCrmAdmin");
   const compiled = ts.transpileModule(fn.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
-  const requireAdmin = new Function(`${compiled}; return requireCrmAdmin;`)();
+  const requireAdmin = new Function("whatsappRoleAllowed",`${compiled}; return requireCrmAdmin;`)(whatsappRoleAllowed);
   const req = new Request("https://test", { headers: { Authorization: "Bearer user-session" } });
   for (const profile of [null, { role: "vendedor", active: true }, { role: "administrador", active: false }]) {
     const db = fakeDb({ profiles: profile ? [{ id: "u1", ...profile }] : [] });

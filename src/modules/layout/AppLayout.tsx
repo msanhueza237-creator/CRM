@@ -23,7 +23,7 @@ import { useWhatsAppInbox } from "../messages/useWhatsAppInbox";
 const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard; roles?: AppRole[] }> = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/empresas", label: "Empresas", icon: Building2 },
-  { to: "/mensajes", label: "Mensajes", icon: MessageCircle, roles: ["administrador"] },
+  { to: "/mensajes", label: "WhatsApp", icon: MessageCircle, roles: ["administrador", "vendedor"] },
   { to: "/prospeccion", label: "Prospeccion", icon: Radar },
   { to: "/agentes", label: "Agentes", icon: Bot },
   { to: "/campanas", label: "Campanas", icon: Megaphone },
@@ -39,7 +39,7 @@ const navItems: Array<{ to: string; label: string; icon: typeof LayoutDashboard;
 
 export function AppLayout() {
   const { user, signOut, isDemoMode } = useAuth();
-  const inbox = useWhatsAppInbox(user?.role === "administrador" && !isDemoMode, "", "all", 0, 0);
+  const inbox = useWhatsAppInbox(Boolean(user && ["administrador", "vendedor"].includes(user.role)) && !isDemoMode, "", "all", 0, 0);
   const { pathname } = useLocation();
   const navigationRef = useRef<HTMLElement>(null);
 
