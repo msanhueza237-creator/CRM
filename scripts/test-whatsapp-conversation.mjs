@@ -17,7 +17,7 @@ function dbFixture(extra={}) {
  const tables={companies:[{id:companyId,name:'Cliente prueba',whatsapp_status:'sin_consentimiento'}],whatsapp_settings:[{active:true,phone_number_id:'p1',business_account_id:'b1'}],whatsapp_messages:[inbound()],content_products:[],...extra};
  return {tables,from(name){let filters=[],order=[],start=0,end=Infinity,op='select',value;const q={
   select(){return q},eq(k,v){filters.push(r=>r[k]===v);return q},in(k,v){filters.push(r=>v.includes(r[k]));return q},
-  contains(k,values){filters.push(r=>values.every(v=>r[k].some(item=>Object.entries(v).every(([key,value])=>item[key]===value))));return q},
+  contains(k,json){const values=JSON.parse(json);filters.push(r=>values.every(v=>r[k].some(item=>Object.entries(v).every(([key,value])=>item[key]===value))));return q},
   order(k,o={ascending:true}){order.push([k,o.ascending]);return q},limit(n){end=n;return q},range(a,b){start=a;end=b+1;return q},
   insert(v){op='insert';value=v;return q},update(v){op='update';value=v;return q},single(){return q.maybeSingle()},maybeSingle(){return q.then(r=>({...r,data:r.data?.[0]||null}))},
   then(resolve,reject){return Promise.resolve().then(()=>{

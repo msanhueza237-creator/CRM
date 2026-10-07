@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createClient } from '@supabase/supabase-js';
 import { storedCatalogSelection, getWhatsAppCatalogSelections } from '../supabase/functions/crm-agent/whatsapp-catalog.ts';
 
 const order=(items=[{product_retailer_id:'1001600453',quantity:1,item_price:34500,currency:'CLP'}])=>({
@@ -10,7 +11,7 @@ function database(rows=[],fail=false){
  const calls=[];
  return {calls,from(table){assert.equal(table,'content_products');let filters=[],limit=Infinity;const q={
   select(){return q},eq(k,v){filters.push(r=>r[k]===v);return q},
-  contains(k,values){calls.push(values);filters.push(r=>values.every(v=>r[k].some(item=>Object.entries(v).every(([key,value])=>item[key]===value))));return q},
+  contains(k,json){const values=JSON.parse(json);calls.push(values);filters.push(r=>values.every(v=>r[k].some(item=>Object.entries(v).every(([key,value])=>item[key]===value))));return q},
   order(){return q},limit(n){limit=n;return q},
   then(resolve,reject){return Promise.resolve(fail?{error:{message:'secret-database-error'}}:{data:rows.filter(r=>filters.every(f=>f(r))).slice(0,limit)}).then(resolve,reject)}
  };return q}};
@@ -25,6 +26,18 @@ test('exact Tiendanube variant ID resolves name, SKU and image without replacing
  assert.equal(item.product.matchedBy,'variant_id');assert.equal(item.unitPrice,34500);assert.equal(item.total,34500);
  assert.equal(JSON.stringify(item).includes('private'),false);assert.equal(JSON.stringify(item).includes('stock'),false);
  assert.deepEqual(source,before);
+});
+test('real Supabase client encodes variant containment as JSON, not a PostgreSQL array',async()=>{
+ const filters=[];
+ const db=createClient('https://catalog.example.test','test-key',{auth:{persistSession:false,autoRefreshToken:false},global:{fetch:async(input)=>{
+  const url=new URL(String(input));filters.push(url.searchParams.get('variants'));
+  const values=JSON.parse(url.searchParams.get('variants').slice(3));
+  const rows=values.some(v=>v.id===1001600453)?[product()]:[];
+  return new Response(JSON.stringify(rows),{status:200,headers:{'Content-Type':'application/json'}});
+ }}});
+ const result=await getWhatsAppCatalogSelections(db,[order()]);
+ assert.deepEqual(filters,['cs.[{"id":"1001600453"}]','cs.[{"sku":"1001600453"}]','cs.[{"id":1001600453}]']);
+ assert.equal(result.get('message-1').items[0].product.sku,'LX1030');
 });
 test('supports string variant IDs and exact SKU without fuzzy name/price matching',async()=>{
  const p=product({variants:[{id:'1001600453',sku:'LX1030'}]});

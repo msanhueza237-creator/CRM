@@ -59,7 +59,7 @@ async function resolveCatalogProduct(db: SupabaseClient, retailerId: string): Pr
     for (const filter of filters) {
       const { data, error } = await db.from("content_products")
         .select("id,name,variants,images,primary_image_url,product_url,source_updated_at")
-        .eq("source_provider", "tiendanube").contains("variants", [filter]).order("id").limit(2);
+        .eq("source_provider", "tiendanube").contains("variants", JSON.stringify([filter])).order("id").limit(2);
       if (error) return { product: null, resolution: "unavailable" };
       if (data?.length === 2) return { product: null, resolution: "ambiguous" };
       for (const value of data || []) {
