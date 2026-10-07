@@ -108,7 +108,7 @@ export async function dispatchWhatsAppCampaign(db: SupabaseClient, env: Env, pay
         continue;
       }
       if (!messageId) throw new Error("missing-message-id");
-      const { error: recordError } = await db.from("whatsapp_messages").update({ meta_message_id: messageId, status: "sent", provider_response: redactMeta(data,[config.token]) }).eq("id", id);
+      const { error: recordError } = await db.from("whatsapp_messages").update({ meta_message_id: messageId, status: "accepted", provider_response: redactMeta(data,[config.token]) }).eq("id", id);
       results.push({ ...base, success: true, messageId, ...(recordError ? { error: "Meta acepto el mensaje; el registro local requiere revision. No reenviar." } : {}) });
       try {
         await db.from("interactions").insert({ company_id: recipient.companyId, type: "whatsapp",

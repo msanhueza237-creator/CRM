@@ -9,7 +9,7 @@ import { WhatsAppConsent } from "../messages/WhatsAppConsent";
 import { whatsAppContactBlocked } from "../../lib/whatsappConsent";
 import "./whatsapp-conversation.css";
 
-const statusLabels: Record<string, string> = { received: "Recibido", sent: "Aceptado por Meta", delivered: "Entregado", read: "Leido", failed: "No enviado", pending: "Pendiente de confirmar" };
+const statusLabels: Record<string, string> = { received: "Recibido", accepted: "Aceptado por Meta", sent: "Enviado", delivered: "Entregado", read: "Leído confirmado", failed: "Fallido", pending: "Pendiente de confirmar" };
 
 export function WhatsAppConversationDialog({ companyId, phone, contactId = "", onClose }: { companyId: string; phone?: string; contactId?: string; onClose: () => void }) {
   const { user } = useAuth();

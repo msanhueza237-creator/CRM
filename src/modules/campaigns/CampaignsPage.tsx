@@ -8,6 +8,7 @@ import { useCompanyStore } from "../companies/CompanyStore";
 import { useTemplateStore } from "../templates/TemplateStore";
 import { getGmailStatus, sendGmailCampaign, syncGmailReplies } from "../../lib/gmailApi";
 import { MetaCampaignDialog } from "./MetaCampaignDialog";
+import { WhatsAppDeliveryMetrics } from "./WhatsAppDeliveryMetrics";
 import { WhatsAppConversationDialog } from "./WhatsAppConversationDialog";
 import { DirectMessageDialog } from "./DirectMessageDialog";
 import { storedWhatsAppBody } from "../../../supabase/functions/_shared/whatsapp-content";
@@ -2443,6 +2444,7 @@ export function CampaignsPage() {
                     <BarRow label="Interesados" value={analytics.interested} max={analytics.total} />
                     <BarRow label="Descartados" value={analytics.discarded} max={analytics.total} />
                   </div>
+                  {["whatsapp", "mixta"].includes(selectedCampaign.type.toLowerCase()) && <WhatsAppDeliveryMetrics campaignId={selectedCampaign.id} />}
                 </div>
               </div>
 

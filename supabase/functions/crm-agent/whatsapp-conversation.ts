@@ -155,7 +155,7 @@ export async function sendWhatsAppReply(db: SupabaseClient, env: Env, payload: R
     if (!response.ok) throw new Error("uncertain-send");
     const messageId = data.messages?.[0]?.id;
     if (typeof messageId !== "string" || !messageId) throw new Error("missing-message-id");
-    const { error } = await db.from("whatsapp_messages").update({ meta_message_id: messageId, status: "sent", provider_response: redactMeta(data,[context.config.token]) }).eq("id", id);
+    const { error } = await db.from("whatsapp_messages").update({ meta_message_id: messageId, status: "accepted", provider_response: redactMeta(data,[context.config.token]) }).eq("id", id);
     return { accepted: true, id, outcome: "accepted", warning: error ? "Meta acepto el mensaje; el registro local requiere revision. No reenviar." : null };
   } catch {
     return { accepted: false, id, outcome: "uncertain", warning: "Resultado incierto. Se conserva el intento para evitar duplicados. Actualiza el historial; no reenvies el mensaje." };

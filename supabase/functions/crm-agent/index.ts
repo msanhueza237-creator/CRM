@@ -16,6 +16,7 @@ import { getWhatsAppInbox, setWhatsAppRead } from "./whatsapp-inbox.ts";
 import { readMessageForm } from "../_shared/direct-message.ts";
 import { splitWhatsAppEvents, whatsappMessageBody, whatsappPhone, metaMessage } from "../_shared/whatsapp-content.ts";
 import { whatsappDispatchId } from "./whatsapp-meta.ts";
+import { getWhatsAppDelivery } from "./whatsapp-delivery.ts";
 
 type ApiKeyValidation = {
   valid: boolean;
@@ -112,10 +113,11 @@ Deno.serve(async (req) => {
       } catch (error) { return json({ error: error instanceof Error ? error.message : "No se pudo completar la operación." }, 400); }
     }
 
-    if ((["meta-whatsapp-conversation", "message-recipients", "whatsapp-inbox"].includes(route) && req.method === "GET") || (["meta-whatsapp-reply", "whatsapp-read"].includes(route) && req.method === "POST")) {
+    if ((["meta-whatsapp-conversation", "message-recipients", "whatsapp-inbox", "whatsapp-delivery"].includes(route) && req.method === "GET") || (["meta-whatsapp-reply", "whatsapp-read"].includes(route) && req.method === "POST")) {
       const admin = await requireCrmAdmin(req, supabase, true);
       if (!admin.authorized) return json({ error: admin.error }, admin.status);
       try {
+        if (route === "whatsapp-delivery") return json(await getWhatsAppDelivery(supabase, url.searchParams.get("campaignId") || ""));
         if (route === "whatsapp-inbox") return json(await getWhatsAppInbox(supabase, admin.userId!, url.searchParams));
         if (route === "whatsapp-read") return json(await setWhatsAppRead(supabase, admin.userId!, await readJsonObject(req)));
         if (route === "message-recipients") return json(await getMessageRecipients(supabase));
@@ -2285,6 +2287,11 @@ async function handleWhatsAppWebhookEvent(context: RouteContext, validation: Api
     eventType = parsed.eventType;
   }
 
+  if (eventType === "status" && metaMessageId) {
+    await updateWhatsAppMessageStatus(context.supabase, metaMessageId, rawPayload);
+    return json({ success: true, event_type: eventType, meta_message_id: metaMessageId });
+  }
+
   await context.supabase.from("whatsapp_webhook_events").insert({
     event_type: eventType,
     meta_message_id: metaMessageId || null,
@@ -2292,11 +2299,6 @@ async function handleWhatsAppWebhookEvent(context: RouteContext, validation: Api
     payload: rawPayload,
     processed: false,
   });
-
-  if (eventType === "status" && metaMessageId) {
-    await updateWhatsAppMessageStatus(context.supabase, metaMessageId, rawPayload);
-    return json({ success: true, event_type: eventType, meta_message_id: metaMessageId });
-  }
 
   if (!sender || !message) {
     return json({ error: "Missing sender or message content" }, 400);
@@ -2615,9 +2617,10 @@ async function updateWhatsAppMessageStatus(
   metaMessageId: string,
   rawPayload: Record<string, unknown>,
 ) {
-  const { error } = await supabase.rpc("crm_whatsapp_message_status", { p_meta_id: metaMessageId, p_payload: rawPayload });
+  const { data, error } = await supabase.rpc("crm_whatsapp_message_status", { p_meta_id: metaMessageId, p_payload: rawPayload });
   if (error) throw new Error("No se pudo registrar el estado de entrega WhatsApp.");
-  await supabase.from("whatsapp_webhook_events").update({ processed: true }).eq("meta_message_id", metaMessageId);
+  // Ask Meta to retry if the acceptance transaction is still in flight.
+  if (data?.processed === false) throw new Error("Confirmación guardada, pendiente de vincular al envío.");
 }
 
 async function handleMetaWhatsAppStatus(context: RouteContext) {

@@ -98,7 +98,7 @@ test('manual reply sends exact text only after confirmation and keeps marketing 
  const db=dbFixture(),p=request(),calls=[];
  const out=await sendWhatsAppReply(db,env,p,'u1',async(url,options)=>{calls.push(JSON.parse(options.body));return Response.json({messages:[{id:'wamid.out'}]})});
  assert.equal(out.accepted,true);assert.equal(calls[0].to,phone);assert.equal(calls[0].text.body,p.text);assert.equal(calls[0].type,'text');
- assert.equal(db.tables.whatsapp_messages.at(-1).status,'sent');assert.equal(db.tables.companies[0].whatsapp_status,'sin_consentimiento');
+ assert.equal(db.tables.whatsapp_messages.at(-1).status,'accepted');assert.equal(db.tables.companies[0].whatsapp_status,'sin_consentimiento');
  await assert.rejects(sendWhatsAppReply(db,env,p,'u1',()=>{throw Error('must not send')}),/intento registrado/);
 });
 for(const [name,change,rows] of [
