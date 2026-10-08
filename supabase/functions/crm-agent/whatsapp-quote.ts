@@ -3,6 +3,8 @@ import { messageUuid } from '../_shared/direct-message.ts';
 import { quoteParty, quoteTotals, type CrmQuote, type QuoteLine } from '../_shared/crm-quote.ts';
 import { readWhatsAppProductEvidence } from './whatsapp-automation-preview.ts';
 import { readLiveWhatsAppProduct } from './whatsapp-tiendanube-live.ts';
+import { getWhatsAppConversation } from './whatsapp-conversation.ts';
+import { deriveQuoteLines } from '../_shared/whatsapp-quote-context.ts';
 type Env=(names:string[])=>string;
 export async function quoteCatalog(db:SupabaseClient,env:Env,search:string) {
  const products=await readWhatsAppProductEvidence(db,env(['WHATSAPP_STORE_CURRENCY']));
@@ -63,4 +65,16 @@ export async function readCrmQuote(db:SupabaseClient,id:string) {
  const {data,error}=await db.from('interactions').select('result,type').eq('id',id).maybeSingle();
  if(error||!data||data.type!=='cotizacion')throw Error('No se encontró la cotización.');
  try{const quote=JSON.parse(data.result);if(quote.kind!=='crm_quote_v1'||quote.id!==id)throw Error('not_crm_quote');return {quote:quote as CrmQuote};}catch{throw Error('Este registro no contiene un PDF generado por el CRM.');}
+}
+
+export async function quoteConversationContext(db:SupabaseClient,env:Env,query:URLSearchParams) {
+ const companyId=query.get('companyId')||'',phone=query.get('phone')||'',contactId=query.get('contactId')||'',sourceMessageId=query.get('sourceMessageId')||'';
+ if(!messageUuid.test(companyId)||!messageUuid.test(sourceMessageId))throw Error('Selecciona una conversación válida.');
+ let messages:Array<{id:string;direction:string;body:string;status:string;occurredAt:string}>=[];
+ for(let offset=0;offset<500;offset+=50){const page=await getWhatsAppConversation(db,env,companyId,phone,offset,contactId);messages.push(...page.messages);if(page.nextOffset===null||page.messages.some(m=>Date.parse(m.occurredAt)<Date.now()-30*86400000))break;if(offset===450)throw Error('Carga el historial anterior para revisar la selección.');}
+ const source=messages.find(m=>m.id===sourceMessageId&&m.direction==='inbound');if(!source)throw Error('No se encontró el mensaje de origen en esta conversación.');
+ // Never use messages sent after the request being quoted, or another phone.
+ messages=messages.filter(m=>Date.parse(m.occurredAt)<=Date.parse(source.occurredAt));
+ const products=await readWhatsAppProductEvidence(db,'CLP');
+ return deriveQuoteLines(messages,products);
 }

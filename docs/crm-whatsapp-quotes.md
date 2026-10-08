@@ -2,6 +2,8 @@
 
 El botón **Preparar cotización PDF** está en la conversación WhatsApp, en celular y escritorio. Extrae como borrador el RUT y los datos que siguen al RUT en el último mensaje; el vendedor debe revisarlos. Las cantidades de soportes de muro/techo se proponen al seleccionar un modelo, sin inferir códigos ambiguos.
 
+El formulario recupera el historial del mismo cliente y número (hasta 500 mensajes recientes), interpreta selecciones numéricas sobre listas realmente enviadas y confirmaciones de producto/cantidad. Las cantidades explícitas de la solicitud de cotización prevalecen. No usa mensajes posteriores a esa solicitud ni ofertas fallidas; si falta un modelo inequívoco, lo señala. El mensaje de origen se fija al abrir el formulario para no sobrescribir ediciones mientras llegan respuestas nuevas.
+
 1. Revisar emisor y cliente: nombre/razón social, RUT, dirección y comuna. Logo PNG/JPG opcional.
 2. Buscar y seleccionar códigos únicos del catálogo Tiendanube; revisar cantidades.
 3. Confirmar si los precios de tienda incluyen IVA o son netos, vigencia y condiciones de despacho/pago.

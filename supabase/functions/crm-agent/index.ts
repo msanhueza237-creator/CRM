@@ -8,7 +8,7 @@ import { retainedDiscoveryHint, publicResearchContext } from "./prospecting-enri
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
 import { dispatchWhatsAppCampaign, getWhatsAppTemplates, getWhatsAppConfig } from "./whatsapp-dispatch.ts";
-import { quoteCatalog, prepareCrmQuote, registerCrmQuote, readCrmQuote } from "./whatsapp-quote.ts";
+import { quoteCatalog, prepareCrmQuote, registerCrmQuote, readCrmQuote, quoteConversationContext } from "./whatsapp-quote.ts";
 import { previewWhatsAppAutomation } from "./whatsapp-automation-preview.ts";
 import { templateManagement, processTemplateWebhook } from "./whatsapp-template-manager.ts";
 import { resolveIncomingWhatsAppRecipient } from "./whatsapp-incoming.ts";
@@ -116,10 +116,11 @@ Deno.serve(async (req) => {
       } catch (error) { return json({ error: error instanceof Error ? error.message : "No se pudo completar la operación." }, 400); }
     }
 
-    if (["whatsapp-quote-catalog", "whatsapp-quote-preview", "whatsapp-quote-register", "whatsapp-quote-record"].includes(route)) {
+    if (["whatsapp-quote-catalog", "whatsapp-quote-preview", "whatsapp-quote-register", "whatsapp-quote-record", "whatsapp-quote-context"].includes(route)) {
       const admin = await requireCrmAdmin(req, supabase, true);
       if (!admin.authorized) return json({ error: admin.error }, admin.status);
       try {
+        if (route === "whatsapp-quote-context") return req.method === "GET" ? json(await quoteConversationContext(supabase, firstEnvValue, url.searchParams)) : json({ error: "Método no permitido." }, 405);
         if (route === "whatsapp-quote-record") return req.method === "GET" ? json(await readCrmQuote(supabase, url.searchParams.get("id") || "")) : json({ error: "Método no permitido." }, 405);
         if (route === "whatsapp-quote-catalog") return req.method === "GET" ? json(await quoteCatalog(supabase, firstEnvValue, url.searchParams.get("search") || "")) : json({ error: "Método no permitido." }, 405);
         if (req.method !== "POST") return json({ error: "Método no permitido." }, 405);
