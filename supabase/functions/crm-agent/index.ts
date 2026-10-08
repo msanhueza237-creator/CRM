@@ -8,6 +8,7 @@ import { retainedDiscoveryHint, publicResearchContext } from "./prospecting-enri
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
 import { dispatchWhatsAppCampaign, getWhatsAppTemplates, getWhatsAppConfig } from "./whatsapp-dispatch.ts";
+import { previewWhatsAppAutomation } from "./whatsapp-automation-preview.ts";
 import { templateManagement, processTemplateWebhook } from "./whatsapp-template-manager.ts";
 import { resolveIncomingWhatsAppRecipient } from "./whatsapp-incoming.ts";
 import { validWhatsAppWebhookAccount, whatsappRoleAllowed, metaFunctionalError } from "./whatsapp-policy.ts";
@@ -114,10 +115,11 @@ Deno.serve(async (req) => {
       } catch (error) { return json({ error: error instanceof Error ? error.message : "No se pudo completar la operación." }, 400); }
     }
 
-    if ((["meta-whatsapp-conversation", "message-recipients", "whatsapp-inbox", "whatsapp-delivery"].includes(route) && req.method === "GET") || (["meta-whatsapp-reply", "whatsapp-read"].includes(route) && req.method === "POST")) {
+    if ((["meta-whatsapp-conversation", "message-recipients", "whatsapp-inbox", "whatsapp-delivery", "whatsapp-assistant-preview"].includes(route) && req.method === "GET") || (["meta-whatsapp-reply", "whatsapp-read"].includes(route) && req.method === "POST")) {
       const admin = await requireCrmAdmin(req, supabase, true);
       if (!admin.authorized) return json({ error: admin.error }, admin.status);
       try {
+        if (route === "whatsapp-assistant-preview") return json(await previewWhatsAppAutomation(supabase, firstEnvValue, url.searchParams));
         if (route === "whatsapp-delivery") return json(await getWhatsAppDelivery(supabase, url.searchParams.get("campaignId") || ""));
         if (route === "whatsapp-inbox") return json(await getWhatsAppInbox(supabase, admin.userId!, url.searchParams));
         if (route === "whatsapp-read") return json(await setWhatsAppRead(supabase, admin.userId!, await readJsonObject(req)));

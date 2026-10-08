@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle, RefreshCw, Send, X } from "lucide-react";
-import { getWhatsAppConversation, getWhatsAppTemplates, type MetaTemplate, type WhatsAppConversation } from "../../lib/whatsappApi";
+import { getWhatsAppConversation, getWhatsAppTemplates, getWhatsAppAssistantPreview, type WhatsAppAssistantPreview, type MetaTemplate, type WhatsAppConversation } from "../../lib/whatsappApi";
 import { sendDirectMessage } from "../../lib/directMessageApi";
 import { notifyInboxChanged, setWhatsAppRead } from "../../lib/whatsappInboxApi";
 import { MessageAttachments } from "./MessageAttachments";
@@ -29,6 +29,9 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   const [uncertain, setUncertain] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [readError, setReadError] = useState("");
+  const [assistant, setAssistant] = useState<WhatsAppAssistantPreview | null>(null);
+  const [assistantLoading, setAssistantLoading] = useState(false);
+  const [assistantError, setAssistantError] = useState("");
   const acknowledged = useRef(new Set<string>());
   const marking = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
@@ -38,6 +41,20 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   const generation = useRef(0);
   const olderLoaded = useRef(false);
   const history = useRef<HTMLDivElement>(null);
+  const latestInboundMessage = data?.messages.slice().reverse().find(m => m.direction === "inbound");
+  const latestInbound = latestInboundMessage?.id;
+  const assistantCurrent = Boolean(assistant?.messageId && assistant.messageId === latestInbound &&
+    !(data?.lastOutboundAt && latestInboundMessage && Date.parse(data.lastOutboundAt) >= Date.parse(latestInboundMessage.occurredAt)));
+  useEffect(() => { setAssistant(null); setAssistantError(""); }, [latestInbound, data?.lastOutboundAt]);
+  async function suggest() {
+    if (!data || assistantLoading || sending) return;
+    setAssistantLoading(true); setAssistantError("");
+    try {
+      const result = await getWhatsAppAssistantPreview(companyId, data.phone, contactId);
+      if (active.current) setAssistant(result);
+    } catch (err) { if (active.current) setAssistantError(err instanceof Error ? err.message : "No se pudo preparar la propuesta."); }
+    finally { if (active.current) setAssistantLoading(false); }
+  }
 
   async function load(older = false, quiet = false) {
     const serial = ++generation.current;
@@ -133,6 +150,15 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
       </article>)}
     </div>
     <footer>
+      {companyId && <section aria-label="Asistente de respuesta" className="wa-template-preview">
+        <strong>Asistente de respuesta</strong>
+        <button type="button" className="ghost-button" disabled={!open || loading || sending || assistantLoading || uncertain} onClick={() => void suggest()}>{assistantLoading ? "Consultando catálogo..." : "Proponer respuesta"}</button>
+        {assistantError && <p role="alert">{assistantError}</p>}
+        {assistantCurrent && assistant?.plan.text && <><p>{assistant.plan.text}</p><small>{assistant.plan.source === "tiendanube" ? "Fuente: catálogo de Tiendanube." : "Propuesta para revisar."}</small>
+          <button type="button" className="ghost-button" disabled={!open || sending || loading || uncertain || mode !== "reply" || Boolean(text.trim()) || Boolean(files.length)} onClick={() => { setText(assistant.plan.text || ""); }}>Usar propuesta</button></>}
+        {assistantCurrent && !assistant?.plan.text && <p>{assistant?.plan.requires === "vision" ? "Esta imagen necesita identificación antes de responder." : assistant?.plan.requires === "transcription" ? "Este audio necesita transcripción antes de responder." : assistant?.plan.requires === "facto_quote" ? "Esta solicitud necesita una cotización formal." : assistant?.plan.requires === "verified_order" ? "Verifica el pedido o las condiciones de despacho antes de responder." : "No hay datos suficientes para proponer una respuesta fiable. Revisa la consulta."}</p>}
+        {assistant && !assistantCurrent && <p>La conversación cambió. Consulta una propuesta para el último mensaje.</p>}
+      </section>}
       {!windowOpen && !contactBlocked && mode!=="template" && <button className="ghost-button" disabled={sending||uncertain} onClick={()=>setMode("template")}>Seleccionar plantilla</button>}
       <div className="direct-channels" role="group" aria-label="Tipo de mensaje WhatsApp"><button type="button" aria-pressed={mode === "reply"} disabled={sending || uncertain} onClick={() => setMode("reply")}>Mensaje</button><button type="button" aria-pressed={mode === "template"} disabled={sending || uncertain} onClick={() => setMode("template")}>Plantilla aprobada</button></div>
       {(mode === "template" ? data?.templateReasons : data?.reasons)?.map(reason => <p className="wa-alert" key={reason}>{reason}</p>)}

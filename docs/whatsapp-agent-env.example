@@ -1,0 +1,9 @@
+# Backend crm-agent only. Not frontend VITE_ variables, not Cloud test fixtures.
+WHATSAPP_STORE_CURRENCY=CLP
+# Enable only after validating the existing store connection in this backend.
+WHATSAPP_LIVE_CATALOG_ENABLED=false
+# Use existing Tiendanube integration values through the secure backend settings.
+# Do not paste actual credentials into this file or chat.
+TIENDANUBE_STORE_ID=
+TIENDANUBE_ACCESS_TOKEN=
+TIENDANUBE_USER_AGENT=

@@ -64,6 +64,15 @@ export function getWhatsAppConversation(companyId: string, phone = "", offset = 
   return whatsappRequest<WhatsAppConversation>(`meta-whatsapp-conversation?${query}`);
 }
 
+export interface WhatsAppAssistantPreview {
+  messageId: string | null;
+  plan: { action: "ignore" | "draft" | "clarify" | "handoff"; reason: string; text: string | null;
+    requires: string; source: "tiendanube" | null; canSend: false };
+}
+export function getWhatsAppAssistantPreview(companyId: string, phone: string, contactId = "") {
+  return whatsappRequest<WhatsAppAssistantPreview>(`whatsapp-assistant-preview?${new URLSearchParams({ companyId, phone, contactId })}`);
+}
+
 export function sendWhatsAppReply(body: { companyId: string; phone: string; text: string; requestId: string; confirmSend: true }) {
   return whatsappRequest<{ accepted: boolean; id: string; outcome: "accepted" | "rejected" | "uncertain"; warning: string | null }>("meta-whatsapp-reply", body);
 }
