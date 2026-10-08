@@ -57,3 +57,10 @@ export async function registerCrmQuote(db:SupabaseClient,env:Env,userId:string,p
  if(error)throw Error('No se pudo registrar la cotización. Reintenta con el mismo identificador.');
  return {quote,alreadyRegistered:false};
 }
+
+export async function readCrmQuote(db:SupabaseClient,id:string) {
+ if(!messageUuid.test(id))throw Error('Identificador de cotización inválido.');
+ const {data,error}=await db.from('interactions').select('result,type').eq('id',id).maybeSingle();
+ if(error||!data||data.type!=='cotizacion')throw Error('No se encontró la cotización.');
+ try{const quote=JSON.parse(data.result);if(quote.kind!=='crm_quote_v1'||quote.id!==id)throw Error('not_crm_quote');return {quote:quote as CrmQuote};}catch{throw Error('Este registro no contiene un PDF generado por el CRM.');}
+}

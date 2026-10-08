@@ -1,3 +1,4 @@
+import { whatsappRequest } from "../../lib/whatsappApi";
 import { crmQuotePdf } from "../../lib/crmQuotePdf";
 import type { CrmQuote } from "../../../supabase/functions/_shared/crm-quote";
 import { useEffect, useState } from "react";
@@ -100,7 +101,7 @@ export function CompanyJourneyView({ result, loading, error, section = "all" }: 
     {!data.events.length ? <p className="company-insight-note">Sin coincidencias verificadas para estos filtros.</p> : <ol className="company-journey-events">
       {data.events.map(event => <li key={event.id}>
         <div className="company-journey-event-date"><time>{date(event.date)}</time><span>{event.source}</span></div>
-        <div className="company-journey-event-body"><strong>{event.title}</strong><span className="company-journey-state">{statusNames[event.status] || event.status}</span><QuoteRecordDetail detail={event.detail} />
+        <div className="company-journey-event-body"><strong>{event.title}</strong><span className="company-journey-state">{statusNames[event.status] || event.status}</span><QuoteRecordDetail detail={event.detail} id={event.id} title={event.title} />
           {event.identity && <small>{event.identity}</small>}
           {safeHref(event.href) && <a href={safeHref(event.href)} target="_blank" rel="noreferrer">{event.section === "documents" ? "Ver documento en CRM" : "Abrir referencia"} <ArrowUpRight size={14} /></a>}
         </div>
@@ -111,10 +112,8 @@ export function CompanyJourneyView({ result, loading, error, section = "all" }: 
   </>;
 }
 
-function QuoteRecordDetail({detail}:{detail:string}) {
- const [error,setError]=useState('');let quote:CrmQuote|null=null;
- try{const parsed=JSON.parse(detail);if(parsed.kind==='crm_quote_v1'&&Array.isArray(parsed.lines)&&parsed.folio&&parsed.issuer&&parsed.customer)quote=parsed;}catch{}
- if(!quote)return <p>{detail}</p>;
- const value=quote;
- return <div><p>Cotización comercial del CRM · Total ${quote.total.toLocaleString('es-CL')} CLP · Vigencia {quote.validDays} días</p><button className="ghost-button" type="button" style={{minHeight:44}} onClick={()=>void (async()=>{try{const file=await crmQuotePdf(value);const url=URL.createObjectURL(file);const a=document.createElement('a');a.href=url;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}catch{setError('No se pudo descargar la cotización.');}})()}>Descargar cotización PDF</button>{error&&<p role="alert">{error}</p>}</div>;
+function QuoteRecordDetail({detail,id,title}:{detail:string;id:string;title:string}) {
+ const [error,setError]=useState('');const [busy,setBusy]=useState(false);
+ if(!title.startsWith('Cotización CRM-')||!id.startsWith('interaction:'))return <p>{detail}</p>;
+ return <div><p>Cotización comercial guardada en el CRM.</p><button className="ghost-button" type="button" style={{minHeight:44}} disabled={busy} onClick={()=>void (async()=>{setBusy(true);setError('');try{const {quote}=await whatsappRequest<{quote:CrmQuote}>('whatsapp-quote-record?id='+encodeURIComponent(id.slice('interaction:'.length)));const file=await crmQuotePdf(quote);const url=URL.createObjectURL(file);const a=document.createElement('a');a.href=url;a.download=file.name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}catch(e){setError(e instanceof Error?e.message:'No se pudo descargar la cotización.');}finally{setBusy(false);}})()}>{busy?'Preparando PDF...':'Descargar cotización PDF'}</button>{error&&<p role="alert">{error}</p>}</div>;
 }
