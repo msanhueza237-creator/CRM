@@ -87,3 +87,20 @@ test('option numbers never resolve from a failed offer, another phone or unknown
   assert.notEqual((await run(s)).plan.reason,'purchase_quantity_required');
  }
 });
+
+function quantityQuestion(s) {
+ offer(s);s.db.tables.whatsapp_messages[1].body='Elegiste Manómetro R32 (código LX1030). ¿Cuántas unidades quieres?';
+ s.payload.canonical_url='https://www.climactiva.cl/productos/manometro/';
+}
+test('quantity 2 follows the sent question with current subtotal and purchase link, no cart writes',async()=>{
+ for(const text of ['2','quiero 2','2 unidades']){
+  const s=scenario(text);quantityQuestion(s);const r=await run(s);
+  assert.equal(r.plan.reason,'purchase_summary');assert.match(r.plan.text,/64.000 CLP/);assert.match(r.plan.text,/seleccionar 2 unidades/);
+  assert.equal(s.calls.length,1);assert.equal(r.plan.canSend,false);
+ }
+});
+test('quantity respects current stock and provider failures',async()=>{
+ const s=scenario('3');quantityQuestion(s);assert.equal((await run(s)).plan.reason,'purchase_insufficient_stock');
+ assert.equal((await run(s,async()=>new Response('',{status:503}))).plan.reason,'live_catalog_unavailable');
+ const noContext=scenario('2');assert.notEqual((await run(noContext)).plan.reason,'purchase_summary');
+});

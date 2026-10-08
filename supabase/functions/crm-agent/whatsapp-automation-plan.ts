@@ -79,6 +79,12 @@ function storeProductLink(product: ProductEvidence): string {
   } catch { return ""; }
 }
 
+export function purchaseQuantityContext(text: string, previousOffer = "") {
+  const question = previousOffer.match(/^Elegiste .+ \(código ([^\n]+)\)\. ¿Cuántas unidades quieres\?$/);
+  const quantity = text.trim().toLowerCase().match(/^(?:(?:quiero|necesito|dame)\s+)?([1-9]\d{0,3})(?:\s+(?:unidades?|piezas?))?[.!?\s]*$/);
+  return question && quantity ? { sku: question[1], quantity: Number(quantity[1]) } : null;
+}
+
 // Preparation only. This module cannot call Meta, a model, or any database.
 // Evidence is supplied by a trusted backend reader, never by the customer.
 export function planWhatsAppAutomation(input: {
@@ -117,6 +123,21 @@ export function planWhatsAppAutomation(input: {
     return plan("handoff", "verified_order_or_shipping_policy_required", null, "verified_order");
   if (/^(hola|buenos dias|buenas tardes|buenas noches)[!.\s]*$/.test(normalized))
     return plan("draft", "greeting", "Hola, soy el asistente de Clima Activa. ¿Qué producto o código necesitas consultar?");
+  const purchase = purchaseQuantityContext(text, input.previousOffer);
+  if (purchase) {
+    const matches = input.products.filter(p => p.published && p.source === "tiendanube" && p.sku === purchase.sku);
+    if (matches.length !== 1) return plan("clarify", "purchase_product_missing", "¿Puedes confirmar el código del producto?", "product");
+    const p = matches[0];
+    if (!Number.isFinite(Date.parse(p.verifiedAt)) || Date.parse(p.verifiedAt) > now || now - Date.parse(p.verifiedAt) > 900000 ||
+      p.currency !== "CLP" || p.price === null || !Number.isFinite(p.price) || p.price < 0 || p.stock === null || !Number.isSafeInteger(p.stock))
+      return plan("handoff", "purchase_data_required", null, "product");
+    if (p.stock < purchase.quantity)
+      return plan("draft", "purchase_insufficient_stock", `La tienda registra ${p.stock} unidades de ${p.name} (${p.sku}); no alcanza para las ${purchase.quantity} que necesitas. ¿Quieres consultar otra cantidad o un modelo alternativo?`, "none", "tiendanube");
+    const total = p.price * purchase.quantity;
+    const link = storeProductLink(p);
+    if (!Number.isFinite(total) || !link) return plan("handoff", "purchase_data_required", null, "product");
+    return plan("draft", "purchase_summary", `Para ${purchase.quantity} unidades de ${p.name} (${p.sku}), el subtotal es $${total.toLocaleString("es-CL")} CLP, sin incluir despacho.\n\nPuedes continuar la compra en la tienda, seleccionar ${purchase.quantity} unidades y agregarlas al carrito:\n${link}\n\nEl stock y el total final se confirman en la tienda.`, "none", "tiendanube");
+  }
   const selection = normalized.match(/\b(?:numero|opcion|modelo|producto)\s*(?:n[°º.]?\s*)?(\d{1,2})\b/) || normalized.match(/^\s*(\d{1,2})[.!?\s]*$/);
   if (selection && input.previousOffer && /Encontré estos modelos en el catálogo:/.test(input.previousOffer)) {
     const choices = [...input.previousOffer.matchAll(/(?:^|\n)(\d+)\. ([^\n]+)\nCódigo: ([^\n]+)/g)]

@@ -3,7 +3,7 @@ import { messageUuid } from "../_shared/direct-message.ts";
 import { metaMessage, whatsappPhone } from "../_shared/whatsapp-content.ts";
 import { getWhatsAppConfig } from "./whatsapp-dispatch.ts";
 import { getWhatsAppConversation } from "./whatsapp-conversation.ts";
-import { planWhatsAppAutomation, resolveWhatsAppProductReferences, suggestWhatsAppProducts, type ProductEvidence } from "./whatsapp-automation-plan.ts";
+import { planWhatsAppAutomation, resolveWhatsAppProductReferences, suggestWhatsAppProducts, purchaseQuantityContext, type ProductEvidence } from "./whatsapp-automation-plan.ts";
 
 import { readLiveWhatsAppProduct } from "./whatsapp-tiendanube-live.ts";
 
@@ -69,6 +69,19 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
     ? String(previous.body || "").slice(0, 4096) : "";
   const input = { previousOffer, incoming, phoneNumberId: configPhone, products, optedOut: false, humanTakeover: false };
   let plan = planWhatsAppAutomation(input);
+  const quantityMessage = metaMessage(incoming.raw_payload, incoming.meta_message_id)?.message;
+  const purchase = purchaseQuantityContext(String(quantityMessage?.text?.body || ""), previousOffer);
+  if (purchase && ["purchase_data_required", "purchase_summary", "purchase_insufficient_stock"].includes(plan.reason)) {
+    const candidates = products.filter(p => p.sku === purchase.sku);
+    try {
+      if (candidates.length !== 1 || env(["WHATSAPP_LIVE_CATALOG_ENABLED"]) !== "true") throw new Error("live_required");
+      const live = await readLiveWhatsAppProduct(candidates[0], env, fetcher);
+      plan = live ? planWhatsAppAutomation({ ...input, products: [live] }) :
+        { action: "handoff", reason: "product_no_longer_available", text: null, requires: "product", source: null, canSend: false };
+    } catch {
+      plan = { action: "handoff", reason: "live_catalog_unavailable", text: null, requires: "product", source: null, canSend: false };
+    }
+  }
   if (env(["WHATSAPP_LIVE_CATALOG_ENABLED"]) === "true" &&
       (plan.reason === "verified_product_answer" || plan.reason === "stale_product_evidence" || plan.reason === "incomplete_product_evidence")) {
     const message = metaMessage(incoming.raw_payload, incoming.meta_message_id)?.message;
