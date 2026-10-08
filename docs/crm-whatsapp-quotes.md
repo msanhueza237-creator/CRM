@@ -49,3 +49,11 @@ register_numbered_crm_quote bloquea el contador, guarda número y snapshot junto
 y devuelve el registro anterior si se reintenta el mismo UUID. Un fallo revierte
 el contador. Solo service_role puede ejecutarla; las cotizaciones anteriores
 conservan sus folios. El logo original sigue siendo el archivo opcional del emisor.
+
+Emisor predeterminado: Importadora Latin Chile Limitada, RUT 77.724.382-9,
+ENC LOS QUILLAYES LT 76 F, Curacaví (documento de referencia del negocio).
+El logo original se incorporará cuando el negocio entregue el archivo.
+El asistente propone respuestas cordiales para saludos, agradecimientos y
+ despedidas. «Gracias por tu cotización» no inicia otra cotización; los mensajes
+mixtos con solicitudes nuevas siguen sus rutas comerciales. Todo sigue siendo
+una propuesta para revisión y envío manual dentro de la ventana de WhatsApp.

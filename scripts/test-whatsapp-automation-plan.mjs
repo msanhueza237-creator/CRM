@@ -113,3 +113,15 @@ test('exact product includes purchase link and unsafe links are omitted',()=>{
   i.products[0].productUrl=url;assert.doesNotMatch(planWhatsAppAutomation(i).text,/Ver producto y comprar:/);
  }
 });
+
+ test('courtesy drafts handle greetings, quote thanks and farewells without product reads or sending',()=>{
+  for(const [body,reason] of [['Hola 👋','greeting'],['Hola, cómo estás?','greeting'],['Buenas tardes','greeting'],['Muchas gracias','gratitude'],['Gracias por tu cotización','gratitude'],['Perfecto, gracias!','gratitude'],['Hasta luego','farewell'],['Que tengas un buen día','farewell']]){
+   const result=planWhatsAppAutomation({...fixture(body),products:[]});assert.equal(result.reason,reason,body);assert.equal(result.action,'draft');assert.ok(result.text);assert.equal(result.requires,'none');assert.equal(result.canSend,false);
+  }
+ });
+ test('thanks never hides a new quote, product question, complaint or withdrawal',()=>{
+  assert.equal(planWhatsAppAutomation(fixture('Gracias, necesito otra cotización')).reason,'formal_quote_required');
+  assert.equal(planWhatsAppAutomation(fixture('Hola, precio y stock LX1030')).reason,'verified_product_answer');
+  assert.equal(planWhatsAppAutomation(fixture('Gracias pero tengo un reclamo')).requires,'seller');
+  assert.equal(planWhatsAppAutomation(fixture('Gracias, no más mensajes')).action,'ignore');
+ });

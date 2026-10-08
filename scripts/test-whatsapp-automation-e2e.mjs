@@ -24,7 +24,7 @@ test('provider outages and unsafe responses fail closed even with a fresh local 
  }
 });
 test('greeting and unrelated URLs never query a provider; category uses bounded live reads',async()=>{
- for(const [text,action] of [['hola','draft'],['precio del manometro','clarify'],['precio LX1030 https://evil.example/product','clarify']]){const s=scenario(text);assert.equal((await run(s)).plan.action,action);assert.equal(s.calls.length,text==='precio del manometro'?1:0)}
+ for(const [text,action] of [['hola','draft'],['Gracias por tu cotización','draft'],['Muchas gracias','draft'],['Hasta luego','draft'],['precio del manometro','clarify'],['precio LX1030 https://evil.example/product','clarify']]){const s=scenario(text);assert.equal((await run(s)).plan.action,action);assert.equal(s.calls.length,text==='precio del manometro'?1:0)}
 });
 test('quote, tracking, seller, audio and image handoffs are explicit and do not query products',async()=>{
  for(const [text,requires] of [['cotizacion LX1030','facto_quote'],['seguimiento de pedido','verified_order'],['quiero vendedor','seller']]){const s=scenario(text);assert.equal((await run(s)).plan.requires,requires);assert.equal(s.calls.length,0)}

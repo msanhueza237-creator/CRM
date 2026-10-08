@@ -117,12 +117,23 @@ export function planWhatsAppAutomation(input: {
   if (/\b(salir|stop|baja)\b|no mas mensajes/.test(normalized)) return plan("ignore", "withdrawal_request");
   if (/\b(vendedor|persona|humano|reclamo|devolucion|descuento)\b/.test(normalized))
     return plan("handoff", "seller_requested_or_exception", null, "seller");
+  // Courtesy-only messages precede quotation intent; mixed business requests
+  // still follow normal product/quote/shipping checks below.
+  const courtesy=normalized.replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
+  if (/^(?:(?:ok|perfecto|listo|bien) )?(?:muchas |mil |muchisimas )?gracias(?: por (?:(?:la|tu|su|toda la) )?(?:cotizacion|ayuda|informacion|atencion|respuesta|todo))?(?: igualmente)?$/.test(courtesy)) {
+    const quoteThanks=/\bcotizacion\b/.test(courtesy);
+    return plan("draft", "gratitude", quoteThanks
+      ? "¡Con mucho gusto! Gracias por confiar en Clima Activa. Si tienes alguna duda sobre la cotización o necesitas algo más, estamos para ayudarte."
+      : "¡Con mucho gusto! Gracias por contactarnos. Si necesitas algo más, estaremos encantados de ayudarte.");
+  }
+  if (/^(?:adios|chao|chau|hasta luego|hasta pronto|hasta manana|nos vemos|que tengas (?:un )?(?:buen|excelente) dia)(?: muchas gracias| gracias)?$/.test(courtesy))
+    return plan("draft", "farewell", "¡Fue un gusto ayudarte! Que tengas un excelente día. Aquí estaremos cuando nos necesites.");
+  if (/^(?:(?:hola|holaa|buenas|buenos dias|buenas tardes|buenas noches)(?: (?:hola|buenas|buenos dias|buenas tardes|buenas noches))?)(?: como (?:estas|estan)| que tal)?$/.test(courtesy))
+    return plan("draft", "greeting", "¡Hola! Bienvenido a Clima Activa. Soy el asistente de atención. ¿En qué podemos ayudarte? Puedes consultar por productos, precios o disponibilidad.");
   if (/\b(cotizacion|cotizar|presupuesto)\b/.test(normalized))
     return plan("handoff", "formal_quote_required", null, "facto_quote");
   if (/\b(seguimiento|tracking|pedido|despacho|envio|entrega)\b/.test(normalized))
     return plan("handoff", "verified_order_or_shipping_policy_required", null, "verified_order");
-  if (/^(hola|buenos dias|buenas tardes|buenas noches)[!.\s]*$/.test(normalized))
-    return plan("draft", "greeting", "Hola, soy el asistente de Clima Activa. ¿Qué producto o código necesitas consultar?");
   const purchase = purchaseQuantityContext(text, input.previousOffer);
   if (purchase) {
     const matches = input.products.filter(p => p.published && p.source === "tiendanube" && p.sku === purchase.sku);

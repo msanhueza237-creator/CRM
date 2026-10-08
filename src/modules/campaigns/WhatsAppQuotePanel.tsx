@@ -14,7 +14,7 @@ export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,o
  const [logoDataUrl,setLogoDataUrl]=useState('');
  const [id,setId]=useState(()=>crypto.randomUUID());
  const [customer,setCustomer]=useState(()=>seedCustomer(message));
- const [issuer,setIssuer]=useState<QuoteParty>({name:'Importadora Latin Chile Limitada',rut:'77.724.382-9',address:'',commune:''});
+ const [issuer,setIssuer]=useState<QuoteParty>({name:'Importadora Latin Chile Limitada',rut:'77.724.382-9',address:'ENC LOS QUILLAYES LT 76 F',commune:'Curacaví'});
  const [search,setSearch]=useState('soporte');const [options,setOptions]=useState<Array<{sku:string;name:string}>>([]);
  const [lines,setLines]=useState<Array<{sku:string;name:string;quantity:number}>>([]);
  const [validDays,setValidDays]=useState(7);const includeVat=true;
