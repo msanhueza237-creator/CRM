@@ -59,7 +59,7 @@ export function resolveWhatsAppProductReferences(text: string, reference: string
 export function suggestWhatsAppProducts(text: string, products: ProductEvidence[]) {
   const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
     .replace(/\bcorta[ -]?tubos?\b/g, "cortatubos").replace(/\bcortador(?:es)? de tubos?\b/g, "cortatubos");
-  const stop = new Set("tienes tiene tienen hay venden vendes manejan precio precios valor cuanto cuesta cuestan vale valen stock disponibilidad disponible disponibles del para por con una uno unos unas los las un de el la me que si saber quiero necesito hola buenas puedes producto productos actual".split(" "));
+  const stop = new Set("tienes tiene tienen tendras tendran tendria tendrias tendrian hay venden vendes manejan precio precios valor cuanto cuesta cuestan vale valen stock disponibilidad disponible disponibles del para por con una uno unos unas los las un de el la me que si saber quiero necesito hola buenas puedes producto productos actual".split(" "));
   const query = [...new Set((normalize(text).match(/[a-z0-9]+/g) || []).filter(w => w.length >= 3 && !stop.has(w)))];
   if (!query.length || query.length > 6 || /https?:\/\//i.test(text)) return [];
   return products.filter(p => {
@@ -117,7 +117,7 @@ export function planWhatsAppAutomation(input: {
   if (/^(hola|buenos dias|buenas tardes|buenas noches)[!.\s]*$/.test(normalized))
     return plan("draft", "greeting", "Hola, soy el asistente de Clima Activa. ¿Qué producto o código necesitas consultar?");
   const asksPrice = /\b(precio|precios|valor|cuesta|cuestan|vale|valen)\b/.test(normalized);
-  const asksStock = /\b(stock|disponibilidad|disponible|disponibles|tienes|tiene|tienen|venden|vendes|manejan|hay)\b/.test(normalized);
+  const asksStock = /\b(stock|disponibilidad|disponible|disponibles|tienes|tiene|tienen|tendras|tendran|tendria|tendrias|tendrian|venden|vendes|manejan|hay)\b/.test(normalized);
   if (!asksPrice && !asksStock) return plan("handoff", "complex_question", null, "seller");
   const reference = String(message.context?.referred_product?.product_retailer_id || "").trim();
   const { matches, unknownLink } = resolveWhatsAppProductReferences(text, reference, input.products);

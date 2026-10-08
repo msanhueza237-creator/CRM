@@ -61,3 +61,13 @@ test('category provider failure does not offer stale links',async()=>{
  const s=scenario('tienes corta tubos');s.product.name='Corta tubo LT-274';
  const r=await run(s,async()=>new Response('',{status:503}));assert.equal(r.plan.reason,'live_catalog_unavailable');assert.equal(r.plan.text,null);
 });
+
+test('soporte de muro tendras resolves catalog models and their current links',async()=>{
+ for(const verb of ['tendrás','tendrán','tendrías']){
+  const s=scenario(`soporte de muro ${verb}?`);
+  s.product.name=s.payload.name.es='Soporte Muro Plegable 450x390x1.5mm 9000 a 12000BTU kit instalacion';
+  s.payload.canonical_url='https://www.climactiva.cl/productos/soporte-muro-plegable/';
+  const r=await run(s);assert.equal(r.plan.action,'clarify');assert.match(r.plan.text,/Soporte Muro Plegable/);
+  assert.match(r.plan.text,/https:\/\/www.climactiva.cl\/productos\/soporte-muro-plegable\//);assert.equal(s.calls.length,1);assert.equal(r.plan.canSend,false);
+ }
+});
