@@ -1,3 +1,4 @@
+import { quotePendingFields } from '../../../supabase/functions/_shared/crm-quote';
 import {useEffect,useState} from 'react';
 import {whatsappRequest} from '../../lib/whatsappApi';
 import {crmQuotePdf} from '../../lib/crmQuotePdf';
@@ -36,6 +37,7 @@ export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,o
  return <section className="wa-quote-panel" aria-label="Cotización comercial CRM">
   <strong>Cotización comercial CRM</strong><button type="button" disabled={busy} onClick={onClose}>Cerrar cotización</button>
   <p>Se recuperan los modelos y cantidades elegidos en la conversación. Revisa los datos antes de emitir. El PDF se enviará solo cuando pulses Enviar respuesta.</p>
+  {quotePendingFields({issuer,customer}).length>0&&<p className="wa-alert">Puedes preparar y guardar la cotización. Datos pendientes: {quotePendingFields({issuer,customer}).join('; ')}.</p>}
   {contextLoading&&<p role="status">Recuperando productos elegidos en la conversación...</p>}
   {unresolved.map((note,i)=><p key={i} className="wa-alert">{note}</p>)}
   {error&&<p role="alert" className="wa-alert">{error}</p>}

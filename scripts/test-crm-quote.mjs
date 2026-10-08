@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {quoteTotals,validQuoteRut} from '../supabase/functions/_shared/crm-quote.ts';
+import {quoteTotals,validQuoteRut,quotePendingFields} from '../supabase/functions/_shared/crm-quote.ts';
 import {prepareCrmQuote,registerCrmQuote,readCrmQuote} from '../supabase/functions/crm-agent/whatsapp-quote.ts';
 import {scenario} from './whatsapp-automation-fixture.mjs';
 const id='00000000-0000-4000-8000-000000000093';
@@ -22,8 +22,8 @@ test('registration requires review, preserves snapshot and is idempotent',async(
  const retry=await registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher);assert.equal(retry.alreadyRegistered,true);assert.equal(retry.quote.folio,r.quote.folio);assert.equal(s.db.tables.interactions.length,1);
 });
 test('price changes block registration until a new review',async()=>{const s=fixture(),expected=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);s.payload.variants[0].promotional_price='35000';await assert.rejects(registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher),/cambiaron/);assert.equal(s.db.tables.interactions.length,0);});
-test('missing customer, bad RUT, duplicate SKU, quantity and insufficient stock stop emission',async()=>{
- for(const edit of [p=>p.customer={...p.customer,rut:'15427713-1'},p=>p.issuer={...p.issuer,address:''},p=>p.lines=[...p.lines,...p.lines],p=>p.lines[0].quantity=0,p=>p.lines[0].quantity=3]){
+test('duplicate SKU, quantity and insufficient stock stop emission',async()=>{
+ for(const edit of [p=>p.lines=[...p.lines,...p.lines],p=>p.lines[0].quantity=0,p=>p.lines[0].quantity=3]){
   const s=fixture();edit(s.input);await assert.rejects(prepareCrmQuote(s.db,s.env,s.input,s.fetcher));assert.equal(s.db.tables.interactions.length,0);
  }
 });
@@ -34,4 +34,12 @@ test('saved quote retrieval preserves long snapshots rather than a history excer
  assert.ok(s.db.tables.interactions[0].result.length>1500);
  const result=await readCrmQuote(s.db,id);assert.equal(result.quote.conditions,expected.conditions);assert.equal(result.quote.lines[0].quantity,2);
  await assert.rejects(readCrmQuote(s.db,'bad-id'),/inválido/);
+});
+
+test('incomplete parties can be prepared and saved with pending fields preserved',async()=>{
+ const s=fixture();s.input.customer={name:'',rut:'15427713-1',address:'',commune:''};s.input.issuer.address='';
+ const expected=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);
+ assert.deepEqual(quotePendingFields(expected),['Emisor: dirección pendiente','Cliente: nombre pendiente','Cliente: RUT por verificar','Cliente: dirección pendiente','Cliente: comuna pendiente']);
+ const result=await registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher);
+ assert.equal(result.quote.customer.rut,'15427713-1');assert.equal(result.quote.total,64000);assert.equal(s.db.tables.interactions.length,1);
 });

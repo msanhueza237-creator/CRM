@@ -11,7 +11,6 @@ export function quoteParty(value: unknown): QuoteParty {
  const p=(value&&typeof value==='object'?value:{}) as Record<string,unknown>;
  const field=(k:string,max:number)=>typeof p[k]==='string'?String(p[k]).trim().slice(0,max):'';
  const party={name:field('name',160),rut:field('rut',15),address:field('address',200),commune:field('commune',80)};
- if(!party.name||!party.address||!party.commune||!validQuoteRut(party.rut))throw Error('Completa nombre, RUT válido, dirección y comuna del emisor y cliente.');
  return party;
 }
 // All line prices come from the backend's current Tiendanube reader. Store prices
@@ -23,4 +22,15 @@ export function quoteTotals(lines: Pick<QuoteLine,'unitPrice'|'quantity'>[], inc
  if(!Number.isSafeInteger(sum)||sum>1e12)throw Error('El monto excede el límite permitido.');
  const net=includeVat?Math.round(sum/1.19):sum,vat=includeVat?sum-net:Math.round(net*.19);
  return {net,vat,total:net+vat};
+}
+
+export function quotePendingFields(quote: Pick<CrmQuote,'issuer'|'customer'>): string[] {
+ const pending:string[]=[];
+ for(const [label,party] of [['Emisor',quote.issuer],['Cliente',quote.customer]] as const){
+  for(const [key,title] of [['name','nombre'],['rut','RUT'],['address','dirección'],['commune','comuna']] as const){
+   if(!party[key]?.trim())pending.push(`${label}: ${title} pendiente`);
+   else if(key==='rut'&&!validQuoteRut(party.rut))pending.push(`${label}: RUT por verificar`);
+  }
+ }
+ return pending;
 }

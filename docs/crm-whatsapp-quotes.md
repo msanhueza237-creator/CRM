@@ -28,3 +28,8 @@ del documento se redondea una sola vez a pesos; IVA = total publicado menos neto
 Este cálculo no se presenta como precio de Facto. Los registros de inventario de
 Facto deben verificar moneda y correspondencia del producto antes de reemplazar
 un precio de venta publicado; no se usan costos de compra para cotizar.
+
+Se permite preparar y registrar una cotización comercial aunque falten datos del
+emisor o cliente. El formulario y PDF enumeran campos pendientes y RUT por
+verificar, sin inventar datos ni considerar válido un RUT incorrecto. Productos,
+cantidades, precio actual, stock y confirmación manual siguen siendo necesarios.
