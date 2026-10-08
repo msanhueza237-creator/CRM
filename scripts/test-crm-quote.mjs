@@ -5,7 +5,8 @@ import {prepareCrmQuote,registerCrmQuote,readCrmQuote} from '../supabase/functio
 import {scenario} from './whatsapp-automation-fixture.mjs';
 const id='00000000-0000-4000-8000-000000000093';
 function fixture(){
- const s=scenario();s.db.tables.interactions=[];const original=s.db.from;
+ const s=scenario();s.db.tables.interactions=[];const original=s.db.from;let nextNumber=100;
+ s.db.rpc=async(_name,p)=>{const old=s.db.tables.interactions.find(r=>r.id===p.p_quote.id);if(old)return {data:{quote:JSON.parse(old.result),alreadyRegistered:true},error:null};const quote={...p.p_quote,quoteNumber:nextNumber,folio:'CRM-'+nextNumber++};s.db.tables.interactions.push({id:quote.id,company_id:p.p_company_id,type:'cotizacion',result:JSON.stringify(quote)});return {data:{quote,alreadyRegistered:false},error:null};};
  s.db.from=function(name){if(name!=='interactions')return original.call(this,name);let selected=id,inserted;
  const q={select(){return q},eq(k,v){selected=v;return q},insert(v){inserted=v;return q},async maybeSingle(){return {data:s.db.tables.interactions.find(r=>r.id===selected)||null,error:null}},then(resolve){if(inserted)s.db.tables.interactions.push(inserted);return Promise.resolve({error:null}).then(resolve)}};return q;};
  const party={name:'Cliente sintético',rut:'15.427.713-7',address:'Dirección sintética 100',commune:'Comuna de prueba'};
@@ -18,7 +19,7 @@ test('preview refreshes promotional variant price and does not register or send'
 test('registration requires review, preserves snapshot and is idempotent',async()=>{const s=fixture(),expected=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);
  await assert.rejects(registerCrmQuote(s.db,s.env,id,s.input,s.fetcher),/Revisa/);
  const r=await registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher);
- assert.equal(s.db.tables.interactions.length,1);assert.equal(JSON.parse(s.db.tables.interactions[0].result).total,64000);
+ assert.equal(r.quote.quoteNumber,100);assert.equal(r.quote.folio,'CRM-100');assert.equal(s.db.tables.interactions.length,1);assert.equal(JSON.parse(s.db.tables.interactions[0].result).total,64000);
  const retry=await registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher);assert.equal(retry.alreadyRegistered,true);assert.equal(retry.quote.folio,r.quote.folio);assert.equal(s.db.tables.interactions.length,1);
 });
 test('price changes block registration until a new review',async()=>{const s=fixture(),expected=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);s.payload.variants[0].promotional_price='35000';await assert.rejects(registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher),/cambiaron/);assert.equal(s.db.tables.interactions.length,0);});

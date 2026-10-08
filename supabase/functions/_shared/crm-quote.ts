@@ -1,6 +1,6 @@
 export type QuoteParty = { name: string; rut: string; address: string; commune: string };
 export type QuoteLine = { sku: string; name: string; quantity: number; unitPrice: number; amount: number; productUrl: string };
-export type CrmQuote = { kind: 'crm_quote_v1'; id: string; folio: string; date: string; validDays: number; issuer: QuoteParty; customer: QuoteParty; lines: QuoteLine[]; pricesIncludeVat: boolean; net: number; vat: number; total: number; conditions: string; sourceMessageId: string; verifiedAt: string; logoDataUrl?: string };
+export type CrmQuote = { kind: 'crm_quote_v1'; quoteNumber?: number; id: string; folio: string; date: string; validDays: number; issuer: QuoteParty; customer: QuoteParty; lines: QuoteLine[]; pricesIncludeVat: boolean; net: number; vat: number; total: number; conditions: string; sourceMessageId: string; verifiedAt: string; logoDataUrl?: string };
 export function validQuoteRut(value: string) {
  const rut=value.replace(/[.\s]/g,'').toUpperCase(), match=rut.match(/^(\d{7,8})-([\dK])$/);
  if(!match)return false;

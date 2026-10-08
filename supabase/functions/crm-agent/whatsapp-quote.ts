@@ -55,9 +55,9 @@ export async function registerCrmQuote(db:SupabaseClient,env:Env,userId:string,p
  const quote=await prepareCrmQuote(db,env,payload,fetcher);
  const expected=payload.expected as CrmQuote|undefined;
  if(!expected||JSON.stringify([expected.issuer,expected.customer,expected.lines,expected.validDays,expected.pricesIncludeVat,expected.conditions,expected.logoDataUrl])!==JSON.stringify([quote.issuer,quote.customer,quote.lines,quote.validDays,quote.pricesIncludeVat,quote.conditions,quote.logoDataUrl]))throw Error('Los datos o precios cambiaron. Vuelve a preparar y revisar la cotización.');
- const {error}=await db.from('interactions').insert({id,company_id:companyId,type:'cotizacion',owner_id:userId,description:`Cotización ${quote.folio} · ${quote.customer.name} · $${quote.total.toLocaleString('es-CL')} CLP · ${quote.lines.map(l=>`${l.quantity} x ${l.name} (${l.sku})`).join('; ')}`,result:JSON.stringify(quote),occurred_at:quote.date});
- if(error)throw Error('No se pudo registrar la cotización. Reintenta con el mismo identificador.');
- return {quote,alreadyRegistered:false};
+ const {data,error}=await db.rpc('register_numbered_crm_quote',{p_quote:quote,p_company_id:companyId,p_owner_id:userId});
+ if(error||!data?.quote)throw Error('No se pudo registrar la cotización. Reintenta con el mismo identificador.');
+ return data as {quote:CrmQuote;alreadyRegistered:boolean};
 }
 
 export async function readCrmQuote(db:SupabaseClient,id:string) {

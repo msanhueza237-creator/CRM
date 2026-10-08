@@ -20,7 +20,7 @@ export async function crmQuotePdf(quote: CrmQuote): Promise<File> {
   doc.setDrawColor(175,45,45);doc.setLineWidth(.6);doc.rect(130,12,68,28);
   doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(175,45,45);doc.text(`RUT: ${quote.issuer.rut||'pendiente'}`,164,18,{align:'center'});
   doc.setFontSize(9);doc.text('COTIZACIÓN COMERCIAL',164,23,{align:'center'});
-  const numberLines=wrap('N° '+quote.folio,62,7);
+  const numberLines=wrap('N° '+(quote.quoteNumber??quote.folio),62,quote.quoteNumber?13:7);
   numberLines.forEach((v,i)=>doc.text(v,164,28+i*3,{align:'center'}));
   return Math.max(45,issuerY+4);
  };

@@ -42,3 +42,10 @@ con el mismo folio/precios; el PDF se genera con el diseño vigente. Documentos
 largos repiten encabezado/tabla y muestran número de página y referencia.
 Validación adicional: `node scripts/test-crm-quote-pdf.mjs` comprueba 20 productos,
 varias páginas, folio, campos pendientes y totales sin solicitudes productivas.
+
+Las nuevas cotizaciones guardadas reciben número correlativo desde 100, folio
+CRM-100, CRM-101, etc. La vista previa no consume número. La función transaccional
+register_numbered_crm_quote bloquea el contador, guarda número y snapshot juntos,
+y devuelve el registro anterior si se reintenta el mismo UUID. Un fallo revierte
+el contador. Solo service_role puede ejecutarla; las cotizaciones anteriores
+conservan sus folios. El logo original sigue siendo el archivo opcional del emisor.
