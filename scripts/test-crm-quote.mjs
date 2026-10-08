@@ -32,8 +32,9 @@ test('duplicate SKU, quantity and insufficient stock stop emission',async()=>{
 test('saved quote retrieval preserves long snapshots rather than a history excerpt',async()=>{
  const s=fixture();s.input.conditions='Condiciones de prueba '.repeat(70);
  const expected=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);await registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher);
- assert.ok(s.db.tables.interactions[0].result.length>1500);
- const result=await readCrmQuote(s.db,id);assert.equal(result.quote.conditions,expected.conditions);assert.equal(result.quote.lines[0].quantity,2);
+ assert.equal(expected.conditions,'');
+ const legacy={...JSON.parse(s.db.tables.interactions[0].result),conditions:'Condiciones históricas de prueba '.repeat(70)};s.db.tables.interactions[0].result=JSON.stringify(legacy);assert.ok(s.db.tables.interactions[0].result.length>1500);
+ const result=await readCrmQuote(s.db,id);assert.equal(result.quote.conditions,legacy.conditions);assert.equal(result.quote.lines[0].quantity,2);
  await assert.rejects(readCrmQuote(s.db,'bad-id'),/inválido/);
 });
 
@@ -43,4 +44,12 @@ test('incomplete parties can be prepared and saved with pending fields preserved
  assert.deepEqual(quotePendingFields(expected),['Emisor: dirección pendiente','Cliente: nombre pendiente','Cliente: RUT por verificar','Cliente: dirección pendiente','Cliente: comuna pendiente']);
  const result=await registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher);
  assert.equal(result.quote.customer.rut,'15427713-1');assert.equal(result.quote.total,64000);assert.equal(s.db.tables.interactions.length,1);
+});
+
+test('bank details come from the issuer configuration and persist with blank observations',async()=>{
+ const s=fixture();s.input.issuer.rut='77.724.382-9';s.input.bankDetails={accountNumber:'fake'};
+ const q=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);assert.equal(q.bankDetails.accountNumber,'985659206');assert.equal(q.conditions,'');
+ const saved=await registerCrmQuote(s.db,s.env,id,{...s.input,expected:q,confirm:true},s.fetcher);
+ assert.deepEqual(saved.quote.bankDetails,q.bankDetails);
+ const changed={...q,bankDetails:{...q.bankDetails,accountNumber:'fake'}};const other=fixture();other.input.issuer.rut='77.724.382-9';await assert.rejects(registerCrmQuote(other.db,other.env,id,{...other.input,expected:changed,confirm:true},other.fetcher),/cambiaron/);
 });

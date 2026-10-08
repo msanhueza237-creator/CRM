@@ -1,4 +1,4 @@
-import { quotePendingFields } from '../../supabase/functions/_shared/crm-quote';
+import { latinChileQuoteBank, validQuoteRut } from '../../supabase/functions/_shared/crm-quote';
 import type { CrmQuote } from '../../supabase/functions/_shared/crm-quote';
 
 export async function crmQuotePdf(quote: CrmQuote): Promise<File> {
@@ -18,7 +18,7 @@ export async function crmQuotePdf(quote: CrmQuote): Promise<File> {
    for(const v of wrap(value,126-issuerX,8)){text(v,issuerX,issuerY,8);issuerY+=3.5;}
   }
   doc.setDrawColor(175,45,45);doc.setLineWidth(.6);doc.rect(130,12,68,28);
-  doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(175,45,45);doc.text(`RUT: ${quote.issuer.rut||'pendiente'}`,164,18,{align:'center'});
+  doc.setFont('helvetica','bold');doc.setFontSize(9);doc.setTextColor(175,45,45);doc.text(`RUT: ${!quote.issuer.rut?'pendiente':validQuoteRut(quote.issuer.rut)?quote.issuer.rut:quote.issuer.rut+' (por verificar)'}`,164,18,{align:'center'});
   doc.setFontSize(9);doc.text('COTIZACIÓN COMERCIAL',164,23,{align:'center'});
   const numberLines=wrap('N° '+(quote.quoteNumber??quote.folio),62,quote.quoteNumber?13:7);
   numberLines.forEach((v,i)=>doc.text(v,164,28+i*3,{align:'center'}));
@@ -27,7 +27,8 @@ export async function crmQuotePdf(quote: CrmQuote): Promise<File> {
  let y=header();
  // Reposition issuer RUT to keep long values inside the identification box.
  // Customer fields use only supplied data; missing values remain explicit.
- const customerRows=[['Señor(es)',quote.customer.name||'Nombre pendiente'],['RUT',quote.customer.rut||'pendiente'],['Dirección',quote.customer.address||'Dirección pendiente'],['Comuna',quote.customer.commune||'Comuna pendiente']];
+ const displayRut=(rut:string)=>!rut?'pendiente':validQuoteRut(rut)?rut:rut+' (por verificar)';
+ const customerRows=[['Señor(es)',quote.customer.name||'Nombre pendiente'],['RUT',displayRut(quote.customer.rut)],['Dirección',quote.customer.address||'Dirección pendiente'],['Comuna',quote.customer.commune||'Comuna pendiente']];
  const customerHeight=customerRows.reduce((n,[_label,value])=>n+Math.max(5,wrap(value,102,9).length*4),4);
  box(left,y,width,customerHeight);
  let cy=y+5;
@@ -61,19 +62,20 @@ export async function crmQuotePdf(quote: CrmQuote): Promise<File> {
  for(const x of cols.slice(1,-1))doc.line(x,tableStart-8,x,bodyBottom);
  y=bodyBottom+3;
  if(y>216){doc.addPage();y=header();}
- const pending=quotePendingFields(quote);
- const notes=[quote.conditions,...(pending.length?['Datos pendientes: '+pending.join('; ')]:[]),'Precios publicados en Tiendanube. Neto calculado sin IVA; importes del documento redondeados a pesos.'].filter(Boolean).join('\n');
- const noteLines=wrap(notes,116,8);const notesHeight=Math.max(32,noteLines.length*3.6+10);
- // Long conditions continue below the totals rather than overlap them.
- const firstNotes=noteLines.slice(0,8);box(left,y,122,40);text('Observaciones',left+2,y+5,9,true);firstNotes.forEach((v,i)=>text(v,left+2,y+10+i*3.5,8));
+ box(left,y,122,40);text('Observaciones',left+2,y+5,9,true);
  box(137,y,61,40);
  for(const [i,[label,value]] of [['Monto neto',quote.net],['IVA 19%',quote.vat],['Total CLP',quote.total]].entries()){
   text(label as string,139,y+8+i*11,10,i===2);doc.text(money(value as number),196,y+8+i*11,{align:'right'});
  }
  y+=44;
- if(notesHeight>40)for(const v of noteLines.slice(8)){if(y>267){doc.addPage();y=header();}text(v,left+2,y,8);y+=3.5;}
- const footerNotes=['Cotización comercial emitida por el CRM; no es documento tributario ni emitido por Facto.','No reserva inventario ni confirma pago.'];
- for(const v of footerNotes){if(y>267){doc.addPage();y=header();}text(v,left,y,8);y+=4;}
+ const bank=quote.bankDetails??latinChileQuoteBank(quote.issuer);
+ if(bank){
+  if(y+28>270){doc.addPage();y=header();}
+  box(left,y,width,27);text('Transferencia bancaria',left+3,y+6,10,true);
+  text(`${bank.bank} · ${bank.accountType} ${bank.accountNumber}`,left+3,y+12,9);
+  text(`Titular: ${bank.holder}`,left+3,y+17,9);
+  text(`RUT: ${bank.rut} · ${bank.email}`,left+3,y+22,9);
+ }
  const count=doc.getNumberOfPages();for(let page=1;page<=count;page++){doc.setPage(page);text(`Referencia: ${quote.folio}`,left,283,7);doc.text(`Página ${page} de ${count}`,right,283,{align:'right'});}
  return new File([doc.output('arraybuffer')],`Cotizacion-${quote.folio}.pdf`,{type:'application/pdf'});
 }

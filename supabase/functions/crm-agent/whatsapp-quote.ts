@@ -1,6 +1,6 @@
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import { messageUuid } from '../_shared/direct-message.ts';
-import { quoteParty, quoteTotals, type CrmQuote, type QuoteLine } from '../_shared/crm-quote.ts';
+import { quoteParty, quoteTotals, latinChileQuoteBank, type CrmQuote, type QuoteLine } from '../_shared/crm-quote.ts';
 import { readWhatsAppProductEvidence } from './whatsapp-automation-preview.ts';
 import { readLiveWhatsAppProduct } from './whatsapp-tiendanube-live.ts';
 import { getWhatsAppConversation } from './whatsapp-conversation.ts';
@@ -43,7 +43,7 @@ export async function prepareCrmQuote(db:SupabaseClient,env:Env,payload:Record<s
   lines.push({sku:live.sku,name:live.name,quantity,unitPrice:live.price,amount:Math.round(live.price*quantity),productUrl:live.productUrl||''});
  }
  const totals=quoteTotals(lines,payload.pricesIncludeVat);
- return {kind:'crm_quote_v1',id,folio:'CRM-'+new Intl.DateTimeFormat('en-CA',{timeZone:'America/Santiago',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()).replaceAll('-','')+'-'+id.replaceAll('-','').toUpperCase(),date:new Date().toISOString(),validDays,issuer,customer,lines,pricesIncludeVat:payload.pricesIncludeVat,...totals,logoDataUrl,conditions:String(payload.conditions||'').trim().slice(0,1500),sourceMessageId,verifiedAt:new Date().toISOString()};
+ return {kind:'crm_quote_v1',bankDetails:latinChileQuoteBank(issuer),id,folio:'CRM-'+new Intl.DateTimeFormat('en-CA',{timeZone:'America/Santiago',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()).replaceAll('-','')+'-'+id.replaceAll('-','').toUpperCase(),date:new Date().toISOString(),validDays,issuer,customer,lines,pricesIncludeVat:payload.pricesIncludeVat,...totals,logoDataUrl,conditions:'',sourceMessageId,verifiedAt:new Date().toISOString()};
 }
 export async function registerCrmQuote(db:SupabaseClient,env:Env,userId:string,payload:Record<string,unknown>,fetcher:typeof fetch=fetch) {
  if(payload.confirm!==true)throw Error('Revisa la cotización antes de registrarla.');
@@ -54,7 +54,7 @@ export async function registerCrmQuote(db:SupabaseClient,env:Env,userId:string,p
  if(existing.data){if(existing.data.company_id!==companyId||existing.data.type!=='cotizacion')throw Error('Identificador ya utilizado.');return {quote:JSON.parse(existing.data.result),alreadyRegistered:true};}
  const quote=await prepareCrmQuote(db,env,payload,fetcher);
  const expected=payload.expected as CrmQuote|undefined;
- if(!expected||JSON.stringify([expected.issuer,expected.customer,expected.lines,expected.validDays,expected.pricesIncludeVat,expected.conditions,expected.logoDataUrl])!==JSON.stringify([quote.issuer,quote.customer,quote.lines,quote.validDays,quote.pricesIncludeVat,quote.conditions,quote.logoDataUrl]))throw Error('Los datos o precios cambiaron. Vuelve a preparar y revisar la cotización.');
+ if(!expected||JSON.stringify([expected.issuer,expected.customer,expected.lines,expected.validDays,expected.pricesIncludeVat,expected.conditions,expected.logoDataUrl,expected.bankDetails])!==JSON.stringify([quote.issuer,quote.customer,quote.lines,quote.validDays,quote.pricesIncludeVat,quote.conditions,quote.logoDataUrl,quote.bankDetails]))throw Error('Los datos o precios cambiaron. Vuelve a preparar y revisar la cotización.');
  const {data,error}=await db.rpc('register_numbered_crm_quote',{p_quote:quote,p_company_id:companyId,p_owner_id:userId});
  if(error||!data?.quote)throw Error('No se pudo registrar la cotización. Reintenta con el mismo identificador.');
  return data as {quote:CrmQuote;alreadyRegistered:boolean};

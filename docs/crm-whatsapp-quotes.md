@@ -57,3 +57,12 @@ El asistente propone respuestas cordiales para saludos, agradecimientos y
  despedidas. «Gracias por tu cotización» no inicia otra cotización; los mensajes
 mixtos con solicitudes nuevas siguen sus rutas comerciales. Todo sigue siendo
 una propuesta para revisión y envío manual dentro de la ventana de WhatsApp.
+
+Observaciones se presenta vacío, sin condiciones automáticas ni textos técnicos.
+Los datos pendientes siguen indicados en sus campos del emisor/cliente y en el
+formulario. Al pie se muestra la transferencia para el emisor RUT 77.724.382-9:
+Scotiabank, cuenta corriente 985659206, Importadora Latin Chile Limitada,
+ventas@climactiva.cl. Datos transcritos de la imagen proporcionada por el negocio.
+El backend fija estos datos y los guarda en el snapshot de nuevas cotizaciones;
+no acepta cuentas bancarias suministradas por el cliente. Las cotizaciones antiguas
+del mismo emisor pueden descargarse con el pie predeterminado del diseño actual.
