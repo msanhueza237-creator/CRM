@@ -87,6 +87,7 @@ export function planWhatsAppAutomation(input: {
   products: ProductEvidence[];
   optedOut: boolean;
   humanTakeover: boolean;
+  previousOffer?: string;
   now?: number;
 }): AutomationPlan {
   const plan = (action: AutomationPlan["action"], reason: string, text: string | null = null,
@@ -116,6 +117,18 @@ export function planWhatsAppAutomation(input: {
     return plan("handoff", "verified_order_or_shipping_policy_required", null, "verified_order");
   if (/^(hola|buenos dias|buenas tardes|buenas noches)[!.\s]*$/.test(normalized))
     return plan("draft", "greeting", "Hola, soy el asistente de Clima Activa. ¿Qué producto o código necesitas consultar?");
+  const selection = normalized.match(/\b(?:numero|opcion|modelo|producto)\s*(?:n[°º.]?\s*)?(\d{1,2})\b/) || normalized.match(/^\s*(\d{1,2})[.!?\s]*$/);
+  if (selection && input.previousOffer && /Encontré estos modelos en el catálogo:/.test(input.previousOffer)) {
+    const choices = [...input.previousOffer.matchAll(/(?:^|\n)(\d+)\. ([^\n]+)\nCódigo: ([^\n]+)/g)]
+      .filter(m => m[1] === String(Number(selection[1])));
+    const products = choices.length === 1 ? input.products.filter(p => p.published && p.source === "tiendanube" && p.sku === choices[0][3].trim()) : [];
+    if (products.length === 1) {
+      if (/\b\d+\s*(unidades?|piezas?)\b/.test(normalized))
+        return plan("handoff", "cart_integration_required", null, "seller");
+      return plan("draft", "purchase_quantity_required", `Elegiste ${products[0].name} (código ${products[0].sku}). ¿Cuántas unidades quieres?`, "none", "tiendanube");
+    }
+    return plan("clarify", "invalid_offer_selection", "¿Puedes indicar el código del producto que quieres y cuántas unidades necesitas?", "product");
+  }
   const asksPrice = /\b(precio|precios|valor|cuesta|cuestan|vale|valen)\b/.test(normalized);
   const asksStock = /\b(stock|disponibilidad|disponible|disponibles|tienes|tiene|tienen|tendras|tendran|tendria|tendrias|tendrian|venden|vendes|manejan|hay)\b/.test(normalized);
   if (!asksPrice && !asksStock) return plan("handoff", "complex_question", null, "seller");

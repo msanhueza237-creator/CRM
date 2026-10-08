@@ -60,7 +60,14 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const currency = env(["WHATSAPP_STORE_CURRENCY"]).trim().toUpperCase();
   const { phoneId: configPhone } = await getWhatsAppConfig(db, env);
   const products = await readWhatsAppProductEvidence(db, currency);
-  const input = { incoming, phoneNumberId: configPhone, products, optedOut: false, humanTakeover: false };
+  // Only the most recent successfully sent message in this same conversation may define option numbers.
+  const previous = conversation.messages.filter(m => m.direction === "outbound" &&
+    ["accepted", "sent", "delivered", "read"].includes(String(m.status)) &&
+    Date.parse(String(m.occurredAt)) < Date.parse(incoming.occurred_at))
+    .sort((a, b) => Date.parse(String(b.occurredAt)) - Date.parse(String(a.occurredAt)))[0];
+  const previousOffer = previous && Date.parse(incoming.occurred_at) - Date.parse(String(previous.occurredAt)) <= 86400000
+    ? String(previous.body || "").slice(0, 4096) : "";
+  const input = { previousOffer, incoming, phoneNumberId: configPhone, products, optedOut: false, humanTakeover: false };
   let plan = planWhatsAppAutomation(input);
   if (env(["WHATSAPP_LIVE_CATALOG_ENABLED"]) === "true" &&
       (plan.reason === "verified_product_answer" || plan.reason === "stale_product_evidence" || plan.reason === "incomplete_product_evidence")) {

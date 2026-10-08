@@ -71,3 +71,19 @@ test('soporte de muro tendras resolves catalog models and their current links',a
   assert.match(r.plan.text,/https:\/\/www.climactiva.cl\/productos\/soporte-muro-plegable\//);assert.equal(s.calls.length,1);assert.equal(r.plan.canSend,false);
  }
 });
+
+function offer(s,status='accepted') {
+ s.db.tables.whatsapp_messages.push({id:'offer',company_id:s.incoming.company_id,phone_number:s.incoming.phone_number,direction:'outbound',status,occurred_at:new Date(Date.now()-120000).toISOString(),body:'Encontré estos modelos en el catálogo:\n\n3. Manómetro R32\nCódigo: LX1030\nVer producto y comprar: https://www.climactiva.cl/productos/manometro/'});
+}
+test('number selected from sent offer asks quantity without pretending to add to cart',async()=>{
+ const s=scenario('me interesa el número 3 me lo puedes agregar al carro de compras ?');offer(s);
+ const r=await run(s);assert.equal(r.plan.reason,'purchase_quantity_required');assert.match(r.plan.text,/LX1030.*¿Cuántas unidades quieres/);
+ assert.doesNotMatch(r.plan.text,/agregado|añadido/);assert.equal(s.calls.length,0);assert.equal(r.plan.canSend,false);
+});
+test('option numbers never resolve from a failed offer, another phone or unknown number',async()=>{
+ for(const mode of ['failed','phone','number']){
+  const s=scenario(mode==='number'?'el número 2':'el número 3');offer(s,mode==='failed'?'failed':'accepted');
+  if(mode==='phone')s.db.tables.whatsapp_messages[1].phone_number='56999999999';
+  assert.notEqual((await run(s)).plan.reason,'purchase_quantity_required');
+ }
+});
