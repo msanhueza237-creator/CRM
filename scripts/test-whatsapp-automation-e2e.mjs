@@ -129,3 +129,10 @@ test('formal PDF waits for customer data and verifies selected quantity against 
 test('product code selection also refreshes stock before asking quantity',async()=>{
  for(const text of ['LX1030','quiero LX1030']){const s=scenario(text);offer(s);const result=await run(s);assert.equal(result.plan.reason,'purchase_quantity_required');assert.equal(s.calls.length,1);}
 });
+test('intermediate formal guidance preserves catalogue number and model code for selection',async()=>{
+ for(const text of ['la opción 3','LX1030']){
+  const s=scenario(text);s.incoming.body=text;offer(s);
+  s.db.tables.whatsapp_messages.push({id:'guidance',company_id:s.incoming.company_id,phone_number:s.incoming.phone_number,direction:'outbound',status:'read',occurred_at:new Date(Date.now()-60000).toISOString(),body:'Para preparar la cotización formal, primero elige el modelo de la lista o envíame su código.'});
+  const r=await run(s);assert.equal(r.plan.reason,'purchase_quantity_required');assert.match(r.plan.text,/LX1030.*Cuántas/);assert.equal(s.calls.length,1);
+ }
+});

@@ -20,3 +20,11 @@ test('ambiguous generic models and withdrawn selections are never silently chose
  const r=deriveQuoteLines([m('outbound','Elegiste Soporte muro pequeño (código WALL-B). ¿Cuántas unidades quieres?'),m('inbound','no quiero ese','received',1),m('inbound','cotización por 2 soportes de muro','received',2)],products);
  assert.equal(r.lines.length,0);assert.equal(r.unresolved.length,1);
 });
+test('option and SKU survive a formal quotation clarification after the catalogue',()=>{
+ const catalogue='Encontré estos modelos en el catálogo:\n\n1. Balanza digital\nCódigo: LX-36475';
+ const products=[{sku:'LX-36475',name:'Balanza digital'}];
+ for(const reply of ['la opción 1','LX-36475']){
+  const r=deriveQuoteLines([m('outbound',catalogue),m('inbound','cotización formal','received',1),m('outbound','Para preparar la cotización formal, primero elige el modelo de la lista o envíame su código.', 'sent',2),m('inbound',reply,'received',3)],products);
+  assert.equal(r.lines[0]?.sku,'LX-36475');assert.equal(r.quantityConfirmed,false);
+ }
+});

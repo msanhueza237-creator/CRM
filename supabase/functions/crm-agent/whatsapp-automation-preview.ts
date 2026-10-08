@@ -62,13 +62,16 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const currency = env(["WHATSAPP_STORE_CURRENCY"]).trim().toUpperCase();
   const { phoneId: configPhone } = await getWhatsAppConfig(db, env);
   const products = await readWhatsAppProductEvidence(db, currency);
-  // Only the most recent successfully sent message in this same conversation may define option numbers.
-  const previous = conversation.messages.filter(m => m.direction === "outbound" &&
-    ["accepted", "sent", "delivered", "read"].includes(String(m.status)) &&
-    Date.parse(String(m.occurredAt)) < Date.parse(incoming.occurred_at))
-    .sort((a, b) => Date.parse(String(b.occurredAt)) - Date.parse(String(a.occurredAt)))[0];
-  const previousOffer = previous && Date.parse(incoming.occurred_at) - Date.parse(String(previous.occurredAt)) <= 86400000
-    ? String(previous.body || "").slice(0, 4096) : "";
+  // Keep the last catalogue across clarification messages, within this customer session.
+  const offerSession=currentQuoteSession(conversation.messages.filter(m=>Date.parse(m.occurredAt)<Date.parse(incoming.occurred_at)));
+  const sent=offerSession.filter(m=>m.direction==='outbound'&&['accepted','sent','delivered','read'].includes(String(m.status)));
+  const previous=sent.at(-1);
+  const latestBody=String(metaMessage(incoming.raw_payload,incoming.meta_message_id)?.message.text?.body||'');
+  const latestNormal=latestBody.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim();
+  const catalogue=[...sent].reverse().find(m=>m.body.startsWith('Encontré estos modelos en el catálogo:'));
+  const choiceReply=/\b(?:numero|opcion|modelo|producto)\s*(?:n[°º.]?\s*)?\d{1,2}\b/.test(latestNormal)||/^\d{1,2}[.!?\s]*$/.test(latestNormal)||Boolean(catalogue&&[...catalogue.body.matchAll(/\nCódigo: ([^\n]+)/g)].some(m=>m[1].trim().toLowerCase()===latestNormal));
+  const quantityPrompt=previous&&/^Elegiste .+ \(código [^\n]+\)\. ¿Cuántas unidades quieres\?$/.test(previous.body);
+  const previousOffer=String((choiceReply&&!(quantityPrompt&&/^\d{1,2}[.!?\s]*$/.test(latestNormal))&&catalogue?catalogue:previous)?.body||'').slice(0,4096);
   const input = { previousOffer, incoming, phoneNumberId: configPhone, products, optedOut: false, humanTakeover: false };
   let plan = planWhatsAppAutomation(input);
   if(['purchase_quantity_required','selection_stock_required','selection_no_stock'].includes(plan.reason)){
