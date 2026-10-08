@@ -150,7 +150,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
       </article>)}
     </div>
     <footer>
-      {companyId && <section aria-label="Asistente de respuesta" className="wa-template-preview">
+      {companyId && <section aria-label="Asistente de respuesta" className="wa-template-preview wa-response-assistant">
         <strong>Asistente de respuesta</strong>
         <button type="button" className="ghost-button" disabled={!open || loading || sending || assistantLoading || uncertain} onClick={() => void suggest()}>{assistantLoading ? "Consultando catálogo..." : "Proponer respuesta"}</button>
         {assistantError && <p role="alert">{assistantError}</p>}

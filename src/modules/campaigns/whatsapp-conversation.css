@@ -58,3 +58,11 @@
 .wa-template { display: grid; gap: 10px; }
 .wa-template-preview { border-left: 3px solid #00827d; padding: 10px; background: #f1f8f5; overflow-wrap: anywhere; }
 @media(max-width: 600px) { .wa-conversation { width: calc(100% - 12px); height: calc(100dvh - 12px); max-height: calc(100dvh - 12px); } .wa-conversation header, .wa-history { padding: 12px; } .wa-conversation h2 { font-size: 17px; } .wa-message { max-width: 96%; } }
+
+.wa-response-assistant { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; padding: 12px; background: #edf7f6; border: 1px solid #c4ded2; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.wa-response-assistant button { min-height: 44px; white-space: normal; }
+.wa-response-assistant p { margin: 0; }
+@media (max-width: 600px) {
+  .wa-response-assistant button { width: 100%; }
+  .wa-conversation footer { max-height: 55%; }
+}
