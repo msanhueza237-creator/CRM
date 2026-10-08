@@ -97,3 +97,19 @@ test('category suggestions are bounded and exclude unpublished or unrelated prod
  i.products.push({...product,sku:'PRIVATE',name:'Cortatubos no publicado',published:false});
  const r=planWhatsAppAutomation(i);assert.match(r.text,/CT0/);assert.match(r.text,/más opciones/);assert.doesNotMatch(r.text,/CT3|CT4|PRIVATE|LX1030/);
 });
+
+test('individual product choices include real store purchase links',()=>{
+ const i=fixture('tienes corta tubos');
+ i.products=[1,2].map(n=>({...product,sku:`CT-${n}`,name:`Corta tubo modelo ${n}`,productUrl:`https://www.climactiva.cl/productos/corta-tubo-${n}/`}));
+ const r=planWhatsAppAutomation(i);
+ assert.match(r.text,/1\. Corta tubo modelo 1\nCódigo: CT-1\nVer producto y comprar: https:\/\/www.climactiva.cl\/productos\/corta-tubo-1\//);
+ assert.match(r.text,/\n\n2\. Corta tubo modelo 2/);
+ assert.equal(r.canSend,false);
+});
+test('exact product includes purchase link and unsafe links are omitted',()=>{
+ const i=fixture();i.products[0].productUrl='https://www.climactiva.cl/productos/manometro/';
+ assert.match(planWhatsAppAutomation(i).text,/Ver producto y comprar:/);
+ for(const url of ['http://www.climactiva.cl/productos/x','https://evil.test/productos/x','javascript:alert(1)','https://user:pass@www.climactiva.cl/productos/x']){
+  i.products[0].productUrl=url;assert.doesNotMatch(planWhatsAppAutomation(i).text,/Ver producto y comprar:/);
+ }
+});

@@ -67,6 +67,17 @@ export function suggestWhatsAppProducts(text: string, products: ProductEvidence[
   });
 }
 
+function storeProductLink(product: ProductEvidence): string {
+  try {
+    const url = new URL(product.productUrl || "");
+    if (url.protocol !== "https:" || url.username || url.password ||
+      !["climactiva.cl", "www.climactiva.cl"].includes(url.hostname) ||
+      !url.pathname.startsWith("/productos/") || url.port) return "";
+    url.hash = "";
+    return url.toString();
+  } catch { return ""; }
+}
+
 // Preparation only. This module cannot call Meta, a model, or any database.
 // Evidence is supplied by a trusted backend reader, never by the customer.
 export function planWhatsAppAutomation(input: {
@@ -112,9 +123,12 @@ export function planWhatsAppAutomation(input: {
   if (unknownLink) return plan("clarify", "unrecognized_product_link", "¿Puedes indicar el código o modelo exacto del producto?", "product");
   if (matches.length !== 1) {
     const candidates = matches.length ? matches : suggestWhatsAppProducts(text, input.products);
-    const options = candidates.slice(0, 3).map(p => `${p.name} (${p.sku})`).join("; ");
+    const options = candidates.slice(0, 3).map((p, i) => {
+      const link = storeProductLink(p);
+      return `${i + 1}. ${p.name}\nCódigo: ${p.sku}${link ? `\nVer producto y comprar: ${link}` : ""}`;
+    }).join("\n\n");
     return plan("clarify", matches.length ? "ambiguous_product" : "product_reference_needed",
-      options ? `Encontré estos modelos en el catálogo: ${options}.${candidates.length > 3 ? " Hay más opciones." : ""} ¿Cuál quieres consultar? Puedes indicarme su código.` :
+      options ? `Encontré estos modelos en el catálogo:\n\n${options}\n\n${candidates.length > 3 ? "Hay más opciones. " : ""}¿Cuál quieres consultar? Puedes indicarme su código.` :
         "¿Puedes indicar el código o modelo exacto del producto?", "product");
   }
   const p = matches[0], verifiedAt = Date.parse(p.verifiedAt);
@@ -128,5 +142,7 @@ export function planWhatsAppAutomation(input: {
   const parts = [`${p.name} (${p.sku}).`];
   if (asksPrice) parts.push(`Precio registrado en la tienda: ${p.price!.toLocaleString("es-CL", { maximumFractionDigits: 4 })} ${p.currency}.`);
   if (asksStock) parts.push(p.stock! > 0 ? "La tienda registra disponibilidad; se confirma al realizar el pedido." : "La tienda registra este producto sin stock.");
-  return plan("draft", "verified_product_answer", parts.join(" "), "none", "tiendanube");
+  const link = storeProductLink(p);
+  if (link) parts.push(`Ver producto y comprar: ${link}`);
+  return plan("draft", "verified_product_answer", parts.join("\n\n"), "none", "tiendanube");
 }
