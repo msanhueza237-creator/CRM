@@ -20,3 +20,11 @@ Precios CLP consultados en la variante actual de Tiendanube. Si son inclusivos, 
 Preparación/registro requieren sesión de administrador o vendedor. Solo identificadores válidos y productos publicados con variante única, precio actual y stock suficiente. Los mensajes de origen deben pertenecer a la ficha. Logo local limitado a PNG/JPG de 180 KB; no se recuperan logos de URLs externas.
 
 Pruebas: RUT/dígito verificador, IVA inclusivo/exclusivo, promoción actual, stock insuficiente, datos incompletos, doble registro, cambio de precio, PDF legible, revisión y adjunto manual con fixtures en 320/390/1280px. No envíos reales ni emisión automática.
+
+Los precios de Tiendanube incluyen IVA 19%, confirmado por el negocio. La nueva
+cotización mantiene ese precio final y muestra el neto unitario calculado como
+precio / 1,19 (dos decimales), junto con Neto, IVA y Total del documento. El neto
+del documento se redondea una sola vez a pesos; IVA = total publicado menos neto.
+Este cálculo no se presenta como precio de Facto. Los registros de inventario de
+Facto deben verificar moneda y correspondencia del producto antes de reemplazar
+un precio de venta publicado; no se usan costos de compra para cotizar.

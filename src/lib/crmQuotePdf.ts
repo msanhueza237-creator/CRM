@@ -10,6 +10,8 @@ export async function crmQuotePdf(quote: CrmQuote): Promise<File> {
  line('CLIENTE',12);line(`${quote.customer.name} · RUT ${quote.customer.rut}`);line(`${quote.customer.address}, ${quote.customer.commune}`);y+=5;
  for(const [i,item] of quote.lines.entries()){
   line(`${i+1}. ${item.name}`,11);line(`Código: ${item.sku} · Cantidad: ${item.quantity}`);
+  const unitNet=quote.pricesIncludeVat?item.unitPrice/1.19:item.unitPrice;
+  line(`Precio unitario neto: $${unitNet.toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2})} CLP`);
   line(`Precio unitario ${quote.pricesIncludeVat?'con IVA':'neto'}: ${money(item.unitPrice)} · Importe: ${money(item.amount)}`);y+=4;
  }
  line(`Neto: ${money(quote.net)}`,12);line(`IVA 19%: ${money(quote.vat)}`,12);line(`TOTAL: ${money(quote.total)}`,14);y+=6;
