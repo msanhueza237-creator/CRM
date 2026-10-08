@@ -3,7 +3,7 @@ import { messageUuid } from "../_shared/direct-message.ts";
 import { metaMessage, whatsappPhone } from "../_shared/whatsapp-content.ts";
 import { getWhatsAppConfig } from "./whatsapp-dispatch.ts";
 import { getWhatsAppConversation } from "./whatsapp-conversation.ts";
-import { planWhatsAppAutomation, resolveWhatsAppProductReferences, type ProductEvidence } from "./whatsapp-automation-plan.ts";
+import { planWhatsAppAutomation, resolveWhatsAppProductReferences, suggestWhatsAppProducts, type ProductEvidence } from "./whatsapp-automation-plan.ts";
 
 import { readLiveWhatsAppProduct } from "./whatsapp-tiendanube-live.ts";
 
@@ -75,6 +75,24 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
       } catch {
         plan = { action: "handoff", reason: "live_catalog_unavailable", text: null, requires: "product", source: null, canSend: false };
       }
+    }
+  }
+  if (plan.action === "clarify" && ["ambiguous_product", "product_reference_needed"].includes(plan.reason)) {
+    const message = metaMessage(incoming.raw_payload, incoming.meta_message_id)?.message;
+    const text = String(message?.text?.body || "");
+    const matches = resolveWhatsAppProductReferences(text,
+      String(message?.context?.referred_product?.product_retailer_id || ""), products).matches;
+    const candidates = (matches.length ? matches : suggestWhatsAppProducts(text, products)).slice(0, 3);
+    if (candidates.length && env(["WHATSAPP_LIVE_CATALOG_ENABLED"]) === "true") {
+      try {
+        const live = (await Promise.all(candidates.map(p => readLiveWhatsAppProduct(p, env, fetcher))))
+          .filter((p): p is ProductEvidence => p !== null);
+        plan = planWhatsAppAutomation({ ...input, products: live });
+      } catch {
+        plan = { action: "handoff", reason: "live_catalog_unavailable", text: null, requires: "product", source: null, canSend: false };
+      }
+    } else if (candidates.length) {
+      plan = planWhatsAppAutomation({ ...input, products: products.map(p => ({ ...p, productUrl: "" })) });
     }
   }
   return { messageId: incoming.id, plan };

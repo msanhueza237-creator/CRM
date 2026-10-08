@@ -46,7 +46,9 @@ export async function readLiveWhatsAppProduct(
     // False/unknown stock management never becomes a numerical availability promise.
     const stock = variant.stock_management === true ? numeric(variant.stock) : null;
     const price = variant.promotional_price != null && variant.promotional_price !== "" ? numeric(variant.promotional_price) : numeric(variant.price);
-    return { ...candidate, name, price, stock, published: true, verifiedAt: new Date().toISOString() };
+    // Only the current canonical URL returned by Tiendanube; never reuse a stale mirror link.
+    const productUrl = typeof product.canonical_url === "string" ? product.canonical_url : "";
+    return { ...candidate, referenceUrl: candidate.productUrl, name, productUrl, price, stock, published: true, verifiedAt: new Date().toISOString() };
   } catch {
     // Provider bodies, headers and credentials must not reach the UI or logs.
     throw new Error("No se pudo confirmar el producto en Tiendanube. Revisa la consulta antes de responder.");

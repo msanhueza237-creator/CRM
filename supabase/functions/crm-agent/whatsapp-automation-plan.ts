@@ -6,6 +6,7 @@ export type ProductEvidence = {
   name: string;
   currency: string;
   productUrl?: string;
+  referenceUrl?: string;
   variantId?: string;
   productId?: string;
   price: number | null;
@@ -40,7 +41,7 @@ export function resolveWhatsAppProductReferences(text: string, reference: string
   const urls = text.match(/https?:\/\/[^\s<>]+/gi) || [];
   const links = urls.map(u => canonicalUrl(u.replace(/[),.;!?]+$/, "")));
   // Never fetch a customer's URL or infer a store from its hostname.
-  if (!reference && links.some(link => !link || !eligible.some(p => canonicalUrl(p.productUrl || "") === link)))
+  if (!reference && links.some(link => !link || !eligible.some(p => [p.productUrl, p.referenceUrl].some(url => canonicalUrl(url || "") === link))))
     return { matches: [] as ProductEvidence[], unknownLink: true };
   const withoutUrls = text.replace(/https?:\/\/[^\s<>]+/gi, " ");
   const tokens = new Set(withoutUrls.toUpperCase().match(/[A-Z0-9]+(?:[-_.][A-Z0-9]+)*/g) || []);
@@ -49,7 +50,7 @@ export function resolveWhatsAppProductReferences(text: string, reference: string
     if (reference) return p.sku === reference || p.variantId === reference;
     const nameWords = words(p.name);
     return tokens.has(p.sku.toUpperCase()) ||
-      (links.length > 0 && links.includes(canonicalUrl(p.productUrl || ""))) ||
+      (links.length > 0 && [p.productUrl, p.referenceUrl].some(url => links.includes(canonicalUrl(url || "")))) ||
       (nameWords.length >= 2 && phrase.includes(` ${nameWords.join(" ")} `));
   });
   return { matches, unknownLink: false };
@@ -71,7 +72,7 @@ function storeProductLink(product: ProductEvidence): string {
   try {
     const url = new URL(product.productUrl || "");
     if (url.protocol !== "https:" || url.username || url.password ||
-      !["climactiva.cl", "www.climactiva.cl"].includes(url.hostname) ||
+      !["www.climactiva.cl"].includes(url.hostname) ||
       !url.pathname.startsWith("/productos/") || url.port) return "";
     url.hash = "";
     return url.toString();

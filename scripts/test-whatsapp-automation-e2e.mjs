@@ -23,8 +23,8 @@ test('provider outages and unsafe responses fail closed even with a fresh local 
   const s=scenario();s.product.source_updated_at=s.product.last_synced_at=new Date().toISOString();const r=await run(s,fetcher);assert.equal(r.plan.reason,'live_catalog_unavailable');assert.equal(r.plan.text,null);assert.equal(JSON.stringify(r).includes('private'),false);
  }
 });
-test('greeting, ambiguous SKU and unrelated URLs never query a provider',async()=>{
- for(const [text,action] of [['hola','draft'],['precio del manometro','clarify'],['precio LX1030 https://evil.example/product','clarify']]){const s=scenario(text);assert.equal((await run(s)).plan.action,action);assert.equal(s.calls.length,0)}
+test('greeting and unrelated URLs never query a provider; category uses bounded live reads',async()=>{
+ for(const [text,action] of [['hola','draft'],['precio del manometro','clarify'],['precio LX1030 https://evil.example/product','clarify']]){const s=scenario(text);assert.equal((await run(s)).plan.action,action);assert.equal(s.calls.length,text==='precio del manometro'?1:0)}
 });
 test('quote, tracking, seller, audio and image handoffs are explicit and do not query products',async()=>{
  for(const [text,requires] of [['cotizacion LX1030','facto_quote'],['seguimiento de pedido','verified_order'],['quiero vendedor','seller']]){const s=scenario(text);assert.equal((await run(s)).plan.requires,requires);assert.equal(s.calls.length,0)}
@@ -42,6 +42,22 @@ test('credentials missing do not cause external requests or reveal configuration
  const s=scenario();const environment=keys=>keys.includes('TIENDANUBE_ACCESS_TOKEN')?'':s.env(keys);assert.equal((await run(s,s.fetcher,environment)).plan.reason,'live_catalog_unavailable');assert.equal(s.calls.length,0);
 });
 test('customer phrase tienes corta tubos offers real catalog options without a false stock promise',async()=>{
- const s=scenario('tienes corta tubos ?');s.product.name='Corta tubo LT-274 1/8"-1-1/8" (3-28MM)';s.product.variants[0].sku='LT-274';
- const r=await run(s);assert.equal(r.plan.action,'clarify');assert.match(r.plan.text,/LT-274/);assert.doesNotMatch(r.plan.text,/disponibilidad|32.000|sin stock/);assert.equal(s.calls.length,0);
+ const s=scenario('tienes corta tubos ?');s.product.name='Corta tubo LT-274 1/8"-1-1/8" (3-28MM)';s.product.variants[0].sku=s.payload.variants[0].sku='LT-274';s.payload.name.es=s.product.name;
+ const r=await run(s);assert.equal(r.plan.action,'clarify');assert.match(r.plan.text,/LT-274/);assert.doesNotMatch(r.plan.text,/disponibilidad|32.000|sin stock/);assert.equal(s.calls.length,1);
+});
+
+test('category links come from current Tiendanube canonical URL, never the old bare domain',async()=>{
+ const s=scenario('tienes corta tubos');s.product.name=s.payload.name.es='Corta tubo LT-274';
+ s.product.product_url='https://climactiva.cl/productos/viejo/';
+ s.payload.canonical_url='https://www.climactiva.cl/productos/actual/';
+ const r=await run(s);assert.match(r.plan.text,/https:\/\/www.climactiva.cl\/productos\/actual\//);
+ assert.doesNotMatch(r.plan.text,/productos\/viejo/);assert.equal(s.calls.length,1);
+});
+test('missing canonical URL never falls back to the mirrored obsolete link',async()=>{
+ const s=scenario();s.product.product_url='https://www.climactiva.cl/productos/viejo/';
+ const r=await run(s);assert.equal(r.plan.action,'draft');assert.doesNotMatch(r.plan.text,/productos\/viejo/);
+});
+test('category provider failure does not offer stale links',async()=>{
+ const s=scenario('tienes corta tubos');s.product.name='Corta tubo LT-274';
+ const r=await run(s,async()=>new Response('',{status:503}));assert.equal(r.plan.reason,'live_catalog_unavailable');assert.equal(r.plan.text,null);
 });
