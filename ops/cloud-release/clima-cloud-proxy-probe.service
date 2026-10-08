@@ -1,0 +1,32 @@
+[Unit]
+Description=Clima Activa temporary synthetic Cloud HTTPS probe
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/python3 -I -B /opt/climactiva-cloud-probe/proxy_probe.py --bind 172.16.0.1 --port 9087 --peer 172.16.0.2
+WorkingDirectory=/opt/climactiva-cloud-probe
+RuntimeMaxSec=3600
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/etc/dokploy /var/lib/docker -/run/docker.sock
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+TasksMax=8
+MemoryMax=64M
+CPUQuota=10%
+StandardOutput=null
+StandardError=null

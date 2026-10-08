@@ -1,0 +1,22 @@
+# Proposed temporary route only. No DNS or certificate changes are needed.
+http:
+  routers:
+    clima-cloud-proxy-probe:
+      rule: "Host(`crm.latinchile.cl`) && (Path(`/__codex_proxy_probe/v1/health`) || Path(`/__codex_proxy_probe/v1/check`))"
+      entryPoints:
+        - websecure
+      priority: 20000
+      service: clima-cloud-proxy-probe
+      middlewares:
+        - clima-cloud-proxy-probe-limit
+      tls: {}
+  middlewares:
+    clima-cloud-proxy-probe-limit:
+      buffering:
+        maxRequestBodyBytes: 1024
+        memRequestBodyBytes: 1024
+  services:
+    clima-cloud-proxy-probe:
+      loadBalancer:
+        servers:
+          - url: http://172.16.0.1:9087
