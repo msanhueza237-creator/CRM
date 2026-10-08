@@ -33,3 +33,12 @@ Se permite preparar y registrar una cotización comercial aunque falten datos de
 emisor o cliente. El formulario y PDF enumeran campos pendientes y RUT por
 verificar, sin inventar datos ni considerar válido un RUT incorrecto. Productos,
 cantidades, precio actual, stock y confirmación manual siguen siendo necesarios.
+
+El PDF usa encabezado del emisor y logo opcional, recuadro de RUT/folio, ficha del
+cliente, tabla con cantidad, precio unitario neto, IVA y monto neto, observaciones
+y totales. Conserva el folio único CRM existente (no asigna número de Facto).
+La ficha del cliente conserva el snapshot y permite descargarlo posteriormente
+con el mismo folio/precios; el PDF se genera con el diseño vigente. Documentos
+largos repiten encabezado/tabla y muestran número de página y referencia.
+Validación adicional: `node scripts/test-crm-quote-pdf.mjs` comprueba 20 productos,
+varias páginas, folio, campos pendientes y totales sin solicitudes productivas.

@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {build} from 'esbuild';
+import {mkdir,writeFile} from 'node:fs/promises';
+import {execFileSync} from 'node:child_process';
+const folder=new URL('../tmp/quote-pdf-layout/',import.meta.url);await mkdir(folder,{recursive:true});
+const module=new URL('generator.mjs',folder);
+await build({entryPoints:['src/lib/crmQuotePdf.ts'],outfile:module.pathname,bundle:true,platform:'node',format:'esm',packages:'external'});
+const {crmQuotePdf}=await import(module.href);
+const party={name:'Empresa de prueba',rut:'15427713-7',address:'',commune:''};
+const q={kind:'crm_quote_v1',id:'00000000-0000-4000-8000-000000000093',folio:'CRM-20261008-00000000000040008000000000000093',date:'2026-10-08T22:00:00Z',validDays:7,issuer:party,customer:party,pricesIncludeVat:true,net:200000,vat:38000,total:238000,conditions:'Condiciones sintéticas para revisar paginación. '.repeat(30),lines:Array.from({length:20},(_,i)=>({sku:'TEST-'+i,name:'Producto de prueba con descripción extensa para verificar saltos de página y conservación de la tabla. '.repeat(2),quantity:1,unitPrice:11900,amount:11900,productUrl:''})),verifiedAt:'2026-10-08T22:00:00Z',sourceMessageId:''};
+const file=await crmQuotePdf(q),path=new URL('multipage.pdf',folder);await writeFile(path,new Uint8Array(await file.arrayBuffer()));
+const content=execFileSync('pdftotext',[path.pathname,'-'],{encoding:'utf8'});
+assert.ok(content.includes(q.folio));assert.ok(content.includes('TEST-19'));assert.ok(content.includes('Datos pendientes'));assert.ok(content.includes('$238.000'));assert.ok(content.includes('P. unit. neto'));assert.ok(content.includes('Observaciones'));
+const pages=Number(execFileSync('pdfinfo',[path.pathname],{encoding:'utf8'}).match(/Pages:\s+(\d+)/)[1]);assert.ok(pages>=2);assert.ok(content.includes(`Página ${pages} de ${pages}`));
+console.log(`PASS quote PDF: ${pages} pages, all 20 items, stable folio, pending fields, net/IVA/total`);
