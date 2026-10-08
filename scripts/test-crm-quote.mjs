@@ -5,12 +5,14 @@ import {prepareCrmQuote,registerCrmQuote,readCrmQuote} from '../supabase/functio
 import {scenario} from './whatsapp-automation-fixture.mjs';
 const id='00000000-0000-4000-8000-000000000093';
 function fixture(){
- const s=scenario();s.db.tables.interactions=[];const original=s.db.from;let nextNumber=100;
+ const s=scenario();s.db.tables.interactions=[];
+ s.incoming.id='00000000-0000-4000-8000-000000000095';s.incoming.body='Quiero una cotización formal. RUT 15.427.713-7 Cliente sintético. Dirección sintética 100. Comuna de prueba';s.incoming.raw_payload.entry[0].changes[0].value.messages[0].text.body=s.incoming.body;
+ s.db.tables.whatsapp_messages.push({...s.incoming,id:'out-question',direction:'outbound',status:'accepted',body:'Elegiste Manómetro R32 (código LX1030). ¿Cuántas unidades quieres?',occurred_at:new Date(Date.now()-120000).toISOString(),raw_payload:null},{...s.incoming,id:'in-quantity',direction:'inbound',body:'2',occurred_at:new Date(Date.now()-60000).toISOString(),raw_payload:null});const original=s.db.from;let nextNumber=100;
  s.db.rpc=async(_name,p)=>{const old=s.db.tables.interactions.find(r=>r.id===p.p_quote.id);if(old)return {data:{quote:JSON.parse(old.result),alreadyRegistered:true},error:null};const quote={...p.p_quote,quoteNumber:nextNumber,folio:'CRM-'+nextNumber++};s.db.tables.interactions.push({id:quote.id,company_id:p.p_company_id,type:'cotizacion',result:JSON.stringify(quote)});return {data:{quote,alreadyRegistered:false},error:null};};
  s.db.from=function(name){if(name!=='interactions')return original.call(this,name);let selected=id,inserted;
  const q={select(){return q},eq(k,v){selected=v;return q},insert(v){inserted=v;return q},async maybeSingle(){return {data:s.db.tables.interactions.find(r=>r.id===selected)||null,error:null}},then(resolve){if(inserted)s.db.tables.interactions.push(inserted);return Promise.resolve({error:null}).then(resolve)}};return q;};
  const party={name:'Cliente sintético',rut:'15.427.713-7',address:'Dirección sintética 100',commune:'Comuna de prueba'};
- const input={id,companyId:s.incoming.company_id,issuer:party,customer:party,lines:[{sku:'LX1030',quantity:2}],validDays:7,pricesIncludeVat:true,conditions:'Despacho no incluido.'};
+ const input={id,sourceMessageId:s.incoming.id,companyId:s.incoming.company_id,issuer:{...party},customer:{...party},lines:[{sku:'LX1030',quantity:2}],validDays:7,pricesIncludeVat:true,conditions:'Despacho no incluido.'};
  return {...s,input};
 }
 test('RUT validates digit rather than accepting any text',()=>{assert.equal(validQuoteRut('15427713-7'),true);assert.equal(validQuoteRut('15427713-1'),false);});
@@ -38,12 +40,11 @@ test('saved quote retrieval preserves long snapshots rather than a history excer
  await assert.rejects(readCrmQuote(s.db,'bad-id'),/inválido/);
 });
 
-test('incomplete parties can be prepared and saved with pending fields preserved',async()=>{
- const s=fixture();s.input.customer={name:'',rut:'15427713-1',address:'',commune:''};s.input.issuer.address='';
- const expected=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);
- assert.deepEqual(quotePendingFields(expected),['Emisor: dirección pendiente','Cliente: nombre pendiente','Cliente: RUT por verificar','Cliente: dirección pendiente','Cliente: comuna pendiente']);
- const result=await registerCrmQuote(s.db,s.env,id,{...s.input,expected,confirm:true},s.fetcher);
- assert.equal(result.quote.customer.rut,'15427713-1');assert.equal(result.quote.total,64000);assert.equal(s.db.tables.interactions.length,1);
+test('formal quote rejects customer data missing from the conversation',async()=>{
+ const s=fixture();s.incoming.body='Quiero una cotización formal';s.incoming.raw_payload.entry[0].changes[0].value.messages[0].text.body=s.incoming.body;
+ await assert.rejects(prepareCrmQuote(s.db,s.env,s.input,s.fetcher),/cliente debe enviar/);assert.equal(s.db.tables.interactions.length,0);
+ const changed=fixture();changed.input.customer.address='Inventada';await assert.rejects(prepareCrmQuote(changed.db,changed.env,changed.input,changed.fetcher),/coincidir/);
+ const unselected=fixture();unselected.db.tables.whatsapp_messages=unselected.db.tables.whatsapp_messages.slice(0,1);await assert.rejects(prepareCrmQuote(unselected.db,unselected.env,unselected.input,unselected.fetcher),/elegir/);
 });
 
 test('bank details come from the issuer configuration and persist with blank observations',async()=>{

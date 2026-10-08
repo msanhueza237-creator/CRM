@@ -1,3 +1,5 @@
+import { currentQuoteSession, customerFromQuoteMessages, quoteCustomerMissing, wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
+import { deriveQuoteLines } from '../_shared/whatsapp-quote-context.ts';
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { messageUuid } from "../_shared/direct-message.ts";
 import { metaMessage, whatsappPhone } from "../_shared/whatsapp-content.ts";
@@ -69,6 +71,16 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
     ? String(previous.body || "").slice(0, 4096) : "";
   const input = { previousOffer, incoming, phoneNumberId: configPhone, products, optedOut: false, humanTakeover: false };
   let plan = planWhatsAppAutomation(input);
+  if(['purchase_quantity_required','selection_stock_required','selection_no_stock'].includes(plan.reason)){
+    const body=String(metaMessage(incoming.raw_payload,incoming.meta_message_id)?.message.text?.body||'');
+    const option=body.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().match(/(?:numero|opcion|modelo|producto)\s*(\d{1,2})|^\s*(\d{1,2})[.!?\s]*$/);
+    const entry=[...previousOffer.matchAll(/(?:^|\n)(\d+)\. [^\n]+\nCódigo: ([^\n]+)/g)].find(m=>option?Number(m[1])===Number(option?.[1]||option?.[2]):body.toLowerCase().trim().replace(/[.!?]+$/,'').trim().replace(/^(?:quiero|elijo|me interesa|modelo|producto)\s+/,'')===m[2].trim().toLowerCase());
+    const selected=entry?products.filter(p=>p.sku===entry[2].trim()):[];
+    if(selected.length===1&&env(['WHATSAPP_LIVE_CATALOG_ENABLED'])==='true'){
+      try{const live=await readLiveWhatsAppProduct(selected[0],env,fetcher);plan=live?planWhatsAppAutomation({...input,products:[live]}):{action:'handoff',reason:'live_catalog_unavailable',text:null,requires:'product',source:null,canSend:false};}
+      catch{plan={action:'handoff',reason:'live_catalog_unavailable',text:null,requires:'product',source:null,canSend:false};}
+    }
+  }
   const quantityMessage = metaMessage(incoming.raw_payload, incoming.meta_message_id)?.message;
   const purchase = purchaseQuantityContext(String(quantityMessage?.text?.body || ""), previousOffer);
   if (purchase && ["purchase_data_required", "purchase_summary", "purchase_insufficient_stock"].includes(plan.reason)) {
@@ -102,7 +114,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
     const text = String(message?.text?.body || "");
     const matches = resolveWhatsAppProductReferences(text,
       String(message?.context?.referred_product?.product_retailer_id || ""), products).matches;
-    const candidates = (matches.length ? matches : suggestWhatsAppProducts(text, products)).slice(0, 3);
+    const candidates = (matches.length ? matches : suggestWhatsAppProducts(text, products)).slice(0, 6);
     if (candidates.length && env(["WHATSAPP_LIVE_CATALOG_ENABLED"]) === "true") {
       try {
         const live = (await Promise.all(candidates.map(p => readLiveWhatsAppProduct(p, env, fetcher))))
@@ -113,6 +125,29 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
       }
     } else if (candidates.length) {
       plan = planWhatsAppAutomation({ ...input, products: products.map(p => ({ ...p, productUrl: "" })) });
+    }
+  }
+  const session=currentQuoteSession(conversation.messages.filter(m=>Date.parse(m.occurredAt)<=Date.parse(incoming.occurred_at)));
+  const formalRequested=session.some(m=>m.direction==='inbound'&&wantsFormalQuote(m.body));
+  const selectionInSession=deriveQuoteLines(session,products);
+  const latestText=String(metaMessage(incoming.raw_payload,incoming.meta_message_id)?.message.text?.body||'');
+  if(formalRequested&&(['formal_quote_required','complex_question'].includes(plan.reason)||(wantsFormalQuote(latestText)&&selectionInSession.lines.length>0&&['product_reference_needed','ambiguous_product','verified_product_answer'].includes(plan.reason)))){
+    const selected=selectionInSession,customer=customerFromQuoteMessages(session),missing=quoteCustomerMissing(customer);
+    const response=(!selected.lines.length||selected.unresolved.length)?{reason:'quote_selection_required',text:'Para preparar la cotización formal, primero elige el modelo de la lista o envíame su código. Después confirmaremos la cantidad y el stock.'}
+      :!selected.quantityConfirmed?{reason:'quote_quantity_required',text:'¿Cuántas unidades del modelo elegido necesitas para la cotización formal?'}
+      :missing.length?{reason:'quote_customer_data_required',text:`Para preparar tu cotización formal, envíame ${missing.join(', ')}. Puedes enviarlos así:\nRUT:\nNombre o razón social:\nDirección:\nComuna:`}
+      :{reason:'formal_quote_ready',text:'¡Perfecto! Ya tenemos los modelos, cantidades y tus datos. Podemos preparar tu cotización formal en PDF; revisaremos nuevamente los precios y el stock antes de guardarla.'};
+    plan={action:'draft',...response,requires:'facto_quote',source:null,canSend:false};
+    if(response.reason==='formal_quote_ready'){
+      if(env(['WHATSAPP_LIVE_CATALOG_ENABLED'])!=='true')plan={action:'handoff',reason:'live_catalog_unavailable',text:null,requires:'product',source:null,canSend:false};
+      else try{
+        for(const line of selected.lines){
+          const evidence=products.filter(p=>p.sku===line.sku);
+          const live=evidence.length===1?await readLiveWhatsAppProduct(evidence[0],env,fetcher):null;
+          if(!live||live.currency!=='CLP'||live.price===null||live.stock===null||!Number.isSafeInteger(live.stock)){plan={action:'handoff',reason:'live_catalog_unavailable',text:null,requires:'product',source:null,canSend:false};break;}
+          if(live.stock<line.quantity){plan={action:'clarify',reason:'quote_stock_unavailable',text:`${line.name} (${line.sku}) registra ${live.stock} unidades; no alcanza para las ${line.quantity} solicitadas. Elige otra cantidad o un modelo con stock antes de preparar el PDF.`,requires:'product',source:'tiendanube',canSend:false};break;}
+        }
+      }catch{plan={action:'handoff',reason:'live_catalog_unavailable',text:null,requires:'product',source:null,canSend:false};}
     }
   }
   return { messageId: incoming.id, plan };

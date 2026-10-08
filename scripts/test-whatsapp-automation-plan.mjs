@@ -9,7 +9,7 @@ function fixture(text='precio y stock LX1030') {
 }
 test('fresh exact product evidence produces a draft, without sending',()=>{
  const input=fixture(),before=structuredClone(input),r=planWhatsAppAutomation(input);
- assert.equal(r.action,'draft');assert.equal(r.source,'tiendanube');assert.match(r.text,/34.500 CLP/);assert.match(r.text,/disponibilidad/);assert.equal(r.canSend,false);assert.deepEqual(input,before);
+ assert.equal(r.action,'draft');assert.equal(r.source,'tiendanube');assert.match(r.text,/34.500 CLP/);assert.match(r.text,/Stock: 2 unidades/);assert.equal(r.canSend,false);assert.deepEqual(input,before);
 });
 test('zero stock is explicit and does not promise availability',()=>{
  const i=fixture('hay stock LX1030');i.products[0].stock=0;
@@ -46,7 +46,7 @@ test('audio and image require their own interpretation before an answer',()=>{
  }
 });
 test('quotes, shipping, tracking and commercial exceptions do not use a product shortcut',()=>{
- for(const [text,requires] of [['cotizar LX1030','facto_quote'],['seguimiento pedido 123','verified_order'],['precio LX1030 y despacho','verified_order'],['quiero un vendedor','seller'],['descuento LX1030','seller']]){
+ for(const [text,requires] of [['cotizar formal LX1030','facto_quote'],['seguimiento pedido 123','verified_order'],['precio LX1030 y despacho','verified_order'],['quiero un vendedor','seller'],['descuento LX1030','seller']]){
   const r=planWhatsAppAutomation(fixture(text));assert.equal(r.requires,requires);assert.equal(r.action,'handoff');assert.equal(r.text,null);
  }
 });
@@ -84,12 +84,12 @@ test('Meta retailer reference can resolve an exact trusted variant ID',()=>{
  assert.equal(planWhatsAppAutomation(i).reason,'ambiguous_product');
 });
 test('tienes requests current stock for an exact product',()=>{
- const r=planWhatsAppAutomation(fixture('tienes LX1030?'));assert.equal(r.action,'draft');assert.match(r.text,/disponibilidad/);
+ const r=planWhatsAppAutomation(fixture('tienes LX1030?'));assert.equal(r.action,'draft');assert.match(r.text,/Stock: 2 unidades/);
 });
 test('corta tubos and cortatubos suggest catalog models without inventing availability',()=>{
  for(const text of ['tienes corta tubos ?','venden cortatubos','tienes cortador de tubos']){
   const i=fixture(text);i.products=[{...product,sku:'CT1',name:'Cortatubos profesional 1/8 a 1-1/8'}];
-  const r=planWhatsAppAutomation(i);assert.equal(r.action,'clarify');assert.match(r.text,/CT1/);assert.doesNotMatch(r.text,/34.500|disponibilidad|sin stock/);
+  const r=planWhatsAppAutomation(i);assert.equal(r.action,'clarify');assert.match(r.text,/CT1/);assert.match(r.text,/Stock: 2 unidades/);
  }
 });
 test('category suggestions are bounded and exclude unpublished or unrelated products',()=>{
@@ -102,7 +102,7 @@ test('individual product choices include real store purchase links',()=>{
  const i=fixture('tienes corta tubos');
  i.products=[1,2].map(n=>({...product,sku:`CT-${n}`,name:`Corta tubo modelo ${n}`,productUrl:`https://www.climactiva.cl/productos/corta-tubo-${n}/`}));
  const r=planWhatsAppAutomation(i);
- assert.match(r.text,/1\. Corta tubo modelo 1\nCódigo: CT-1\nVer producto y comprar: https:\/\/www.climactiva.cl\/productos\/corta-tubo-1\//);
+ assert.match(r.text,/1\. Corta tubo modelo 1\nCódigo: CT-1[\s\S]*Ver producto y comprar: https:\/\/www.climactiva.cl\/productos\/corta-tubo-1\//);
  assert.match(r.text,/\n\n2\. Corta tubo modelo 2/);
  assert.equal(r.canSend,false);
 });
@@ -120,7 +120,7 @@ test('exact product includes purchase link and unsafe links are omitted',()=>{
   }
  });
  test('thanks never hides a new quote, product question, complaint or withdrawal',()=>{
-  assert.equal(planWhatsAppAutomation(fixture('Gracias, necesito otra cotización')).reason,'formal_quote_required');
+  assert.equal(planWhatsAppAutomation(fixture('Gracias, necesito otra cotización formal')).reason,'formal_quote_required');
   assert.equal(planWhatsAppAutomation(fixture('Hola, precio y stock LX1030')).reason,'verified_product_answer');
   assert.equal(planWhatsAppAutomation(fixture('Gracias pero tengo un reclamo')).requires,'seller');
   assert.equal(planWhatsAppAutomation(fixture('Gracias, no más mensajes')).action,'ignore');

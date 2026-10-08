@@ -10,7 +10,7 @@ function seedCustomer(message:string):QuoteParty {
 }
 export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,onClose,canAttach,phone,contactId}:{companyId:string;phone:string;contactId:string;message:string;sourceMessageId:string;canAttach:boolean;onAttach:(file:File,text:string)=>void;onClose:()=>void}) {
  const [contextSource]=useState(sourceMessageId);const [contextMessage]=useState(message);
- const [contextLoading,setContextLoading]=useState(true);const [unresolved,setUnresolved]=useState<string[]>([]);
+ const [contextLoading,setContextLoading]=useState(true);const [quoteReady,setQuoteReady]=useState(false);const [unresolved,setUnresolved]=useState<string[]>([]);
  const [logoDataUrl,setLogoDataUrl]=useState('');
  const [id,setId]=useState(()=>crypto.randomUUID());
  const [customer,setCustomer]=useState(()=>seedCustomer(message));
@@ -21,7 +21,7 @@ export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,o
  const conditions='';
  const [quote,setQuote]=useState<CrmQuote|null>(null);const [saved,setSaved]=useState(false);const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [confirmed,setConfirmed]=useState(false);
  useEffect(()=>{let alive=true;const query=new URLSearchParams({companyId,phone,contactId,sourceMessageId:contextSource});
- void whatsappRequest<{lines:typeof lines;unresolved:string[]}>(`whatsapp-quote-context?${query}`).then(r=>{if(alive){setLines(r.lines);setUnresolved(r.unresolved);}}).catch(e=>{if(alive)setError(e instanceof Error?e.message:'No se pudo recuperar la selección anterior.');}).finally(()=>{if(alive)setContextLoading(false);});return()=>{alive=false;};},[companyId,phone,contactId,contextSource]);
+ void whatsappRequest<{lines:typeof lines;unresolved:string[];customer:QuoteParty;ready:boolean;missing:string[]}>(`whatsapp-quote-context?${query}`).then(r=>{if(alive){setLines(r.lines);setUnresolved(r.unresolved);setCustomer(r.customer);setQuoteReady(r.ready);if(!r.ready)setError(r.missing.length?`El cliente debe enviar: ${r.missing.join(', ')}.`:'Primero debe elegir modelo y cantidad y solicitar el PDF formal.');}}).catch(e=>{if(alive)setError(e instanceof Error?e.message:'No se pudo recuperar la selección anterior.');}).finally(()=>{if(alive)setContextLoading(false);});return()=>{alive=false;};},[companyId,phone,contactId,contextSource]);
  const invalidate=()=>{if(saved){setId(crypto.randomUUID());setSaved(false);}setQuote(null);setConfirmed(false);};
  const payload=()=>({id,companyId,sourceMessageId:contextSource,logoDataUrl,issuer,customer,lines:lines.map(l=>({sku:l.sku,quantity:l.quantity})),validDays,pricesIncludeVat:includeVat,conditions});
  async function operate(action:'search'|'preview'|'register'){
@@ -37,7 +37,7 @@ export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,o
  return <section className="wa-quote-panel" aria-label="Cotización comercial CRM">
   <strong>Cotización comercial CRM</strong><button type="button" disabled={busy} onClick={onClose}>Cerrar cotización</button>
   <p>Se recuperan los modelos y cantidades elegidos en la conversación. Revisa los datos antes de emitir. El PDF se enviará solo cuando pulses Enviar respuesta.</p>
-  {quotePendingFields({issuer,customer}).length>0&&<p className="wa-alert">Puedes preparar y guardar la cotización. Datos pendientes: {quotePendingFields({issuer,customer}).join('; ')}.</p>}
+  {quotePendingFields({issuer,customer}).length>0&&<p className="wa-alert">Para el PDF formal el cliente debe completar sus datos. Datos pendientes: {quotePendingFields({issuer,customer}).join('; ')}.</p>}
   {contextLoading&&<p role="status">Recuperando productos elegidos en la conversación...</p>}
   {unresolved.map((note,i)=><p key={i} className="wa-alert">{note}</p>)}
   {error&&<p role="alert" className="wa-alert">{error}</p>}
@@ -49,7 +49,7 @@ export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,o
   <label>Vigencia en días<input type="number" min={1} max={90} value={validDays} onChange={e=>{invalidate();setValidDays(Number(e.target.value));}}/></label>
   <p>Precios de Tiendanube con IVA 19% incluido. El neto se calcula dividiendo por 1,19; no se agrega IVA al precio de la tienda.</p>
   <p>Observaciones en blanco. Al pie del PDF se incluyen los datos de transferencia de Importadora Latin Chile.</p>
-  <button type="button" disabled={!lines.length} onClick={()=>void operate('preview')}>Consultar precios y preparar cotización</button></fieldset>
+  <button type="button" disabled={!lines.length||!quoteReady} onClick={()=>void operate('preview')}>Consultar precios y preparar cotización</button></fieldset>
   {quote&&<div className="wa-quote-review"><strong>{saved?`Cotización ${quote.quoteNumber??quote.folio}`:'Vista previa: número asignado al guardar'}</strong>{quote.lines.map(l=><p key={l.sku}>{l.quantity} × {l.name} · Neto unitario: ${(l.unitPrice/1.19).toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2})} CLP · Precio con IVA: ${l.unitPrice.toLocaleString('es-CL')} CLP c/u · Importe con IVA: ${l.amount.toLocaleString('es-CL')} CLP</p>)}<p>Neto: ${quote.net.toLocaleString('es-CL')} · IVA: ${quote.vat.toLocaleString('es-CL')} · Total: ${quote.total.toLocaleString('es-CL')} CLP</p>
   {!saved?<><label className="wa-quote-confirm"><input type="checkbox" checked={confirmed} disabled={busy||contextLoading} onChange={e=>setConfirmed(e.target.checked)}/>Confirmo cliente, emisor, productos, cantidades, IVA y condiciones.</label><button type="button" disabled={busy||!confirmed} onClick={()=>void operate('register')}>Guardar cotización en ficha</button></>:<><p>Cotización guardada en la ficha del cliente.</p><button type="button" disabled={busy||contextLoading} onClick={()=>void pdf(false)}>Descargar PDF</button><button type="button" disabled={busy||!canAttach} onClick={()=>void pdf(true)}>Adjuntar PDF a respuesta</button></>}
   </div>}

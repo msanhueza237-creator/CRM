@@ -1,3 +1,4 @@
+import { wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
 import { metaMessage, replyWindow, whatsappPhone } from "../_shared/whatsapp-content.ts";
 
 export type ProductEvidence = {
@@ -59,7 +60,7 @@ export function resolveWhatsAppProductReferences(text: string, reference: string
 export function suggestWhatsAppProducts(text: string, products: ProductEvidence[]) {
   const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
     .replace(/\bcorta[ -]?tubos?\b/g, "cortatubos").replace(/\bcortador(?:es)? de tubos?\b/g, "cortatubos");
-  const stop = new Set("tienes tiene tienen tendras tendran tendria tendrias tendrian hay venden vendes manejan precio precios valor cuanto cuesta cuestan vale valen stock disponibilidad disponible disponibles del para por con una uno unos unas los las un de el la me que si saber quiero necesito hola buenas puedes producto productos actual".split(" "));
+  const stop = new Set("tienes tiene tienen tendras tendran tendria tendrias tendrian hay venden vendes manejan precio precios valor cuanto cuesta cuestan vale valen stock disponibilidad disponible disponibles del para por con una uno unos unas los las un de el la me que si saber quiero necesito hola buenas puedes producto productos actual cotizar cotizacion cotiza cotizas coticemos presupuesto formal pdf quiero queremos cotizacion".split(" "));
   const query = [...new Set((normalize(text).match(/[a-z0-9]+/g) || []).filter(w => w.length >= 3 && !stop.has(w)))];
   if (!query.length || query.length > 6 || /https?:\/\//i.test(text)) return [];
   return products.filter(p => {
@@ -130,7 +131,7 @@ export function planWhatsAppAutomation(input: {
     return plan("draft", "farewell", "¡Fue un gusto ayudarte! Que tengas un excelente día. Aquí estaremos cuando nos necesites.");
   if (/^(?:(?:hola|holaa|buenas|buenos dias|buenas tardes|buenas noches)(?: (?:hola|buenas|buenos dias|buenas tardes|buenas noches))?)(?: como (?:estas|estan)| que tal)?$/.test(courtesy))
     return plan("draft", "greeting", "¡Hola! Bienvenido a Clima Activa. Soy el asistente de atención. ¿En qué podemos ayudarte? Puedes consultar por productos, precios o disponibilidad.");
-  if (/\b(cotizacion|cotizar|presupuesto)\b/.test(normalized))
+  if (wantsFormalQuote(text) && suggestWhatsAppProducts(text,input.products).length === 0)
     return plan("handoff", "formal_quote_required", null, "facto_quote");
   if (/\b(seguimiento|tracking|pedido|despacho|envio|entrega)\b/.test(normalized))
     return plan("handoff", "verified_order_or_shipping_policy_required", null, "verified_order");
@@ -150,31 +151,38 @@ export function planWhatsAppAutomation(input: {
     return plan("draft", "purchase_summary", `Para ${purchase.quantity} unidades de ${p.name} (${p.sku}), el subtotal es $${total.toLocaleString("es-CL")} CLP, sin incluir despacho.\n\nPuedes continuar la compra en la tienda, seleccionar ${purchase.quantity} unidades y agregarlas al carrito:\n${link}\n\nEl stock y el total final se confirman en la tienda.`, "none", "tiendanube");
   }
   const selection = normalized.match(/\b(?:numero|opcion|modelo|producto)\s*(?:n[°º.]?\s*)?(\d{1,2})\b/) || normalized.match(/^\s*(\d{1,2})[.!?\s]*$/);
-  if (selection && input.previousOffer && /Encontré estos modelos en el catálogo:/.test(input.previousOffer)) {
+  if (input.previousOffer && /Encontré estos modelos en el catálogo:/.test(input.previousOffer)) {
     const choices = [...input.previousOffer.matchAll(/(?:^|\n)(\d+)\. ([^\n]+)\nCódigo: ([^\n]+)/g)]
-      .filter(m => m[1] === String(Number(selection[1])));
+      .filter(m => selection ? m[1] === String(Number(selection[1])) : new RegExp('^(?:(?:quiero|elijo|me interesa|modelo|producto)\\s+)?'+m[3].trim().toLowerCase().replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[.!?\\s]*$').test(normalized));
     const products = choices.length === 1 ? input.products.filter(p => p.published && p.source === "tiendanube" && p.sku === choices[0][3].trim()) : [];
     if (products.length === 1) {
+      const product=products[0],verified=Date.parse(product.verifiedAt);
+      if(!Number.isFinite(verified)||verified>now||now-verified>900000||product.stock===null||!Number.isSafeInteger(product.stock))return plan('handoff','selection_stock_required',null,'product');
+      if(product.stock<=0)return plan('clarify','selection_no_stock','Ese modelo está sin stock actualmente. ¿Quieres elegir otra alternativa disponible?','product');
       if (/\b\d+\s*(unidades?|piezas?)\b/.test(normalized))
         return plan("handoff", "cart_integration_required", null, "seller");
       return plan("draft", "purchase_quantity_required", `Elegiste ${products[0].name} (código ${products[0].sku}). ¿Cuántas unidades quieres?`, "none", "tiendanube");
     }
-    return plan("clarify", "invalid_offer_selection", "¿Puedes indicar el código del producto que quieres y cuántas unidades necesitas?", "product");
+    if(selection||choices.length)return plan("clarify", "invalid_offer_selection", "¿Puedes indicar el código del producto que quieres y cuántas unidades necesitas?", "product");
   }
-  const asksPrice = /\b(precio|precios|valor|cuesta|cuestan|vale|valen)\b/.test(normalized);
-  const asksStock = /\b(stock|disponibilidad|disponible|disponibles|tienes|tiene|tienen|tendras|tendran|tendria|tendrias|tendrian|venden|vendes|manejan|hay)\b/.test(normalized);
+  const asksPrice = /\b(precio|precios|valor|cuesta|cuestan|vale|valen|cotizar|cotiza|cotizas|cotizacion|presupuesto)\b/.test(normalized);
+  const asksStock = asksPrice || /\b(stock|disponibilidad|disponible|disponibles|tienes|tiene|tienen|tendras|tendran|tendria|tendrias|tendrian|venden|vendes|manejan|hay)\b/.test(normalized);
   if (!asksPrice && !asksStock) return plan("handoff", "complex_question", null, "seller");
   const reference = String(message.context?.referred_product?.product_retailer_id || "").trim();
   const { matches, unknownLink } = resolveWhatsAppProductReferences(text, reference, input.products);
   if (unknownLink) return plan("clarify", "unrecognized_product_link", "¿Puedes indicar el código o modelo exacto del producto?", "product");
   if (matches.length !== 1) {
     const candidates = matches.length ? matches : suggestWhatsAppProducts(text, input.products);
-    const options = candidates.slice(0, 3).map((p, i) => {
+    const options = [...candidates].sort((a,b)=>Number((b.stock??0)>0)-Number((a.stock??0)>0)).slice(0, 3).map((p, i) => {
       const link = storeProductLink(p);
-      return `${i + 1}. ${p.name}\nCódigo: ${p.sku}${link ? `\nVer producto y comprar: ${link}` : ""}`;
+      const fresh=Number.isFinite(Date.parse(p.verifiedAt))&&Date.parse(p.verifiedAt)<=now&&now-Date.parse(p.verifiedAt)<=900000;
+      const known=fresh&&p.stock!==null&&Number.isSafeInteger(p.stock)&&p.stock>=0;
+      const status=known?(p.stock!>0?`Stock: ${p.stock} unidades disponibles.`:'Sin stock actualmente.'):'Stock pendiente de confirmar; no puedo ofrecer disponibilidad.';
+      const price=fresh&&p.currency==='CLP'&&p.price!==null&&Number.isFinite(p.price)?`\nPrecio con IVA: $${p.price.toLocaleString('es-CL')} CLP.`:'';
+      return `${i + 1}. ${p.name}\nCódigo: ${p.sku}\n${status}${price}${link ? `\nVer producto${known&&p.stock!>0?" y comprar":""}: ${link}` : ""}`;
     }).join("\n\n");
     return plan("clarify", matches.length ? "ambiguous_product" : "product_reference_needed",
-      options ? `Encontré estos modelos en el catálogo:\n\n${options}\n\n${candidates.length > 3 ? "Hay más opciones. " : ""}¿Cuál quieres consultar? Puedes indicarme su código.` :
+      options ? `Encontré estos modelos en el catálogo:\n\n${options}\n\n${candidates.length > 3 ? "Hay más opciones. " : ""}¿Qué modelo con stock prefieres? Puedes indicarme su número o código.` :
         "¿Puedes indicar el código o modelo exacto del producto?", "product");
   }
   const p = matches[0], verifiedAt = Date.parse(p.verifiedAt);
@@ -187,8 +195,8 @@ export function planWhatsAppAutomation(input: {
     return plan("handoff", "incomplete_product_evidence", null, "product");
   const parts = [`${p.name} (${p.sku}).`];
   if (asksPrice) parts.push(`Precio registrado en la tienda: ${p.price!.toLocaleString("es-CL", { maximumFractionDigits: 4 })} ${p.currency}.`);
-  if (asksStock) parts.push(p.stock! > 0 ? "La tienda registra disponibilidad; se confirma al realizar el pedido." : "La tienda registra este producto sin stock.");
+  if (asksStock) parts.push(p.stock! > 0 ? `Stock: ${p.stock} unidades disponibles; se confirma al realizar el pedido.` : "La tienda registra este producto sin stock.");
   const link = storeProductLink(p);
-  if (link) parts.push(`Ver producto y comprar: ${link}`);
+  if (link) parts.push(`Ver producto${p.stock!>0?" y comprar":""}: ${link}`);
   return plan("draft", "verified_product_answer", parts.join("\n\n"), "none", "tiendanube");
 }

@@ -29,10 +29,10 @@ Este cálculo no se presenta como precio de Facto. Los registros de inventario d
 Facto deben verificar moneda y correspondencia del producto antes de reemplazar
 un precio de venta publicado; no se usan costos de compra para cotizar.
 
-Se permite preparar y registrar una cotización comercial aunque falten datos del
-emisor o cliente. El formulario y PDF enumeran campos pendientes y RUT por
-verificar, sin inventar datos ni considerar válido un RUT incorrecto. Productos,
-cantidades, precio actual, stock y confirmación manual siguen siendo necesarios.
+El emisor puede mantener datos pendientes. Para nuevas cotizaciones formales de
+WhatsApp el cliente debe haber enviado nombre o razón social, RUT válido, dirección
+y comuna en la conversación; además debe elegir modelo y cantidad y solicitar el
+PDF formal. No se reemplaza esta información por datos del vendedor o de la ficha.
 
 El PDF usa encabezado del emisor y logo opcional, recuadro de RUT/folio, ficha del
 cliente, tabla con cantidad, precio unitario neto, IVA y monto neto, observaciones
@@ -66,3 +66,15 @@ ventas@climactiva.cl. Datos transcritos de la imagen proporcionada por el negoci
 El backend fija estos datos y los guarda en el snapshot de nuevas cotizaciones;
 no acepta cuentas bancarias suministradas por el cliente. Las cotizaciones antiguas
 del mismo emisor pueden descargarse con el pie predeterminado del diseño actual.
+
+Flujo de WhatsApp: «cotizar una balanza digital» busca modelos y consulta hasta seis
+alternativas actuales de Tiendanube, mostrando hasta tres con precio con IVA,
+stock y enlaces canónicos; los modelos con stock se muestran primero. Sin stock
+se indica expresamente y no se invita a comprar ni a confirmar cantidad. La elección
+por número/código vuelve a consultar stock. «Cotización formal»/«PDF» inicia la
+solicitud de datos, sin saltarse modelo y cantidad. El botón de PDF aparece cuando
+los datos del cliente están completos y se confirma stock suficiente. El servidor
+verifica nuevamente selección, datos originales, precio y stock antes de guardar.
+Una nueva bienvenida «Hola» separa la selección y datos de la conversación anterior.
+Observaciones, pie bancario y numeración existentes se conservan. No hay envíos
+automáticos ni escritura de pedidos/carritos en estas pruebas.
