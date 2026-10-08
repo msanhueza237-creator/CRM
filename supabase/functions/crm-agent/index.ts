@@ -2321,7 +2321,9 @@ async function handleWhatsAppWebhookEvent(context: RouteContext, validation: Api
   const normalizedSender = normalizeWhatsAppPhone(sender);
   const cleanSender = normalizedSender.replace(/\D/g, "");
 
-  const recipient = await resolveIncomingWhatsAppRecipient(context.supabase, cleanSender, contactName);
+  const replyTo = metaMessage(rawPayload, metaMessageId)?.message.context?.id;
+  const recipient = await resolveIncomingWhatsAppRecipient(context.supabase, cleanSender, contactName,
+    typeof replyTo === "string" ? replyTo : "");
   const matchedCompanyId = recipient.companyId;
   const { data: lastOutbound } = matchedCompanyId ? await context.supabase
     .from("whatsapp_messages")

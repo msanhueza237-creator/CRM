@@ -26,15 +26,53 @@ export async function findWhatsAppContacts(db: SupabaseClient, companyId: string
   return await matchingRows(db, "contacts", phone, companyId);
 }
 
-export async function resolveIncomingWhatsAppRecipient(db: SupabaseClient, rawPhone: string, name: string) {
+// A shared directory number can still have one established messaging thread.
+// Never select the newest company arbitrarily or trust a customer's display name.
+async function establishedCompany(db: SupabaseClient, phone: string, candidates: string[], replyTo: string) {
+  const variants = [phone, `+${phone}`, ...(phone.startsWith("569") && phone.length === 11 ? [phone.slice(2)] : [])];
+  const accepted = ["accepted", "sent", "delivered", "read"];
+  if (replyTo) {
+    const { data, error } = await db.from("whatsapp_messages").select("company_id,phone_number,direction,status")
+      .eq("meta_message_id", replyTo).limit(2);
+    if (error) throw new Error("No se pudo verificar el mensaje al que responde el cliente.");
+    if (data?.length === 1) {
+      const row = data[0];
+      if (row.direction === "outbound" && accepted.includes(row.status) && whatsappPhone(row.phone_number) === phone && candidates.includes(row.company_id)) return row.company_id as string;
+    }
+    // An explicit but invalid reference must not fall back to another thread.
+    return null;
+  }
+  const companyIds = new Set<string>();
+  let hasAcceptedOutbound = false;
+  for (let offset = 0; offset < 100000; offset += 500) {
+    const { data, error } = await db.from("whatsapp_messages").select("company_id,direction,status")
+      .in("phone_number", variants).order("id").range(offset, offset + 499);
+    if (error) throw new Error("No se pudo verificar el hilo WhatsApp existente.");
+    for (const row of data || []) {
+      if (!row.company_id) continue;
+      companyIds.add(row.company_id);
+      if (row.direction === "outbound" && accepted.includes(row.status)) hasAcceptedOutbound = true;
+    }
+    if (companyIds.size > 1) return null;
+    if ((data?.length || 0) < 500) {
+      const companyId = [...companyIds][0];
+      return hasAcceptedOutbound && candidates.includes(companyId) ? companyId : null;
+    }
+  }
+  throw new Error("La comprobación del hilo WhatsApp quedó incompleta.");
+}
+
+export async function resolveIncomingWhatsAppRecipient(db: SupabaseClient, rawPhone: string, name: string, replyTo = "") {
   const phone = whatsappPhone(rawPhone);
   if (!/^[1-9]\d{7,14}$/.test(phone)) throw new Error("Remitente WhatsApp no válido.");
   const companies = await matchingRows(db, "companies", phone);
   const contacts = await matchingRows(db, "contacts", phone);
   const companyIds = [...new Set([...companies.map(row => row.id), ...contacts.map(row => row.company_id)].filter(Boolean))];
-  // Keep ambiguous messages visible in the unlinked inbox, never in an arbitrary client.
-  if (companyIds.length > 1) return { companyId: null, contactId: null, ambiguous: true };
   let companyId: string = companyIds[0];
+  if (companyIds.length > 1) {
+    companyId = await establishedCompany(db, phone, companyIds, replyTo) || "";
+    if (!companyId) return { companyId: null, contactId: null, ambiguous: true };
+  }
   if (!companyId) {
     companyId = await whatsappDispatchId("incoming-company", phone);
     const { error } = await db.from("companies").insert({ id: companyId, name: `Contacto WhatsApp (+${phone})`,

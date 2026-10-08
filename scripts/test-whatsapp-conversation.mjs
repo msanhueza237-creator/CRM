@@ -106,6 +106,43 @@ test('ambiguous shared numbers stay unlinked instead of choosing an arbitrary co
  assert.equal(db.tables.companies.length,2);assert.equal(db.tables.contacts.length,0);
 });
 
+test('campaign reply keeps its established company despite a duplicate directory number and expired window',async()=>{
+ const contact={id:'marco',company_id:companyId,phone,full_name:'Nombre CRM',notes:'Conservar'};
+ const db=dbFixture({companies:[{id:companyId,phone},{id:'duplicate',whatsapp:'+'+phone}],contacts:[contact],whatsapp_messages:[
+  {id:'campaign',company_id:companyId,phone_number:'+'+phone,direction:'outbound',status:'accepted',meta_message_id:'wamid.campaign',occurred_at:'2026-01-01T00:00:00Z'},
+  {id:'unlinked',company_id:null,phone_number:phone,direction:'inbound',status:'received'},
+ ]});
+ assert.deepEqual(await resolveIncomingWhatsAppRecipient(db,phone,'Nombre distinto'),{companyId,contactId:'marco',ambiguous:false});
+ assert.equal(db.tables.companies.length,2);assert.equal(db.tables.contacts.length,1);assert.equal(contact.notes,'Conservar');
+});
+
+test('shared number with multiple established companies needs an exact matching Meta reply reference',async()=>{
+ const db=dbFixture({companies:[{id:companyId,phone},{id:'other',phone}],whatsapp_messages:[
+  {id:'a',company_id:companyId,phone_number:phone,direction:'outbound',status:'delivered',meta_message_id:'wamid.a'},
+  {id:'b',company_id:'other',phone_number:phone,direction:'outbound',status:'read',meta_message_id:'wamid.b'},
+ ]});
+ assert.equal((await resolveIncomingWhatsAppRecipient(db,phone,'Cliente')).ambiguous,true);
+ assert.equal((await resolveIncomingWhatsAppRecipient(db,phone,'Cliente','wamid.a')).companyId,companyId);
+ assert.equal((await resolveIncomingWhatsAppRecipient(db,phone,'Cliente','wamid.b')).companyId,'other');
+ assert.equal((await resolveIncomingWhatsAppRecipient(db,phone,'Cliente','wamid.missing')).ambiguous,true);
+});
+
+test('wrong-phone, inbound, pending and failed reply references cannot select a company',async()=>{
+ for(const extra of [{phone_number:'56922222222'},{direction:'inbound'},{status:'pending'},{status:'failed'}]){
+  const db=dbFixture({companies:[{id:companyId,phone},{id:'other',phone}],whatsapp_messages:[
+   {id:'a',company_id:companyId,phone_number:phone,direction:'outbound',status:'accepted',meta_message_id:'wamid.a',...extra},
+  ]});
+  assert.equal((await resolveIncomingWhatsAppRecipient(db,phone,'Cliente','wamid.a')).ambiguous,true);
+ }
+});
+
+test('history lookup failure does not create or guess a company',async()=>{
+ const db=dbFixture({companies:[{id:companyId,phone},{id:'other',phone}]});
+ const from=db.from.bind(db);db.from=table=>{const q=from(table);if(table==='whatsapp_messages')q.range=()=>Promise.resolve({data:null,error:{message:'fixture'}});return q};
+ await assert.rejects(resolveIncomingWhatsAppRecipient(db,phone,'Cliente'),/No se pudo verificar el hilo/);
+ assert.equal(db.tables.contacts.length,0);
+});
+
 test('concurrent new senders create one CRM company and one contact without opt-in',async()=>{
  const db=dbFixture({companies:[],contacts:[]});
  const results=await Promise.all([1,2].map(()=>resolveIncomingWhatsAppRecipient(db,phone,'Cliente')));
@@ -144,6 +181,14 @@ test('real inbound handler persists batches and retries once, without overwritin
  db.tables.companies.push({id:'ambiguous',phone});payload.entry[0].changes[0].value.messages[0].id='wamid.ambiguous';
  assert.equal((await invoke()).status,200);assert.equal(db.tables.whatsapp_messages.at(-1).company_id,null);assert.equal(db.tables.interactions.length,1);
  assert.match(db.tables.whatsapp_webhook_events.at(-1).processing_error,/sin vincular/);
+ // A template accepted after the previous 24-hour window retains the same thread.
+ db.tables.whatsapp_messages.push({id:'accepted-campaign',company_id:companyId,phone_number:'+'+phone,direction:'outbound',status:'accepted',meta_message_id:'wamid.campaign',created_at:new Date().toISOString()});
+ payload.entry[0].changes[0].value.messages[0].id='wamid.reply-after-template';
+ payload.entry[0].changes[0].value.messages[0].context={id:'wamid.campaign'};
+ assert.equal((await invoke()).status,200);
+ assert.equal(db.tables.whatsapp_messages.at(-1).company_id,companyId);
+ assert.equal(db.tables.whatsapp_messages.at(-1).contact_id,contact.id);
+ assert.equal((await getWhatsAppConversation(db,env,companyId,phone)).canReply,true);
 });
 
 test('conversation exposes sanitized catalog detail through the existing authenticated history',async()=>{

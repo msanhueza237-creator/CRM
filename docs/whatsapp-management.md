@@ -62,6 +62,22 @@ Fuentes oficiales revisadas: [Graph versions](https://developers.facebook.com/do
 
 ## Verificacion sin envios reales
 
+### Continuidad del hilo al responder una campaña
+
+Una respuesta entrante conserva la empresa y el número del hilo establecido,
+aunque existan fichas duplicadas con ese número. Si Meta incluye `context.id`,
+se comprueba que corresponda a un mensaje saliente aceptado del mismo número y
+a una empresa candidata. Sin esa referencia solo se reutiliza un hilo cuando
+el historial completo del número está vinculado a una única empresa y contiene
+un saliente aceptado. No se decide por nombre, última empresa o una ventana de
+24 horas; la ventana limita el envío y no define la identidad del hilo.
+
+Cuando hay varios hilos posibles y ninguna referencia inequívoca, el mensaje
+permanece sin vincular para revisión. Un error al consultar el historial bloquea
+la atribución y no crea otra ficha. Esta corrección afecta la recepción futura;
+no modifica mensajes ya recibidos sin vínculo. Su reasociación exige verificar
+la empresa correcta y aprobar la modificación de los registros existentes.
+
 `node --experimental-transform-types --test --test-concurrency=1 scripts/test-whatsapp-meta.mjs scripts/test-whatsapp-conversation.mjs scripts/test-direct-messages.mjs scripts/test-whatsapp-inbox.mjs scripts/test-whatsapp-management.mjs scripts/test-whatsapp-delivery.mjs scripts/test-whatsapp-catalog.mjs`
 
 `node scripts/typecheck-whatsapp.mjs`, `node scripts/test-whatsapp-management-browser.mjs`, `node scripts/test-whatsapp-inbox-browser.mjs`, `npm run build`.
