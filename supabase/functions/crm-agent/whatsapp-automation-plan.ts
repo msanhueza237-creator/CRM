@@ -55,6 +55,18 @@ export function resolveWhatsAppProductReferences(text: string, reference: string
   return { matches, unknownLink: false };
 }
 
+export function suggestWhatsAppProducts(text: string, products: ProductEvidence[]) {
+  const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+    .replace(/\bcorta[ -]?tubos?\b/g, "cortatubos").replace(/\bcortador(?:es)? de tubos?\b/g, "cortatubos");
+  const stop = new Set("tienes tiene tienen hay venden vendes manejan precio precios valor cuanto cuesta cuestan vale valen stock disponibilidad disponible disponibles del para por con una uno unos unas los las un de el la me que si saber quiero necesito hola buenas puedes producto productos actual".split(" "));
+  const query = [...new Set((normalize(text).match(/[a-z0-9]+/g) || []).filter(w => w.length >= 3 && !stop.has(w)))];
+  if (!query.length || query.length > 6 || /https?:\/\//i.test(text)) return [];
+  return products.filter(p => {
+    const words = new Set(normalize(p.name).match(/[a-z0-9]+/g) || []);
+    return p.published && p.source === "tiendanube" && p.sku && query.every(w => words.has(w));
+  });
+}
+
 // Preparation only. This module cannot call Meta, a model, or any database.
 // Evidence is supplied by a trusted backend reader, never by the customer.
 export function planWhatsAppAutomation(input: {
@@ -92,14 +104,19 @@ export function planWhatsAppAutomation(input: {
     return plan("handoff", "verified_order_or_shipping_policy_required", null, "verified_order");
   if (/^(hola|buenos dias|buenas tardes|buenas noches)[!.\s]*$/.test(normalized))
     return plan("draft", "greeting", "Hola, soy el asistente de Clima Activa. ¿Qué producto o código necesitas consultar?");
-  const asksPrice = /\b(precio|precios|valor|cuesta|cuestan)\b/.test(normalized);
-  const asksStock = /\b(stock|disponibilidad|disponible|disponibles|tienen|hay)\b/.test(normalized);
+  const asksPrice = /\b(precio|precios|valor|cuesta|cuestan|vale|valen)\b/.test(normalized);
+  const asksStock = /\b(stock|disponibilidad|disponible|disponibles|tienes|tiene|tienen|venden|vendes|manejan|hay)\b/.test(normalized);
   if (!asksPrice && !asksStock) return plan("handoff", "complex_question", null, "seller");
   const reference = String(message.context?.referred_product?.product_retailer_id || "").trim();
   const { matches, unknownLink } = resolveWhatsAppProductReferences(text, reference, input.products);
   if (unknownLink) return plan("clarify", "unrecognized_product_link", "¿Puedes indicar el código o modelo exacto del producto?", "product");
-  if (matches.length !== 1) return plan("clarify", matches.length ? "ambiguous_product" : "product_reference_needed",
-    "¿Puedes indicar el código o modelo exacto del producto?", "product");
+  if (matches.length !== 1) {
+    const candidates = matches.length ? matches : suggestWhatsAppProducts(text, input.products);
+    const options = candidates.slice(0, 3).map(p => `${p.name} (${p.sku})`).join("; ");
+    return plan("clarify", matches.length ? "ambiguous_product" : "product_reference_needed",
+      options ? `Encontré estos modelos en el catálogo: ${options}.${candidates.length > 3 ? " Hay más opciones." : ""} ¿Cuál quieres consultar? Puedes indicarme su código.` :
+        "¿Puedes indicar el código o modelo exacto del producto?", "product");
+  }
   const p = matches[0], verifiedAt = Date.parse(p.verifiedAt);
   // Fixed pilot limit. A later production reader must refresh the source first.
   if (!Number.isFinite(verifiedAt) || verifiedAt > now || now - verifiedAt > 15 * 60 * 1000)

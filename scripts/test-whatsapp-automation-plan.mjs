@@ -83,3 +83,17 @@ test('Meta retailer reference can resolve an exact trusted variant ID',()=>{
  i.products.push({...product,sku:'OTHER',variantId:'12345'});
  assert.equal(planWhatsAppAutomation(i).reason,'ambiguous_product');
 });
+test('tienes requests current stock for an exact product',()=>{
+ const r=planWhatsAppAutomation(fixture('tienes LX1030?'));assert.equal(r.action,'draft');assert.match(r.text,/disponibilidad/);
+});
+test('corta tubos and cortatubos suggest catalog models without inventing availability',()=>{
+ for(const text of ['tienes corta tubos ?','venden cortatubos','tienes cortador de tubos']){
+  const i=fixture(text);i.products=[{...product,sku:'CT1',name:'Cortatubos profesional 1/8 a 1-1/8'}];
+  const r=planWhatsAppAutomation(i);assert.equal(r.action,'clarify');assert.match(r.text,/CT1/);assert.doesNotMatch(r.text,/34.500|disponibilidad|sin stock/);
+ }
+});
+test('category suggestions are bounded and exclude unpublished or unrelated products',()=>{
+ const i=fixture('tienes corta tubos');i.products=Array.from({length:5},(_,n)=>({...product,sku:`CT${n}`,name:`Cortatubos modelo ${n}`}));
+ i.products.push({...product,sku:'PRIVATE',name:'Cortatubos no publicado',published:false});
+ const r=planWhatsAppAutomation(i);assert.match(r.text,/CT0/);assert.match(r.text,/más opciones/);assert.doesNotMatch(r.text,/CT3|CT4|PRIVATE|LX1030/);
+});

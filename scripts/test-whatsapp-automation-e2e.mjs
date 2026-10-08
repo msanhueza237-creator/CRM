@@ -41,3 +41,7 @@ test('already answered inbound cannot propose another response',async()=>{
 test('credentials missing do not cause external requests or reveal configuration',async()=>{
  const s=scenario();const environment=keys=>keys.includes('TIENDANUBE_ACCESS_TOKEN')?'':s.env(keys);assert.equal((await run(s,s.fetcher,environment)).plan.reason,'live_catalog_unavailable');assert.equal(s.calls.length,0);
 });
+test('customer phrase tienes corta tubos offers real catalog options without a false stock promise',async()=>{
+ const s=scenario('tienes corta tubos ?');s.product.name='Corta tubo LT-274 1/8"-1-1/8" (3-28MM)';s.product.variants[0].sku='LT-274';
+ const r=await run(s);assert.equal(r.plan.action,'clarify');assert.match(r.plan.text,/LT-274/);assert.doesNotMatch(r.plan.text,/disponibilidad|32.000|sin stock/);assert.equal(s.calls.length,0);
+});
