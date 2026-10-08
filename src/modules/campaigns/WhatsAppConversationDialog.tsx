@@ -3,6 +3,7 @@ import { MessageCircle, RefreshCw, Send, X } from "lucide-react";
 import { getWhatsAppConversation, getWhatsAppTemplates, getWhatsAppAssistantPreview, type WhatsAppAssistantPreview, type MetaTemplate, type WhatsAppConversation } from "../../lib/whatsappApi";
 import { sendDirectMessage } from "../../lib/directMessageApi";
 import { notifyInboxChanged, setWhatsAppRead } from "../../lib/whatsappInboxApi";
+import { WhatsAppQuotePanel } from "./WhatsAppQuotePanel";
 import { MessageAttachments } from "./MessageAttachments";
 import { useAuth } from "../auth/AuthContext";
 import { WhatsAppConsent } from "../messages/WhatsAppConsent";
@@ -29,6 +30,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   const [uncertain, setUncertain] = useState(false);
   const [now, setNow] = useState(Date.now());
   const [readError, setReadError] = useState("");
+  const [quoteOpen, setQuoteOpen] = useState(false);
   const [assistant, setAssistant] = useState<WhatsAppAssistantPreview | null>(null);
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantError, setAssistantError] = useState("");
@@ -156,9 +158,11 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
         {assistantError && <p role="alert">{assistantError}</p>}
         {assistantCurrent && assistant?.plan.text && <><p>{assistant.plan.text}</p><small>{assistant.plan.source === "tiendanube" ? "Fuente: catálogo de Tiendanube." : "Propuesta para revisar."}</small>
           <button type="button" className="ghost-button" disabled={!open || sending || loading || uncertain || mode !== "reply" || Boolean(text.trim()) || Boolean(files.length)} onClick={() => { setText(assistant.plan.text || ""); }}>Usar propuesta</button></>}
-        {assistantCurrent && !assistant?.plan.text && <p>{assistant?.plan.requires === "vision" ? "Esta imagen necesita identificación antes de responder." : assistant?.plan.requires === "transcription" ? "Este audio necesita transcripción antes de responder." : assistant?.plan.requires === "facto_quote" ? "Esta solicitud necesita una cotización formal." : assistant?.plan.requires === "verified_order" ? "Verifica el pedido o las condiciones de despacho antes de responder." : "No hay datos suficientes para proponer una respuesta fiable. Revisa la consulta."}</p>}
+        {assistantCurrent && !assistant?.plan.text && <p>{assistant?.plan.requires === "vision" ? "Esta imagen necesita identificación antes de responder." : assistant?.plan.requires === "transcription" ? "Este audio necesita transcripción antes de responder." : assistant?.plan.requires === "facto_quote" ? "Usa Preparar cotización PDF para revisar los datos y generar el documento del CRM." : assistant?.plan.requires === "verified_order" ? "Verifica el pedido o las condiciones de despacho antes de responder." : "No hay datos suficientes para proponer una respuesta fiable. Revisa la consulta."}</p>}
         {assistant && !assistantCurrent && <p>La conversación cambió. Consulta una propuesta para el último mensaje.</p>}
       </section>}
+      {companyId && !quoteOpen && <button type="button" className="ghost-button wa-quote-open" disabled={loading || sending || uncertain} onClick={() => setQuoteOpen(true)}>Preparar cotización PDF</button>}
+      {quoteOpen && <WhatsAppQuotePanel canAttach={open && mode === "reply" && !text.trim() && !files.length && !sending && !uncertain} companyId={companyId} message={latestInboundMessage?.body || ""} sourceMessageId={latestInbound || ""} onClose={() => setQuoteOpen(false)} onAttach={(file, caption) => { setFiles([file]); setText(caption); setMode("reply"); }} />}
       {!windowOpen && !contactBlocked && mode!=="template" && <button className="ghost-button" disabled={sending||uncertain} onClick={()=>setMode("template")}>Seleccionar plantilla</button>}
       <div className="direct-channels" role="group" aria-label="Tipo de mensaje WhatsApp"><button type="button" aria-pressed={mode === "reply"} disabled={sending || uncertain} onClick={() => setMode("reply")}>Mensaje</button><button type="button" aria-pressed={mode === "template"} disabled={sending || uncertain} onClick={() => setMode("template")}>Plantilla aprobada</button></div>
       {(mode === "template" ? data?.templateReasons : data?.reasons)?.map(reason => <p className="wa-alert" key={reason}>{reason}</p>)}

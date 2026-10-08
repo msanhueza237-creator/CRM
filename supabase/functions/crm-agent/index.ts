@@ -8,6 +8,7 @@ import { retainedDiscoveryHint, publicResearchContext } from "./prospecting-enri
 import { mirrorFactoDocuments } from "./facto-document-mirror.ts";
 import { classifyInvoiceCustomers } from "./invoice-customer-classification.ts";
 import { dispatchWhatsAppCampaign, getWhatsAppTemplates, getWhatsAppConfig } from "./whatsapp-dispatch.ts";
+import { quoteCatalog, prepareCrmQuote, registerCrmQuote } from "./whatsapp-quote.ts";
 import { previewWhatsAppAutomation } from "./whatsapp-automation-preview.ts";
 import { templateManagement, processTemplateWebhook } from "./whatsapp-template-manager.ts";
 import { resolveIncomingWhatsAppRecipient } from "./whatsapp-incoming.ts";
@@ -113,6 +114,17 @@ Deno.serve(async (req) => {
         if (operation !== "list" && session.role !== "administrador") return json({ error: "Solo administradores pueden gestionar plantillas." }, 403);
         return json(await templateManagement(supabase, firstEnvValue, session.userId!, session.role === "administrador", operation, input));
       } catch (error) { return json({ error: error instanceof Error ? error.message : "No se pudo completar la operación." }, 400); }
+    }
+
+    if (["whatsapp-quote-catalog", "whatsapp-quote-preview", "whatsapp-quote-register"].includes(route)) {
+      const admin = await requireCrmAdmin(req, supabase, true);
+      if (!admin.authorized) return json({ error: admin.error }, admin.status);
+      try {
+        if (route === "whatsapp-quote-catalog") return req.method === "GET" ? json(await quoteCatalog(supabase, firstEnvValue, url.searchParams.get("search") || "")) : json({ error: "Método no permitido." }, 405);
+        if (req.method !== "POST") return json({ error: "Método no permitido." }, 405);
+        const payload = await readJsonObject(req);
+        return json(route === "whatsapp-quote-preview" ? { quote: await prepareCrmQuote(supabase, firstEnvValue, payload) } : await registerCrmQuote(supabase, firstEnvValue, admin.userId!, payload));
+      } catch (error) { return json({ error: error instanceof Error ? error.message : "No se pudo preparar la cotización." }, 400); }
     }
 
     if ((["meta-whatsapp-conversation", "message-recipients", "whatsapp-inbox", "whatsapp-delivery", "whatsapp-assistant-preview"].includes(route) && req.method === "GET") || (["meta-whatsapp-reply", "whatsapp-read"].includes(route) && req.method === "POST")) {

@@ -66,3 +66,13 @@
   .wa-response-assistant button { width: 100%; }
   .wa-conversation footer { max-height: 55%; }
 }
+
+.wa-quote-open { min-height:44px; width:100%; margin-bottom:12px; }
+.wa-quote-panel { display:flex; flex-direction:column; gap:12px; padding:12px; margin-bottom:16px; border:1px solid #c4ded2; background:#f6fbfa; overflow-wrap:anywhere; }
+.wa-quote-panel fieldset { min-width:0; display:flex; flex-direction:column; gap:10px; border:1px solid #c4ded2; }
+.wa-quote-panel label { display:flex; flex-direction:column; gap:5px; }
+.wa-quote-panel input,.wa-quote-panel select { width:100%; min-width:0; min-height:44px; box-sizing:border-box; padding:8px; }
+.wa-quote-panel button { min-height:44px; white-space:normal; }
+.wa-quote-line { padding:10px 0; border-bottom:1px solid #c4ded2; }
+.wa-quote-panel .wa-quote-confirm { display:flex; flex-direction:row; align-items:flex-start; }
+.wa-quote-confirm input { width:24px; min-width:24px; }
