@@ -37,7 +37,11 @@ try{
  await page.getByRole('button',{name:'Enviar respuesta',exact:true}).click();await page.getByText('Mensaje aceptado por Meta.',{exact:true}).waitFor();assert.equal(sent.length,1);await page.getByRole('button',{name:'Actualizar conversacion',exact:true}).click();assert.equal(await page.getByRole('button',{name:'Usar propuesta',exact:true}).count(),0);assert.equal(await page.getByLabel('Respuesta',{exact:true}).inputValue(),'');
  assert.equal(await page.getByRole('button',{name:'Preparar cotización PDF',exact:true}).count(),0);
  data.messages.push({id:'formal-inbound',direction:'inbound',body:'Quiero una cotización formal. RUT 15427713-7 Cliente sintético. Dirección sintética 100. Comuna de prueba',status:'received',occurredAt:new Date(Date.now()+1000).toISOString(),type:'text'});agentPreview.messageId='formal-inbound';agentPreview.plan.reason='formal_quote_ready';await page.getByRole('button',{name:'Actualizar conversacion',exact:true}).click();await page.getByRole('button',{name:'Proponer respuesta',exact:true}).click();
- await page.getByRole('button',{name:'Preparar cotización PDF',exact:true}).click();
+ // Ready quotes open and prepare their preview without another button click.
+ await page.getByRole('region',{name:'Cotización comercial CRM'}).waitFor();
+ await page.getByRole('checkbox',{name:'Confirmo cliente, emisor, productos, cantidades, IVA y condiciones.'}).waitFor();
+ assert.equal(sent.length,1);
+
  const panel=page.getByRole('region',{name:'Cotización comercial CRM'});
  const defaultIssuer=panel.getByRole('group',{name:'Emisor',exact:true});assert.equal(await defaultIssuer.getByLabel('Nombre o razón social').inputValue(),'Importadora Latin Chile Limitada');assert.equal(await defaultIssuer.getByLabel('RUT',{exact:true}).inputValue(),'77.724.382-9');assert.equal(await defaultIssuer.getByLabel('Dirección',{exact:true}).inputValue(),'ENC LOS QUILLAYES LT 76 F');assert.equal(await defaultIssuer.getByLabel('Comuna',{exact:true}).inputValue(),'Curacaví');
  for(const width of [320,390,1280]){await page.setViewportSize({width,height:850});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await panel.getByRole('button',{name:'Buscar productos'}).scrollIntoViewIfNeeded();const b=await panel.getByRole('button',{name:'Buscar productos'}).boundingBox();assert.ok(b.height>=44&&b.x+b.width<=width+1);}

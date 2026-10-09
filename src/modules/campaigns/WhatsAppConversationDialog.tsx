@@ -53,7 +53,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
     setAssistantLoading(true); setAssistantError("");
     try {
       const result = await getWhatsAppAssistantPreview(companyId, data.phone, contactId);
-      if (active.current) setAssistant(result);
+      if (active.current) { setAssistant(result); if(result.plan.reason === "formal_quote_ready" && result.messageId === latestInbound) setQuoteOpen(true); }
     } catch (err) { if (active.current) setAssistantError(err instanceof Error ? err.message : "No se pudo preparar la propuesta."); }
     finally { if (active.current) setAssistantLoading(false); }
   }
