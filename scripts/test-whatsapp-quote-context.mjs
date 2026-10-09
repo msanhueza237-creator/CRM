@@ -35,3 +35,9 @@ test('SKU digits are never quantity; cotizame 2 confirms two of the named model'
  const products=[{sku:'LX-36475',name:'Balanza digital'}];
  const r=deriveQuoteLines([m('inbound','LX-36475 este modelo cotizame 2','received')],products);assert.equal(r.lines[0]?.quantity,2);assert.equal(r.quantityConfirmed,true);
 });
+test('real customer prefiero la 1 y las 2 unidades retains the exact offered SKU and quantity',()=>{
+ const products=[{sku:'LX-36575',name:'Balanza Electrinioca Digital 100Kg'}];
+ const offer='Encontré estos modelos en el catálogo:\n\n1. Balanza Electrinioca Digital 100Kg\nCódigo: LX-36575';
+ const r=deriveQuoteLines([m('outbound',offer),m('inbound','prefiero la 1 y las 2 unidades que te quedan. puedes hacerme una cotización formal','received',1),m('outbound','Elige un modelo','sent',2),m('inbound','LX-36475 este modelo cotizame 2','received',3)],products);
+ assert.equal(r.lines[0]?.sku,'LX-36575');assert.equal(r.lines[0]?.quantity,2);assert.equal(r.quantityConfirmed,true);
+});

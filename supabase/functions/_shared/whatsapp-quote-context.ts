@@ -31,9 +31,9 @@ export function deriveQuoteLines(messages:Message[],products:Product[]) {
   if(/\b(olvida|cancelar|cancela)\b|no quiero|no me interesa/.test(text)){selected.clear();pendingSku='';continue;}
   const direct=explicitSelectedProducts(text,products);
   if(direct.length===1){const qty=selectedQuantity(text,direct[0].sku);pick(direct[0].sku,qty||1,qty!==null);continue;}
-  const option=text.match(/\b(?:numero|opcion|modelo|producto)\s*(\d{1,2})\b/)||text.match(/^\s*(\d{1,2})[.!?\s]*$/);
+  const option=text.match(/\b(?:numero|opcion|modelo|producto)\s*(\d{1,2})\b/)||text.match(/\b(?:prefiero|elijo|quiero)\s+(?:la|el)\s+(\d{1,2})\b/)||text.match(/^\s*(\d{1,2})[.!?\s]*$/);
   if(option&&catalogOffer.startsWith('Encontré estos modelos en el catálogo:')){
-   const entries=[...catalogOffer.matchAll(/(?:^|\n)(\d+)\. [^\n]+\nCódigo: ([^\n]+)/g)].filter(p=>Number(p[1])===Number(option[1]));if(entries.length===1)pick(entries[0][2].trim());
+   const entries=[...catalogOffer.matchAll(/(?:^|\n)(\d+)\. [^\n]+\nCódigo: ([^\n]+)/g)].filter(p=>Number(p[1])===Number(option[1]));if(entries.length===1){const rest=text.replace(option[0],'');const q=rest.match(/\b(?:las|los|esas|esos)\s+([1-9]\d{0,3})\s+unidades?\b/);pick(entries[0][2].trim(),q?Number(q[1]):1,Boolean(q));}
   }else if(catalogOffer.startsWith('Encontré estos modelos en el catálogo:')&&[...catalogOffer.matchAll(/(?:^|\n)(\d+)\. [^\n]+\nCódigo: ([^\n]+)/g)].some(entry=>normal(entry[2].trim())===text.trim())){
    pick(m.body.trim());
   }else if(pendingSku&&/¿Cuántas unidades quieres\?/.test(offer)){

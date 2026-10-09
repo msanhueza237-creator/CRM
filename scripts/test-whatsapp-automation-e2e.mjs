@@ -149,3 +149,11 @@ test('model and requested quantity in one natural phrase checks live stock and t
   s.payload.variants[0].stock=1;assert.equal((await run(s)).plan.reason,'purchase_insufficient_stock');
  }
 });
+test('real conversation retains option one and two units, explains mistyped LX-36475 vs LX-36575',async()=>{
+ const s=scenario('LX-36475 este modelo cotizame 2');s.incoming.body='LX-36475 este modelo cotizame 2';s.product.variants[0].sku=s.payload.variants[0].sku='LX-36575';s.product.name=s.payload.name.es='Balanza Electrinioca Digital 100Kg';
+ const push=(direction,body,seconds)=>s.db.tables.whatsapp_messages.push({id:'history'+seconds,company_id:s.incoming.company_id,phone_number:s.incoming.phone_number,direction,status:direction==='outbound'?'read':'received',occurred_at:new Date(Date.now()-seconds*1000).toISOString(),body});
+ push('outbound','Encontré estos modelos en el catálogo:\n\n1. Balanza Electrinioca Digital 100Kg\nCódigo: LX-36575\nStock: 2 unidades disponibles.',180);
+ push('inbound','prefiero la 1 y las 2 unidades que te quedan. puedes hacerme una cotización formal',120);
+ push('outbound','Para preparar la cotización formal, primero elige el modelo de la lista o envíame su código.',60);
+ const r=await run(s);assert.equal(r.plan.reason,'unknown_product_code');assert.match(r.plan.text,/LX-36475.*LX-36575.*2 unidad.*Confirmas/s);assert.equal(r.plan.canSend,false);
+});

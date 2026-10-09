@@ -136,7 +136,13 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const formalRequested=session.some(m=>m.direction==='inbound'&&wantsFormalQuote(m.body));
   const selectionInSession=deriveQuoteLines(session,products);
   const latestText=String(metaMessage(incoming.raw_payload,incoming.meta_message_id)?.message.text?.body||'');
-  if(formalRequested&&(['formal_quote_required','complex_question','purchase_summary'].includes(plan.reason)||(wantsFormalQuote(latestText)&&selectionInSession.lines.length>0&&['product_reference_needed','ambiguous_product','verified_product_answer'].includes(plan.reason)))){
+  const typedCode=latestText.match(/\b[A-Za-z]{1,8}-\d{3,8}\b/)?.[0];
+  const codeMismatch=Boolean(typedCode&&!products.some(p=>p.sku.toLowerCase()===typedCode.toLowerCase()));
+  if(codeMismatch){
+    const chosen=selectionInSession.lines;
+    plan={action:'clarify',reason:'unknown_product_code',text:chosen.length===1?`El código ${typedCode} no aparece en el catálogo. La opción que elegiste es ${chosen[0].name}, código ${chosen[0].sku}, por ${chosen[0].quantity} unidad(es). ¿Confirmas ese modelo y cantidad?`: `El código ${typedCode} no aparece en el catálogo. Confirma el código tal como aparece en la lista para consultar su stock y precio.`,requires:'product',source:'tiendanube',canSend:false};
+  }
+  if(!codeMismatch&&formalRequested&&(['formal_quote_required','complex_question','purchase_summary'].includes(plan.reason)||(wantsFormalQuote(latestText)&&selectionInSession.lines.length>0&&['product_reference_needed','ambiguous_product','verified_product_answer'].includes(plan.reason)))){
     const selected=selectionInSession,customer=customerFromQuoteMessages(session),missing=quoteCustomerMissing(customer);
     const response=(!selected.lines.length||selected.unresolved.length)?{reason:'quote_selection_required',text:'Para preparar la cotización formal, primero elige el modelo de la lista o envíame su código. Después confirmaremos la cantidad y el stock.'}
       :!selected.quantityConfirmed?{reason:'quote_quantity_required',text:'¿Cuántas unidades del modelo elegido necesitas para la cotización formal?'}
