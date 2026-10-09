@@ -32,6 +32,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   const [readError, setReadError] = useState("");
   const [quoteOpen, setQuoteOpen] = useState(false);
   const [assistant, setAssistant] = useState<WhatsAppAssistantPreview | null>(null);
+  const [imageProvider, setImageProvider] = useState(() => localStorage.getItem("whatsapp-image-provider") === "openai" ? "openai" : "deepseek");
   const [assistantLoading, setAssistantLoading] = useState(false);
   const [assistantError, setAssistantError] = useState("");
   const acknowledged = useRef(new Set<string>());
@@ -52,7 +53,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
     if (!data || assistantLoading || sending) return;
     setAssistantLoading(true); setAssistantError("");
     try {
-      const result = await getWhatsAppAssistantPreview(companyId, data.phone, contactId);
+      const result = await getWhatsAppAssistantPreview(companyId, data.phone, contactId, imageProvider);
       if (active.current) { setAssistant(result); if(result.plan.reason === "formal_quote_ready" && result.messageId === latestInbound) setQuoteOpen(true); }
     } catch (err) { if (active.current) setAssistantError(err instanceof Error ? err.message : "No se pudo preparar la propuesta."); }
     finally { if (active.current) setAssistantLoading(false); }
@@ -158,6 +159,12 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
         <strong>Asistente de respuesta</strong>
         <button type="button" className="ghost-button" disabled={!open || loading || sending || assistantLoading || uncertain} onClick={() => void suggest()}>{assistantLoading ? "Consultando catálogo..." : "Proponer respuesta"}</button>
         {assistantError && <p role="alert">{assistantError}</p>}
+        <label style={{display:"block",width:"100%"}}>Modelo para interpretar fotos
+          <select aria-label="Modelo para interpretar fotos" value={imageProvider} disabled={assistantLoading} style={{width:"100%",minHeight:44}} onChange={event => {setImageProvider(event.target.value);localStorage.setItem("whatsapp-image-provider",event.target.value);setAssistant(null);}}>
+            <option value="deepseek">DeepSeek · deepseek-flash</option>
+            <option value="openai">OpenAI · gpt-4o-mini</option>
+          </select>
+        </label>
         {assistantCurrent && assistant?.mediaAnalysis && <p><strong>{assistant.mediaAnalysis.kind === "audio" ? "Audio transcrito:" : "Imagen interpretada:"}</strong> {assistant.mediaAnalysis.observation}</p>}
         {assistantCurrent && assistant?.plan.text && <><p>{assistant.plan.text}</p><small>{assistant.plan.source === "tiendanube" ? "Fuente: catálogo de Tiendanube." : "Propuesta para revisar."}</small>
           <button type="button" className="ghost-button" disabled={!open || sending || loading || uncertain || mode !== "reply" || Boolean(text.trim()) || Boolean(files.length)} onClick={() => { setText(assistant.plan.text || ""); }}>Usar propuesta</button></>}

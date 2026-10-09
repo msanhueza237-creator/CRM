@@ -1,3 +1,4 @@
+import { decryptApiKey } from '../prospecting-integrations/deepseek.ts';
 import { analyzeWhatsAppMedia, mediaAsText, type MediaAnalysis } from './whatsapp-media-analysis.ts';
 import { currentQuoteSession, customerFromQuoteMessages, quoteCustomerMissing, wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
 import { deriveQuoteLines, explicitSelectedProducts, selectedQuantity } from '../_shared/whatsapp-quote-context.ts';
@@ -63,10 +64,16 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const currency = env(["WHATSAPP_STORE_CURRENCY"]).trim().toUpperCase();
   const { phoneId: configPhone } = await getWhatsAppConfig(db, env);
   const products = await readWhatsAppProductEvidence(db, currency);
+  const imageProvider=query.get("imageProvider")||"deepseek";
+  if(!["deepseek","openai"].includes(imageProvider))throw Error("Proveedor de imágenes no disponible.");
   let mediaAnalysis:MediaAnalysis|null=null;
   const initial=planWhatsAppAutomation({incoming,phoneNumberId:configPhone,products,optedOut:false,humanTakeover:false});
   if(['transcription_required','visual_identification_required'].includes(initial.reason)){
-    try{mediaAnalysis=await analyzeWhatsAppMedia(incoming,env,fetcher);if(!mediaAnalysis||mediaAnalysis.needsClarification)return {messageId:incoming.id,plan:{action:'clarify',reason:'media_clarification_required',text:'No puedo identificar con seguridad el producto de la imagen. ¿Puedes indicar su nombre, modelo o enviar una foto de la etiqueta?',requires:'vision',source:null,canSend:false},mediaAnalysis};
+    try{mediaAnalysis=await analyzeWhatsAppMedia(incoming,env,fetcher,async()=>{
+      const {data:integration,error}=await db.from("prospecting_ai_integrations").select("status,models,api_key_encrypted").eq("provider","deepseek").limit(1).maybeSingle();
+      if(error||integration?.status!=="verified"||!Array.isArray(integration.models)||!integration.models.includes("deepseek-flash")||!integration.api_key_encrypted)throw Error("deepseek_not_configured");
+      return decryptApiKey(integration.api_key_encrypted,env(["PROSPECTING_SECRET_ENCRYPTION_KEY"]));
+    },imageProvider as "deepseek"|"openai");if(!mediaAnalysis||mediaAnalysis.needsClarification)return {messageId:incoming.id,plan:{action:'clarify',reason:'media_clarification_required',text:'No puedo identificar con seguridad el producto de la imagen. ¿Puedes indicar su nombre, modelo o enviar una foto de la etiqueta?',requires:'vision',source:null,canSend:false},mediaAnalysis};
       incoming={...incoming,...mediaAsText(incoming,mediaAnalysis.text)};
     }catch{return {messageId:incoming.id,plan:{action:'handoff',reason:'media_analysis_unavailable',text:'No pude interpretar el archivo. Indica el producto por texto o envía un archivo más claro.',requires:initial.requires,source:null,canSend:false}};}
   }

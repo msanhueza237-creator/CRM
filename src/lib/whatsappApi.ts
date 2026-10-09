@@ -70,8 +70,8 @@ export interface WhatsAppAssistantPreview {
   plan: { action: "ignore" | "draft" | "clarify" | "handoff"; reason: string; text: string | null;
     requires: string; source: "tiendanube" | null; canSend: false };
 }
-export function getWhatsAppAssistantPreview(companyId: string, phone: string, contactId = "") {
-  return whatsappRequest<WhatsAppAssistantPreview>(`whatsapp-assistant-preview?${new URLSearchParams({ companyId, phone, contactId })}`);
+export function getWhatsAppAssistantPreview(companyId: string, phone: string, contactId = "", imageProvider = "deepseek") {
+  return whatsappRequest<WhatsAppAssistantPreview>(`whatsapp-assistant-preview?${new URLSearchParams({ companyId, phone, contactId, imageProvider })}`);
 }
 
 export function sendWhatsAppReply(body: { companyId: string; phone: string; text: string; requestId: string; confirmSend: true }) {
