@@ -161,3 +161,12 @@ test('bare full product name queries live price and stock without requiring a ke
  const name='Bomba de condensado Mute coner';const s=scenario(name);s.incoming.body=name;s.product.name=s.payload.name.es=name;s.payload.canonical_url='https://www.climactiva.cl/productos/bomba-mute-coner/';
  const r=await run(s);assert.equal(r.plan.reason,'verified_product_answer');assert.match(r.plan.text,/32.000.*Stock: 2 unidades.*https:/s);assert.equal(s.calls.length,1);assert.equal(r.plan.canSend,false);
 });
+test('whole-catalog lookup tolerates valve typo and preserves ways and fractional size',async()=>{
+ const s=scenario('estoy buscando valvula motivada de 2 vías 3/4');s.product.name=s.payload.name.es='Válvula motorizada 2 vías, 3/4';s.product.description_text='Actuador eléctrico 220 V para circuito de agua';s.payload.description={es:'<p>Actuador eléctrico <strong>220 V</strong> para circuito de agua</p>'};s.payload.canonical_url='https://www.climactiva.cl/productos/valvula/';
+ const r=await run(s);assert.match(r.plan.text,/Válvula motorizada 2 vías, 3\/4/);assert.match(r.plan.text,/Stock: 2/);assert.equal(s.calls.length,1);
+ const mismatch=scenario('busco valvula motorizada 3 vías 3/4');mismatch.product.name='Válvula motorizada 2 vías, 3/4';assert.equal(mismatch.calls.length,0);assert.doesNotMatch((await run(mismatch)).plan.text||'',/Válvula motorizada 2 vías/);
+});
+test('catalog description is searchable and current official description accompanies identified product',async()=>{
+ const s=scenario('busco equipo presurizado');s.product.description_text='Equipo presurizado de prueba';s.payload.description={es:'<p>Equipo presurizado de prueba. Características oficiales: 220 V</p><script>privateSynthetic()</script>'};const r=await run(s);assert.match(r.plan.text,/Manómetro/);assert.equal(s.calls.length,1);
+ const exact=scenario();exact.payload.description=s.payload.description;const result=await run(exact);assert.match(result.plan.text,/Características oficiales: 220 V/);assert.doesNotMatch(result.plan.text,/privateSynthetic|<script>/);
+});

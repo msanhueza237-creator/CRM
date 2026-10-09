@@ -21,7 +21,7 @@ export async function readWhatsAppProductEvidence(db: SupabaseClient, currency: 
   const products: ProductEvidence[] = [];
   for (let offset = 0; offset < 10000; offset += 500) {
     const { data, error } = await db.from("content_products")
-      .select("name,external_id,product_url,variants,last_synced_at,source_updated_at")
+      .select("name,description_text,category,brand,external_id,product_url,variants,last_synced_at,source_updated_at")
       .eq("source_provider", "tiendanube").eq("source_status", "active").eq("paused", false)
       .eq("sync_status", "synced").order("id").range(offset, offset + 499);
     if (error) throw new Error("No se pudo consultar el catálogo sincronizado de Tiendanube.");
@@ -32,7 +32,7 @@ export async function readWhatsAppProductEvidence(db: SupabaseClient, currency: 
         const sku = typeof variant.sku === "string" ? variant.sku.trim() : "";
         if (!sku) continue;
         products.push({ productId: typeof row.external_id === "string" ? row.external_id : "", productUrl: typeof row.product_url === "string" ? row.product_url : "",
-          variantId: typeof variant.id === "string" || typeof variant.id === "number" ? String(variant.id) : "", source: "tiendanube", sku, name: String(row.name || ""), currency,
+          variantId: typeof variant.id === "string" || typeof variant.id === "number" ? String(variant.id) : "", source: "tiendanube", sku, name: String(row.name || ""), description:String(row.description_text||''), category:String(row.category||''), brand:String(row.brand||''), currency,
           price: variant.promotional_price != null && variant.promotional_price !== "" ? number(variant.promotional_price) : number(variant.price),
           stock: variant.stock_management === false ? null : number(variant.stock), published: true,
           verifiedAt: typeof row.last_synced_at === "string" && typeof row.source_updated_at === "string"

@@ -6,6 +6,9 @@ export type ProductEvidence = {
   source: "tiendanube";
   sku: string;
   name: string;
+  description?: string;
+  category?: string;
+  brand?: string;
   currency: string;
   productUrl?: string;
   referenceUrl?: string;
@@ -59,15 +62,13 @@ export function resolveWhatsAppProductReferences(text: string, reference: string
 }
 
 export function suggestWhatsAppProducts(text: string, products: ProductEvidence[]) {
-  const normalize = (value: string) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
-    .replace(/\bcorta[ -]?tubos?\b/g, "cortatubos").replace(/\bcortador(?:es)? de tubos?\b/g, "cortatubos");
-  const stop = new Set("tienes tiene tienen tendras tendran tendria tendrias tendrian hay venden vendes manejan precio precios valor cuanto cuesta cuestan vale valen stock disponibilidad disponible disponibles del para por con una uno unos unas los las un de el la me que si saber quiero necesito hola buenas puedes producto productos actual cotizar cotizacion cotiza cotizas coticemos presupuesto formal pdf quiero queremos cotizacion".split(" "));
-  const query = [...new Set((normalize(text).match(/[a-z0-9]+/g) || []).filter(w => w.length >= 3 && !stop.has(w)))];
-  if (!query.length || query.length > 6 || /https?:\/\//i.test(text)) return [];
-  return products.filter(p => {
-    const words = new Set(normalize(p.name).match(/[a-z0-9]+/g) || []);
-    return p.published && p.source === "tiendanube" && p.sku && query.every(w => words.has(w));
-  });
+ const normalize=(v:string)=>v.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\bcorta[ -]?tubos?\b|\bcortador(?:es)? de tubos?\b/g,'cortatubos').replace(/\b(?:motivadas?|motirazadas?|motorizadas?)\b/g,'motorizada');
+ const stop=new Set('estoy buscando busco quisiera saber informacion caracteristicas detalles necesito quiero precio precios stock disponibilidad tienes tiene tienen tendras tendran tendria tendrias hay venden vendes manejan del de la el los las un una por para con me puedes cuanto cuesta cotizar cotizacion formal pdf producto productos actual vias via'.split(' '));
+ const tokenize=(v:string)=>normalize(v).match(/\d+\/\d+|[a-z0-9]+/g)||[];
+ const query=[...new Set(tokenize(text).filter(w=>!stop.has(w)&&(/\d/.test(w)||w.length>=3)))];
+ if(!query.length||query.length>64||/https?:\/\//i.test(text))return [];
+ const close=(a:string,b:string)=>{if(a===b||a.length>3&&(a+'s'===b||b+'s'===a))return true;if(a.length<6||b.length<6||/\d/.test(a+b)||a[0]!==b[0]||Math.abs(a.length-b.length)>1)return false;let i=0,j=0,n=0;while(i<a.length&&j<b.length){if(a[i]===b[j]){i++;j++;continue;}if(++n>1)return false;if(a.length>=b.length)i++;if(b.length>=a.length)j++;}return n+(a.length-i)+(b.length-j)<=1;};
+ return products.filter(p=>{if(!p.published||p.source!=='tiendanube'||!p.sku)return false;const tokens=tokenize(p.name+' '+p.sku+' '+(p.description||'')+' '+(p.category||'')+' '+(p.brand||''));return query.every(w=>tokens.some(t=>close(w,t)));});
 }
 
 function storeProductLink(product: ProductEvidence): string {
@@ -132,7 +133,7 @@ export function planWhatsAppAutomation(input: {
     return plan("draft", "farewell", "¡Fue un gusto ayudarte! Que tengas un excelente día. Aquí estaremos cuando nos necesites.");
   if (/^(?:(?:hola|holaa|buenas|buenos dias|buenas tardes|buenas noches)(?: (?:hola|buenas|buenos dias|buenas tardes|buenas noches))?)(?: como (?:estas|estan)| que tal)?$/.test(courtesy))
     return plan("draft", "greeting", "¡Hola! Bienvenido a Clima Activa. Soy el asistente de atención. ¿En qué podemos ayudarte? Puedes consultar por productos, precios o disponibilidad.");
-  if (wantsFormalQuote(text) && suggestWhatsAppProducts(text,input.products).length === 0)
+  if (wantsFormalQuote(text) && (suggestWhatsAppProducts(text,input.products).length === 0 || resolveWhatsAppProductReferences(text,"",input.products).matches.length===1))
     return plan("handoff", "formal_quote_required", null, "facto_quote");
   if (/\b(seguimiento|tracking|pedido|despacho|envio|entrega)\b/.test(normalized))
     return plan("handoff", "verified_order_or_shipping_policy_required", null, "verified_order");
@@ -167,7 +168,8 @@ export function planWhatsAppAutomation(input: {
     if(selection||choices.length)return plan("clarify", "invalid_offer_selection", "¿Puedes indicar el código del producto que quieres y cuántas unidades necesitas?", "product");
   }
   const bareName=input.products.some(p=>p.published&&p.source==='tiendanube'&&p.name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()===normalized.trim());
-  const asksPrice = bareName || /\b(precio|precios|valor|cuesta|cuestan|vale|valen|cotizar|cotiza|cotizas|cotizacion|presupuesto)\b/.test(normalized);
+  const discovery=!wantsFormalQuote(text)&&suggestWhatsAppProducts(text,input.products).length>0;
+  const asksPrice = bareName || discovery || /\b(precio|precios|valor|cuesta|cuestan|vale|valen|cotizar|cotiza|cotizas|cotizacion|presupuesto)\b/.test(normalized);
   const asksStock = asksPrice || /\b(stock|disponibilidad|disponible|disponibles|tienes|tiene|tienen|tendras|tendran|tendria|tendrias|tendrian|venden|vendes|manejan|hay)\b/.test(normalized);
   if (!asksPrice && !asksStock) return plan("handoff", "complex_question", null, "seller");
   const reference = String(message.context?.referred_product?.product_retailer_id || "").trim();
@@ -196,6 +198,7 @@ export function planWhatsAppAutomation(input: {
     (asksStock && (p.stock === null || !Number.isSafeInteger(p.stock) || p.stock < 0)))
     return plan("handoff", "incomplete_product_evidence", null, "product");
   const parts = [`${p.name} (${p.sku}).`];
+  if(p.description)parts.push('Descripción de la tienda: '+p.description.slice(0,900));
   if (asksPrice) parts.push(`Precio registrado en la tienda: ${p.price!.toLocaleString("es-CL", { maximumFractionDigits: 4 })} ${p.currency}.`);
   if (asksStock) parts.push(p.stock! > 0 ? `Stock: ${p.stock} unidades disponibles; se confirma al realizar el pedido.` : "La tienda registra este producto sin stock.");
   const link = storeProductLink(p);
