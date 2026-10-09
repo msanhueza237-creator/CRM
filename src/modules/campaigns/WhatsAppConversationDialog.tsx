@@ -115,17 +115,19 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
   const template = templates.find(t => `${t.id}:${t.language}` === templateId);
   const templateReady = Boolean(template && template.variables.every((_, i) => parameters[i]?.trim()) && data?.canTemplate && !templateError);
 
-  async function send() {
-    if (!data || busy.current || uncertain || (mode === "template" ? !templateReady : (!text.trim() && !files.length) || !data.canReply || !data.expiresAt || Date.parse(data.expiresAt) <= Date.now() || text.length > (files.length ? 1024 : 4096))) return;
+  async function send(quoteReply?:{file:File;caption:string}) {
+    const replyText=quoteReply?.caption??text,replyFiles=quoteReply?[quoteReply.file]:files;
+    if (!data || busy.current || uncertain || (mode === "template" ? !templateReady : (!replyText.trim() && !replyFiles.length) || !data.canReply || !data.expiresAt || Date.parse(data.expiresAt) <= Date.now() || replyText.length > (replyFiles.length ? 1024 : 4096))) return;
     busy.current = true; setSending(true); setNotice(""); setError("");
     requestId.current ||= crypto.randomUUID();
     try {
-      const result = await sendDirectMessage("whatsapp", { companyId, contactId, phone: data.phone, text: text.trim(), mode,
-        templateId: template?.id, language: template?.language, templateVersion: template?.versionKey, parameters, requestId: requestId.current, confirmSend: true }, mode === "template" ? [] : files);
+      const result = await sendDirectMessage("whatsapp", { companyId, contactId, phone: data.phone, text: replyText.trim(), mode,
+        templateId: template?.id, language: template?.language, templateVersion: template?.versionKey, parameters, requestId: requestId.current, confirmSend: true }, mode === "template" ? [] : replyFiles);
       setNotice(result.warning || "Mensaje aceptado por Meta.");
       if (result.accepted) { setText(""); setFiles([]); requestId.current = null; }
       else if (result.outcome === "rejected") requestId.current = null;
       else setUncertain(true);
+      return result.accepted;
     } catch (err) { setNotice(err instanceof Error ? err.message : "No se pudo confirmar el envio. No lo repitas sin revisar el historial."); setUncertain(true); }
     finally { busy.current = false; setSending(false); notifyInboxChanged(); await load(); }
   }
@@ -162,7 +164,7 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
         {assistant && !assistantCurrent && <p>La conversación cambió. Consulta una propuesta para el último mensaje.</p>}
       </section>}
       {companyId && assistantCurrent && assistant?.plan.reason === "formal_quote_ready" && !quoteOpen && <button type="button" className="ghost-button wa-quote-open" disabled={loading || sending || uncertain} onClick={() => setQuoteOpen(true)}>Preparar cotización PDF</button>}
-      {quoteOpen && <WhatsAppQuotePanel key={companyId + (data?.phone || phone || "")} phone={data?.phone || phone || ""} contactId={contactId} canAttach={open && mode === "reply" && !text.trim() && !files.length && !sending && !uncertain} companyId={companyId} message={latestInboundMessage?.body || ""} sourceMessageId={latestInbound || ""} onClose={() => setQuoteOpen(false)} onAttach={(file, caption) => { setFiles([file]); setText(caption); setMode("reply"); }} />}
+      {quoteOpen && <WhatsAppQuotePanel key={companyId + (data?.phone || phone || "")} phone={data?.phone || phone || ""} contactId={contactId} canAttach={open && mode === "reply" && !text.trim() && !files.length && !sending && !uncertain} companyId={companyId} message={latestInboundMessage?.body || ""} sourceMessageId={latestInbound || ""} onClose={() => setQuoteOpen(false)} onSend={async(file,caption)=>Boolean(await send({file,caption}))} onAttach={(file, caption) => { setFiles([file]); setText(caption); setMode("reply"); }} />}
       {!windowOpen && !contactBlocked && mode!=="template" && <button className="ghost-button" disabled={sending||uncertain} onClick={()=>setMode("template")}>Seleccionar plantilla</button>}
       <div className="direct-channels" role="group" aria-label="Tipo de mensaje WhatsApp"><button type="button" aria-pressed={mode === "reply"} disabled={sending || uncertain} onClick={() => setMode("reply")}>Mensaje</button><button type="button" aria-pressed={mode === "template"} disabled={sending || uncertain} onClick={() => setMode("template")}>Plantilla aprobada</button></div>
       {(mode === "template" ? data?.templateReasons : data?.reasons)?.map(reason => <p className="wa-alert" key={reason}>{reason}</p>)}

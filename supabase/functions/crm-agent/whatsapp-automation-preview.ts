@@ -156,7 +156,8 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
           const evidence=products.filter(p=>p.sku===line.sku);
           const live=evidence.length===1?await readLiveWhatsAppProduct(evidence[0],env,fetcher):null;
           if(!live||live.currency!=='CLP'||live.price===null||live.stock===null||!Number.isSafeInteger(live.stock)){plan={action:'handoff',reason:'live_catalog_unavailable',text:null,requires:'product',source:null,canSend:false};break;}
-          if(live.stock<line.quantity){plan={action:'clarify',reason:'quote_stock_unavailable',text:`${line.name} (${line.sku}) registra ${live.stock} unidades; no alcanza para las ${line.quantity} solicitadas. Elige otra cantidad o un modelo con stock antes de preparar el PDF.`,requires:'product',source:'tiendanube',canSend:false};break;}
+          if(live.stock===0){plan={action:'clarify',reason:'quote_stock_unavailable',text:`${line.name} (${line.sku}) está sin stock. No podemos cotizar unidades disponibles de este modelo.`,requires:'product',source:'tiendanube',canSend:false};break;}
+          if(live.stock<line.quantity)plan={action:'draft',reason:'formal_quote_ready',text:`Solicitaste ${line.quantity} unidades de ${line.name} (${line.sku}), pero hay ${live.stock} disponibles. Preparamos la cotización formal por las ${live.stock} unidades en stock.`,requires:'facto_quote',source:'tiendanube',canSend:false};
         }
       }catch{plan={action:'handoff',reason:'live_catalog_unavailable',text:null,requires:'product',source:null,canSend:false};}
     }

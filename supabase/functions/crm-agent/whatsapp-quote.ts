@@ -48,8 +48,9 @@ export async function prepareCrmQuote(db:SupabaseClient,env:Env,payload:Record<s
   if(!Number.isSafeInteger(quantity)||quantity<1||quantity>9999)throw Error('Cantidad inválida.');
   const live=await readLiveWhatsAppProduct(candidates[0],env,fetcher);
   if(!live||live.price===null||!Number.isFinite(live.price)||live.currency!=='CLP')throw Error('No se pudo confirmar el precio actual del producto.');
-  if(live.stock===null||!Number.isSafeInteger(live.stock)||live.stock<quantity)throw Error('No se pudo confirmar stock suficiente para la cantidad solicitada.');
-  lines.push({sku:live.sku,name:live.name,quantity,unitPrice:live.price,amount:Math.round(live.price*quantity),productUrl:live.productUrl||''});
+  if(live.stock===null||!Number.isSafeInteger(live.stock)||live.stock<1)throw Error('No se pudo confirmar stock suficiente para la cantidad solicitada.');
+  const availableQuantity=Math.min(quantity,live.stock);
+  lines.push({sku:live.sku,name:live.name,quantity:availableQuantity,...(availableQuantity<quantity?{requestedQuantity:quantity}:{}),unitPrice:live.price,amount:Math.round(live.price*availableQuantity),productUrl:live.productUrl||''});
  }
  const totals=quoteTotals(lines,payload.pricesIncludeVat);
  return {kind:'crm_quote_v1',bankDetails:latinChileQuoteBank(issuer),id,folio:'CRM-'+new Intl.DateTimeFormat('en-CA',{timeZone:'America/Santiago',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date()).replaceAll('-','')+'-'+id.replaceAll('-','').toUpperCase(),date:new Date().toISOString(),validDays,issuer,customer,lines,pricesIncludeVat:payload.pricesIncludeVat,...totals,logoDataUrl,conditions:'',sourceMessageId,verifiedAt:new Date().toISOString()};

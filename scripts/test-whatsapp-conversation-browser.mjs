@@ -49,10 +49,16 @@ try{
  await panel.getByRole('group',{name:'Emisor',exact:true}).getByLabel('Dirección',{exact:true}).fill('');await panel.getByText(/Para el PDF formal el cliente debe completar sus datos/).waitFor();
  await panel.getByLabel('Cantidad',{exact:true}).waitFor();assert.equal(await panel.getByLabel('Cantidad',{exact:true}).inputValue(),'2');await panel.getByRole('button',{name:'Buscar productos'}).click();await panel.getByLabel('Seleccionar modelo').selectOption('LX1030');await panel.getByLabel('Cantidad',{exact:true}).fill('2');
  await panel.getByRole('button',{name:'Consultar precios y preparar cotización'}).click();await panel.getByText(/Total:.*64.000 CLP/).waitFor();assert.equal(quoteRegistrations,0);assert.equal(sent.length,1);await panel.getByText(/Neto unitario:.*26.890,76/).waitFor();assert.equal(await panel.getByRole('option',{name:'Son netos, agregar IVA 19%'}).count(),0);
+ if(process.env.TEST_QUOTE_DIRECT_SEND==='true'){
+ assert.equal(await panel.getByRole('button',{name:'Guardar y enviar PDF por WhatsApp'}).isDisabled(),true);
+ await panel.getByRole('checkbox').check();await panel.getByRole('button',{name:'Guardar y enviar PDF por WhatsApp'}).click();await panel.waitFor({state:'detached'});assert.equal(quoteRegistrations,1);assert.equal(sent.length,2);
+ }else{
  assert.equal(await panel.getByRole('button',{name:'Guardar cotización en ficha'}).isDisabled(),true);await panel.getByRole('checkbox').check();await panel.getByRole('button',{name:'Guardar cotización en ficha'}).click();await panel.getByText('Cotización guardada en la ficha del cliente.').waitFor();assert.equal(quoteRegistrations,1);await panel.getByText('Cotización 100',{exact:true}).waitFor();
  const downloading=page.waitForEvent('download');await panel.getByRole('button',{name:'Descargar PDF',exact:true}).click();const download=await downloading;await download.saveAs(output+'/synthetic-quote.pdf');
  await page.setViewportSize({width:390,height:850});await page.screenshot({path:output+'/quote-390.png'});
  await panel.getByRole('button',{name:'Adjuntar PDF a respuesta',exact:true}).click();assert.match(await page.getByLabel('Respuesta',{exact:true}).inputValue(),/Adjunto cotización/);assert.equal(sent.length,1);
+
+ }
  data.canReply=false;data.reasons=['Ventana de 24 horas cerrada.'];data.expiresAt=new Date(Date.now()-1).toISOString();await page.getByRole('button',{name:'Actualizar conversacion',exact:true}).click();await page.getByText(data.reasons[0],{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Enviar respuesta',exact:true}).isDisabled(),true);
  failing=true;await page.getByRole('button',{name:'Actualizar conversacion',exact:true}).click();await page.getByText('Sin conexion al historial',{exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Enviar respuesta',exact:true}).isDisabled(),true);
  await page.getByRole('button',{name:'Cerrar conversacion',exact:true}).click();await page.getByText('Cerrado',{exact:true}).waitFor();assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);

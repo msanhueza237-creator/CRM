@@ -123,7 +123,7 @@ test('zero stock selection cannot proceed to quantity or quote',async()=>{
 test('formal PDF waits for customer data and verifies selected quantity against current stock',async()=>{
  const missing=scenario();quoteHistory(missing);assert.equal((await run(missing)).plan.reason,'quote_customer_data_required');assert.equal(missing.calls.length,0);
  const ready=scenario();quoteHistory(ready,true);assert.equal((await run(ready)).plan.reason,'formal_quote_ready');assert.equal(ready.calls.length,1);
- const empty=scenario();quoteHistory(empty,true);empty.payload.variants[0].stock=1;assert.equal((await run(empty)).plan.reason,'quote_stock_unavailable');
+ const empty=scenario();quoteHistory(empty,true);empty.payload.variants[0].stock=1;assert.equal((await run(empty)).plan.reason,'formal_quote_ready');
 });
 
 test('product code selection also refreshes stock before asking quantity',async()=>{

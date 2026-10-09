@@ -58,3 +58,7 @@ test('quote contact phone comes from the source WhatsApp message, not client pay
  const s=fixture();s.input.customer.phone='+56900000000';const q=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);
  const source=s.db.tables.whatsapp_messages.find(m=>m.id===s.input.sourceMessageId);assert.equal(q.customer.phone,'+'+source.phone_number.replace(/\D/g,''));assert.notEqual(q.customer.phone,s.input.customer.phone);
 });
+test('formal quote automatically caps requested quantity to verified positive stock and records the difference',async()=>{
+ const s=fixture();s.payload.variants[0].stock=1;const q=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);assert.equal(q.lines[0].quantity,1);assert.equal(q.lines[0].requestedQuantity,2);assert.equal(q.total,32000);
+ s.payload.variants[0].stock=0;await assert.rejects(prepareCrmQuote(s.db,s.env,s.input,s.fetcher),/stock/);
+});

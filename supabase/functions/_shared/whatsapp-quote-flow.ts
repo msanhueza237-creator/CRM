@@ -1,7 +1,7 @@
 import { validQuoteRut, type QuoteParty } from './crm-quote.ts';
 export type QuoteFlowMessage={direction:string;body:string;status:string;occurredAt:string};
 const normal=(s:string)=>s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
-export const wantsFormalQuote=(body:string)=>/\b(?:cotizacion\s+formal|cotizar\s+formal|presupuesto\s+formal|pdf)\b/.test(normal(body))&&!/\b(?:no quiero|cancelar|cancela)\b/.test(normal(body));
+export const wantsFormalQuote=(body:string)=>(/\b(?:cotizacion\s+formal|cotizar\s+formal|presupuesto\s+formal|pdf)\b/.test(normal(body))||/\b(?:cotizar|cotizame|cotizacion)\b/.test(normal(body))&&/\b\d{1,2}\.?\d{3}\.?\d{3}-[\dk]\b/.test(normal(body)))&&!/\b(?:no quiero|cancelar|cancela)\b/.test(normal(body));
 export function currentQuoteSession(messages:QuoteFlowMessage[]) {
  const ordered=[...messages].sort((a,b)=>Date.parse(a.occurredAt)-Date.parse(b.occurredAt));
  const last=Date.parse(ordered.at(-1)?.occurredAt||'');

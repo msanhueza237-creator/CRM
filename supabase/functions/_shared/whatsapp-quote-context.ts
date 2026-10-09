@@ -5,7 +5,9 @@ const words=(value:string):string[]=>normal(value).match(/[a-z]+/g)||[];
 const normal=(s:string)=>s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
 const family=(name:string)=>{const n=normal(name);return /\bsoporte\b/.test(n)?/\bmuro\b/.test(n)?'muro':/\btecho\b/.test(n)?'techo':'':'';};
 export function selectedQuantity(text:string,sku='') {
- const clean=normal(text).split(normal(sku)||'\0').join(' ');
+ const clean=normal(text).split(/\b(?:rut|\d{1,2}\.?\d{3}\.?\d{3}-[\dk])\b/)[0].split(normal(sku)||'\0').join(' ');
+ const unit=clean.match(/\b([1-9]\d{0,3})\s*(?:unidades?|unidad|piezas?)\b/);
+ if(unit&&[...clean.matchAll(/\d+/g)].length===1)return Number(unit[1]);
  const matches=[...clean.matchAll(/(?:\b(?:cotizame|cotizar|cotiza|quiero|necesito|dame|llevo)\s+(?:esas?\s+|las?\s+|los?\s+)?|^\s*)([1-9]\d{0,3})(?=\b)/g)];
  if(matches.length!==1||[...clean.matchAll(/\b\d+\b/g)].length!==1)return null;
  return Number(matches[0][1]);
@@ -15,14 +17,14 @@ export function explicitSelectedProducts<T extends Product>(text:string,products
  return products.filter(p=>{const sku=normal(p.sku);let at=n.indexOf(sku);while(at>=0){if((at===0||!/[a-z0-9-]/.test(n[at-1]))&&(at+sku.length===n.length||!/[a-z0-9-]/.test(n[at+sku.length])))return true;at=n.indexOf(sku,at+1);}return false;});
 }
 export function deriveQuoteLines(messages:Message[],products:Product[]) {
- const selected=new Map<string,{sku:string;name:string;quantity:number;confirmed:boolean}>();let pendingSku='',offer='',catalogOffer='';
+ const selected=new Map<string,{sku:string;name:string;quantity:number;confirmed:boolean}>();let pendingSku='',offer='',catalogOffer='',singleOfferedSku='';
  const lookup=(sku:string)=>{const matches=products.filter(p=>p.sku===sku);return matches.length===1?matches[0]:null;};
  const pick=(sku:string,quantity=1,confirmed=false)=>{const p=lookup(sku);if(!p)return;const key=family(p.name)||sku;selected.set(key,{sku:p.sku,name:p.name,quantity,confirmed});pendingSku=sku;};
  let latestRequest='';
  for(const m of currentQuoteSession(messages)){
   if(m.direction==='outbound'){
    if(!['accepted','sent','delivered','read'].includes(m.status))continue;
-   offer=m.body;if(m.body.startsWith('Encontré estos modelos en el catálogo:'))catalogOffer=m.body;
+   offer=m.body;const mentioned=products.filter(p=>m.body.includes(p.name)&&m.body.includes(p.sku));singleOfferedSku=mentioned.length===1?mentioned[0].sku:'';if(m.body.startsWith('Encontré estos modelos en el catálogo:'))catalogOffer=m.body;
    const ack=m.body.match(/^Elegiste .+ \(código ([^\n]+)\)\. ¿Cuántas unidades quieres\?$/);if(ack)pick(ack[1]);
    continue;
   }
@@ -30,7 +32,11 @@ export function deriveQuoteLines(messages:Message[],products:Product[]) {
   const text=normal(m.body);if(/\b(cotizacion|cotizar|presupuesto)\b/.test(text))latestRequest=m.body;
   if(/\b(olvida|cancelar|cancela)\b|no quiero|no me interesa/.test(text)){selected.clear();pendingSku='';continue;}
   const direct=explicitSelectedProducts(text,products);
-  if(direct.length===1){const qty=selectedQuantity(text,direct[0].sku);pick(direct[0].sku,qty||1,qty!==null);continue;}
+  if(!direct.length){const names=products.filter(p=>normal(p.name).trim()===text.trim());if(names.length===1)direct.push(names[0]);}
+  if(direct.length===1){const qty=selectedQuantity(text,direct[0].sku);const previous=[...selected.values()].find(p=>p.sku===direct[0].sku);pick(direct[0].sku,qty??previous?.quantity??1,qty!==null||Boolean(previous?.confirmed));continue;}
+  if(/\b(?:misma|mismo|esta|este)\b/.test(text)&&singleOfferedSku&&selected.size===0)pick(singleOfferedSku);
+  const requestedQuantity=selectedQuantity(text);
+  if(selected.size===1&&requestedQuantity!==null&&/(?:unidades?|unidad|piezas?)\b/.test(text)){pick([...selected.values()][0].sku,requestedQuantity,true);continue;}
   const option=text.match(/\b(?:numero|opcion|modelo|producto)\s*(\d{1,2})\b/)||text.match(/\b(?:prefiero|elijo|quiero)\s+(?:la|el)\s+(\d{1,2})\b/)||text.match(/^\s*(\d{1,2})[.!?\s]*$/);
   if(option&&catalogOffer.startsWith('Encontré estos modelos en el catálogo:')){
    const entries=[...catalogOffer.matchAll(/(?:^|\n)(\d+)\. [^\n]+\nCódigo: ([^\n]+)/g)].filter(p=>Number(p[1])===Number(option[1]));if(entries.length===1){const rest=text.replace(option[0],'');const q=rest.match(/\b(?:las|los|esas|esos)\s+([1-9]\d{0,3})\s+unidades?\b/);pick(entries[0][2].trim(),q?Number(q[1]):1,Boolean(q));}

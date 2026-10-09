@@ -41,3 +41,6 @@ test('real customer prefiero la 1 y las 2 unidades retains the exact offered SKU
  const r=deriveQuoteLines([m('outbound',offer),m('inbound','prefiero la 1 y las 2 unidades que te quedan. puedes hacerme una cotización formal','received',1),m('outbound','Elige un modelo','sent',2),m('inbound','LX-36475 este modelo cotizame 2','received',3)],products);
  assert.equal(r.lines[0]?.sku,'LX-36575');assert.equal(r.lines[0]?.quantity,2);assert.equal(r.quantityConfirmed,true);
 });
+test('same valve compact 20unidades plus customer details preserves quantity',()=>{
+ const p=[{sku:'MVA-2W34',name:'Válvula motorizada 2 vías, 3/4'}];const r=deriveQuoteLines([m('outbound','Encontré estos modelos en el catálogo:\n\n1. '+p[0].name+'\nCódigo: MVA-2W34'),m('inbound','puede cotizar 20unidades de esta esta misma válvula\n15427713-7\nMarco Sanhueza\nlos alamos 6719\nlo prado','received',1)],p);assert.equal(r.lines[0]?.quantity,20);assert.equal(r.quantityConfirmed,true);
+});

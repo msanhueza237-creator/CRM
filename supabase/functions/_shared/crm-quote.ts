@@ -4,7 +4,7 @@ export function latinChileQuoteBank(issuer: {rut:string}): QuoteBankDetails | un
  return {bank:'Scotiabank',accountType:'Cuenta corriente',accountNumber:'985659206',holder:'Importadora Latin Chile Limitada',rut:'77.724.382-9',email:'ventas@climactiva.cl'};
 }
 export type QuoteParty = { name: string; rut: string; address: string; commune: string; phone?: string };
-export type QuoteLine = { sku: string; name: string; quantity: number; unitPrice: number; amount: number; productUrl: string };
+export type QuoteLine = { sku: string; name: string; quantity: number; requestedQuantity?: number; unitPrice: number; amount: number; productUrl: string };
 export type CrmQuote = { kind: 'crm_quote_v1'; bankDetails?: QuoteBankDetails; quoteNumber?: number; id: string; folio: string; date: string; validDays: number; issuer: QuoteParty; customer: QuoteParty; lines: QuoteLine[]; pricesIncludeVat: boolean; net: number; vat: number; total: number; conditions: string; sourceMessageId: string; verifiedAt: string; logoDataUrl?: string };
 export function validQuoteRut(value: string) {
  const rut=value.replace(/[.\s]/g,'').toUpperCase(), match=rut.match(/^(\d{7,8})-([\dK])$/);
