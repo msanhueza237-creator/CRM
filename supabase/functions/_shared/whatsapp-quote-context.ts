@@ -4,6 +4,16 @@ type Message={direction:string;body:string;status:string;occurredAt:string};
 const words=(value:string):string[]=>normal(value).match(/[a-z]+/g)||[];
 const normal=(s:string)=>s.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
 const family=(name:string)=>{const n=normal(name);return /\bsoporte\b/.test(n)?/\bmuro\b/.test(n)?'muro':/\btecho\b/.test(n)?'techo':'':'';};
+export function selectedQuantity(text:string,sku='') {
+ const clean=normal(text).split(normal(sku)||'\0').join(' ');
+ const matches=[...clean.matchAll(/(?:\b(?:cotizame|cotizar|cotiza|quiero|necesito|dame|llevo)\s+(?:esas?\s+|las?\s+|los?\s+)?|^\s*)([1-9]\d{0,3})(?=\b)/g)];
+ if(matches.length!==1||[...clean.matchAll(/\b\d+\b/g)].length!==1)return null;
+ return Number(matches[0][1]);
+}
+export function explicitSelectedProducts<T extends Product>(text:string,products:T[]) {
+ const n=normal(text);
+ return products.filter(p=>{const sku=normal(p.sku);let at=n.indexOf(sku);while(at>=0){if((at===0||!/[a-z0-9-]/.test(n[at-1]))&&(at+sku.length===n.length||!/[a-z0-9-]/.test(n[at+sku.length])))return true;at=n.indexOf(sku,at+1);}return false;});
+}
 export function deriveQuoteLines(messages:Message[],products:Product[]) {
  const selected=new Map<string,{sku:string;name:string;quantity:number;confirmed:boolean}>();let pendingSku='',offer='',catalogOffer='';
  const lookup=(sku:string)=>{const matches=products.filter(p=>p.sku===sku);return matches.length===1?matches[0]:null;};
@@ -19,17 +29,16 @@ export function deriveQuoteLines(messages:Message[],products:Product[]) {
   if(m.direction!=='inbound')continue;
   const text=normal(m.body);if(/\b(cotizacion|cotizar|presupuesto)\b/.test(text))latestRequest=m.body;
   if(/\b(olvida|cancelar|cancela)\b|no quiero|no me interesa/.test(text)){selected.clear();pendingSku='';continue;}
-  const code=text.trim().replace(/[.!?]+$/,'').trim().replace(/^(?:quiero|elijo|me interesa|modelo|producto)\s+/,'');
-  const direct=products.filter(p=>normal(p.sku)===code);
-  if(direct.length===1){pick(direct[0].sku);continue;}
+  const direct=explicitSelectedProducts(text,products);
+  if(direct.length===1){const qty=selectedQuantity(text,direct[0].sku);pick(direct[0].sku,qty||1,qty!==null);continue;}
   const option=text.match(/\b(?:numero|opcion|modelo|producto)\s*(\d{1,2})\b/)||text.match(/^\s*(\d{1,2})[.!?\s]*$/);
   if(option&&catalogOffer.startsWith('Encontré estos modelos en el catálogo:')){
    const entries=[...catalogOffer.matchAll(/(?:^|\n)(\d+)\. [^\n]+\nCódigo: ([^\n]+)/g)].filter(p=>Number(p[1])===Number(option[1]));if(entries.length===1)pick(entries[0][2].trim());
   }else if(catalogOffer.startsWith('Encontré estos modelos en el catálogo:')&&[...catalogOffer.matchAll(/(?:^|\n)(\d+)\. [^\n]+\nCódigo: ([^\n]+)/g)].some(entry=>normal(entry[2].trim())===text.trim())){
    pick(m.body.trim());
   }else if(pendingSku&&/¿Cuántas unidades quieres\?/.test(offer)){
-   const qty=text.match(/^(?:(?:quiero|necesito|dame)\s+)?([1-9]\d{0,3})(?:\s+(?:unidades?|piezas?))?[.!?\s]*$/);
-   if(qty)pick(pendingSku,Number(qty[1]),true);
+   const qty=selectedQuantity(text);
+   if(qty)pick(pendingSku,qty,true);
   }
  }
  const unresolved:string[]=[];

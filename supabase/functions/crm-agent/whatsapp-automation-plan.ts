@@ -1,3 +1,4 @@
+import { selectedQuantity } from '../_shared/whatsapp-quote-context.ts';
 import { wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
 import { metaMessage, replyWindow, whatsappPhone } from "../_shared/whatsapp-content.ts";
 
@@ -82,8 +83,8 @@ function storeProductLink(product: ProductEvidence): string {
 
 export function purchaseQuantityContext(text: string, previousOffer = "") {
   const question = previousOffer.match(/^Elegiste .+ \(código ([^\n]+)\)\. ¿Cuántas unidades quieres\?$/);
-  const quantity = text.trim().toLowerCase().match(/^(?:(?:quiero|necesito|dame)\s+)?([1-9]\d{0,3})(?:\s+(?:unidades?|piezas?))?[.!?\s]*$/);
-  return question && quantity ? { sku: question[1], quantity: Number(quantity[1]) } : null;
+  const quantity = selectedQuantity(text,question?.[1]||'');
+  return question && quantity ? { sku: question[1], quantity } : null;
 }
 
 // Preparation only. This module cannot call Meta, a model, or any database.

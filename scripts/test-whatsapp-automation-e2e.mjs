@@ -142,3 +142,10 @@ test('exact model code resolves without a prior catalogue and refreshes live sto
   const r=await run(s);assert.equal(r.plan.reason,'purchase_quantity_required');assert.match(r.plan.text,/LX-36475.*Cuántas/);assert.equal(s.calls.length,1);
  }
 });
+test('model and requested quantity in one natural phrase checks live stock and totals',async()=>{
+ for(const text of ['LX-36475 este modelo cotizame 2','quiero esas 2 LX-36475']){
+  const s=scenario(text);s.incoming.body=text;s.product.variants[0].sku=s.payload.variants[0].sku='LX-36475';s.product.name=s.payload.name.es='Balanza digital';s.payload.canonical_url='https://www.climactiva.cl/productos/balanza/';
+  const r=await run(s);assert.equal(r.plan.reason,'purchase_summary');assert.match(r.plan.text,/2 unidades.*LX-36475.*64.000/s);assert.equal(s.calls.length,1);
+  s.payload.variants[0].stock=1;assert.equal((await run(s)).plan.reason,'purchase_insufficient_stock');
+ }
+});

@@ -1,5 +1,5 @@
 import { currentQuoteSession, customerFromQuoteMessages, quoteCustomerMissing, wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
-import { deriveQuoteLines } from '../_shared/whatsapp-quote-context.ts';
+import { deriveQuoteLines, explicitSelectedProducts, selectedQuantity } from '../_shared/whatsapp-quote-context.ts';
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { messageUuid } from "../_shared/direct-message.ts";
 import { metaMessage, whatsappPhone } from "../_shared/whatsapp-content.ts";
@@ -71,9 +71,9 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const catalogue=[...sent].reverse().find(m=>m.body.startsWith('Encontré estos modelos en el catálogo:'));
   const choiceReply=/\b(?:numero|opcion|modelo|producto)\s*(?:n[°º.]?\s*)?\d{1,2}\b/.test(latestNormal)||/^\d{1,2}[.!?\s]*$/.test(latestNormal)||Boolean(catalogue&&[...catalogue.body.matchAll(/\nCódigo: ([^\n]+)/g)].some(m=>m[1].trim().toLowerCase()===latestNormal));
   const quantityPrompt=previous&&/^Elegiste .+ \(código [^\n]+\)\. ¿Cuántas unidades quieres\?$/.test(previous.body);
-  const directCode=latestNormal.replace(/[.!?]+$/,'').trim().replace(/^(?:quiero|elijo|me interesa|modelo|producto)\s+/,'');
-  const directProducts=products.filter(p=>p.published&&p.source==='tiendanube'&&p.sku.toLowerCase()===directCode);
-  const previousOffer=directProducts.length===1?`Encontré estos modelos en el catálogo:\n\n1. ${directProducts[0].name}\nCódigo: ${directProducts[0].sku}`:String((choiceReply&&!(quantityPrompt&&/^\d{1,2}[.!?\s]*$/.test(latestNormal))&&catalogue?catalogue:previous)?.body||'').slice(0,4096);
+  const directProducts=explicitSelectedProducts(latestBody,products).filter(p=>p.published&&p.source==='tiendanube');
+  const directQuantity=directProducts.length===1?selectedQuantity(latestBody,directProducts[0].sku):null;
+  const previousOffer=directProducts.length===1&&directQuantity!==null?`Elegiste ${directProducts[0].name} (código ${directProducts[0].sku}). ¿Cuántas unidades quieres?`:directProducts.length===1?`Encontré estos modelos en el catálogo:\n\n1. ${directProducts[0].name}\nCódigo: ${directProducts[0].sku}`:String((choiceReply&&!(quantityPrompt&&/^\d{1,2}[.!?\s]*$/.test(latestNormal))&&catalogue?catalogue:previous)?.body||'').slice(0,4096);
   const input = { previousOffer, incoming, phoneNumberId: configPhone, products, optedOut: false, humanTakeover: false };
   let plan = planWhatsAppAutomation(input);
   if(['purchase_quantity_required','selection_stock_required','selection_no_stock'].includes(plan.reason)){
@@ -136,7 +136,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const formalRequested=session.some(m=>m.direction==='inbound'&&wantsFormalQuote(m.body));
   const selectionInSession=deriveQuoteLines(session,products);
   const latestText=String(metaMessage(incoming.raw_payload,incoming.meta_message_id)?.message.text?.body||'');
-  if(formalRequested&&(['formal_quote_required','complex_question'].includes(plan.reason)||(wantsFormalQuote(latestText)&&selectionInSession.lines.length>0&&['product_reference_needed','ambiguous_product','verified_product_answer'].includes(plan.reason)))){
+  if(formalRequested&&(['formal_quote_required','complex_question','purchase_summary'].includes(plan.reason)||(wantsFormalQuote(latestText)&&selectionInSession.lines.length>0&&['product_reference_needed','ambiguous_product','verified_product_answer'].includes(plan.reason)))){
     const selected=selectionInSession,customer=customerFromQuoteMessages(session),missing=quoteCustomerMissing(customer);
     const response=(!selected.lines.length||selected.unresolved.length)?{reason:'quote_selection_required',text:'Para preparar la cotización formal, primero elige el modelo de la lista o envíame su código. Después confirmaremos la cantidad y el stock.'}
       :!selected.quantityConfirmed?{reason:'quote_quantity_required',text:'¿Cuántas unidades del modelo elegido necesitas para la cotización formal?'}

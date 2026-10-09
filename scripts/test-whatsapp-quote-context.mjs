@@ -31,3 +31,7 @@ test('option and SKU survive a formal quotation clarification after the catalogu
 test('explicit unique SKU selects even when the prior list is unavailable',()=>{
  const r=deriveQuoteLines([m('inbound','LX-36475','received')],[{sku:'LX-36475',name:'Balanza digital'}]);assert.equal(r.lines[0]?.sku,'LX-36475');assert.equal(r.quantityConfirmed,false);
 });
+test('SKU digits are never quantity; cotizame 2 confirms two of the named model',()=>{
+ const products=[{sku:'LX-36475',name:'Balanza digital'}];
+ const r=deriveQuoteLines([m('inbound','LX-36475 este modelo cotizame 2','received')],products);assert.equal(r.lines[0]?.quantity,2);assert.equal(r.quantityConfirmed,true);
+});
