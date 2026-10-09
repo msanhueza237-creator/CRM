@@ -166,7 +166,8 @@ export function planWhatsAppAutomation(input: {
     }
     if(selection||choices.length)return plan("clarify", "invalid_offer_selection", "¿Puedes indicar el código del producto que quieres y cuántas unidades necesitas?", "product");
   }
-  const asksPrice = /\b(precio|precios|valor|cuesta|cuestan|vale|valen|cotizar|cotiza|cotizas|cotizacion|presupuesto)\b/.test(normalized);
+  const bareName=input.products.some(p=>p.published&&p.source==='tiendanube'&&p.name.normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim()===normalized.trim());
+  const asksPrice = bareName || /\b(precio|precios|valor|cuesta|cuestan|vale|valen|cotizar|cotiza|cotizas|cotizacion|presupuesto)\b/.test(normalized);
   const asksStock = asksPrice || /\b(stock|disponibilidad|disponible|disponibles|tienes|tiene|tienen|tendras|tendran|tendria|tendrias|tendrian|venden|vendes|manejan|hay)\b/.test(normalized);
   if (!asksPrice && !asksStock) return plan("handoff", "complex_question", null, "seller");
   const reference = String(message.context?.referred_product?.product_retailer_id || "").trim();

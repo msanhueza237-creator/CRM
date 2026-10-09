@@ -157,3 +157,7 @@ test('real conversation retains option one and two units, explains mistyped LX-3
  push('outbound','Para preparar la cotización formal, primero elige el modelo de la lista o envíame su código.',60);
  const r=await run(s);assert.equal(r.plan.reason,'unknown_product_code');assert.match(r.plan.text,/LX-36475.*LX-36575.*2 unidad.*Confirmas/s);assert.equal(r.plan.canSend,false);
 });
+test('bare full product name queries live price and stock without requiring a keyword',async()=>{
+ const name='Bomba de condensado Mute coner';const s=scenario(name);s.incoming.body=name;s.product.name=s.payload.name.es=name;s.payload.canonical_url='https://www.climactiva.cl/productos/bomba-mute-coner/';
+ const r=await run(s);assert.equal(r.plan.reason,'verified_product_answer');assert.match(r.plan.text,/32.000.*Stock: 2 unidades.*https:/s);assert.equal(s.calls.length,1);assert.equal(r.plan.canSend,false);
+});
