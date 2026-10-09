@@ -1,6 +1,6 @@
 # Imágenes y audios de WhatsApp
 
-Implementación preparada; pendiente de verificación y publicación operativa.
+Fotos publicadas el 9 de octubre de 2026 con DeepSeek y selector OpenAI. Audio pendiente de la siguiente fase.
 
 - El asistente valida la conversación, remitente, ventana de atención y consentimiento antes de procesar medios.
 - Descarga únicamente el archivo indicado por el identificador de Meta. Solo HTTPS en dominios oficiales de Meta, sin redirecciones; archivos limitados a 5 MB para imágenes y 10 MB para audios.
@@ -13,3 +13,5 @@ Implementación preparada; pendiente de verificación y publicación operativa.
 Validación del 9 de octubre de 2026: 86 pruebas backend aprobadas, tipos y compilación correctos, navegador 320/390/1280 correcto. Las pruebas usan archivos y respuestas sintéticas, sin mensajes reales. La prueba real con una imagen pública del catálogo recibió HTTP 429, código credit_balance_exhausted, tipo insufficient_quota. No se publicó esta función en producción. Hace falta recargar la cuenta API existente y verificar imagen y audio con el proveedor real antes de publicar. No se cambiaron credenciales ni facturación.
 
 Actualización: fotos priorizadas; DeepSeek devolvió HTTP 200 con interpretación JSON estructurada de una imagen pública real del catálogo. Se reutiliza exclusivamente la conexión verificada y cifrada existente. El selector de WhatsApp conserva la elección local, invalida propuestas anteriores al cambiar y nunca cambia silenciosamente de proveedor. OpenAI sigue condicionado al saldo API. Las fotos externas se utilizan como pistas para buscar alternativas en todo el catálogo, sin afirmar equivalencia exacta ni inventar precio o stock. Nuevos proveedores requieren adaptador, credencial segura y comprobación de visión antes de añadirlos al selector; no se aceptan destinos arbitrarios enviados por el navegador. Audio queda para la siguiente fase.
+
+Publicación comprobada: backend de fotos instalado con configuración existente intacta; crm-agent/health HTTP 200 y ruta protegida sin autenticación HTTP 401. Frontend release 123207d, Dokploy finalizado, HTML y bundle públicos HTTP 200 con selector. Se verificó celular 320/390 y escritorio 1280. La prueba real utilizó una foto pública del catálogo; falta la comprobación de extremo a extremo con una foto enviada por el cliente en WhatsApp. El HTML anterior puede estar en caché: recargar la página.
