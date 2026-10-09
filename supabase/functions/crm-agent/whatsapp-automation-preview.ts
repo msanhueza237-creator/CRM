@@ -1,3 +1,4 @@
+import { analyzeWhatsAppMedia, mediaAsText, type MediaAnalysis } from './whatsapp-media-analysis.ts';
 import { currentQuoteSession, customerFromQuoteMessages, quoteCustomerMissing, wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
 import { deriveQuoteLines, explicitSelectedProducts, selectedQuantity } from '../_shared/whatsapp-quote-context.ts';
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -52,7 +53,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
     throw new Error("Selecciona una conversación vinculada válida.");
   const conversation = await getWhatsAppConversation(db, env, companyId, phone, 0, contactId);
   if (!conversation.canReply) return { messageId: null, plan: { action: "ignore", reason: "conversation_blocked", text: null, requires: "none", source: null, canSend: false } };
-  const { data: incoming, error } = await db.from("whatsapp_messages")
+  let { data: incoming, error } = await db.from("whatsapp_messages")
     .select("id,direction,phone_number,meta_message_id,raw_payload,occurred_at")
     .eq("company_id", companyId).eq("direction", "inbound").in("phone_number", [phone, `+${phone}`])
     .order("occurred_at", { ascending: false }).order("id", { ascending: false }).limit(1).maybeSingle();
@@ -62,6 +63,13 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const currency = env(["WHATSAPP_STORE_CURRENCY"]).trim().toUpperCase();
   const { phoneId: configPhone } = await getWhatsAppConfig(db, env);
   const products = await readWhatsAppProductEvidence(db, currency);
+  let mediaAnalysis:MediaAnalysis|null=null;
+  const initial=planWhatsAppAutomation({incoming,phoneNumberId:configPhone,products,optedOut:false,humanTakeover:false});
+  if(['transcription_required','visual_identification_required'].includes(initial.reason)){
+    try{mediaAnalysis=await analyzeWhatsAppMedia(incoming,env,fetcher);if(!mediaAnalysis||mediaAnalysis.needsClarification)return {messageId:incoming.id,plan:{action:'clarify',reason:'media_clarification_required',text:'No puedo identificar con seguridad el producto de la imagen. ¿Puedes indicar su nombre, modelo o enviar una foto de la etiqueta?',requires:'vision',source:null,canSend:false},mediaAnalysis};
+      incoming={...incoming,...mediaAsText(incoming,mediaAnalysis.text)};
+    }catch{return {messageId:incoming.id,plan:{action:'handoff',reason:'media_analysis_unavailable',text:'No pude interpretar el archivo. Indica el producto por texto o envía un archivo más claro.',requires:initial.requires,source:null,canSend:false}};}
+  }
   // Keep the last catalogue across clarification messages, within this customer session.
   const offerSession=currentQuoteSession(conversation.messages.filter(m=>Date.parse(m.occurredAt)<Date.parse(incoming.occurred_at)));
   const sent=offerSession.filter(m=>m.direction==='outbound'&&['accepted','sent','delivered','read'].includes(String(m.status)));
@@ -162,5 +170,5 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
       }catch{plan={action:'handoff',reason:'live_catalog_unavailable',text:null,requires:'product',source:null,canSend:false};}
     }
   }
-  return { messageId: incoming.id, plan };
+  return { messageId: incoming.id, plan, mediaAnalysis };
 }

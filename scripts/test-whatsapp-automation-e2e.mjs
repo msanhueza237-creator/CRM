@@ -28,7 +28,7 @@ test('greeting and unrelated URLs never query a provider; category uses bounded 
 });
 test('quote, tracking, seller, audio and image handoffs are explicit and do not query products',async()=>{
  for(const [text,requires] of [['cotizacion formal LX1030','facto_quote'],['seguimiento de pedido','verified_order'],['quiero vendedor','seller']]){const s=scenario(text);assert.equal((await run(s)).plan.requires,requires);assert.equal(s.calls.length,0)}
- for(const [type,requires] of [['audio','transcription'],['image','vision']]){const s=scenario();s.incoming.raw_payload.entry[0].changes[0].value.messages[0].type=type;const r=await run(s);assert.equal(r.plan.requires,requires);assert.equal(r.plan.text,null);assert.equal(s.calls.length,0)}
+ for(const [type,requires] of [['audio','transcription'],['image','vision']]){const s=scenario();s.incoming.raw_payload.entry[0].changes[0].value.messages[0].type=type;const r=await run(s);assert.equal(r.plan.requires,requires);assert.match(r.plan.text,/interpretar el archivo/);assert.equal(s.calls.length,0)}
 });
 test('withdrawal and closed attention window inhibit any response or provider read',async()=>{
  const s=scenario('baja');assert.equal((await run(s)).plan.action,'ignore');assert.equal(s.calls.length,0);
