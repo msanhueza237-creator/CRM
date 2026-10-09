@@ -71,7 +71,9 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const catalogue=[...sent].reverse().find(m=>m.body.startsWith('Encontré estos modelos en el catálogo:'));
   const choiceReply=/\b(?:numero|opcion|modelo|producto)\s*(?:n[°º.]?\s*)?\d{1,2}\b/.test(latestNormal)||/^\d{1,2}[.!?\s]*$/.test(latestNormal)||Boolean(catalogue&&[...catalogue.body.matchAll(/\nCódigo: ([^\n]+)/g)].some(m=>m[1].trim().toLowerCase()===latestNormal));
   const quantityPrompt=previous&&/^Elegiste .+ \(código [^\n]+\)\. ¿Cuántas unidades quieres\?$/.test(previous.body);
-  const previousOffer=String((choiceReply&&!(quantityPrompt&&/^\d{1,2}[.!?\s]*$/.test(latestNormal))&&catalogue?catalogue:previous)?.body||'').slice(0,4096);
+  const directCode=latestNormal.replace(/[.!?]+$/,'').trim().replace(/^(?:quiero|elijo|me interesa|modelo|producto)\s+/,'');
+  const directProducts=products.filter(p=>p.published&&p.source==='tiendanube'&&p.sku.toLowerCase()===directCode);
+  const previousOffer=directProducts.length===1?`Encontré estos modelos en el catálogo:\n\n1. ${directProducts[0].name}\nCódigo: ${directProducts[0].sku}`:String((choiceReply&&!(quantityPrompt&&/^\d{1,2}[.!?\s]*$/.test(latestNormal))&&catalogue?catalogue:previous)?.body||'').slice(0,4096);
   const input = { previousOffer, incoming, phoneNumberId: configPhone, products, optedOut: false, humanTakeover: false };
   let plan = planWhatsAppAutomation(input);
   if(['purchase_quantity_required','selection_stock_required','selection_no_stock'].includes(plan.reason)){

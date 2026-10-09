@@ -136,3 +136,9 @@ test('intermediate formal guidance preserves catalogue number and model code for
   const r=await run(s);assert.equal(r.plan.reason,'purchase_quantity_required');assert.match(r.plan.text,/LX1030.*Cuántas/);assert.equal(s.calls.length,1);
  }
 });
+test('exact model code resolves without a prior catalogue and refreshes live stock',async()=>{
+ for(const text of ['LX-36475','quiero LX-36475']){
+  const s=scenario(text);s.incoming.body=text;s.product.variants[0].sku=s.payload.variants[0].sku='LX-36475';s.product.name=s.payload.name.es='Balanza digital';
+  const r=await run(s);assert.equal(r.plan.reason,'purchase_quantity_required');assert.match(r.plan.text,/LX-36475.*Cuántas/);assert.equal(s.calls.length,1);
+ }
+});

@@ -28,3 +28,6 @@ test('option and SKU survive a formal quotation clarification after the catalogu
   assert.equal(r.lines[0]?.sku,'LX-36475');assert.equal(r.quantityConfirmed,false);
  }
 });
+test('explicit unique SKU selects even when the prior list is unavailable',()=>{
+ const r=deriveQuoteLines([m('inbound','LX-36475','received')],[{sku:'LX-36475',name:'Balanza digital'}]);assert.equal(r.lines[0]?.sku,'LX-36475');assert.equal(r.quantityConfirmed,false);
+});

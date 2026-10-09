@@ -19,6 +19,9 @@ export function deriveQuoteLines(messages:Message[],products:Product[]) {
   if(m.direction!=='inbound')continue;
   const text=normal(m.body);if(/\b(cotizacion|cotizar|presupuesto)\b/.test(text))latestRequest=m.body;
   if(/\b(olvida|cancelar|cancela)\b|no quiero|no me interesa/.test(text)){selected.clear();pendingSku='';continue;}
+  const code=text.trim().replace(/[.!?]+$/,'').trim().replace(/^(?:quiero|elijo|me interesa|modelo|producto)\s+/,'');
+  const direct=products.filter(p=>normal(p.sku)===code);
+  if(direct.length===1){pick(direct[0].sku);continue;}
   const option=text.match(/\b(?:numero|opcion|modelo|producto)\s*(\d{1,2})\b/)||text.match(/^\s*(\d{1,2})[.!?\s]*$/);
   if(option&&catalogOffer.startsWith('Encontré estos modelos en el catálogo:')){
    const entries=[...catalogOffer.matchAll(/(?:^|\n)(\d+)\. [^\n]+\nCódigo: ([^\n]+)/g)].filter(p=>Number(p[1])===Number(option[1]));if(entries.length===1)pick(entries[0][2].trim());
