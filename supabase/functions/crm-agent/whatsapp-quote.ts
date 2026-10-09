@@ -1,3 +1,4 @@
+import { whatsappPhone } from '../_shared/whatsapp-content.ts';
 import { currentQuoteSession, customerFromQuoteMessages, quoteCustomerMissing, wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import { messageUuid } from '../_shared/direct-message.ts';
@@ -26,6 +27,7 @@ export async function prepareCrmQuote(db:SupabaseClient,env:Env,payload:Record<s
  if(!messageUuid.test(sourceMessageId))throw Error('Mensaje de origen inválido.');
  const sourceRow=await db.from('whatsapp_messages').select('id,phone_number').eq('id',sourceMessageId).eq('company_id',companyId).maybeSingle();
  if(sourceRow.error||!sourceRow.data)throw Error('El mensaje de origen no pertenece a esta ficha.');
+ const sourcePhone=whatsappPhone(sourceRow.data.phone_number);if(/^[1-9]\d{7,14}$/.test(sourcePhone))customer.phone='+'+sourcePhone;else delete customer.phone;
  const context=await quoteConversationContext(db,env,new URLSearchParams({companyId,phone:String(sourceRow.data?.phone_number||''),sourceMessageId}));
  if(!context.ready)throw Error(context.missing.length?`Para la cotización formal el cliente debe enviar: ${context.missing.join(', ')}.`:'Primero el cliente debe elegir modelo y cantidad y solicitar la cotización formal.');
  const normalized=(value:string)=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[.\s-]/g,'').toLowerCase();

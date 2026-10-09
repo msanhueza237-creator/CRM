@@ -54,3 +54,7 @@ test('bank details come from the issuer configuration and persist with blank obs
  assert.deepEqual(saved.quote.bankDetails,q.bankDetails);
  const changed={...q,bankDetails:{...q.bankDetails,accountNumber:'fake'}};const other=fixture();other.input.issuer.rut='77.724.382-9';await assert.rejects(registerCrmQuote(other.db,other.env,id,{...other.input,expected:changed,confirm:true},other.fetcher),/cambiaron/);
 });
+test('quote contact phone comes from the source WhatsApp message, not client payload',async()=>{
+ const s=fixture();s.input.customer.phone='+56900000000';const q=await prepareCrmQuote(s.db,s.env,s.input,s.fetcher);
+ const source=s.db.tables.whatsapp_messages.find(m=>m.id===s.input.sourceMessageId);assert.equal(q.customer.phone,'+'+source.phone_number.replace(/\D/g,''));assert.notEqual(q.customer.phone,s.input.customer.phone);
+});

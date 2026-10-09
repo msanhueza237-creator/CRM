@@ -29,6 +29,7 @@ export async function crmQuotePdf(quote: CrmQuote): Promise<File> {
  // Customer fields use only supplied data; missing values remain explicit.
  const displayRut=(rut:string)=>!rut?'pendiente':validQuoteRut(rut)?rut:rut+' (por verificar)';
  const customerRows=[['Señor(es)',quote.customer.name||'Nombre pendiente'],['RUT',displayRut(quote.customer.rut)],['Dirección',quote.customer.address||'Dirección pendiente'],['Comuna',quote.customer.commune||'Comuna pendiente']];
+ if(quote.customer.phone)customerRows.push(['Teléfono',quote.customer.phone]);
  const customerHeight=customerRows.reduce((n,[_label,value])=>n+Math.max(5,wrap(value,102,9).length*4),4);
  box(left,y,width,customerHeight);
  let cy=y+5;
