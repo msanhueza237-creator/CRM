@@ -31,3 +31,48 @@ test('formal quote after photo carries original quantities and data into quote p
  const preview=await run(s,model,env);assert.equal(preview.plan.reason,'formal_quote_ready');s.query.set('sourceMessageId',s.incoming.id);const context=await quoteConversationContext(s.db,env,s.query,model);assert.equal(context.ready,true);assert.equal(context.lines[0].quantity,5);assert.deepEqual(context.missing,[]);
  const quote=await prepareCrmQuote(s.db,env,{id:'00000000-0000-4000-8000-000000000044',companyId:s.query.get('companyId'),sourceMessageId:s.incoming.id,issuer:{name:'Emisor Prueba',rut:'77.724.382-9',address:'Calle Prueba',commune:'Lo Prado'},customer:context.customer,lines:context.lines.map(l=>({sku:l.sku,quantity:l.quantity})),validDays:7,pricesIncludeVat:true},model);assert.equal(quote.lines[0].quantity,5);assert.equal(quote.total,160000);
 });
+
+test('multi-product quantities survive a single message with each-one clauses',async()=>{
+ const {s,env,fetcher}=photoThenText('quiero 2 de estas mas 2 de cada una de las válvulas, cotización formal');
+ const r=await run(s,async(url,o)=>url==='https://api.deepseek.com/responses'?Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({query:'Manómetro R32',observation:'Manómetro y válvulas.',needsClarification:false,intent:'formal_quote',requests:[{query:'Manómetro R32',quantity:2},{query:'Válvula 5/8',quantity:2},{query:'Válvula 1/2',quantity:2}]})}]}]}):fetcher(url,o),env);
+ assert.deepEqual(r.mediaAnalysis.requests.map(r=>r.quantity),[2,2,2]);
+ assert.doesNotMatch(r.plan.text,/primero elige el modelo de la lista/);
+});
+
+test('repeated same product is one line; conflicting quantities ask only for quantity',async()=>{
+ const {visualQuoteSelection}=await import('../supabase/functions/crm-agent/whatsapp-image-context.ts');
+ const products=[{sku:'ST-2BMC',name:'Bomba de vacío ST-2BMC',source:'tiendanube',published:true}];
+ const analysis={kind:'image',text:'ST-2BMC',observation:'Bomba',needsClarification:false,requests:[{query:'ST-2BMC',quantity:2},{query:'ST-2BMC',quantity:2}]};
+ assert.deepEqual(visualQuoteSelection(analysis,products),{lines:[{sku:'ST-2BMC',name:'Bomba de vacío ST-2BMC',quantity:2}],quantityConfirmed:true,unresolved:[]});
+ analysis.requests[1].quantity=5;
+ const conflict=visualQuoteSelection(analysis,products);
+ assert.equal(conflict.quantityConfirmed,false);assert.match(conflict.unresolved[0],/2 y 5 unidades/);assert.doesNotMatch(conflict.unresolved[0],/modelo exacto/);
+});
+
+test('ambiguous quantities preserve a precise clarification instead of asking to choose again',async()=>{
+ const {s,env,fetcher}=photoThenText('quiero 2 de estas, cotiza 5 de estas bombas');
+ const r=await run(s,async(url,o)=>url==='https://api.deepseek.com/responses'?Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({query:'Manómetro R32',observation:'¿Quieres 2 o 5 unidades del producto de la foto?',needsClarification:true,intent:'formal_quote',requests:[{query:'Manómetro R32',quantity:null}]})}]}]}):fetcher(url,o),env);
+ assert.equal(r.plan.reason,'media_clarification_required');assert.match(r.plan.text,/2 y 5 unidades/);assert.match(r.plan.text,/¿Qué cantidad quieres cotizar/);assert.doesNotMatch(r.plan.text,/modelo/);
+});
+
+test('photo and previously offered valves carry all three selections into the PDF preparation',async()=>{
+ const {quoteConversationContext,prepareCrmQuote}=await import('../supabase/functions/crm-agent/whatsapp-quote.ts');
+ const {s,env,fetcher}=photoThenText('quiero 2 de estas mas 2 de cada una de las válvulas\nme las cotizas formal\n15427713-7\nCliente Prueba\nCalle Prueba 100\nLo Prado');
+ s.incoming.id='00000000-0000-4000-8000-000000000033';
+ const valve58={...structuredClone(s.product),external_id:'457',name:'Válvula de bola 5/8',variants:[{...s.product.variants[0],id:790,sku:'SV58'}]};
+ const valve12={...structuredClone(valve58),external_id:'458',name:'Válvula de bola 1/2',variants:[{...valve58.variants[0],id:791,sku:'SV12'}]};
+ s.db.tables.content_products.push(valve58,valve12);
+ s.db.tables.whatsapp_messages.push({...structuredClone(s.incoming),id:'sent-valves',raw_payload:{},direction:'outbound',message_type:'text',status:'read',body:'Válvula de bola 5/8 (SV58).\nVálvula de bola 1/2 (SV12).',occurred_at:new Date(Date.now()-12000).toISOString()});
+ const model=async(u,o)=>{
+  if(u==='https://api.deepseek.com/responses'){
+   const context=JSON.parse(JSON.parse(o.body).input[1].content[0].text);assert.ok(context.conversation.some(m=>m.text.includes('SV58')&&m.text.includes('SV12')));
+   return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({query:'Manómetro R32',observation:'Manómetro y dos válvulas seleccionadas.',needsClarification:false,intent:'formal_quote',requests:[{query:'Manómetro R32',quantity:2},{query:'SV58',quantity:2},{query:'SV12',quantity:2}]})}]}]});
+  }
+  if(String(u).includes('api.tiendanube.com')){const p=u.endsWith('/457')?valve58:u.endsWith('/458')?valve12:s.product;return Response.json({...s.payload,id:Number(p.external_id),name:{es:p.name},variants:[{...s.payload.variants[0],id:p.variants[0].id,sku:p.variants[0].sku}]});}
+  return fetcher(u,o);
+ };
+ const before=structuredClone(s.db.tables);assert.equal((await run(s,model,env)).plan.reason,'formal_quote_ready');s.query.set('sourceMessageId',s.incoming.id);
+ const context=await quoteConversationContext(s.db,env,s.query,model);assert.equal(context.ready,true);assert.deepEqual(context.lines.map(l=>[l.sku,l.quantity]),[['LX1030',2],['SV58',2],['SV12',2]]);
+ const quote=await prepareCrmQuote(s.db,env,{id:'00000000-0000-4000-8000-000000000044',companyId:s.query.get('companyId'),sourceMessageId:s.incoming.id,issuer:{name:'Emisor Prueba',rut:'77.724.382-9',address:'Calle Prueba',commune:'Lo Prado'},customer:context.customer,lines:context.lines.map(l=>({sku:l.sku,quantity:l.quantity})),validDays:7,pricesIncludeVat:true},model);
+ assert.equal(quote.lines.length,3);assert.equal(quote.total,192000);assert.deepEqual(s.db.tables,before);
+});

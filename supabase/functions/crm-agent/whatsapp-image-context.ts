@@ -19,13 +19,13 @@ export async function interpretConversationImage(db:SupabaseClient,env:Env,messa
   const {data:integration,error}=await db.from('prospecting_ai_integrations').select('status,models,api_key_encrypted').eq('provider','deepseek').limit(1).maybeSingle();
   if(error||integration?.status!=='verified'||!Array.isArray(integration.models)||!integration.models.includes('deepseek-flash')||!integration.api_key_encrypted)throw Error('deepseek_not_configured');
   return decryptApiKey(integration.api_key_encrypted,env(['PROSPECTING_SECRET_ENCRYPTION_KEY']));
- },provider,session.slice(-16).map(m=>({...m,body:m.type==='image'?m.id===image.id?'[Imagen analizada adjunta]':'[Otra imagen no visible en esta consulta]':m.body})));
+ },provider,session.slice(-40).map(m=>({...m,body:m.type==='image'?m.id===image.id?'[Imagen analizada adjunta]':'[Otra imagen no visible en esta consulta]':m.body})));
 }
 export function imageCatalogRequests(analysis:MediaAnalysis,products:ProductEvidence[]){
  return (analysis.requests||[{query:analysis.text,quantity:null}]).map(request=>({ ...request,products:(resolveWhatsAppProductReferences(request.query,'',products).matches.length?resolveWhatsAppProductReferences(request.query,'',products).matches:suggestWhatsAppProducts(request.query,products))}));
 }
 export function visualQuoteSelection(analysis:MediaAnalysis,products:ProductEvidence[]){
  const requests=imageCatalogRequests(analysis,products),unresolved:string[]=[],lines:Array<{sku:string;name:string;quantity:number}>=[];
- for(const request of requests){if(request.products.length!==1){unresolved.push(`Confirma el modelo para ${request.query}.`);continue;}const p=request.products[0];if(lines.some(l=>l.sku===p.sku)){unresolved.push(`Confirma la cantidad total de ${p.name}.`);continue;}lines.push({sku:p.sku,name:p.name,quantity:request.quantity||1});}
+ for(const request of requests){if(request.products.length!==1){unresolved.push(`Confirma el modelo para ${request.query}.`);continue;}const p=request.products[0];const previous=lines.find(l=>l.sku===p.sku);if(previous){if(request.quantity!==null&&previous.quantity!==request.quantity)unresolved.push(`Para ${p.name} (${p.sku}) aparecen ${previous.quantity} y ${request.quantity} unidades. ¿Qué cantidad quieres cotizar?`);continue;}lines.push({sku:p.sku,name:p.name,quantity:request.quantity||1});}
  return {lines,quantityConfirmed:requests.length>0&&requests.every(r=>r.quantity!==null)&&!unresolved.length,unresolved};
 }

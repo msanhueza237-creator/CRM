@@ -72,7 +72,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   if(initial.action!=='ignore'&&!['greeting','gratitude','farewell','seller_requested_or_exception','verified_order_or_shipping_policy_required'].includes(initial.reason)){
     try{
       mediaAnalysis=initial.reason==='transcription_required'?await analyzeWhatsAppMedia(incoming,env,fetcher):await interpretConversationImage(db,env,conversation.messages,incoming,companyId,phone,configPhone,products,imageProvider as 'deepseek'|'openai',fetcher);
-      if(mediaAnalysis?.needsClarification)return {messageId:incoming.id,plan:{action:'clarify',reason:'media_clarification_required',text:'Para responder con precisión, ¿puedes confirmar el tipo o modelo del producto de la foto y las medidas que necesitas?',requires:'vision',source:null,canSend:false},mediaAnalysis};
+      if(mediaAnalysis?.needsClarification)return {messageId:incoming.id,plan:{action:'clarify',reason:'media_clarification_required',text:mediaAnalysis.observation||'¿Puedes aclarar el producto o la cantidad que necesitas?',requires:'vision',source:null,canSend:false},mediaAnalysis};
       if(mediaAnalysis){
         if(mediaAnalysis.intent==='other')return {messageId:incoming.id,plan:{action:'clarify',reason:'image_context_other_question',text:'¿Qué información necesitas sobre esta consulta? Puedo ayudarte a buscar productos de nuestro catálogo o preparar una cotización.',requires:'none',source:null,canSend:false},mediaAnalysis};
         incoming={...incoming,...mediaAsText(incoming,mediaAnalysis.text)};
@@ -176,7 +176,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   }
   if(!codeMismatch&&formalRequested&&(['formal_quote_required','complex_question','purchase_summary','image_context_product_answer'].includes(plan.reason)||(wantsFormalQuote(latestText)&&selectionInSession.lines.length>0&&['product_reference_needed','ambiguous_product','verified_product_answer'].includes(plan.reason)))){
     const selected=selectionInSession,customer=customerFromQuoteMessages(session),missing=quoteCustomerMissing(customer);
-    const response=(!selected.lines.length||selected.unresolved.length)?{reason:'quote_selection_required',text:'Para preparar la cotización formal, primero elige el modelo de la lista o envíame su código. Después confirmaremos la cantidad y el stock.'}
+    const response=(!selected.lines.length||selected.unresolved.length)?{reason:'quote_selection_required',text:selected.unresolved.length?selected.unresolved.join('\n'):'No pude identificar el producto que quieres cotizar. ¿Puedes indicar su nombre o código?'}
       :!selected.quantityConfirmed?{reason:'quote_quantity_required',text:'¿Cuántas unidades del modelo elegido necesitas para la cotización formal?'}
       :missing.length?{reason:'quote_customer_data_required',text:`Para preparar tu cotización formal, envíame ${missing.join(', ')}. Puedes enviarlos así:\nRUT:\nNombre o razón social:\nDirección:\nComuna:`}
       :{reason:'formal_quote_ready',text:'¡Perfecto! Ya tenemos los modelos, cantidades y tus datos. Podemos preparar tu cotización formal en PDF; revisaremos nuevamente los precios y el stock antes de guardarla.'};
