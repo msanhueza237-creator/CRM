@@ -68,8 +68,21 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   if(!["deepseek","openai"].includes(imageProvider))throw Error("Proveedor de imágenes no disponible.");
   let mediaAnalysis:MediaAnalysis|null=null;
   const initial=planWhatsAppAutomation({incoming,phoneNumberId:configPhone,products,optedOut:false,humanTakeover:false});
-  if(['transcription_required','visual_identification_required'].includes(initial.reason)){
-    try{mediaAnalysis=await analyzeWhatsAppMedia(incoming,env,fetcher,async()=>{
+  const imageReferenceText=String(metaMessage(incoming.raw_payload,incoming.meta_message_id)?.message.text?.body||'');
+  let mediaIncoming=incoming;
+  // Resolve only a short reference to the immediately preceding image in this
+  // same conversation. Never skip an intervening reply or reuse an older session.
+  const imageReference=/^(?:(?:quiero|necesito|busco|me interesa|cotiza(?:me)?|cotizar|cotizacion(?: formal)?(?: por)?)\s+)?(?:esa|ese|esta|este|la de la foto|el de la foto|la de la imagen|el de la imagen)(?:\s+(?:por favor|producto|modelo|\d+\s*(?:unidades?)?))*[.!?\s]*$/i.test(imageReferenceText.normalize('NFD').replace(/[\u0300-\u036f]/g,''));
+  if(imageReference && initial.action!=='ignore'){
+    const prior=conversation.messages.filter(m=>Date.parse(m.occurredAt)<Date.parse(incoming.occurred_at)).at(-1);
+    if(prior?.direction==='inbound'&&prior.type==='image'&&Date.parse(incoming.occurred_at)-Date.parse(prior.occurredAt)<=10*60*1000){
+      const {data:photo,error:photoError}=await db.from("whatsapp_messages").select("id,direction,phone_number,meta_message_id,raw_payload,occurred_at")
+        .eq("id",prior.id).eq("company_id",companyId).eq("direction","inbound").in("phone_number",[phone,`+${phone}`]).maybeSingle();
+      if(!photoError&&photo&&planWhatsAppAutomation({incoming:photo,phoneNumberId:configPhone,products,optedOut:false,humanTakeover:false}).reason==='visual_identification_required')mediaIncoming=photo;
+    }
+  }
+  if(['transcription_required','visual_identification_required'].includes(initial.reason)||mediaIncoming!==incoming){
+    try{mediaAnalysis=await analyzeWhatsAppMedia(mediaIncoming,env,fetcher,async()=>{
       const {data:integration,error}=await db.from("prospecting_ai_integrations").select("status,models,api_key_encrypted").eq("provider","deepseek").limit(1).maybeSingle();
       if(error||integration?.status!=="verified"||!Array.isArray(integration.models)||!integration.models.includes("deepseek-flash")||!integration.api_key_encrypted)throw Error("deepseek_not_configured");
       return decryptApiKey(integration.api_key_encrypted,env(["PROSPECTING_SECRET_ENCRYPTION_KEY"]));
