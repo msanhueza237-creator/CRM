@@ -175,3 +175,8 @@ test('real same-valve message with compact 20unidades and all customer data offe
  s.db.tables.whatsapp_messages.push({id:'one-valve',company_id:s.incoming.company_id,phone_number:s.incoming.phone_number,direction:'outbound',status:'read',occurred_at:new Date(Date.now()-60000).toISOString(),body:'Encontré estos modelos en el catálogo:\n\n1. Válvula motorizada 2 vías, 3/4\nCódigo: MVA-2W34\nStock: 12 unidades disponibles.'});
  const r=await run(s);assert.equal(r.plan.reason,'formal_quote_ready');assert.match(r.plan.text,/20.*12.*12/s);assert.equal(r.plan.canSend,false);
 });
+test('real cotices five of these pumps with customer data prepares quote from sent model',async()=>{
+ const text='quiero que me cotices 5 de estas bombas\naca te dejo los datos\n15427713-7\nMarco Sanhueza\nlos alamos 6719\nlo prado';const s=scenario(text);s.incoming.body=text;s.product.name=s.payload.name.es='Bomba de condensado Mute coner';s.product.variants[0].sku=s.payload.variants[0].sku='Mute corner 20L/H';s.payload.variants[0].stock=12;
+ s.db.tables.whatsapp_messages.push({id:'pump-offer',company_id:s.incoming.company_id,phone_number:s.incoming.phone_number,direction:'outbound',status:'read',occurred_at:new Date(Date.now()-60000).toISOString(),body:'Bomba de condensado Mute coner\nCódigo: Mute corner 20L/H\nStock: 12 unidades disponibles.'});
+ const r=await run(s);assert.equal(r.plan.reason,'formal_quote_ready');assert.match(r.plan.text,/PDF/);assert.equal(s.calls.length,1);assert.equal(r.plan.canSend,false);
+});

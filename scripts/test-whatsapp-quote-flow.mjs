@@ -21,3 +21,7 @@ test('a different product request cannot reuse the previous selected model',()=>
  const history=[m('Elegiste Soporte de muro (código WALL). ¿Cuántas unidades quieres?',0,'outbound'),m('2',1),m('quiero cotización formal por una balanza digital',2)];
  const result=deriveQuoteLines(history,[{sku:'WALL',name:'Soporte de muro'},{sku:'DS100',name:'Balanza digital DS100'}]);assert.equal(result.lines.length,0);
 });
+test('cotices with RUT is formal and five de estas retains the sole offered pump',()=>{
+ const text='quiero que me cotices 5 de estas bombas\naca te dejo los datos\n15427713-7\nMarco Sanhueza\nlos alamos 6719\nlo prado';const history=[m('Bomba de condensado Mute coner\nCódigo: Mute corner 20L/H',0,'outbound'),m(text,1)];
+ assert.equal(wantsFormalQuote(text),true);assert.equal(wantsFormalQuote('me cotices una bomba'),false);const r=deriveQuoteLines(history,[{sku:'Mute corner 20L/H',name:'Bomba de condensado Mute coner'}]);assert.deepEqual(r.lines,[{sku:'Mute corner 20L/H',name:'Bomba de condensado Mute coner',quantity:5}]);assert.equal(r.quantityConfirmed,true);assert.deepEqual(quoteCustomerMissing(customerFromQuoteMessages(history)),[]);
+});
