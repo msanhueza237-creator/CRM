@@ -1,3 +1,5 @@
+import {interpretConversationImage,visualQuoteSelection} from './whatsapp-image-context.ts';
+import {getWhatsAppConfig} from './whatsapp-dispatch.ts';
 import { whatsappPhone } from '../_shared/whatsapp-content.ts';
 import { currentQuoteSession, customerFromQuoteMessages, quoteCustomerMissing, wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
 import type { SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
@@ -28,7 +30,7 @@ export async function prepareCrmQuote(db:SupabaseClient,env:Env,payload:Record<s
  const sourceRow=await db.from('whatsapp_messages').select('id,phone_number').eq('id',sourceMessageId).eq('company_id',companyId).maybeSingle();
  if(sourceRow.error||!sourceRow.data)throw Error('El mensaje de origen no pertenece a esta ficha.');
  const sourcePhone=whatsappPhone(sourceRow.data.phone_number);if(/^[1-9]\d{7,14}$/.test(sourcePhone))customer.phone='+'+sourcePhone;else delete customer.phone;
- const context=await quoteConversationContext(db,env,new URLSearchParams({companyId,phone:String(sourceRow.data?.phone_number||''),sourceMessageId}));
+ const context=await quoteConversationContext(db,env,new URLSearchParams({companyId,phone:String(sourceRow.data?.phone_number||''),sourceMessageId,imageProvider:String(payload.imageProvider||'deepseek')}),fetcher);
  if(!context.ready)throw Error(context.missing.length?`Para la cotización formal el cliente debe enviar: ${context.missing.join(', ')}.`:'Primero el cliente debe elegir modelo y cantidad y solicitar la cotización formal.');
  const normalized=(value:string)=>value.normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[.\s-]/g,'').toLowerCase();
  if((['name','rut','address','commune'] as const).some(key=>normalized(customer[key])!==normalized(context.customer[key])))throw Error('Los datos del cliente deben coincidir con los enviados en la conversación.');
@@ -77,16 +79,24 @@ export async function readCrmQuote(db:SupabaseClient,id:string) {
  try{const quote=JSON.parse(data.result);if(quote.kind!=='crm_quote_v1'||quote.id!==id)throw Error('not_crm_quote');return {quote:quote as CrmQuote};}catch{throw Error('Este registro no contiene un PDF generado por el CRM.');}
 }
 
-export async function quoteConversationContext(db:SupabaseClient,env:Env,query:URLSearchParams) {
+export async function quoteConversationContext(db:SupabaseClient,env:Env,query:URLSearchParams,fetcher:typeof fetch=fetch) {
  const companyId=query.get('companyId')||'',phone=query.get('phone')||'',contactId=query.get('contactId')||'',sourceMessageId=query.get('sourceMessageId')||'';
  if(!messageUuid.test(companyId)||!messageUuid.test(sourceMessageId))throw Error('Selecciona una conversación válida.');
- let messages:Array<{id:string;direction:string;body:string;status:string;occurredAt:string}>=[];
+ let messages:Array<{id:string;direction:string;body:string;status:string;occurredAt:string;type:string}>=[];
  for(let offset=0;offset<500;offset+=50){const page=await getWhatsAppConversation(db,env,companyId,phone,offset,contactId);messages.push(...page.messages);if(page.nextOffset===null||page.messages.some(m=>Date.parse(m.occurredAt)<Date.now()-30*86400000))break;if(offset===450)throw Error('Carga el historial anterior para revisar la selección.');}
  const source=messages.find(m=>m.id===sourceMessageId&&m.direction==='inbound');if(!source)throw Error('No se encontró el mensaje de origen en esta conversación.');
  // Never use messages sent after the request being quoted, or another phone.
  messages=messages.filter(m=>Date.parse(m.occurredAt)<=Date.parse(source.occurredAt));
  const products=await readWhatsAppProductEvidence(db,'CLP');
- const session=currentQuoteSession(messages),selection=deriveQuoteLines(session,products),customer=customerFromQuoteMessages(session),missing=quoteCustomerMissing(customer);
- const formalRequested=session.some(m=>m.direction==='inbound'&&wantsFormalQuote(m.body));
+ const session=currentQuoteSession(messages),customer=customerFromQuoteMessages(session),missing=quoteCustomerMissing(customer);
+ let selection=deriveQuoteLines(session,products),formalRequested=session.some(m=>m.direction==='inbound'&&wantsFormalQuote(m.body));
+ if(session.some(m=>m.direction==='inbound'&&(m as {type?:string}).type==='image')){
+  const {data:incoming,error}=await db.from('whatsapp_messages').select('id,direction,phone_number,meta_message_id,raw_payload,occurred_at').eq('id',sourceMessageId).eq('company_id',companyId).eq('direction','inbound').in('phone_number',[phone,`+${phone}`]).maybeSingle();
+  if(error||!incoming)throw Error('No se pudo recuperar el mensaje de esta consulta.');
+  const {phoneId}=await getWhatsAppConfig(db,env);
+  const provider=query.get('imageProvider')==='openai'?'openai':'deepseek';
+  const analysis=await interpretConversationImage(db,env,messages,incoming,companyId,phone.replace(/^\+/,''),phoneId,products,provider,fetcher);
+  if(analysis){formalRequested=analysis.intent==='formal_quote';selection=analysis.needsClarification?{lines:[],quantityConfirmed:false,unresolved:['Confirma el modelo de la imagen.']}:visualQuoteSelection(analysis,products);}
+ }
  return {...selection,customer,missing,formalRequested,ready:formalRequested&&selection.lines.length>0&&selection.quantityConfirmed&&selection.unresolved.length===0&&missing.length===0};
 }

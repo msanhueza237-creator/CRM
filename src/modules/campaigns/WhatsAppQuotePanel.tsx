@@ -8,7 +8,7 @@ function seedCustomer(message:string):QuoteParty {
  const rest=rut?message.slice((rut.index||0)+rut[0].length).trim().split(/[.\n,]+/).map(p=>p.trim()).filter(Boolean):[];
  return {rut:rut?.[0]||'',name:rest[0]||'',address:rest[1]||'',commune:rest[2]||''};
 }
-export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,onSend,onClose,canAttach,phone,contactId}:{companyId:string;phone:string;contactId:string;message:string;sourceMessageId:string;canAttach:boolean;onAttach:(file:File,text:string)=>void;onSend:(file:File,text:string)=>Promise<boolean>;onClose:()=>void}) {
+export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,onSend,onClose,canAttach,phone,contactId,imageProvider="deepseek"}:{imageProvider?:string;companyId:string;phone:string;contactId:string;message:string;sourceMessageId:string;canAttach:boolean;onAttach:(file:File,text:string)=>void;onSend:(file:File,text:string)=>Promise<boolean>;onClose:()=>void}) {
  const [contextSource]=useState(sourceMessageId);const [contextMessage]=useState(message);
  const [contextLoading,setContextLoading]=useState(true);const [quoteReady,setQuoteReady]=useState(false);const [unresolved,setUnresolved]=useState<string[]>([]);
  const [logoDataUrl,setLogoDataUrl]=useState('');
@@ -20,10 +20,10 @@ export function WhatsAppQuotePanel({companyId,message,sourceMessageId,onAttach,o
  const [validDays,setValidDays]=useState(7);const includeVat=true;
  const conditions='';
  const [quote,setQuote]=useState<CrmQuote|null>(null);const [saved,setSaved]=useState(false);const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [confirmed,setConfirmed]=useState(false);
- useEffect(()=>{let alive=true;const query=new URLSearchParams({companyId,phone,contactId,sourceMessageId:contextSource});
- void whatsappRequest<{lines:typeof lines;unresolved:string[];customer:QuoteParty;ready:boolean;missing:string[]}>(`whatsapp-quote-context?${query}`).then(async r=>{if(alive){setLines(r.lines);setUnresolved(r.unresolved);setCustomer(r.customer);setQuoteReady(r.ready);if(r.ready){const preview=await whatsappRequest<{quote:CrmQuote}>('whatsapp-quote-preview',{id,companyId,sourceMessageId:contextSource,logoDataUrl,issuer,customer:r.customer,lines:r.lines.map(l=>({sku:l.sku,quantity:l.quantity})),validDays,pricesIncludeVat:includeVat,conditions});if(alive)setQuote(preview.quote);}if(!r.ready)setError(r.missing.length?`El cliente debe enviar: ${r.missing.join(', ')}.`:'Primero debe elegir modelo y cantidad y solicitar el PDF formal.');}}).catch(e=>{if(alive)setError(e instanceof Error?e.message:'No se pudo recuperar la selección anterior.');}).finally(()=>{if(alive)setContextLoading(false);});return()=>{alive=false;};},[companyId,phone,contactId,contextSource]);
+ useEffect(()=>{let alive=true;const query=new URLSearchParams({companyId,phone,contactId,sourceMessageId:contextSource,imageProvider});
+ void whatsappRequest<{lines:typeof lines;unresolved:string[];customer:QuoteParty;ready:boolean;missing:string[]}>(`whatsapp-quote-context?${query}`).then(async r=>{if(alive){setLines(r.lines);setUnresolved(r.unresolved);setCustomer(r.customer);setQuoteReady(r.ready);if(r.ready){const preview=await whatsappRequest<{quote:CrmQuote}>('whatsapp-quote-preview',{id,companyId,sourceMessageId:contextSource,imageProvider,logoDataUrl,issuer,customer:r.customer,lines:r.lines.map(l=>({sku:l.sku,quantity:l.quantity})),validDays,pricesIncludeVat:includeVat,conditions});if(alive)setQuote(preview.quote);}if(!r.ready)setError(r.missing.length?`El cliente debe enviar: ${r.missing.join(', ')}.`:'Primero debe elegir modelo y cantidad y solicitar el PDF formal.');}}).catch(e=>{if(alive)setError(e instanceof Error?e.message:'No se pudo recuperar la selección anterior.');}).finally(()=>{if(alive)setContextLoading(false);});return()=>{alive=false;};},[companyId,phone,contactId,contextSource,imageProvider]);
  const invalidate=()=>{if(saved){setId(crypto.randomUUID());setSaved(false);}setQuote(null);setConfirmed(false);};
- const payload=()=>({id,companyId,sourceMessageId:contextSource,logoDataUrl,issuer,customer,lines:lines.map(l=>({sku:l.sku,quantity:l.quantity})),validDays,pricesIncludeVat:includeVat,conditions});
+ const payload=()=>({id,companyId,sourceMessageId:contextSource,imageProvider,logoDataUrl,issuer,customer,lines:lines.map(l=>({sku:l.sku,quantity:l.quantity})),validDays,pricesIncludeVat:includeVat,conditions});
  async function operate(action:'search'|'preview'|'register'){
   setBusy(true);setError('');
   try{
