@@ -1,4 +1,4 @@
-import {interpretConversationImage,visualQuoteSelection} from './whatsapp-image-context.ts';
+import {interpretConversationImage,interpretConversationAudio,visualQuoteSelection} from './whatsapp-image-context.ts';
 import {getWhatsAppConfig} from './whatsapp-dispatch.ts';
 import { whatsappPhone } from '../_shared/whatsapp-content.ts';
 import { currentQuoteSession, customerFromQuoteMessages, quoteCustomerMissing, wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
@@ -82,21 +82,23 @@ export async function readCrmQuote(db:SupabaseClient,id:string) {
 export async function quoteConversationContext(db:SupabaseClient,env:Env,query:URLSearchParams,fetcher:typeof fetch=fetch) {
  const companyId=query.get('companyId')||'',phone=query.get('phone')||'',contactId=query.get('contactId')||'',sourceMessageId=query.get('sourceMessageId')||'';
  if(!messageUuid.test(companyId)||!messageUuid.test(sourceMessageId))throw Error('Selecciona una conversación válida.');
+ let mediaAllowed=false;
  let messages:Array<{id:string;direction:string;body:string;status:string;occurredAt:string;type:string}>=[];
- for(let offset=0;offset<500;offset+=50){const page=await getWhatsAppConversation(db,env,companyId,phone,offset,contactId);messages.push(...page.messages);if(page.nextOffset===null||page.messages.some(m=>Date.parse(m.occurredAt)<Date.now()-30*86400000))break;if(offset===450)throw Error('Carga el historial anterior para revisar la selección.');}
+ for(let offset=0;offset<500;offset+=50){const page=await getWhatsAppConversation(db,env,companyId,phone,offset,contactId);if(offset===0)mediaAllowed=page.canReply;messages.push(...page.messages);if(page.nextOffset===null||page.messages.some(m=>Date.parse(m.occurredAt)<Date.now()-30*86400000))break;if(offset===450)throw Error('Carga el historial anterior para revisar la selección.');}
  const source=messages.find(m=>m.id===sourceMessageId&&m.direction==='inbound');if(!source)throw Error('No se encontró el mensaje de origen en esta conversación.');
  // Never use messages sent after the request being quoted, or another phone.
  messages=messages.filter(m=>Date.parse(m.occurredAt)<=Date.parse(source.occurredAt));
  const products=await readWhatsAppProductEvidence(db,'CLP');
  const session=currentQuoteSession(messages),customer=customerFromQuoteMessages(session),missing=quoteCustomerMissing(customer);
  let selection=deriveQuoteLines(session,products),formalRequested=session.some(m=>m.direction==='inbound'&&wantsFormalQuote(m.body));
- if(session.some(m=>m.direction==='inbound'&&(m as {type?:string}).type==='image')){
+ if(source.type==='audio'||session.some(m=>m.direction==='inbound'&&(m as {type?:string}).type==='image')){
+  if(!mediaAllowed)throw Error('No se pueden interpretar medios: la conversación está bloqueada o fuera de la ventana de atención.');
   const {data:incoming,error}=await db.from('whatsapp_messages').select('id,direction,phone_number,meta_message_id,raw_payload,occurred_at').eq('id',sourceMessageId).eq('company_id',companyId).eq('direction','inbound').in('phone_number',[phone,`+${phone}`]).maybeSingle();
   if(error||!incoming)throw Error('No se pudo recuperar el mensaje de esta consulta.');
   const {phoneId}=await getWhatsAppConfig(db,env);
   const provider=query.get('imageProvider')==='openai'?'openai':'deepseek';
-  const analysis=await interpretConversationImage(db,env,messages,incoming,companyId,phone.replace(/^\+/,''),phoneId,products,provider,fetcher);
-  if(analysis){formalRequested=analysis.intent==='formal_quote';selection=analysis.needsClarification?{lines:[],quantityConfirmed:false,unresolved:['Confirma el modelo de la imagen.']}:visualQuoteSelection(analysis,products);}
+  const analysis=source.type==='audio'?await interpretConversationAudio(db,env,messages,incoming,phoneId,products,fetcher):await interpretConversationImage(db,env,messages,incoming,companyId,phone.replace(/^\+/,''),phoneId,products,provider,fetcher);
+  if(analysis){formalRequested=analysis.intent==='formal_quote';selection=analysis.needsClarification?{lines:[],quantityConfirmed:false,unresolved:['Confirma el modelo o cantidad de la consulta.']}:visualQuoteSelection(analysis,products);}
  }
  return {...selection,customer,missing,formalRequested,ready:formalRequested&&selection.lines.length>0&&selection.quantityConfirmed&&selection.unresolved.length===0&&missing.length===0};
 }

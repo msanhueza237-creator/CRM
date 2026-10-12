@@ -1,5 +1,5 @@
-import {interpretConversationImage,imageCatalogRequests,visualQuoteSelection} from './whatsapp-image-context.ts';
-import { analyzeWhatsAppMedia, mediaAsText, type MediaAnalysis } from './whatsapp-media-analysis.ts';
+import {interpretConversationImage,interpretConversationAudio,imageCatalogRequests,visualQuoteSelection} from './whatsapp-image-context.ts';
+import { MediaProcessingError, mediaAsText, type MediaAnalysis } from './whatsapp-media-analysis.ts';
 import { currentQuoteSession, customerFromQuoteMessages, quoteCustomerMissing, wantsFormalQuote } from '../_shared/whatsapp-quote-flow.ts';
 import { deriveQuoteLines, explicitSelectedProducts, selectedQuantity } from '../_shared/whatsapp-quote-context.ts';
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
@@ -71,13 +71,22 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
   const originalText=String(metaMessage(incoming.raw_payload,incoming.meta_message_id)?.message.text?.body||'');
   if(initial.action!=='ignore'&&!['greeting','gratitude','farewell','seller_requested_or_exception','verified_order_or_shipping_policy_required'].includes(initial.reason)){
     try{
-      mediaAnalysis=initial.reason==='transcription_required'?await analyzeWhatsAppMedia(incoming,env,fetcher):await interpretConversationImage(db,env,conversation.messages,incoming,companyId,phone,configPhone,products,imageProvider as 'deepseek'|'openai',fetcher);
-      if(mediaAnalysis?.needsClarification)return {messageId:incoming.id,plan:{action:'clarify',reason:'media_clarification_required',text:mediaAnalysis.observation||'¿Puedes aclarar el producto o la cantidad que necesitas?',requires:'vision',source:null,canSend:false},mediaAnalysis};
+      mediaAnalysis=initial.reason==='transcription_required'?await interpretConversationAudio(db,env,conversation.messages,incoming,configPhone,products,fetcher):await interpretConversationImage(db,env,conversation.messages,incoming,companyId,phone,configPhone,products,imageProvider as 'deepseek'|'openai',fetcher);
+      if(mediaAnalysis?.needsClarification)return {messageId:incoming.id,plan:{action:'clarify',reason:'media_clarification_required',text:mediaAnalysis.observation||'¿Puedes aclarar el producto o la cantidad que necesitas?',requires:mediaAnalysis.kind==='audio'?'transcription':'vision',source:null,canSend:false},mediaAnalysis};
       if(mediaAnalysis){
         if(mediaAnalysis.intent==='other')return {messageId:incoming.id,plan:{action:'clarify',reason:'image_context_other_question',text:'¿Qué información necesitas sobre esta consulta? Puedo ayudarte a buscar productos de nuestro catálogo o preparar una cotización.',requires:'none',source:null,canSend:false},mediaAnalysis};
         incoming={...incoming,...mediaAsText(incoming,mediaAnalysis.text)};
       }
-    }catch{return {messageId:incoming.id,plan:{action:'handoff',reason:'media_analysis_unavailable',text:'No pude interpretar el archivo junto con los mensajes. Puedes indicar el modelo o reenviar una foto más clara.',requires:initial.reason==='transcription_required'?'transcription':'vision',source:null,canSend:false}};}
+    } catch (error) {
+      if (error instanceof MediaProcessingError) {
+        return { messageId: incoming.id, plan: { action: 'handoff', reason: 'media_analysis_unavailable',
+          text: null, requires: initial.reason==='transcription_required'?'transcription':'vision', source: null, canSend: false }, mediaAnalysis: null,
+          processingError: { code: error.code, provider: error.stage, message: error.message } };
+      }
+      return { messageId: incoming.id, plan: { action: 'handoff', reason: 'media_analysis_unavailable',
+        text: 'No pude interpretar el archivo junto con los mensajes. Puedes indicar el modelo o reenviar una foto más clara.',
+        requires: initial.reason === 'transcription_required' ? 'transcription' : 'vision', source: null, canSend: false } };
+    }
   }
   // Keep the last catalogue across clarification messages, within this customer session.
   const offerSession=currentQuoteSession(conversation.messages.filter(m=>Date.parse(m.occurredAt)<Date.parse(incoming.occurred_at)));
@@ -116,7 +125,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
       plan = { action: "handoff", reason: "live_catalog_unavailable", text: null, requires: "product", source: null, canSend: false };
     }
   }
-  if (mediaAnalysis?.kind!=='image' && env(["WHATSAPP_LIVE_CATALOG_ENABLED"]) === "true" &&
+  if (!mediaAnalysis && env(["WHATSAPP_LIVE_CATALOG_ENABLED"]) === "true" &&
       (plan.reason === "verified_product_answer" || plan.reason === "stale_product_evidence" || plan.reason === "incomplete_product_evidence")) {
     const message = metaMessage(incoming.raw_payload, incoming.meta_message_id)?.message;
     const candidates = resolveWhatsAppProductReferences(String(message?.text?.body || ""),
@@ -131,7 +140,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
       }
     }
   }
-  if (mediaAnalysis?.kind!=='image' && plan.action === "clarify" && ["ambiguous_product", "product_reference_needed"].includes(plan.reason)) {
+  if (!mediaAnalysis && plan.action === "clarify" && ["ambiguous_product", "product_reference_needed"].includes(plan.reason)) {
     const message = metaMessage(incoming.raw_payload, incoming.meta_message_id)?.message;
     const text = String(message?.text?.body || "");
     const matches = resolveWhatsAppProductReferences(text,
@@ -149,7 +158,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
       plan = planWhatsAppAutomation({ ...input, products: products.map(p => ({ ...p, productUrl: "" })) });
     }
   }
-  if(mediaAnalysis?.kind==='image'){
+  if(mediaAnalysis){
     if(env(['WHATSAPP_LIVE_CATALOG_ENABLED'])!=='true')return {messageId:incoming.id,plan:{action:'handoff',reason:'live_catalog_unavailable',text:'No puedo confirmar los precios y stock actuales. Necesitamos revisarlos antes de ofrecer estos productos.',requires:'product',source:null,canSend:false},mediaAnalysis};
     const requests=imageCatalogRequests(mediaAnalysis,products);
     const responses:string[]=[];
@@ -161,12 +170,12 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
         responses.push(item.text||`Necesito confirmar el modelo exacto para ${request.query}.`);
       }catch{responses.push(`No pude confirmar el precio y stock actuales para ${request.query}. Necesitamos revisarlos antes de ofrecerlo.`);}
     }
-    if(responses.length){let text='';for(const response of responses){if(text.length+response.length>3900){text+='\n\nHay más alternativas. Indica qué modelo o medida quieres revisar con detalle.';break;}text+=(text?'\n\n':'')+response;}plan={action:'draft',reason:'image_context_product_answer',text:text||'Encontré alternativas, pero necesito que confirmes el modelo o medida para responder con precisión.',requires:'none',source:'tiendanube',canSend:false};}
+    if(responses.length){let text='';for(const response of responses){if(text.length+response.length>3900){text+='\n\nHay más alternativas. Indica qué modelo o medida quieres revisar con detalle.';break;}text+=(text?'\n\n':'')+response;}plan={action:'draft',reason:mediaAnalysis.kind==='audio'?'audio_context_product_answer':'image_context_product_answer',text:text||'Encontré alternativas, pero necesito que confirmes el modelo o medida para responder con precisión.',requires:'none',source:'tiendanube',canSend:false};}
   }
   const session=currentQuoteSession(conversation.messages.filter(m=>Date.parse(m.occurredAt)<=Date.parse(incoming.occurred_at)));
-  const formalRequested=mediaAnalysis?.kind==='image'?mediaAnalysis.intent==='formal_quote':session.some(m=>m.direction==='inbound'&&wantsFormalQuote(m.body));
+  const formalRequested=mediaAnalysis?mediaAnalysis.intent==='formal_quote':session.some(m=>m.direction==='inbound'&&wantsFormalQuote(m.body));
   let selectionInSession=deriveQuoteLines(session,products);
-  if(mediaAnalysis?.kind==='image'&&mediaAnalysis.intent==='formal_quote')selectionInSession=visualQuoteSelection(mediaAnalysis,products);
+  if(mediaAnalysis&&mediaAnalysis.intent==='formal_quote')selectionInSession=visualQuoteSelection(mediaAnalysis,products);
   const latestText=originalText||String(metaMessage(incoming.raw_payload,incoming.meta_message_id)?.message.text?.body||'');
   const typedCode=latestText.match(/\b[A-Za-z]{1,8}-\d{3,8}\b/)?.[0];
   const codeMismatch=Boolean(typedCode&&!products.some(p=>p.sku.toLowerCase()===typedCode.toLowerCase()));
@@ -174,7 +183,7 @@ export async function previewWhatsAppAutomation(db: SupabaseClient, env: Env, qu
     const chosen=selectionInSession.lines;
     plan={action:'clarify',reason:'unknown_product_code',text:chosen.length===1?`El código ${typedCode} no aparece en el catálogo. La opción que elegiste es ${chosen[0].name}, código ${chosen[0].sku}, por ${chosen[0].quantity} unidad(es). ¿Confirmas ese modelo y cantidad?`: `El código ${typedCode} no aparece en el catálogo. Confirma el código tal como aparece en la lista para consultar su stock y precio.`,requires:'product',source:'tiendanube',canSend:false};
   }
-  if(!codeMismatch&&formalRequested&&(['formal_quote_required','complex_question','purchase_summary','image_context_product_answer'].includes(plan.reason)||(wantsFormalQuote(latestText)&&selectionInSession.lines.length>0&&['product_reference_needed','ambiguous_product','verified_product_answer'].includes(plan.reason)))){
+  if(!codeMismatch&&formalRequested&&(['formal_quote_required','complex_question','purchase_summary','image_context_product_answer','audio_context_product_answer'].includes(plan.reason)||(wantsFormalQuote(latestText)&&selectionInSession.lines.length>0&&['product_reference_needed','ambiguous_product','verified_product_answer'].includes(plan.reason)))){
     const selected=selectionInSession,customer=customerFromQuoteMessages(session),missing=quoteCustomerMissing(customer);
     const response=(!selected.lines.length||selected.unresolved.length)?{reason:'quote_selection_required',text:selected.unresolved.length?selected.unresolved.join('\n'):'No pude identificar el producto que quieres cotizar. ¿Puedes indicar su nombre o código?'}
       :!selected.quantityConfirmed?{reason:'quote_quantity_required',text:'¿Cuántas unidades del modelo elegido necesitas para la cotización formal?'}

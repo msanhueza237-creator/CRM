@@ -159,16 +159,21 @@ export function WhatsAppConversationDialog({ companyId, phone, contactId = "", o
         <strong>Asistente de respuesta</strong>
         <button type="button" className="ghost-button" disabled={!open || loading || sending || assistantLoading || uncertain} onClick={() => void suggest()}>{assistantLoading ? "Consultando catálogo..." : "Proponer respuesta"}</button>
         {assistantError && <p role="alert">{assistantError}</p>}
+        <p>Audios: OpenAI convierte la voz en texto; DeepSeek interpreta la consulta. Revisas la propuesta antes de enviarla.</p>
+        {assistantCurrent && assistant?.processingError && <p role="alert">{assistant.processingError.message}</p>}
         <label style={{display:"block",width:"100%"}}>Modelo para interpretar fotos
           <select aria-label="Modelo para interpretar fotos" value={imageProvider} disabled={assistantLoading} style={{width:"100%",minHeight:44}} onChange={event => {setImageProvider(event.target.value);localStorage.setItem("whatsapp-image-provider",event.target.value);setAssistant(null);}}>
             <option value="deepseek">DeepSeek · deepseek-flash</option>
             <option value="openai">OpenAI · gpt-4o-mini</option>
           </select>
         </label>
-        {assistantCurrent && assistant?.mediaAnalysis && <p><strong>{assistant.mediaAnalysis.kind === "audio" ? "Audio transcrito:" : "Imagen interpretada:"}</strong> {assistant.mediaAnalysis.observation}</p>}
+        {assistantCurrent && assistant?.mediaAnalysis && <>
+          {assistant.mediaAnalysis.kind === "audio" && <p><strong>Transcripción · OpenAI:</strong> {assistant.mediaAnalysis.transcript}</p>}
+          <p><strong>{assistant.mediaAnalysis.kind === "audio" ? "Interpretación · DeepSeek:" : "Imagen interpretada:"}</strong> {assistant.mediaAnalysis.observation}</p>
+        </>}
         {assistantCurrent && assistant?.plan.text && <><p>{assistant.plan.text}</p><small>{assistant.plan.source === "tiendanube" ? "Fuente: catálogo de Tiendanube." : "Propuesta para revisar."}</small>
           <button type="button" className="ghost-button" disabled={!open || sending || loading || uncertain || mode !== "reply" || Boolean(text.trim()) || Boolean(files.length)} onClick={() => { setText(assistant.plan.text || ""); }}>Usar propuesta</button></>}
-        {assistantCurrent && !assistant?.plan.text && <p>{assistant?.plan.requires === "vision" ? "Esta imagen necesita identificación antes de responder." : assistant?.plan.requires === "transcription" ? "Este audio necesita transcripción antes de responder." : assistant?.plan.requires === "facto_quote" ? "Usa Preparar cotización PDF para revisar los datos y generar el documento del CRM." : assistant?.plan.requires === "verified_order" ? "Verifica el pedido o las condiciones de despacho antes de responder." : "No hay datos suficientes para proponer una respuesta fiable. Revisa la consulta."}</p>}
+        {assistantCurrent && !assistant?.plan.text && !assistant?.processingError && <p>{assistant?.plan.requires === "vision" ? "Esta imagen necesita identificación antes de responder." : assistant?.plan.requires === "transcription" ? "Este audio necesita transcripción antes de responder." : assistant?.plan.requires === "facto_quote" ? "Usa Preparar cotización PDF para revisar los datos y generar el documento del CRM." : assistant?.plan.requires === "verified_order" ? "Verifica el pedido o las condiciones de despacho antes de responder." : "No hay datos suficientes para proponer una respuesta fiable. Revisa la consulta."}</p>}
         {assistant && !assistantCurrent && <p>La conversación cambió. Consulta una propuesta para el último mensaje.</p>}
       </section>}
       {companyId && assistantCurrent && assistant?.plan.reason === "formal_quote_ready" && !quoteOpen && <button type="button" className="ghost-button wa-quote-open" disabled={loading || sending || uncertain} onClick={() => setQuoteOpen(true)}>Preparar cotización PDF</button>}

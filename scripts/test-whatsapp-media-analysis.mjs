@@ -1,12 +1,21 @@
+import {audioScenario} from './whatsapp-audio-fixture.mjs';
 import {encryptApiKey} from '../supabase/functions/prospecting-integrations/deepseek.ts';
 const secret='synthetic-encryption-fixture-only-32bytes';
 const encrypted=await encryptApiKey('synthetic-only',secret);
 import {test} from 'node:test';import assert from 'node:assert/strict';
 import {scenario,run} from './whatsapp-automation-fixture.mjs';
-function media(kind){const s=scenario();s.incoming.message_type=kind;const m=s.incoming.raw_payload.entry[0].changes[0].value.messages[0];m.type=kind;m[kind]={id:'123456'};delete m.text;const calls=[];s.db.tables.prospecting_ai_integrations=[{provider:'deepseek',status:'verified',models:['deepseek-flash'],api_key_encrypted:encrypted}];const env=keys=>keys.includes('PROSPECTING_SECRET_ENCRYPTION_KEY')?secret:keys.includes('OPENAI_API_KEY')?'synthetic-only':s.env(keys);const fetcher=async(url,opts)=>{assert.equal(opts.redirect,'error');calls.push(url);if(url==='https://graph.facebook.com/v26.0/123456')return Response.json({id:'123456',url:'https://lookaside.fbsbx.com/media/file',mime_type:kind==='audio'?'audio/ogg':'image/jpeg'});if(url==='https://lookaside.fbsbx.com/media/file')return new Response(new Uint8Array([1,2,3]),{headers:{'Content-Type':kind==='audio'?'audio/ogg':'image/jpeg'}});if(url==='https://api.openai.com/v1/audio/transcriptions'){assert.ok(opts.body instanceof FormData);assert.equal(opts.body.get('model'),'gpt-4o-mini-transcribe');return Response.json({text:'precio y stock LX1030'});}if(url==='https://api.deepseek.com/responses'){const b=JSON.parse(opts.body);assert.equal(b.store,false);assert.equal(b.model,'deepseek-flash');assert.deepEqual(b.reasoning,{effort:'none'});assert.equal(b.text.format.type,'json_schema');return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({query:'Manómetro R32',observation:'Veo un manómetro marcado R32.',needsClarification:false})}]}]});}return s.fetcher(url,opts);};return {s,calls,env,fetcher};}
-test('audio is transcribed before querying live catalogue; originals and database unchanged',async()=>{const {s,calls,env,fetcher}=media('audio'),before=structuredClone(s.db.tables);const r=await run(s,fetcher,env);assert.equal(r.plan.reason,'verified_product_answer');assert.match(r.plan.text,/32.000/);assert.equal(r.mediaAnalysis.text,'precio y stock LX1030');assert.equal(calls.length,4);assert.deepEqual(s.db.tables,before);assert.equal(r.plan.canSend,false);});
+function media(kind){const s=scenario();s.incoming.message_type=kind;const m=s.incoming.raw_payload.entry[0].changes[0].value.messages[0];m.type=kind;m[kind]={id:'123456'};delete m.text;const calls=[];s.db.tables.prospecting_ai_integrations=[{provider:'deepseek',status:'verified',models:['deepseek-flash'],api_key_encrypted:encrypted}];const env=keys=>keys.includes('PROSPECTING_SECRET_ENCRYPTION_KEY')?secret:keys.includes('OPENAI_API_KEY')?'synthetic-only':s.env(keys);const fetcher=async(url,opts)=>{assert.equal(opts.redirect,'error');calls.push(url);if(url==='https://graph.facebook.com/v26.0/123456')return Response.json({id:'123456',url:'https://lookaside.fbsbx.com/media/file',mime_type:kind==='audio'?'audio/ogg':'image/jpeg'});if(url==='https://lookaside.fbsbx.com/media/file')return new Response(new Uint8Array([255,216,255,224,0,2,255,217]),{headers:{'Content-Type':kind==='audio'?'audio/ogg':'image/jpeg'}});if(url==='https://api.deepseek.com/responses'){const b=JSON.parse(opts.body);assert.equal(b.store,false);assert.equal(b.model,'deepseek-flash');assert.deepEqual(b.reasoning,{effort:'none'});assert.equal(b.text.format.type,'json_schema');return Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({query:'Manómetro R32',observation:'Veo un manómetro marcado R32.',needsClarification:false})}]}]});}return s.fetcher(url,opts);};return {s,calls,env,fetcher};}
+test('OpenAI transcribes and DeepSeek interpretation actually selects the live product, without writes or sends',async()=>{
+ const {s,calls,env,fetcher,transcript}=audioScenario(),before=structuredClone(s.db.tables);
+ const result=await run(s,fetcher,env);
+ assert.equal(result.plan.reason,'audio_context_product_answer');assert.match(result.plan.text,/Manómetro R32/);assert.match(result.plan.text,/32.000/);
+ assert.equal(result.mediaAnalysis.transcript,transcript);assert.equal(result.mediaAnalysis.text,'Manómetro R32');
+ assert.equal(result.mediaAnalysis.transcriptionProvider,'openai');assert.equal(result.mediaAnalysis.interpretationProvider,'deepseek');
+ assert.ok(calls.indexOf('https://api.openai.com/v1/audio/transcriptions')<calls.indexOf('https://api.deepseek.com/responses'));
+ assert.equal(calls.length,5);assert.deepEqual(s.db.tables,before);assert.equal(result.plan.canSend,false);
+});
 test('image interpretation identifies a catalogue product and reads current price/stock',async()=>{const {s,env,fetcher}=media('image');const r=await run(s,fetcher,env);assert.equal(r.plan.reason,'image_context_product_answer');assert.match(r.plan.text,/Stock: 2/);assert.match(r.mediaAnalysis.observation,/manómetro/);});
-test('unsafe media URL never receives Meta authorization or triggers a model',async()=>{const {s,calls,env,fetcher}=media('audio');const r=await run(s,async(url,opts)=>{if(url.includes('graph.facebook.com'))return Response.json({id:'123456',url:'https://evil.example/file',mime_type:'audio/ogg'});return fetcher(url,opts);},env);assert.equal(r.plan.reason,'media_analysis_unavailable');assert.equal(calls.length,0);});
+test('unsafe media URL never receives Meta authorization or triggers a model',async()=>{const {s,calls,env,fetcher}=media('image');const r=await run(s,async(url,opts)=>{if(url.includes('graph.facebook.com'))return Response.json({id:'123456',url:'https://evil.example/file',mime_type:'audio/ogg'});return fetcher(url,opts);},env);assert.equal(r.plan.reason,'media_analysis_unavailable');assert.equal(calls.length,0);});
 test('closed conversation does not download media or invoke model',async()=>{const {s,calls,env,fetcher}=media('audio');s.incoming.raw_payload.entry[0].changes[0].value.messages[0].timestamp=String(Math.floor(Date.now()/1000)-86401);const r=await run(s,fetcher,env);assert.equal(r.plan.action,'ignore');assert.equal(calls.length,0);});
 test('ambiguous image asks clarification without a product availability claim',async()=>{const {s,env,fetcher}=media('image');const r=await run(s,async(url,opts)=>url.endsWith('/responses')?Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({query:'',observation:'Imagen borrosa.',needsClarification:true})}]}]}):fetcher(url,opts),env);assert.equal(r.plan.reason,'media_clarification_required');assert.equal(s.calls.length,0);});
 test('explicit OpenAI photo choice uses OpenAI only, without decrypting DeepSeek',async()=>{const {s,env,fetcher}=media('image');s.db.tables.prospecting_ai_integrations=[];s.query.set('imageProvider','openai');const r=await run(s,async(url,opts)=>url==='https://api.openai.com/v1/responses'?Response.json({output:[{content:[{type:'output_text',text:JSON.stringify({query:'Manómetro R32',observation:'Manómetro.',needsClarification:false})}]}]}):fetcher(url,opts),env);assert.equal(r.plan.reason,'image_context_product_answer');});
@@ -75,4 +84,77 @@ test('photo and previously offered valves carry all three selections into the PD
  const context=await quoteConversationContext(s.db,env,s.query,model);assert.equal(context.ready,true);assert.deepEqual(context.lines.map(l=>[l.sku,l.quantity]),[['LX1030',2],['SV58',2],['SV12',2]]);
  const quote=await prepareCrmQuote(s.db,env,{id:'00000000-0000-4000-8000-000000000044',companyId:s.query.get('companyId'),sourceMessageId:s.incoming.id,issuer:{name:'Emisor Prueba',rut:'77.724.382-9',address:'Calle Prueba',commune:'Lo Prado'},customer:context.customer,lines:context.lines.map(l=>({sku:l.sku,quantity:l.quantity})),validDays:7,pricesIncludeVat:true},model);
  assert.equal(quote.lines.length,3);assert.equal(quote.total,192000);assert.deepEqual(s.db.tables,before);
+});
+
+test('missing OpenAI configuration blocks audio before any download, despite configured DeepSeek',async()=>{
+ const {s,calls,env,fetcher}=audioScenario();
+ const result=await run(s,fetcher,keys=>keys.includes('OPENAI_API_KEY')?'':env(keys));
+ assert.equal(result.processingError.code,'configuration');assert.equal(result.processingError.provider,'OpenAI');assert.equal(result.plan.text,null);assert.equal(calls.length,0);
+});
+
+for(const failure of ['401','429','500','timeout','invalid-json','oversized-json','invalid-schema'])test(`image provider ${failure} is isolated, never falls back or exposes private errors`,async()=>{
+ const {s,env,fetcher}=media('image'),before=structuredClone(s.db.tables),requests=[];
+ const result=await run(s,async(url,options)=>{
+  requests.push(url);
+  assert.ok(!String(url).includes('openai.com'));
+  if(url!=='https://api.deepseek.com/responses')return fetcher(url,options);
+  if(failure==='timeout')throw Error('synthetic-private-provider-detail');
+  if(failure==='invalid-json')return new Response('synthetic-private-provider-detail');
+  if(failure==='oversized-json')return Response.json({text:'x'.repeat(128*1024+1)});
+  if(failure==='invalid-schema')return Response.json({output:[{content:[{type:'output_text',text:'{"query":1,"observation":"synthetic-private-provider-detail"}'}]}]});
+  return new Response('synthetic-private-provider-detail',{status:Number(failure)});
+ },env);
+ assert.equal(result.plan.reason,'media_analysis_unavailable');assert.equal(result.plan.canSend,false);
+ assert.doesNotMatch(JSON.stringify(result),/synthetic-private-provider-detail|synthetic-only/);
+ assert.equal(requests.filter(u=>u==='https://api.deepseek.com/responses').length,1);
+ assert.equal(s.calls.length,0);assert.deepEqual(s.db.tables,before);
+});
+
+for(const failure of ['too-large','empty','wrong-signature','redirect','wrong-id','unsafe-host','unsafe-credentials'])test(`image download ${failure} never reaches a model`,async()=>{
+ const {s,env,fetcher}=media('image');let modelCalls=0;
+ const result=await run(s,async(url,options)=>{
+  if(String(url).includes('api.deepseek.com')){modelCalls++;throw Error('unexpected model');}
+  if(String(url).includes('graph.facebook.com')&&['wrong-id','unsafe-host','unsafe-credentials'].includes(failure))return Response.json({id:failure==='wrong-id'?'999':'123456',url:failure==='unsafe-host'?'https://facebook.com.evil.example/file':failure==='unsafe-credentials'?'https://user:secret@lookaside.fbsbx.com/file':'https://lookaside.fbsbx.com/media/file',mime_type:'image/jpeg'});
+  if(url==='https://lookaside.fbsbx.com/media/file'){
+   assert.equal(options.redirect,'error');
+   if(failure==='redirect')return new Response(null,{status:302,headers:{Location:'https://evil.example'}});
+   if(failure==='too-large')return new Response(new Uint8Array(5*1024*1024+1));
+   if(failure==='empty')return new Response(new Uint8Array());
+   if(failure==='wrong-signature')return new Response('<html>not an image</html>');
+  }
+  return fetcher(url,options);
+ },env);
+ assert.equal(result.plan.reason,'media_analysis_unavailable');assert.equal(modelCalls,0);assert.equal(s.calls.length,0);
+});
+
+test('model input omits marked internal financial lines and contact identifiers, preserving product requests',async()=>{
+ const {s,env,fetcher}=photoThenText('Necesito 2 unidades Manómetro R32\nMargen interno 987654321\nSaldo de otros clientes 123456789\ncliente@example.test +56912345678\nRUT 15427713-7\nCliente Privado\nDirección Privada');
+ s.db.tables.whatsapp_messages.push({...structuredClone(s.incoming),id:'foreign',company_id:'00000000-0000-4000-8000-000000000099',body:'FOREIGN_CUSTOMER',raw_payload:{},occurred_at:new Date(Date.now()-1000).toISOString()});
+ let inspected=false;
+ const result=await run(s,async(url,options)=>{
+  if(url==='https://api.deepseek.com/responses'){
+   const body=JSON.parse(options.body),context=JSON.parse(body.input[1].content[0].text);
+   const text=JSON.stringify(context);assert.match(text,/Necesito 2 unidades Manómetro R32/);
+   assert.doesNotMatch(text,/987654321|123456789|cliente@example|56912345678|15427713|Cliente Privado|Dirección Privada|FOREIGN_CUSTOMER/);
+   assert.match(body.input[0].content,/No reproduzcas datos personales, financieros/);inspected=true;
+  }
+  return fetcher(url,options);
+ },env);
+ assert.equal(inspected,true);assert.equal(result.plan.canSend,false);
+});
+
+test('same-company different phone and wrong Meta account images remain isolated',async()=>{
+ for(const target of ['phone','account']){
+  const {s,calls,env,fetcher}=photoThenText('quiero esa');
+  const photo=s.db.tables.whatsapp_messages[1];
+  if(target==='phone')photo.phone_number='+56999999999';
+  else photo.raw_payload.entry[0].changes[0].value.metadata.phone_number_id='other-account';
+  const result=await run(s,fetcher,env);assert.equal(result.mediaAnalysis,null);assert.equal(calls.length,0);
+ }
+});
+
+test('integration lookup or decryption errors are redacted before returning a media failure',async()=>{
+ const {s,env,fetcher}=media('image');s.db.tables.prospecting_ai_integrations[0].api_key_encrypted='synthetic-private-invalid-envelope';
+ const result=await run(s,fetcher,env);
+ assert.equal(result.plan.reason,'media_analysis_unavailable');assert.doesNotMatch(JSON.stringify(result),/synthetic-private|decrypt|encryption/i);assert.equal(s.calls.length,0);
 });

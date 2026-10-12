@@ -2,7 +2,7 @@ import {metaMessage} from '../_shared/whatsapp-content.ts';
 import type {SupabaseClient} from 'https://esm.sh/@supabase/supabase-js@2.45.4';
 import {currentQuoteSession} from '../_shared/whatsapp-quote-flow.ts';
 import {decryptApiKey} from '../prospecting-integrations/deepseek.ts';
-import {analyzeWhatsAppMedia,type MediaAnalysis} from './whatsapp-media-analysis.ts';
+import {analyzeWhatsAppMedia,MediaProcessingError,type MediaAnalysis} from './whatsapp-media-analysis.ts';
 import {planWhatsAppAutomation,suggestWhatsAppProducts,resolveWhatsAppProductReferences,type ProductEvidence} from './whatsapp-automation-plan.ts';
 type Env=(names:string[])=>string;
 type Message={id:string;direction:string;body:string;type:string;status:string;occurredAt:string};
@@ -15,11 +15,7 @@ export async function interpretConversationImage(db:SupabaseClient,env:Env,messa
  const {data:photo,error}=await db.from('whatsapp_messages').select('id,direction,phone_number,meta_message_id,raw_payload,occurred_at').eq('id',image.id).eq('company_id',companyId).eq('direction','inbound').in('phone_number',[phone,`+${phone}`]).maybeSingle();
  if(error)throw Error('image_context_unavailable');
  if(!photo||planWhatsAppAutomation({incoming:photo,phoneNumberId:phoneId,products,optedOut:false,humanTakeover:false}).reason!=='visual_identification_required')return null;
- return analyzeWhatsAppMedia(photo,env,fetcher,async()=>{
-  const {data:integration,error}=await db.from('prospecting_ai_integrations').select('status,models,api_key_encrypted').eq('provider','deepseek').limit(1).maybeSingle();
-  if(error||integration?.status!=='verified'||!Array.isArray(integration.models)||!integration.models.includes('deepseek-flash')||!integration.api_key_encrypted)throw Error('deepseek_not_configured');
-  return decryptApiKey(integration.api_key_encrypted,env(['PROSPECTING_SECRET_ENCRYPTION_KEY']));
- },provider,session.slice(-40).map(m=>({...m,body:m.type==='image'?m.id===image.id?'[Imagen analizada adjunta]':'[Otra imagen no visible en esta consulta]':m.body})));
+ return analyzeWhatsAppMedia(photo,env,fetcher,()=>readDeepSeekMediaKey(db,env),provider,session.slice(-40).map(m=>({...m,body:m.type==='image'?m.id===image.id?'[Imagen analizada adjunta]':'[Otra imagen no visible en esta consulta]':m.body})));
 }
 export function imageCatalogRequests(analysis:MediaAnalysis,products:ProductEvidence[]){
  return (analysis.requests||[{query:analysis.text,quantity:null}]).map(request=>({ ...request,products:(resolveWhatsAppProductReferences(request.query,'',products).matches.length?resolveWhatsAppProductReferences(request.query,'',products).matches:suggestWhatsAppProducts(request.query,products))}));
@@ -28,4 +24,17 @@ export function visualQuoteSelection(analysis:MediaAnalysis,products:ProductEvid
  const requests=imageCatalogRequests(analysis,products),unresolved:string[]=[],lines:Array<{sku:string;name:string;quantity:number}>=[];
  for(const request of requests){if(request.products.length!==1){unresolved.push(`Confirma el modelo para ${request.query}.`);continue;}const p=request.products[0];const previous=lines.find(l=>l.sku===p.sku);if(previous){if(request.quantity!==null&&previous.quantity!==request.quantity)unresolved.push(`Para ${p.name} (${p.sku}) aparecen ${previous.quantity} y ${request.quantity} unidades. ¿Qué cantidad quieres cotizar?`);continue;}lines.push({sku:p.sku,name:p.name,quantity:request.quantity||1});}
  return {lines,quantityConfirmed:requests.length>0&&requests.every(r=>r.quantity!==null)&&!unresolved.length,unresolved};
+}
+
+export async function readDeepSeekMediaKey(db:SupabaseClient,env:Env){
+ try{
+  const {data:integration,error}=await db.from('prospecting_ai_integrations').select('status,models,api_key_encrypted').eq('provider','deepseek').limit(1).maybeSingle();
+  if(error||integration?.status!=='verified'||!Array.isArray(integration.models)||!integration.models.includes('deepseek-flash')||!integration.api_key_encrypted)throw Error('not_configured');
+  return await decryptApiKey(integration.api_key_encrypted,env(['PROSPECTING_SECRET_ENCRYPTION_KEY']));
+ }catch{throw new MediaProcessingError('configuration','DeepSeek');}
+}
+export async function interpretConversationAudio(db:SupabaseClient,env:Env,messages:Message[],incoming:Incoming,phoneId:string,products:ProductEvidence[],fetcher:typeof fetch=fetch){
+ if(planWhatsAppAutomation({incoming,phoneNumberId:phoneId,products,optedOut:false,humanTakeover:false}).reason!=='transcription_required')return null;
+ const session=currentQuoteSession(messages.filter(m=>Date.parse(m.occurredAt)<=Date.parse(incoming.occurred_at))) as Message[];
+ return analyzeWhatsAppMedia(incoming,env,fetcher,()=>readDeepSeekMediaKey(db,env),'deepseek',session);
 }

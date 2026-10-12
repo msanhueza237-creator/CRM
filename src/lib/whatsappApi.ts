@@ -65,7 +65,8 @@ export function getWhatsAppConversation(companyId: string, phone = "", offset = 
 }
 
 export interface WhatsAppAssistantPreview {
-  mediaAnalysis?: {kind:"image"|"audio";text:string;observation:string;needsClarification:boolean}|null;
+  mediaAnalysis?: {kind:"image"|"audio";text:string;observation:string;needsClarification:boolean;transcript?:string;transcriptionProvider?:"openai";interpretationProvider?:"deepseek"|"openai"}|null;
+  processingError?: {code:string;provider:string;message:string};
   messageId: string | null;
   plan: { action: "ignore" | "draft" | "clarify" | "handoff"; reason: string; text: string | null;
     requires: string; source: "tiendanube" | null; canSend: false };
