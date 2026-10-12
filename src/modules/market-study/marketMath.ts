@@ -1,5 +1,5 @@
 import Decimal from 'decimal.js';
-import type { NativeStudyJob } from '../../../supabase/functions/_shared/market-native-contract';
+import { isChileMarketUrl, type NativeStudyJob } from '../../../supabase/functions/_shared/market-native-contract.ts';
 import type { MarketFx, MarketObservation, MarketReview, StoredMarketObservation } from '../../../supabase/functions/_shared/market-study-contract';
 export interface MarketProduct {
  key:string;sku:string;name:string;description?:string;brand?:string;mode:'current'|'transit';stock:number|null;stockAt:string|null;eta:string|null;
@@ -51,6 +51,7 @@ export function compareProduct(product:MarketProduct,observations:StoredMarketOb
   const p=row.payload,r=review!.payload,reasons:string[]=[];
   if(!coherent)reasons.push('Revisiones incompatibles de presentación o cambio interno.');
   if(r.sku!==product.sku||r.unit!==p.unit||!known(r.internal_quantity)||r.internal_quantity<=0)reasons.push('Unidad, cantidad o identidad incompatibles.');
+  if(!isChileMarketUrl(p.source_url))reasons.push('Fuente fuera del alcance de dominios .cl.');
   if(p.seller_kind!=='competitor')reasons.push('Proveedor: referencia de compra, no precio competidor.');
   if(!fresh(p.observed_at,MARKET_RULES.observationDays,now))reasons.push('Oferta antigua o sin fecha válida.');
   if(p.confidence<MARKET_RULES.minConfidence)reasons.push('Confianza insuficiente.');
@@ -96,7 +97,7 @@ export function marketTargetReferences(product:MarketProduct,job:NativeStudyJob|
  const approved=reviewed.comparable.map(o=>({url:o.observation.payload.source_url,seller:o.observation.payload.seller,observed_at:o.observation.payload.observed_at,net:o.netPerInternalUnit!,reviewed:true}));
  const offers=job?.state==='completed'&&job.sku===product.sku?job.result.offers||[]:[];
  const provisional=offers.filter(o=>!latest.some(r=>r.payload.source_url===o.url&&(r.payload.suggested_sku===product.sku||reviews.some(v=>v.observation_id===r.id&&v.payload.product_key===product.key))))
-  .filter(o=>o.identity==='model_match'&&o.package_quantity===1&&o.availability!=='unavailable'&&fresh(o.observed_at,MARKET_RULES.observationDays,now))
+  .filter(o=>isChileMarketUrl(o.url)&&o.identity==='model_match'&&o.package_quantity===1&&o.availability!=='unavailable'&&fresh(o.observed_at,MARKET_RULES.observationDays,now))
   .map(o=>({...o,net:toNetClp(o.amount,o.currency,o.vat,o.vat_percent,null,now),reviewed:false}))
   .filter((o):o is typeof o & {net:number}=>o.net!==null&&o.net>0);
  // Prefer reviewed evidence when it exists; do not dilute it with candidates.

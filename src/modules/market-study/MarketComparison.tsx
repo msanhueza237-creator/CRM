@@ -90,6 +90,7 @@ export function MarketComparison({product,products,job,onReview,observations=[],
     {offers.length>0&&<p role="status" className="market-muted">{offers.filter(o=>known(o.amount)).length} de {offers.length} fuentes con precio publicado</p>}
     {job?.state==='completed'&&offers.length===0&&<p role="status">La busqueda no encontro fichas publicas verificables para este producto.</p>}
     {offers.length>0&&rows.length===0&&<p role="status">Ninguna oferta coincide con los filtros.</p>}
+    {job?.result.original_result&&<details className="market-muted"><summary>Resultado original conservado · {job.result.original_result.offers?.length||0} fuentes</summary><p>La actualización de fuentes .cl conserva la investigación anterior y no aprueba equivalencias.</p>{job.result.original_result.offers?.map((offer,index)=><p key={index}>{offer.title} · {offer.url} · {offer.observed_at} · {offer.amount===null?'Sin precio verificable':`${offer.amount} ${offer.currency||'moneda pendiente'}`} {offer.price_error||offer.warning}</p>)}</details>}
     {job&&<details className="market-muted"><summary>{offers.length} fuentes · Cobertura de la busqueda</summary><p>{job.result.coverage}</p>{job.result.queries?.map(q=><p key={q}>{q}</p>)}<p>{job.result.usage_note}</p></details>}
   </section>;
 }

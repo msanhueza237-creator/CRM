@@ -4,7 +4,7 @@ import { previewMarketImport, normalizeMarketObservation, normalizeMarketReview,
 import { toNetClp, discountScenario, compareProduct, marketTopTen, marketTarget, marketTargetReferences } from '../src/modules/market-study/marketMath.ts';
 import { marketProducts } from '../src/modules/market-study/marketSources.ts';
 const now=Date.parse('2026-10-02T12:00:00Z'),at='2026-10-01T12:00:00Z',id='11111111-1111-4111-8111-111111111111';
-const observation=(patch={})=>({provider:'synthetic',external_id:'offer-1',revision:1,product_label:'Bomba sintética',suggested_sku:'SYN-01',seller:'Competidor sintético',seller_kind:'competitor',amount:142800,currency:'CLP',vat_basis:'gross',vat_percent:19,unit:'unit',package_quantity:1,presentation:'Unidad',availability:'available',source_url:'https://example.test/offer',observed_at:at,confidence:.9,fx:null,notes:'Dato sintético, no investigación real.',...patch});
+const observation=(patch={})=>({provider:'synthetic',external_id:'offer-1',revision:1,product_label:'Bomba sintética',suggested_sku:'SYN-01',seller:'Competidor sintético',seller_kind:'competitor',amount:142800,currency:'CLP',vat_basis:'gross',vat_percent:19,unit:'unit',package_quantity:1,presentation:'Unidad',availability:'available',source_url:'https://synthetic-shop.cl/offer',observed_at:at,confidence:.9,fx:null,notes:'Dato sintético, no investigación real.',...patch});
 const review=(patch={})=>({id:'22222222-2222-4222-8222-222222222222',observation_id:id,created_at:at,created_by:id,payload:{observation_id:id,request_id:'33333333-3333-4333-8333-333333333333',expected_review_id:null,decision:'approved',product_key:'current:SYN-01',sku:'SYN-01',unit:'unit',internal_quantity:1,equivalence_confirmed:true,cost_basis_confirmed:true,internal_fx:null,reason:'Modelo y presentación revisados.',...patch}});
 const product=(patch={})=>({key:'current:SYN-01',sku:'SYN-01',name:'Bomba sintética',mode:'current',stock:5,stockAt:at,eta:null,price:100000,priceCurrency:'CLP',priceAt:at,cost:70000,costCurrency:'CLP',costAt:at,costStatus:'recorded',costSource:'Fixture',path:'/dashboard',notices:[],...patch});
 const stored=(patch={})=>({id,payload:observation(patch),created_at:at,created_by:id});
@@ -117,4 +117,9 @@ test('Objetivo provisional no revive rechazos, fallos, ofertas antiguas ni otros
  assert.equal(marketTargetReferences(product(),job,[],[],now).references[0].net,10000);
  for(const patch of [{decision:'rejected'},{decision:'pending'}])assert.equal(marketTargetReferences(product(),job,[o],[review(patch)],now).references.length,0);
  for(const patch of [{sku:'OTHER'},{state:'unknown'},{result:{offers:[{...web,observed_at:'2020-01-01'}]}},{result:{offers:[{...web,observed_at:'2099-01-01'}]}}])assert.equal(marketTargetReferences(product(),{...job,...patch},[],[],now).references.length,0);
+});
+
+test('Objetivo excluye dominios fuera de .cl aunque tengan CLP o revision humana',()=>{
+ const p=product(),payload=observation({source_url:'https://tienda.cl.evil.com/offer'}),row=stored(payload),r=review();
+ const comparison=compareProduct(p,[row],[r],now);assert.equal(comparison.comparable.length,0);assert.ok(comparison.offered[0].reasons.some(s=>s.includes('.cl')));
 });

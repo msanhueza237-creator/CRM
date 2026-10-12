@@ -1,5 +1,4 @@
 export const MARKET_SITES = [
-  {name:'Refrimarket', host:'www.refrimarket.com'},
   {name:'RefriRepuestos', host:'refrirepuestos.cl'},
   {name:'ANWO', host:'www.anwo.cl'},
   {name:'MoretoClima', host:'www.moretoclima.cl'},
@@ -24,7 +23,11 @@ export interface NativeStudyJob {
   selection:{choice:string;provider:string;model:string};
   result:{attributes?:MarketAttribute[];text?:string;observed_at?:string;error?:string;
     kind?:'market_search';product_title?:string;product_profile?:{description?:string;brand?:string};queries?:string[];offers?:MarketWebOffer[];
-    source_count?:number;coverage?:string;usage_note?:string;refreshed_at?:string};
+    source_count?:number;coverage?:string;usage_note?:string;refreshed_at?:string;
+    original_result?:NativeStudyJob['result'];refresh_batch?:string;source_policy?:'chile_cl_only'};
+}
+export function isChileMarketUrl(value:string) {
+  try{return publicProductUrl(value).hostname.endsWith('.cl');}catch{return false;}
 }
 // Public links from search are not restricted to the example competitor list.
 // Network-level DNS/IP validation is additionally required before fetching them.

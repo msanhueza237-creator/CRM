@@ -62,3 +62,12 @@ test('Tiempo agotado y TLS se distinguen por etapa; jamas se completa un precio 
  await assert.rejects(fetchPublicProduct(url,async u=>String(u).endsWith('/robots.txt')?new Response('',{status:404}):timed(),true),/agotado al leer la ficha/);
  await assert.rejects(fetchPublicProduct(url,async()=>{throw new Error('invalid peer certificate: NotValidForName');},true),/Certificado TLS no valido/);
 });
+
+test('Reader .cl nunca sigue redirecciones ni acepta una respuesta ya redirigida',async()=>{
+ let calls=0;await assert.rejects(fetchPublicProduct('https://tienda.cl.evil.com/producto',async()=>{calls++;throw Error('Unexpected');},true),/fuera de .cl/);assert.equal(calls,0);
+ for(const destination of ['https://tienda.com/producto','https://otra.cl/producto']){
+  calls=0;await assert.rejects(fetchPublicProduct(url,async(_u,init)=>{calls++;assert.equal(init.redirect,'manual');return calls===1?new Response('',{status:404}):new Response('',{status:302,headers:{location:destination}});},true),/redirige/);assert.equal(calls,2);
+ }
+ const response=new Response(structured(product),{headers:{'content-type':'text/html'}});Object.defineProperty(response,'url',{value:'https://evil.com/producto'});Object.defineProperty(response,'redirected',{value:true});
+ await assert.rejects(fetchPublicProduct(url,async()=>response,true),/redirige/);
+});

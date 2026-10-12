@@ -100,7 +100,7 @@ test('Prioriza .cl y descarta listados sin cambiar la busqueda a una lista cerra
   {type:'web_search_result',url:'https://tienda.cl/index.php?route=product/search&tag=foo',title:'Busqueda'},
   {type:'web_search_result',url:'https://otra-tienda.cl/producto/a',title:'A'},
   {type:'web_search_result',url:'https://tercera.cl/search?q=abc',title:'Busqueda'}];
- assert.deepEqual(searchSources(p).sources.map(s=>new URL(s.url).hostname),['otra-tienda.cl','example-shop.com']);
+ assert.deepEqual(searchSources(p).sources.map(s=>new URL(s.url).hostname),['otra-tienda.cl']);
 });
 
 test('IVA chileno supuesto es visible; neto explicito gana; modelos + y packs no se mezclan',()=>{
@@ -177,8 +177,8 @@ test('HT816: selecciona fichas chilenas y convierte enlace de carrito en ficha s
  const urls=['https://stichileing.cl/producto/anemometro-ht-816/?add-to-cart=12667','https://www.tdmclimatizacion.cl/anemometro-ht816','https://www.cdn.amazon.it/product/HT816','https://www.nature.com/articles/abc/tables/4','https://amazon.com.mx/product/HT816','https://pmc.ncbi.nlm.nih.gov/articles/abc/table/Tab4/','https://amazon.es/product/HT816'];
  const found=searchSources({content:[payload.content[0],{type:'web_search_tool_result',content:urls.map(url=>({type:'web_search_result',url,title:'HT816'}))}]});
  assert.deepEqual(found.sources.map(o=>o.url),['https://stichileing.cl/producto/anemometro-ht-816/','https://www.tdmclimatizacion.cl/anemometro-ht816']);assert.equal(found.excluded_count,5);
- // Open Chilean .com commerce remains possible; no fixed competitor whitelist.
- const generic=searchSources({content:[payload.content[0],{type:'web_search_tool_result',content:[{type:'web_search_result',url:'https://comercio-chileno.com/tienda/anemometro'}]}]});assert.equal(generic.sources.length,1);
+ // The requested .cl scope also excludes Chilean businesses on .com.
+ const generic=searchSources({content:[payload.content[0],{type:'web_search_tool_result',content:[{type:'web_search_result',url:'https://comercio-chileno.com/tienda/anemometro'}]}]});assert.equal(generic.sources.length,0);
 });
 
 test('Nunca se acepta una accion comercial directa, ni se inventa una ficha para URLs ambiguas',async()=>{
@@ -194,8 +194,28 @@ test('Refresh de historial repara URL de carrito sin IA/escrituras; robots de fi
  const before=JSON.stringify(job),calls=[];
  const fetcher=async u=>{calls.push(String(u));assert.doesNotMatch(String(u),/add-to-cart|quantity|amazon/);return String(u).endsWith('/robots.txt')?new Response('User-agent: *\nDisallow: /*?add-to-cart='):new Response('<h1>HT816</h1><script type="application/ld+json">'+JSON.stringify({'@type':'Product',name:'Anemometro HT816',offers:{'@type':'Offer',price:11900,priceCurrency:'CLP'}})+'</script>',{headers:{'Content-Type':'text/html'}});};
  const result=await refreshMarketSources(job,fetcher);
- assert.equal(result.result.offers[0].url,canonical);assert.equal(result.result.offers[0].amount,11900);assert.match(result.result.offers[0].warning,/equivalencia tecnica pendiente/);assert.equal(result.result.offers[1].amount,null);assert.match(result.result.offers[1].price_error,/otro mercado/);
+ assert.equal(result.result.offers[0].url,canonical);assert.equal(result.result.offers[0].amount,11900);assert.match(result.result.offers[0].warning,/equivalencia tecnica pendiente/);assert.equal(result.result.offers[1].amount,null);assert.match(result.result.offers[1].price_error,/fuera de .cl/);
  assert.deepEqual(calls,['https://tienda.cl/robots.txt',canonical]);assert.equal(JSON.stringify(job),before);
  let attempts=0;const denied=await refreshMarketSources(job,async()=>{attempts++;return new Response('User-agent: *\nDisallow: /producto/');});
  assert.equal(attempts,1);assert.equal(denied.result.offers[0].amount,null);assert.match(denied.result.offers[0].price_error,/no permite/);
+});
+
+test('Alcance estricto .cl: subdominios reales, no sufijos falsos ni tiendas chilenas .com',async()=>{
+ const accepted=['https://tienda.cl/producto/a','https://shop.tienda.cl/producto/a'];
+ const denied=['https://tienda.cl.evil.com/producto/a','https://tienda-cl.com/producto/a','https://falabella.com/falabella-cl/product/123','https://tienda.cl@evil.com/producto/a','https://tienda.cl:444/producto/a','https://universidad.cl/articles/estudio','https://universidad.cl/documento.pdf'];
+ for(const url of [...accepted,...denied]){
+  const found=searchSources({content:[payload.content[0],{type:'web_search_tool_result',content:[{type:'web_search_result',url}]}]});
+  assert.equal(found.sources.length,accepted.includes(url)?1:0,url);
+ }
+ const job={sku:'SYN',state:'completed',result:{kind:'market_search',offers:denied.map(url=>({url,title:'SYN',amount:999}))}};
+ const before=JSON.stringify(job);const updated=await refreshMarketSources(job,async()=>{throw Error('Must not fetch excluded sources');});
+ assert.equal(updated.result.offers.length,denied.length);assert.ok(updated.result.offers.every(o=>o.amount===null&&o.price_error));assert.equal(JSON.stringify(job),before);
+});
+
+test('.cl no prueba moneda ni mercado: conserva evidencia y deja precio ambiguo pendiente',()=>{
+ for(const currency of ['USD','EUR',null]){
+  const o=webOffer(url,'HT816',JSON.stringify({title:'HT816',price:200,currency,singleProduct:true}),'HT816','Anemometro',new Date().toISOString());
+  assert.equal(o.amount,null);assert.match(o.price_error,/CLP no confirmada/);assert.match(o.evidence,/200/);
+ }
+ const foreign=webOffer('https://tienda.com/producto','HT816',JSON.stringify({title:'HT816',price:200,currency:'CLP'}),'HT816','Anemometro',new Date().toISOString());assert.equal(foreign.amount,null);
 });

@@ -68,9 +68,12 @@ export function productText(html:string,sourceUrl?:string) {
 }
 export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch,openMarket=false) {
   const url=openMarket?publicProductUrl(value):marketSite(value).url,signal=AbortSignal.timeout(openMarket?8000:16000);
+  if(openMarket&&!url.hostname.endsWith('.cl'))throw new Error('Fuente excluida: dominio fuera de .cl; estudio limitado a Chile.');
   const get=async(target:string)=>{
     const stage=target===url.origin+'/robots.txt'?'verificar robots.txt':'leer la ficha del producto';
-    try{return await fetcher(target,{redirect:'manual',signal,headers:{'User-Agent':agent,Accept:'text/html,text/plain','Cache-Control':'no-cache'}});}
+    try{const response=await fetcher(target,{redirect:'manual',signal,headers:{'User-Agent':agent,Accept:'text/html,text/plain','Cache-Control':'no-cache'}});
+      if(response.redirected||response.url&&response.url!==target){await response.body?.cancel();throw new Error('La fuente redirige; no se admite un destino sin validar.');}
+      return response;}
     catch(e){
       const message=e instanceof Error?e.message:'';
       if(signal.aborted||e instanceof Error&&['TimeoutError','AbortError'].includes(e.name)||/sin respuesta|cancelad|timed? ?out/i.test(message))throw new Error(`Tiempo de lectura agotado al ${stage}. No se obtuvo un precio verificable.`);
