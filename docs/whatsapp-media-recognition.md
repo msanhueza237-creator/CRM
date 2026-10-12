@@ -1,6 +1,6 @@
 # Imágenes y audios de WhatsApp
 
-## Entrega del 12 de octubre de 2026 — publicación autorizada, verificación en curso
+## Entrega publicada el 12 de octubre de 2026
 
 Base: `e639a4a546cd838840b2fa20c665c61e87dc5853`. Las ramas remotas `fix/historical-import-cloud` y `codex/whatsapp-media-recognition` coincidían al iniciar. Se preserva el contexto de imágenes, pedidos múltiples y las mejoras locales de validación/privacidad. El TS18047 de `3b31a3d` ya estaba corregido en la base. No se trabaja sobre `main` antigua.
 
@@ -26,15 +26,34 @@ La [referencia oficial de OpenAI](https://developers.openai.com/api/reference/re
 - Se conserva el aislamiento de empresa/teléfono/cuenta Meta y sesión conversacional; bajas y ventana cerrada impiden procesar medios, también al preparar cotizaciones.
 - Se omiten líneas textuales marcadas como financieras/internas y se redactan correos/teléfonos; continúa la exclusión del texto posterior al RUT. La observación del modelo se limita por prompt a información comercial. Estas reglas NO son anonimización universal del texto ni de los píxeles/voz originales. El envío manual requiere revisión humana.
 
-### Verificación y bloqueo de prueba real
+### Verificación del 12 de octubre de 2026
 
-Resultado final local: **256/256 pruebas aprobadas**, typecheck backend y build frontend correctos; `git diff --check` limpio. Navegador con red interceptada en 320/390/1280: proveedores diferenciados, transcripción e interpretación visibles, error de cuota sin botón de usar propuesta y envío manual. Las ramas remotas se comprobaron de nuevo al finalizar y seguían en `e639a4a`. No se realizó commit, push, merge o despliegue.
+Marco autorizó la publicación y validación con muestras sintéticas. Implementación: commit `2a6219c`, subido a `fix/historical-import-cloud`; `main` permanece intacta. Esta sección sustituye las notas anteriores de entrega local y falta de autorización.
 
-Las pruebas locales usan muestras generadas y proveedores simulados, incluyendo una prueba en la que OpenAI produce una frase hablada y la interpretación DeepSeek cambia realmente la consulta al catálogo. También prueban errores por etapa, cuota, configuración, formatos, límites, ausencia de fallback, privacidad, conversación ajena y cotización sin identidad inferida de voz.
+- 256/256 pruebas locales aprobadas; comprobación de tipos y build frontend correctos. Navegador con red interceptada: 320/390/1280, transcripción e interpretación separadas, error de cuota sin propuesta enviable y envío manual.
+- La compilación de `crm-agent` mediante `edge-runtime bundle` en el servidor pasó con los módulos nuevos y las dependencias existentes.
+- Prueba real de visión: PNG creado localmente con dibujo y etiqueta de manómetro R32; DeepSeek `/responses` respondió HTTP 200 y lo identificó correctamente.
+- Pruebas reales de transcripción: WAV generado localmente con FFmpeg/flite y convertido a OGG; OpenAI `/v1/audio/transcriptions` respondió HTTP 429 por cuota/saldo en ambas. Por ello NO se afirma éxito de extremo a extremo de audio. La aplicación muestra un error controlado y no ofrece texto para enviar.
+- Prueba aislada de interpretación: texto sintético «Necesito dos manómetros para refrigerante R32» enviado a DeepSeek, HTTP 200 y producto reconocido. La etapa OpenAI se simuló explícitamente en esta prueba aislada; no es evidencia de transcripción real. La cantidad escrita con palabras no quedó confirmada por el validador conservador: requiere revisión.
+- Solo se usaron integraciones existentes y muestras generadas; no hubo medios de clientes, envíos WhatsApp, escrituras en tablas comerciales ni cambios de facturación.
 
-No hay `OPENAI_API_KEY`, `DEEPSEEK_API_KEY` ni `PROSPECTING_SECRET_ENCRYPTION_KEY` disponibles en el entorno de ejecución local (solo se comprobó presencia, nunca valores). Por ello no se pudo ejecutar una prueba real sintética contra ambos proveedores ni comprobar saldo. No se usaron credenciales de producción ni se solicitó crearlas. Antes de publicar se requiere ejecutar esa comprobación desde un backend autorizado que ya tenga la integración existente.
+Pendiente operativo: habilitar saldo/cuota API en la cuenta OpenAI existente y repetir una prueba sintética WAV/OGG. No es un bloqueo de acceso al servidor ni de autorización para publicar.
 
-Comandos locales (sin conexiones reales):
+### Despliegue y recuperación
+
+Ruta administrativa comprobada: HTTPS `dokploy.latinchile.cl`, API y terminal autenticada del contenedor. Frontend: aplicación `v8OxI5RagW3PhD2_LmzLc`, dominio `crm.latinchile.cl`, rama `fix/historical-import-cloud`, despliegue automático desactivado. Backend: compose `LxMlWdQafv20SciDFU4Xr`, contenedor `crm-climactiva-supabase-duewf7-supabase-edge-functions`, servicio `crm-agent` de `supabase.latinchile.cl`.
+
+Los cuatro módulos cambiados se compararon por SHA-256 con `e639a4a`, se respaldaron y se sustituyeron por los archivos exactos de `2a6219c`: `whatsapp-media-analysis.ts`, `whatsapp-image-context.ts`, `whatsapp-automation-preview.ts`, `whatsapp-quote.ts`. Solo se reinició el contenedor de funciones. Salud HTTP 200 y `whatsapp-assistant-preview` sin sesión HTTP 401 comprobados después del reinicio.
+
+Frontend solicitado mediante `application.deploy`, deployment `XLEyc7QQo49xHcxfJjnbF`. Estado final: `done`. HTML público y bundle `/assets/index-DpAaj7R4.js` HTTP 200; el bundle contiene los rótulos nuevos «Transcripción · OpenAI», «Interpretación · DeepSeek» y la explicación de ambas etapas.
+
+Recuperación preparada, no ejecutada: los cuatro módulos anteriores permanecen en `/home/deno/functions/.whatsapp-rollback-20261012/`; restaurarlos sobre los mismos nombres y reiniciar únicamente functions. El frontend anterior se archivó y validó en `/tmp/crm-deploy/frontend-before.tar.gz` en el entorno de trabajo; conservarlo antes de cerrar este entorno. La configuración previa de Dokploy también está respaldada de forma privada. Un rollback debe restaurar frontend y backend coordinadamente y comprobar salud/acceso protegido.
+
+No ejecutar el antiguo `functions-sync`: su configuración borra directorios y descarga archivos desde `main`, que está atrasada. Esta publicación preservó esa configuración y utilizó actualización selectiva; una futura publicación de toda la pila debe resolver primero ese mecanismo.
+
+No se crearon credenciales ni migraciones. No se cambiaron variables, facturación ni configuración de otros servicios.
+
+Comprobaciones locales reproducibles:
 
 ```sh
 node --experimental-transform-types --test --test-concurrency=1 scripts/test-whatsapp-audio-pipeline.mjs scripts/test-whatsapp-media-analysis.mjs scripts/test-whatsapp-automation-plan.mjs scripts/test-whatsapp-automation-preview.mjs scripts/test-whatsapp-automation-e2e.mjs scripts/test-whatsapp-quote-context.mjs scripts/test-whatsapp-quote-flow.mjs scripts/test-whatsapp-meta.mjs scripts/test-whatsapp-conversation.mjs scripts/test-direct-messages.mjs scripts/test-whatsapp-inbox.mjs scripts/test-whatsapp-management.mjs scripts/test-whatsapp-delivery.mjs scripts/test-whatsapp-catalog.mjs
@@ -43,15 +62,6 @@ npm run build
 PLAYWRIGHT_BROWSERS_PATH=/tmp/crm-playwright node --experimental-transform-types scripts/test-whatsapp-conversation-browser.mjs
 git diff --check
 ```
-
-### Procedimiento de publicación autorizado
-
-1. Volver a consultar las ramas remotas. En un checkout aislado de la revisión aprobada, ejecutar `git apply --check /workspace/whatsapp-audio-final.patch` y después aplicar el diff; integrar por revisión si la base cambió. No sobrescribir cambios posteriores ni publicar desde `main` antigua.
-2. Repetir las comprobaciones anteriores; probar con una muestra de voz sintética en el backend autorizado, confirmar modelo/proveedor de ambas etapas, cuota y permisos sin mostrar secretos. Probar OGG de nota de voz además de WAV; no utilizar medios de clientes.
-3. Desplegar en el servicio existente `crm-agent` de `supabase.latinchile.cl` los módulos cambiados `whatsapp-media-analysis.ts`, `whatsapp-image-context.ts`, `whatsapp-automation-preview.ts` y `whatsapp-quote.ts`, junto con las dependencias de la revisión aprobada. Confirmar el destino administrativo/montaje real y conservar el artefacto previo; no hay un comando administrativo verificado en este entorno y no se inventa uno.
-4. Publicar el frontend de la misma revisión mediante el pipeline existente de Dokploy: cambia `WhatsAppConversationDialog.tsx` y su contrato `whatsappApi.ts`. Confirmar la rama/revisión seleccionada por el pipeline; no asumir que usa la rama de WhatsApp.
-5. No se requieren migraciones ni nuevas variables/credenciales. Verificar presencia segura de las existentes y `WHATSAPP_LIVE_CATALOG_ENABLED=true` / moneda de tienda configurada, sin cambiarlas silenciosamente.
-6. Comprobar salud HTTP 200, acceso sin sesión HTTP 401 y, con cuenta de prueba, audio sintético → OpenAI → DeepSeek → catálogo, error de cuota sin respuesta enviable, imagen DeepSeek y revisión manual en 320/390/1280. No enviar a clientes. Si falla, restaurar los artefactos previos coordinadamente y revisar qué comportamiento de audio se reintroduce.
 
 ## Comportamiento e historial anterior
 
