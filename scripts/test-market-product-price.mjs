@@ -55,3 +55,10 @@ test('404 y restricciones se distinguen; documentos y clips no ocupan cupos de p
  const result=searchSources({content:[{type:'server_tool_use',name:'web_search',input:{query:'balanza Chile'}},{type:'web_search_tool_result',content:['https://web.cl/docs/file.pdf','https://video.cl/shorts/clips/abc','https://web.cl/product-category/balanza',url].map(url=>({type:'web_search_result',url}))}]});
  assert.deepEqual(result.sources.map(s=>s.url),[url]);
 });
+
+test('Tiempo agotado y TLS se distinguen por etapa; jamas se completa un precio faltante',async()=>{
+ const timed=()=>{throw new Error('Fuente sin respuesta o consulta cancelada.');};
+ await assert.rejects(fetchPublicProduct(url,timed,true),/agotado al verificar robots.txt/);
+ await assert.rejects(fetchPublicProduct(url,async u=>String(u).endsWith('/robots.txt')?new Response('',{status:404}):timed(),true),/agotado al leer la ficha/);
+ await assert.rejects(fetchPublicProduct(url,async()=>{throw new Error('invalid peer certificate: NotValidForName');},true),/Certificado TLS no valido/);
+});

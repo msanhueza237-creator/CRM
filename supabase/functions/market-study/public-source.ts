@@ -68,7 +68,16 @@ export function productText(html:string,sourceUrl?:string) {
 }
 export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch,openMarket=false) {
   const url=openMarket?publicProductUrl(value):marketSite(value).url,signal=AbortSignal.timeout(openMarket?8000:16000);
-  const get=async(target:string)=>fetcher(target,{redirect:'manual',signal,headers:{'User-Agent':agent,Accept:'text/html,text/plain','Cache-Control':'no-cache'}});
+  const get=async(target:string)=>{
+    const stage=target===url.origin+'/robots.txt'?'verificar robots.txt':'leer la ficha del producto';
+    try{return await fetcher(target,{redirect:'manual',signal,headers:{'User-Agent':agent,Accept:'text/html,text/plain','Cache-Control':'no-cache'}});}
+    catch(e){
+      const message=e instanceof Error?e.message:'';
+      if(signal.aborted||e instanceof Error&&['TimeoutError','AbortError'].includes(e.name)||/sin respuesta|cancelad|timed? ?out/i.test(message))throw new Error(`Tiempo de lectura agotado al ${stage}. No se obtuvo un precio verificable.`);
+      if(/certificate|certificado|NotValidForName/i.test(message))throw new Error(`Certificado TLS no valido al ${stage}; consulta detenida.`);
+      throw e;
+    }
+  };
   const robots=await get(url.origin+'/robots.txt');
   let rules='';if(robots.status!==404){if(!robots.ok){await robots.body?.cancel();throw new Error('No se pudo verificar el permiso de lectura del sitio.');}rules=await read(robots,100000);}else await robots.body?.cancel();
   const parser=robotsParser(url.origin+'/robots.txt',rules),delay=parser.getCrawlDelay(agent)||0;

@@ -34,10 +34,21 @@ export function publicProductUrl(value:string) {
     !/^([a-z0-9][a-z0-9-]*\.)+[a-z]{2,63}$/i.test(u.hostname)||
     /(?:^|\.)(?:localhost|local|internal|test|invalid|example|lan|home|onion)$/i.test(u.hostname)||
     /\/(?:admin|login|account|cart|checkout|auth|api)(?:\/|$)/i.test(u.pathname)||
-    [...u.searchParams.keys()].some(k=>/token|secret|key|auth|session|password/i.test(k)))
+    [...u.searchParams.keys()].some(k=>/token|secret|key|auth|session|password/i.test(k)||/^(?:add[-_]?to[-_]?cart|remove_item|wc-ajax|checkout|quantity|action|cmd|add|buy|remove|submit|purchase)$/i.test(k)))
     throw new Error('El enlace no corresponde a una fuente publica HTTPS.');
   for(const k of [...u.searchParams.keys()])if(/^utm_|^(?:gclid|fbclid)$/i.test(k))u.searchParams.delete(k);
   u.hash='';return u;
+}
+// Search indexes sometimes return WooCommerce add-to-cart links. Only the
+// explicit product-detail path can become a read-only source; no action is sent.
+// All other action URLs remain rejected by publicProductUrl.
+export function publicProductSourceUrl(value:string) {
+  let u:URL;try{u=new URL(value);}catch{throw new Error('Enlace publico invalido.');}
+  if(u.searchParams.has('add-to-cart')&&/^\/(?:producto|product)\/[^/]+\/?$/.test(u.pathname)&&
+    u.searchParams.getAll('add-to-cart').length===1&&/^\d+$/.test(u.searchParams.get('add-to-cart')||'')){
+    u.searchParams.delete('add-to-cart');u.searchParams.delete('quantity');
+  }
+  return publicProductUrl(u.href);
 }
 export function marketSite(value:string) {
   let url:URL;

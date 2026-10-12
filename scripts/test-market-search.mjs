@@ -172,3 +172,30 @@ test('Fallo HTTP persiste diagnostico controlado, conserva reserva y no consulta
   assert.equal(calls,1);assert.equal(finish.state,'unknown');assert.equal(finish.cost,null);assert.equal(finish.result.offers,undefined);assert.match(finish.result.error,new RegExp(String(status)));assert.doesNotMatch(finish.result.error,/private-upstream/);
  }
 });
+
+test('HT816: selecciona fichas chilenas y convierte enlace de carrito en ficha sin ejecutar accion',()=>{
+ const urls=['https://stichileing.cl/producto/anemometro-ht-816/?add-to-cart=12667','https://www.tdmclimatizacion.cl/anemometro-ht816','https://www.cdn.amazon.it/product/HT816','https://www.nature.com/articles/abc/tables/4','https://amazon.com.mx/product/HT816','https://pmc.ncbi.nlm.nih.gov/articles/abc/table/Tab4/','https://amazon.es/product/HT816'];
+ const found=searchSources({content:[payload.content[0],{type:'web_search_tool_result',content:urls.map(url=>({type:'web_search_result',url,title:'HT816'}))}]});
+ assert.deepEqual(found.sources.map(o=>o.url),['https://stichileing.cl/producto/anemometro-ht-816/','https://www.tdmclimatizacion.cl/anemometro-ht816']);assert.equal(found.excluded_count,5);
+ // Open Chilean .com commerce remains possible; no fixed competitor whitelist.
+ const generic=searchSources({content:[payload.content[0],{type:'web_search_tool_result',content:[{type:'web_search_result',url:'https://comercio-chileno.com/tienda/anemometro'}]}]});assert.equal(generic.sources.length,1);
+});
+
+test('Nunca se acepta una accion comercial directa, ni se inventa una ficha para URLs ambiguas',async()=>{
+ for(const bad of ['https://tienda.cl/producto/ht816/?add-to-cart=12','https://tienda.cl/product/ht816?action=buy','https://tienda.cl/product/ht816?wc-ajax=add_to_cart','https://tienda.cl/product/ht816?ADD-TO-CART=12','https://tienda.cl/product/ht816?quantity=2'])assert.throws(()=>publicProductUrl(bad),/publica HTTPS/);
+ const invalid=['https://tienda.cl/?add-to-cart=12','https://tienda.cl/producto/ht816?add-to-cart=abc','https://tienda.cl/producto/ht816?add-to-cart=12&action=checkout','https://tienda.cl/producto/ht816?add-to-cart=12&add-to-cart=13'];
+ for(const url of invalid){assert.equal(searchSources({content:[payload.content[0],{type:'web_search_tool_result',content:[{type:'web_search_result',url}]}]}).sources.length,0);}
+});
+
+test('Refresh de historial repara URL de carrito sin IA/escrituras; robots de ficha sigue siendo obligatorio',async()=>{
+ const cart='https://tienda.cl/producto/ht816/?add-to-cart=12&quantity=2&variant=blue';
+ const canonical='https://tienda.cl/producto/ht816/?variant=blue';
+ const job={sku:'HT816',state:'completed',result:{kind:'market_search',product_title:'Anemometro digital',offers:[{url:cart,title:'HT816',amount:null},{url:'https://amazon.es/product/ht816',title:'HT816',amount:null}]}};
+ const before=JSON.stringify(job),calls=[];
+ const fetcher=async u=>{calls.push(String(u));assert.doesNotMatch(String(u),/add-to-cart|quantity|amazon/);return String(u).endsWith('/robots.txt')?new Response('User-agent: *\nDisallow: /*?add-to-cart='):new Response('<h1>HT816</h1><script type="application/ld+json">'+JSON.stringify({'@type':'Product',name:'Anemometro HT816',offers:{'@type':'Offer',price:11900,priceCurrency:'CLP'}})+'</script>',{headers:{'Content-Type':'text/html'}});};
+ const result=await refreshMarketSources(job,fetcher);
+ assert.equal(result.result.offers[0].url,canonical);assert.equal(result.result.offers[0].amount,11900);assert.match(result.result.offers[0].warning,/equivalencia tecnica pendiente/);assert.equal(result.result.offers[1].amount,null);assert.match(result.result.offers[1].price_error,/otro mercado/);
+ assert.deepEqual(calls,['https://tienda.cl/robots.txt',canonical]);assert.equal(JSON.stringify(job),before);
+ let attempts=0;const denied=await refreshMarketSources(job,async()=>{attempts++;return new Response('User-agent: *\nDisallow: /producto/');});
+ assert.equal(attempts,1);assert.equal(denied.result.offers[0].amount,null);assert.match(denied.result.offers[0].price_error,/no permite/);
+});
