@@ -219,3 +219,39 @@ test('.cl no prueba moneda ni mercado: conserva evidencia y deja precio ambiguo 
  }
  const foreign=webOffer('https://tienda.com/producto','HT816',JSON.stringify({title:'HT816',price:200,currency:'CLP'}),'HT816','Anemometro',new Date().toISOString());assert.equal(foreign.amount,null);
 });
+
+test('Balanzas: capacidad kg/kilos/gramos comparable sin aprobar equivalencia por capacidad sola',()=>{
+ const expected=productFeatures('Balanza digital 100Kg');assert.equal(expected[0].kind,'masa');assert.equal(expected[0].value,100);
+ for(const text of ['100 kg','100 kilogramos','100 kilos','100000 gramos','100000 g'])assert.equal(productFeatures(text)[0].value,100,text);
+ const at=new Date().toISOString(),facts={title:'Balanza Digital 100 kg LP-7516',price:115000,currency:'CLP',singleProduct:true,description:'Plataforma 30 x 40 cm'};
+ const same=webOffer('https://tienda.cl/producto/balanza','',JSON.stringify(facts),'LX-36575','Balanza Digital 100Kg',at);
+ assert.equal(same.identity,'similar');assert.ok(same.match_reasons.some(r=>r.includes('Caracteristicas presentes: 100kg')));assert.match(same.warning,/no equivalente confirmado/);
+ const different=webOffer('https://tienda.cl/producto/balanza','',JSON.stringify({...facts,title:'Balanza Digital 30 kg LP-7516'}),'LX-36575','Balanza Digital 100Kg',at);
+ assert.equal(different.identity,'different');assert.ok(different.conflicts.some(c=>c.includes('masa:')));
+ const missing=webOffer('https://tienda.cl/producto/balanza','',JSON.stringify({...facts,title:'Balanza de plataforma'}),'LX-36575','Balanza Digital 100Kg',at);
+ assert.ok(missing.match_reasons.some(r=>r.includes('Falta verificar: 100kg')));
+});
+
+test('LX-36575: sector comercial verificable y capacidad exacta; no basta keyword o peso envio',()=>{
+ const source='https://hvac.cl/balanza';
+ const base={title:'Balanza digital 100 kg',price:119000,currency:'CLP',singleProduct:true,commercial_sector:{label:'Herramientas para refrigeracion',url:'https://hvac.cl/refrigeracion'}};
+ const offer=f=>webOffer(source,'resultado de busqueda 100kg',JSON.stringify({...base,...f}),'LX-36575','Balanza digital 100Kg',new Date().toISOString());
+ assert.equal(offer({}).amount,119000);assert.notEqual(offer({}).identity,'model_match');assert.equal(offer({}).search_scope.eligible,true);
+ for(const f of [{commercial_sector:null,description:'Ideal refrigeracion'},{commercial_sector:{label:'Refrigeracion',url:'https://otra.cl/refrigeracion'}},{title:'Balanza 30kg',description:'Peso de envio 100kg'},{title:'Balanza 100-150 kg'},{title:'Balanza digital',description:'Productos relacionados: balanza100kg'},{title:'Balanza digital',description:'Otro producto: capacidad maxima 100 kg'},{title:'Balanza digital',description:'Capacidad de embalaje 100kg'},{title:'Balanza 30kg',description:'Capacidad maxima 100kg'},{title:'Balanza digital',description:'Capacidad maxima 150 kg. Peso de envio 100 kg'}]){const o=offer(f);assert.equal(o.amount,null,JSON.stringify(f));assert.equal(o.search_scope.eligible,false);assert.ok(o.price_error);}
+ assert.equal(offer({title:'Balanza digital',description:'Capacidad maxima: 100 kg. Peso de envio: 5 kg'}).amount,119000);
+ assert.equal(offer({title:'Balanza digital',description:'Rango de pesaje 0-100 kg'}).amount,119000);
+ const other=webOffer(source,'',JSON.stringify({...base,title:'Balanza 30kg',commercial_sector:null}),'OTHER','Balanza 30kg',new Date().toISOString());assert.equal(other.amount,119000);assert.equal(other.search_scope,undefined);
+});
+
+test('Consulta LX-36575 no transmite usos contradictorios; filtro no modifica perfil del catalogo',async()=>{
+ const secret='test-secret-for-encryption-not-real-32',encrypted=await encryptApiKey('synthetic-provider-key',secret);let request;
+ const ctx={url:'https://fixture.invalid',serviceRoleKey:'synthetic',readEnv:k=>k==='PROSPECTING_SECRET_ENCRYPTION_KEY'?secret:undefined,fetcher:async u=>{
+  if(String(u).includes('prospecting_ai_integrations'))return json([{status:'verified',models:['deepseek-flash'],api_key_encrypted:encrypted}]);
+  if(String(u).includes('market_extraction_policy'))return json([{choice:choice.choice,revision:1}]);throw Error('unexpected');
+ }};
+ const original=ctx.fetcher;ctx.fetcher=async(u,o)=>{if(String(u).includes('/anthropic/')){request=JSON.parse(o.body);return json({content:[payload.content[0],{type:'web_search_tool_result',content:[]}]});}return original(u,o);};
+ const rpc=async(_,args)=>args.p_action==='status'?{web_search_supported:true}:args.p_action==='reserve'?{created:true,ticket:id}:{result:args.p_data.result};
+ const result=await marketSearch({id,revision:1,sku:'LX-36575',title:'Balanza Digital 100Kg',description:'Para alimentos, paqueteria y equipaje',brand:'Climactiva'},ctx,rpc,actor);
+ const input=JSON.parse(request.messages[0].content);assert.match(input.product,/100 kg.*climatizacion.*refrigeracion/);assert.doesNotMatch(input.description,/alimentos|paqueteria|equipaje/);assert.match(request.system,/Todas las consultas deben incluir 100 kg/);
+ assert.equal(result.result.product_profile.description,'Para alimentos, paqueteria y equipaje');assert.match(result.result.search_restriction,/No confirma uso para refrigerantes/);
+});

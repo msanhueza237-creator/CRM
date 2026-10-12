@@ -71,3 +71,25 @@ test('Reader .cl nunca sigue redirecciones ni acepta una respuesta ya redirigida
  const response=new Response(structured(product),{headers:{'content-type':'text/html'}});Object.defineProperty(response,'url',{value:'https://evil.com/producto'});Object.defineProperty(response,'redirected',{value:true});
  await assert.rejects(fetchPublicProduct(url,async()=>response,true),/redirige/);
 });
+
+test('Sector se acredita con taxonomia de la ficha o declaracion comercial, no keyword en relacionados',()=>{
+ const source='https://hvac.cl/balanza',p={...product,name:'Balanza 100 kg',description:'Uso en refrigeracion'};
+ const html=structured(p),scope=h=>facts(h,source).commercial_sector;
+ assert.equal(scope(html),null);
+ assert.equal(scope(html.replace('</body>','<aside>Somos tienda de refrigeracion</aside></body>')),null);
+ const add=data=>html.replace('</body>','<script type="application/ld+json">'+JSON.stringify(data)+'</script></body>');
+ const breadcrumb={ '@type':'BreadcrumbList',itemListElement:[{position:1,name:'Refrigeración',item:'https://hvac.cl/refrigeracion'},{position:2,name:'Balanza 100 kg',item:source}]};
+ assert.equal(scope(add(breadcrumb)).label,'Refrigeración');
+ assert.equal(scope(add({...breadcrumb,itemListElement:[breadcrumb.itemListElement[0],{...breadcrumb.itemListElement[1],item:'https://hvac.cl/otro'}]})),null);
+ assert.equal(scope(add({'@type':'Organization',url:'https://hvac.cl',description:'Tienda de herramientas de refrigeracion'})).url,'https://hvac.cl/');
+ assert.equal(scope(add({'@type':'Organization',url:'https://otro.cl',description:'Tienda de herramientas de refrigeracion'})),null);
+ assert.throws(()=>scope(add({'@type':'Product',name:'Otro producto refrigeracion'})),/varios productos/);
+});
+
+test('Sector por portada: consulta extra solo para restriccion; robots y redirecciones se respetan',async()=>{
+ const html=structured(product),home='<html><head><meta name="description" content="Venta online de aire acondicionado y refrigeracion en Chile"></head></html>';
+ let calls=[];const fetcher=async(u,init)=>{calls.push(String(u));assert.equal(init.redirect,'manual');return String(u).endsWith('robots.txt')?new Response('User-agent: *'):new Response(String(u)==='https://tienda.cl/'?home:html,{headers:{'content-type':'text/html'}});};
+ const result=await fetchPublicProduct(url,fetcher,true,true);assert.equal(JSON.parse(result.text.split('\n')[0]).commercial_sector.url,'https://tienda.cl/');assert.equal(calls.length,3);
+ calls=[];await fetchPublicProduct(url,fetcher,true);assert.equal(calls.length,2);
+ calls=[];const denied=await fetchPublicProduct(url,async(u,init)=>String(u).endsWith('robots.txt')?new Response('User-agent: *\nDisallow: /$'):fetcher(u,init),true,true);assert.equal(JSON.parse(denied.text.split('\n')[0]).commercial_sector,null);assert.deepEqual(calls,[url]);
+});

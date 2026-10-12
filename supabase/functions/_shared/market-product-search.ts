@@ -25,12 +25,13 @@ type Feature = { kind: string; value: number; label: string };
 export function productFeatures(text: string): Feature[] {
   const result: Feature[] = [];
   const input = searchText(text).replace(/\b(\d+)\s*\/\s*(\d+)\s*(?:pulgadas?|pulg\.?|inches?|["\u2033])/g, (_m, a, b) => `${Number(a) / Number(b)} pulgadas`);
-  const pattern = /\b(\d+(?:[.,]\d+)?)\s*(pulgadas?|pulg\.?|inches?|["\u2033]|mm|cm|m|voltios?|volts?|v|kw|w|hz|btu(?:\/h)?|cfm|l\/min|l\/h)(?![a-z])/g;
+  const pattern = /\b(\d+(?:[.,]\d+)?)\s*(pulgadas?|pulg\.?|inches?|["\u2033]|mm|cm|m|voltios?|volts?|v|kw|w|hz|btu(?:\/h)?|cfm|l\/min|l\/h|kilogramos?|kilos?|kg|gramos?|g)(?![a-z])/g;
   for (const m of input.matchAll(pattern)) {
     const n = Number(m[1].replace(',', '.')), unit = m[2];
     const length = /^(?:pulg|inch|["\u2033]|mm|cm|m$)/.test(unit);
-    const kind = length ? 'medida' : /^(?:v|volt)/.test(unit) ? 'voltaje' : /^(?:k?w)$/.test(unit) ? 'potencia' : unit;
-    const value = n * (length ? unit === 'mm' ? 1 : unit === 'cm' ? 10 : unit === 'm' ? 1000 : 25.4 : unit === 'kw' ? 1000 : 1);
+    const mass = /^(?:kilogramos?|kilos?|kg|gramos?|g)$/.test(unit);
+    const kind = mass ? 'masa' : length ? 'medida' : /^(?:v|volt)/.test(unit) ? 'voltaje' : /^(?:k?w)$/.test(unit) ? 'potencia' : unit;
+    const value = n * (mass ? /^(?:gramos?|g)$/.test(unit) ? 0.001 : 1 : length ? unit === 'mm' ? 1 : unit === 'cm' ? 10 : unit === 'm' ? 1000 : 25.4 : unit === 'kw' ? 1000 : 1);
     result.push({ kind, value: Math.round(value * 10000) / 10000, label: m[0] });
     if (result.length === 12) break;
   }
@@ -63,4 +64,30 @@ export function productSimilarity(name: string, sku: string, profile: MarketSear
   // Similarity is a discovery aid, not technical equivalence or a price approval.
   const similar = (common.length >= 2 || common.length === 1 && matched.length > 0) && common.length / terms.length >= 0.6;
   return { similar, conflicts, matched, missing, common };
+}
+
+// User-requested discovery scope, not a catalog attribute or equivalence approval.
+// Exact SKU only: capacity restrictions must never leak to other products.
+export function marketSearchRestriction(sku:string) {
+  return sku==='LX-36575'?{
+    query:'balanza digital capacidad 100 kg climatizacion refrigeracion',
+    description:'Contexto sectorial: Herramientas para Climatizacion. Criterio de busqueda solicitado: tiendas .cl de climatizacion o refrigeracion y capacidad de pesaje explicita de 100 kg. No confirma uso para refrigerantes, marca, modelo ni equivalencia.',
+    notice:'Filtro solicitado para LX-36575: tiendas .cl de climatización/refrigeración y capacidad de pesaje de 100 kg. La descripción histórica del catálogo menciona alimentos, paquetería y equipaje; esos usos no dirigirán esta búsqueda. Es una restricción de búsqueda, no una ficha técnica confirmada. Actualizar fuentes relee las URLs existentes; no descubre tiendas nuevas ni aprueba equivalencias.',
+  }:null;
+}
+
+// Only product-title or explicitly labelled weighing capacity qualifies. Shipping
+// weights, unrelated page copy, alternatives and ranges ending elsewhere do not.
+export function scaleCapacity100(title:string,description:string) {
+  const t=searchText(title),d=searchText(description);
+  const mass=/(\d+(?:[.,]\d+)?)\s*(kilogramos?|kilos?|kg|gramos?|g)(?![a-z])/g;
+  const values=(text:string)=>[...text.matchAll(mass)].map(m=>Number(m[1].replace(',','.'))*(/^(?:gramos?|g)$/.test(m[2])?.001:1));
+  const ambiguous=/(?:\d+(?:[.,]\d+)?\s*(?:kg|g)?\s*[-/–]\s*\d)|(?:\d+\s*(?:kg|kilogramos?)\s*(?:o|y)\s*\d)/;
+  const labelled=[...d.matchAll(/(?:capacidad(?:\s+(?:de\s+(?:pesaje|peso)|maxima|de\s+carga))?|peso\s+maximo|carga\s+maxima|rango\s+de\s+pesaje)\s*[:=]?\s*(?:hasta\s+)?(\d[^.;\n]{0,64})/g)].filter(m=>!/(?:relacionad|otros? productos?|otros? modelos?|tambien disponible|envio|embalaje)/.test(d.slice(Math.max(0,m.index-65),m.index))).map(m=>m[1]);
+  if(labelled.length){
+    const caps=labelled.flatMap(s=>{const range=s.match(/^0\s*(?:kg\s*)?(?:-|–|a)\s*(100\s*(?:kg|kilogramos?))/);return range?values(range[1]):ambiguous.test(s)?[NaN]:values(s).slice(0,1);});
+    if(caps.length)return caps.every(n=>n===100)&&values(t).every(n=>n===100)?labelled.join(' · ').slice(0,180):null;
+  }
+  const caps=values(t);
+  return /\bbalanza\b/.test(t)&&!/(?:envio|embalaje|paquete|peso\s+bruto)/.test(t)&&!ambiguous.test(t)&&caps.length===1&&caps[0]===100?title.slice(0,180):null;
 }

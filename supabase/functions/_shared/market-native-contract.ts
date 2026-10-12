@@ -16,13 +16,14 @@ export interface MarketWebOffer {
   match_reasons?:string[]; conflicts?:string[];
   vat_assumed?:boolean; package_assumed?:boolean; currency_assumed?:boolean;
   price_error?:string;
+  search_scope?:{eligible:boolean;sector:string|null;capacity_evidence:string|null};
 }
 export interface NativeStudyJob {
   id:string; sku:string; source_url:string; state:'running'|'completed'|'failed'|'unknown';
   created_at:string; finished_at:string|null; reserved_usd:number; estimated_usd:number|null;
   selection:{choice:string;provider:string;model:string};
   result:{attributes?:MarketAttribute[];text?:string;observed_at?:string;error?:string;
-    kind?:'market_search';product_title?:string;product_profile?:{description?:string;brand?:string};queries?:string[];offers?:MarketWebOffer[];
+    kind?:'market_search';product_title?:string;product_profile?:{description?:string;brand?:string};queries?:string[];offers?:MarketWebOffer[];search_restriction?:string;
     source_count?:number;coverage?:string;usage_note?:string;refreshed_at?:string;
     original_result?:NativeStudyJob['result'];refresh_batch?:string;source_policy?:'chile_cl_only'};
 }

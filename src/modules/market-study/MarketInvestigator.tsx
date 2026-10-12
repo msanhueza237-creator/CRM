@@ -25,7 +25,7 @@ import type {
 } from "../../../supabase/functions/_shared/market-study-contract";
 import type { MarketProduct } from "./marketMath";
 import { MarketComparison } from './MarketComparison';
-import { matchesMarketProduct, productNameQuery, publicProductDescription } from '../../../supabase/functions/_shared/market-product-search';
+import { matchesMarketProduct, productNameQuery, publicProductDescription, marketSearchRestriction } from '../../../supabase/functions/_shared/market-product-search';
 const label = {
   title: "Producto",
   brand: "Marca",
@@ -183,6 +183,7 @@ export function MarketInvestigator({
           </select>
         </label>
       </div>
+      {product&&marketSearchRestriction(product.sku)&&<p role="status" className="market-warning">{marketSearchRestriction(product.sku)!.notice}</p>}
       {product?.description&&<details className="market-muted"><summary>Descripción del producto</summary><p>{product.description}</p></details>}
       <details className="market-muted"><summary>Referencias conocidas</summary><div className="market-source-links" aria-label="Buscar en competidores">
         {MARKET_SITES.map((s) => (

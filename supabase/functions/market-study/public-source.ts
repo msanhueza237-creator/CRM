@@ -11,12 +11,45 @@ async function read(response:Response,max:number) {
   const bytes=new Uint8Array(length);let offset=0;for(const chunk of chunks){bytes.set(chunk,offset);offset+=chunk.length;}
   return new TextDecoder().decode(bytes);
 }
+// Merchant declarations and the current product's breadcrumb taxonomy qualify;
+// keywords in product descriptions, recommendations or arbitrary navigation do not.
+function commercialSector(document:Document,records:Record<string,unknown>[],sourceUrl?:string) {
+  if(!sourceUrl)return null;
+  const source=new URL(sourceUrl),norm=(s:unknown)=>String(s||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/\s+/g,' ').trim();
+  const same=(value:unknown)=>{try{const u=new URL(String(value),source);return u.protocol==='https:'&&u.hostname===source.hostname&&!u.username&&!u.password?u:null;}catch{return null;}};
+  const sector=(label:unknown)=>/^(?:(?:herramientas|equipos|repuestos|accesorios)(?: para| de)? )?(?:refrigeracion|climatizacion|aire acondicionado)(?: y (?:refrigeracion|climatizacion|aire acondicionado))?$/.test(norm(label));
+  const current=(value:unknown)=>{const u=same(value);return !!u&&u.pathname.replace(/\/$/,'')===source.pathname.replace(/\/$/,'');};
+  if(source.pathname==='/'){
+    const description=document.querySelector('meta[name="description"]')?.getAttribute('content')||'';
+    if(/\b(?:venta|vendemos|distribuidor|distribuidora|comercializacion|comercializamos|tienda)\b/.test(norm(description))&&/\b(?:refrigeracion|climatizacion|aire acondicionado)\b/.test(norm(description))&&!/\b(?:no|sin|excepto)\b/.test(norm(description)))return {label:description.slice(0,250),url:source.href,evidence:'Declaracion comercial en portada de la tienda'};
+  }
+  for(const r of records){
+    if([r['@type']].flat().includes('BreadcrumbList')&&Array.isArray(r.itemListElement)){
+      const items=r.itemListElement.filter(v=>v&&typeof v==='object') as Record<string,unknown>[];
+      const item=(v:Record<string,unknown>)=>v.item&&typeof v.item==='object'?v.item as Record<string,unknown>:{};
+      const url=(v:Record<string,unknown>)=>typeof v.item==='string'?v.item:item(v)['@id']||item(v).url;
+      const last=items.at(-1);
+      if(last&&current(url(last)))for(const v of items.slice(0,-1)){const label=v.name||item(v).name,u=same(url(v));if(u&&sector(label))return {label:String(label).slice(0,160),url:u.href,evidence:'Categoria comercial de la ficha actual'};}
+    }
+    if([r['@type']].flat().some(t=>['Organization','Store','LocalBusiness'].includes(String(t)))){
+      const u=same(r.url),description=String(r.description||'');
+      if(u&&/\b(?:venta|vendemos|distribuidor|distribuidora|comercializacion|comercializamos|tienda)\b/.test(norm(description))&&/\b(?:refrigeracion|climatizacion|aire acondicionado)\b/.test(norm(description))&&!/\b(?:no|sin|excepto)\b/.test(norm(description)))return {label:description.slice(0,200),url:u.href,evidence:'Declaracion comercial de la tienda en datos estructurados'};
+    }
+  }
+  const heading=norm(document.querySelector('h1')?.textContent);
+  for(const crumb of document.querySelectorAll('[class*="breadcrumb"],[aria-label="breadcrumb"],[aria-label="Breadcrumb"]')){
+    if(!heading||!norm(crumb.textContent).endsWith(heading))continue;
+    for(const a of crumb.querySelectorAll('a[href]')){const u=same(a.getAttribute('href'));if(u&&sector(a.textContent))return {label:a.textContent?.trim(),url:u.href,evidence:'Ruta de categoria comercial de la ficha actual'};}
+  }
+  return null;
+}
 export function productText(html:string,sourceUrl?:string) {
   const {document}=parseHTML(html) as {document:Document};
-  const products:Record<string,unknown>[]=[];
+  const products:Record<string,unknown>[]=[],records:Record<string,unknown>[]=[];
   const visit=(value:unknown,depth=0)=>{if(depth>12||!value||typeof value!=='object')return;if(Array.isArray(value)){value.forEach(v=>visit(v,depth+1));return;}
-    const r=value as Record<string,unknown>;if([r['@type']].flat().includes('Product'))products.push(r);else if(r['@graph'])visit(r['@graph'],depth+1);};
+    const r=value as Record<string,unknown>;records.push(r);if([r['@type']].flat().includes('Product'))products.push(r);else if(r['@graph'])visit(r['@graph'],depth+1);};
   for(const node of document.querySelectorAll('script[type="application/ld+json"]')){try{visit(JSON.parse(node.textContent||''));}catch{/* Invalid metadata is not evidence. */}}
+  const commercial_sector=commercialSector(document,records,sourceUrl);
   if(products.length>1)throw new Error('La pagina contiene varios productos. Selecciona una ficha individual.');
   const structuredOffer=products.length===1?(isMarketplaceSource(sourceUrl)?marketplaceOffer(document,products[0],sourceUrl):singleOffer(products[0])):null;
   for(const node of document.querySelectorAll('script,style,nav,header,footer,form,aside,iframe,button,[hidden],[aria-hidden="true"]'))node.remove();
@@ -27,7 +60,7 @@ export function productText(html:string,sourceUrl?:string) {
     const p=products[0];
     if(!structuredOffer)throw new Error('Hay variantes o precios multiples; requiere revision manual.');
     const offer=structuredOffer,brand=p.brand&&typeof p.brand==='object'?(p.brand as Record<string,unknown>).name:p.brand;
-    const facts={title:clean(p.name).slice(0,160),brand:clean(brand).slice(0,120),model:clean(p.model).slice(0,120),sku:clean(p.sku).slice(0,120),
+    const facts={commercial_sector,title:clean(p.name).slice(0,160),brand:clean(brand).slice(0,120),model:clean(p.model).slice(0,120),sku:clean(p.sku).slice(0,120),
       price:offer.price,currency:offer.priceCurrency,availability:offer.availability,priceIncludesTax:offer.valueAddedTaxIncluded,singleProduct:true,description:clean(p.description).slice(0,3000),priceEvidence:offer.priceEvidence};
     const taxLines=(main?.textContent||'').split(/\n/).map(s=>s.trim()).filter(s=>s.length<180&&/\bIVA\b|impuesto|por unidad|pack de/i.test(s)).slice(0,6);
     return JSON.stringify(facts)+'\n'+taxLines.join('\n');
@@ -37,7 +70,7 @@ export function productText(html:string,sourceUrl?:string) {
   const commerce=commerceProduct(document,sourceUrl);
   if(commerce){
     const taxLines=(main.textContent||'').split(/\n/).map(s=>s.trim()).filter(s=>s.length<180&&/\bIVA\b|impuesto|por unidad/i.test(s)).slice(0,6);
-    return JSON.stringify(commerce)+'\n'+taxLines.join('\n');
+    return JSON.stringify({...commerce,commercial_sector})+'\n'+taxLines.join('\n');
   }
   const meta=(key:string)=>document.querySelector(`meta[property="${key}"],meta[name="${key}"]`)?.getAttribute('content');
   const nodes=[...main.querySelectorAll('[itemprop="price"]')];
@@ -46,7 +79,7 @@ export function productText(html:string,sourceUrl?:string) {
   const isProduct=meta('og:type')?.includes('product')||document.querySelector('[itemtype$="schema.org/Product"]');
   if(price&&currency&&isProduct){
     const taxLines=(main.textContent||'').split(/\n/).map(s=>s.trim()).filter(s=>s.length<180&&/\bIVA\b|impuesto|por unidad|pack de/i.test(s)).slice(0,6);
-    return JSON.stringify({title:headings[0].textContent?.trim(),price,currency,singleProduct:true})+'\n'+taxLines.join('\n');
+    return JSON.stringify({commercial_sector,title:headings[0].textContent?.trim(),price,currency,singleProduct:true})+'\n'+taxLines.join('\n');
   }
   // OpenCart product detail: scope to the title/cart block, never related cards.
   if(cartContext&&sourceUrl&&new URL(sourceUrl).hostname.endsWith('.cl')){
@@ -56,7 +89,7 @@ export function productText(html:string,sourceUrl?:string) {
     if(prices.length===1&&net&&!/US\$|\bUSD\b/.test(context)){
       const gross=integer(prices[0]),netPrice=integer(net[1]);
       if(gross>0&&netPrice>0&&Math.abs(gross-netPrice*1.19)<=1.5){
-        return JSON.stringify({title:heading?.textContent?.trim(),price:gross,currency:'CLP',currencyAssumed:true,priceIncludesTax:true,singleProduct:true,
+        return JSON.stringify({commercial_sector,title:heading?.textContent?.trim(),price:gross,currency:'CLP',currencyAssumed:true,priceIncludesTax:true,singleProduct:true,
           availability:/sin\s+stock|agotado/i.test(context)?'https://schema.org/OutOfStock':/stock\s+disponible/i.test(context)?'https://schema.org/InStock':null,
           priceEvidence:prices[0],netEvidence:net[0]})+'\nIVA 19% conciliado entre precio publicado y neto. CLP supuesto por ficha chilena en pesos.';
       }
@@ -66,7 +99,7 @@ export function productText(html:string,sourceUrl?:string) {
   if(new TextEncoder().encode(text).length>20000)throw new Error('La ficha contiene demasiada informacion; no se enviara una lectura parcial.');
   return text;
 }
-export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch,openMarket=false) {
+export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch,openMarket=false,requireSector=false) {
   const url=openMarket?publicProductUrl(value):marketSite(value).url,signal=AbortSignal.timeout(openMarket?8000:16000);
   if(openMarket&&!url.hostname.endsWith('.cl'))throw new Error('Fuente excluida: dominio fuera de .cl; estudio limitado a Chile.');
   const get=async(target:string)=>{
@@ -91,5 +124,24 @@ export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch
   if(!/^text\/html(?:;|$)/i.test(response.headers.get('content-type')||'')){await response.body?.cancel();throw new Error('La fuente no es una pagina de producto HTML.');}
   const html=await read(response,1500000);
   if(/cf-chl-|verify you are human|access denied|<title>[^<]*(?:captcha|just a moment)/i.test(html))throw new Error('El sitio solicita una verificacion humana. Consulta detenida.');
-  return {text:productText(html,url.href),observed_at:new Date().toISOString()};
+  let text=productText(html,url.href);
+  if(requireSector){
+    let facts:Record<string,unknown>|null=null;try{facts=JSON.parse(text.split('\n')[0]);}catch{/* No structured product price. */}
+    if(facts&&!facts.commercial_sector){
+      const home=url.origin+'/';
+      if(parser.isAllowed(home,agent)!==false){
+        if(delay>0)await new Promise(r=>setTimeout(r,delay*1000));
+        const response=await get(home);
+        if(response.ok&&/^text\/html(?:;|$)/i.test(response.headers.get('content-type')||'')){
+          const html=await read(response,1500000);
+          if(!/cf-chl-|verify you are human|access denied|<title>[^<]*(?:captcha|just a moment)/i.test(html)){
+            const {document}=parseHTML(html) as {document:Document};
+            facts.commercial_sector=commercialSector(document,[],home);
+            text=JSON.stringify(facts)+'\n'+text.split('\n').slice(1).join('\n');
+          }
+        }else await response.body?.cancel();
+      }
+    }
+  }
+  return {text,observed_at:new Date().toISOString()};
 }
