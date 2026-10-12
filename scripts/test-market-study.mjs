@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { previewMarketImport, normalizeMarketObservation, normalizeMarketReview, assertMarketAccess } from '../supabase/functions/_shared/market-study-contract.ts';
-import { toNetClp, discountScenario, compareProduct, marketTopTen, marketTarget } from '../src/modules/market-study/marketMath.ts';
+import { toNetClp, discountScenario, compareProduct, marketTopTen, marketTarget, marketTargetReferences } from '../src/modules/market-study/marketMath.ts';
 import { marketProducts } from '../src/modules/market-study/marketSources.ts';
 const now=Date.parse('2026-10-02T12:00:00Z'),at='2026-10-01T12:00:00Z',id='11111111-1111-4111-8111-111111111111';
 const observation=(patch={})=>({provider:'synthetic',external_id:'offer-1',revision:1,product_label:'Bomba sintética',suggested_sku:'SYN-01',seller:'Competidor sintético',seller_kind:'competitor',amount:142800,currency:'CLP',vat_basis:'gross',vat_percent:19,unit:'unit',package_quantity:1,presentation:'Unidad',availability:'available',source_url:'https://example.test/offer',observed_at:at,confidence:.9,fx:null,notes:'Dato sintético, no investigación real.',...patch});
@@ -95,4 +95,26 @@ test('Perfil de busqueda conserva descripcion publica, no costos ni notas privad
  const data={inventory:[{sku:'SYN',name:'Difusor circular',description:'Aluminio 10 pulgadas. Costo: 19000 CLP',brand:'Ejemplo',unit_cost:19000}],imports:[{operation:{id:'op',inventory_mode:'future',status:'transit'},scenarios:[],costs:[],lines:[{id:'line',sku:'SYN',product_name:'Difusor circular',description:'Con regulacion de caudal; EXW 4 USD',quantity:10,notes:'privado'}]}]};
  const [current,incoming]=marketProducts(data);
  assert.equal(current.description,'Aluminio 10 pulgadas.');assert.equal(incoming.description,'Con regulacion de caudal');assert.equal(current.brand,'Ejemplo');assert.equal(incoming.brand,'Ejemplo');assert.equal(current.cost,19000);
+});
+
+
+test('Objetivo incorpora equivalencia humana aunque el codigo de la tienda sea distinto; no inventa precios',()=>{
+ const o=stored(),r=review();
+ const web={url:o.payload.source_url,seller:o.payload.seller,title:'Bomba con otro codigo',observed_at:at,amount:142800,currency:'CLP',vat:'gross',vat_percent:19,package_quantity:1,availability:'available',identity:'similar'};
+ const job={sku:product().sku,state:'completed',result:{offers:[web]}};
+ assert.equal(marketTargetReferences(product(),job,[],[],now).references.length,0);
+ const confirmed=marketTargetReferences(product(),job,[o],[r],now);
+ assert.equal(confirmed.references[0].net,120000);assert.equal(confirmed.usesReviewed,true);
+ assert.equal(confirmed.references[0].url,o.payload.source_url);assert.equal(confirmed.references[0].observed_at,at);
+ assert.equal(marketTargetReferences(product(),null,[o],[r],now).references[0].net,120000);
+ for(const patch of [{decision:'pending'},{decision:'rejected'},{equivalence_confirmed:false},{sku:'OTHER'}])assert.equal(marketTargetReferences(product(),job,[o],[review(patch)],now).references.length,0);
+ for(const patch of [{amount:null},{amount:0},{currency:'USD'},{vat_basis:'unknown'},{package_quantity:null},{availability:'unavailable'},{observed_at:'2020-01-01'}])assert.equal(marketTargetReferences(product(),job,[stored(patch)],[r],now).references.length,0);
+ assert.equal(marketTargetReferences(product(),job,[o,{...stored({revision:2}),id:'new'}],[r],now).references.length,0);
+});
+test('Objetivo provisional no revive rechazos, fallos, ofertas antiguas ni otros productos',()=>{
+ const o=stored(),web={url:o.payload.source_url,seller:o.payload.seller,observed_at:at,amount:11900,currency:'CLP',vat:'gross',vat_percent:19,package_quantity:1,availability:'available',identity:'model_match'};
+ const job={sku:product().sku,state:'completed',result:{offers:[web]}};
+ assert.equal(marketTargetReferences(product(),job,[],[],now).references[0].net,10000);
+ for(const patch of [{decision:'rejected'},{decision:'pending'}])assert.equal(marketTargetReferences(product(),job,[o],[review(patch)],now).references.length,0);
+ for(const patch of [{sku:'OTHER'},{state:'unknown'},{result:{offers:[{...web,observed_at:'2020-01-01'}]}},{result:{offers:[{...web,observed_at:'2099-01-01'}]}}])assert.equal(marketTargetReferences(product(),{...job,...patch},[],[],now).references.length,0);
 });

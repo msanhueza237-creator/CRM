@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import {PGlite} from '@electric-sql/pglite';
 import {publicProductUrl} from '../supabase/functions/_shared/market-native-contract.ts';
 import {publicIPv4,publicFetch} from '../supabase/functions/market-study/public-network.ts';
-import {searchSources,webOffer,marketSearch,refreshMarketSources} from '../supabase/functions/market-study/market-search.ts';
+import {searchProviderError,searchSources,webOffer,marketSearch,refreshMarketSources} from '../supabase/functions/market-study/market-search.ts';
 import {productText} from '../supabase/functions/market-study/public-source.ts';
 import {encryptApiKey} from '../supabase/functions/prospecting-integrations/deepseek.ts';
 import {matchesMarketProduct,productFeatures,productNameQuery,publicProductDescription} from '../supabase/functions/_shared/market-product-search.ts';
@@ -147,4 +147,28 @@ test('Filtro local por palabras sin acentos, descripcion y SKU secundario; medid
  assert.equal(productFeatures('10 pulgadas')[0].value,productFeatures('254 mm')[0].value);
  assert.equal(productFeatures('1/2 pulgadas')[0].value,12.7);
  assert.equal(publicProductDescription('Aluminio.\nCosto: 19000 CLP; margen:30%; token=abc; EXW 4.50; https://privado.test; ventas@local.cl'),'Aluminio.');
+});
+
+
+test('Errores de proveedor son observables sin cuerpos privados; fallo parcial no es exito vacio',()=>{
+ for(const [status,pattern] of [[401,/credencial/],[403,/permisos/],[402,/saldo/],[429,/limite.*cuota/],[400,/herramienta/],[503,/no disponible/]])assert.match(searchProviderError(status),pattern);
+ assert.throws(()=>searchSources({content:[{type:'text',text:'El precio es 123'}]}),/no ejecuto web_search/);
+ assert.throws(()=>searchSources({content:[...payload.content,{type:'web_search_tool_result',content:{type:'web_search_tool_result_error',error_code:'rate_limit_exceeded'}}]}),/herramienta web_search fallo/);
+ assert.deepEqual(searchSources({content:[payload.content[0],{type:'web_search_tool_result',content:[]}]}).sources,[]);
+});
+
+test('Fallo HTTP persiste diagnostico controlado, conserva reserva y no consulta fichas ni reintenta',async()=>{
+ const secret='synthetic-encryption-secret-32-chars',encrypted=await encryptApiKey('synthetic-only',secret);
+ for(const status of [401,402,429,503]){
+  let calls=0,finish;
+  const ctx={url:'https://fixture.invalid',serviceRoleKey:'synthetic',readEnv:k=>k==='PROSPECTING_SECRET_ENCRYPTION_KEY'?secret:undefined,fetcher:async u=>{
+   if(String(u).includes('prospecting_ai_integrations'))return json([{status:'verified',models:['deepseek-flash'],api_key_encrypted:encrypted}]);
+   if(String(u).includes('market_extraction_policy'))return json([{choice:choice.choice,revision:1}]);
+   if(String(u).includes('/anthropic/')){calls++;return new Response('private-upstream-diagnostic-do-not-expose',{status});}
+   throw Error('Unexpected request');
+  }};
+  const rpc=async(_name,args)=>{if(args.p_action==='status')return {web_search_supported:true};if(args.p_action==='reserve')return {created:true,ticket:id};if(args.p_action==='finish'){finish=args.p_data;return finish;}};
+  await marketSearch({id,sku:'HT816',title:'Termostato',revision:1},ctx,rpc,actor,async()=>{throw Error('Source reader must not run');});
+  assert.equal(calls,1);assert.equal(finish.state,'unknown');assert.equal(finish.cost,null);assert.equal(finish.result.offers,undefined);assert.match(finish.result.error,new RegExp(String(status)));assert.doesNotMatch(finish.result.error,/private-upstream/);
+ }
 });

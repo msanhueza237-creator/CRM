@@ -11,8 +11,8 @@ const choice='deepseek:deepseek-flash',now=new Date().toISOString();
 const settings={enabled:true,web_search_supported:true,daily_usd:2.5,daily_jobs:10,spent_usd:0,jobs_today:0,selection:{choice,revision:1},choices:[{choice,provider:'deepseek',model:'deepseek-flash'}],jobs:[]};
 const offer=(seller,amount,extra={})=>({url:`https://${seller}/ht816`,seller,title:'Termostato HT-816',amount,currency:'CLP',vat:'gross',vat_percent:19,package_quantity:1,availability:'available',identity:'model_match',observed_at:now,evidence:'Precio por unidad con IVA 19%',warning:'Equivalencia tecnica pendiente',...extra});
 const offers=[offer('nuevo-oferente.cl',23800),offer('precio-menor.cl',17850),offer('sin-datos.cl',null,{currency:null,vat:'unknown',package_quantity:null,identity:'possible',price_error:'Enlace de producto no disponible (HTTP 404).'}),offer('internacional.com',9,{currency:'USD'}),offer('similar.cl',1190,{identity:'similar',title:'Termostato digital otro codigo',match_reasons:['Nombre/descripcion: termostato, digital.']}),offer('diferente.cl',2380,{identity:'different',title:'Termostato 110 V',conflicts:['voltaje: 220 V / 110 V']})];
-const calls=[],errors=[],unexpected=[];
-const browser=await chromium.launch({headless:true,channel:'chrome'}),context=await browser.newContext({viewport:{width:1280,height:1000},serviceWorkers:'block'});
+const calls=[],errors=[],unexpected=[];let observations=[],reviews=[];
+const browser=await chromium.launch({headless:true,...(process.env.CHROME_PATH?{executablePath:process.env.CHROME_PATH}:{channel:'chrome'})}),context=await browser.newContext({viewport:{width:1280,height:1000},serviceWorkers:'block'});
 await context.route('**/*',async route=>{
  const req=route.request(),u=new URL(req.url());if(u.origin!=='https://fixture.invalid'){unexpected.push(u.href);return route.abort();}
  if(u.pathname==='/app')return route.fulfill({contentType:'text/html',body:'<html lang="es"><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div></html>'});
@@ -20,7 +20,7 @@ await context.route('**/*',async route=>{
  if(u.pathname.endsWith('/native-settings'))response=settings;
  else if(u.pathname.endsWith('/search')){const p=req.postDataJSON();assert.deepEqual(Object.keys(p).sort(),p.description?['description','id','revision','sku','title']:['id','revision','sku','title']);if(p.description)assert.equal(p.description,'Regulación digital de temperatura 220 V');assert.equal(p.sku,'HT816');assert.equal(p.title,'Termostato HT-816');const j={id:p.id,sku:p.sku,source_url:'https://www.google.com/search?q=HT816',state:'completed',selection:{choice,model:'deepseek-flash'},reserved_usd:.25,estimated_usd:null,created_at:now,result:{kind:'market_search',offers,queries:['HT816 precio Chile'],coverage:'Web indexada, no censo exhaustivo.'}};settings.jobs=[j];settings.spent_usd=.25;settings.jobs_today=1;response=j;}
  else if(u.pathname.endsWith('/sources/refresh')){const p=req.postDataJSON();assert.deepEqual(Object.keys(p),['id']);const job=settings.jobs.find(j=>j.id===p.id);assert.ok(job);response={...job,result:{...job.result,refreshed_at:now,offers:job.result.offers.map(o=>o.seller==='sin-datos.cl'?offer('sin-datos.cl',115000):o)}};}
- else if(u.pathname.endsWith('/bootstrap'))response={observations:[],reviews:[],inventory:[{sku:'OTHER',name:'Otro producto'},{sku:'HT816',name:'Termostato HT-816',description:'Regulación digital de temperatura 220 V',net_price:20000,price_currency:'CLP'}],inventoryAvailable:true,imports:[],importsComplete:true,inventoryWarnings:[],warnings:[],readAt:now};
+ else if(u.pathname.endsWith('/bootstrap'))response={observations,reviews,inventory:[{sku:'OTHER',name:'Otro producto'},{sku:'HT816',name:'Termostato HT-816',description:'Regulación digital de temperatura 220 V',net_price:20000,price_currency:'CLP'}],inventoryAvailable:true,imports:[],importsComplete:true,inventoryWarnings:[],warnings:[],readAt:now};
  else{unexpected.push(u.pathname);return route.abort();}
  return route.fulfill({contentType:'application/json',body:JSON.stringify(response)});
 });
@@ -65,6 +65,26 @@ try{
  await updateBudget(0,0);assert.equal(await searchButton.isDisabled(),false);
  settings.jobs=[{id:'running-fixture',state:'running',sku:'HT816',created_at:now,source_url:'https://fixture.invalid/product',selection:{model:'deepseek-flash'},result:{},reserved_usd:.25}];
  await page.getByRole('button',{name:'Actualizar historial',exact:true}).click();await page.getByText('Consultando',{exact:true}).waitFor();assert.equal(await searchButton.isDisabled(),true);
- assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);await fs.writeFile(path.join(output,'results.json'),JSON.stringify({passed:true,network:'mocked',checks:['automatic search without URL','unknown competitor domain','current and incoming costs','sorting and filtering','currency isolation','no automatic price changes or equivalence approval','320/390/1280 layout','URL product selection preserved']},null,2));
+
+ // Regression: the page must pass saved observations and human reviews through
+ // the investigator into the target comparison, even with a different SKU.
+ const similar=offers.find(o=>o.identity==='similar');
+ settings.jobs=[{id:'reviewed-study',state:'completed',sku:'HT816',created_at:now,source_url:'https://www.google.com/search?q=termostato',selection:{model:'deepseek-flash'},result:{kind:'market_search',offers:[similar]},reserved_usd:.25}];
+ await mount(true);await page.getByText('1 de 1 fuentes tienen precio publicado, pero ninguna cumple la base de comparacion.',{exact:false}).waitFor();
+ const targetRegion=page.getByRole('region',{name:'Precio de mercado objetivo'});
+ assert.match(await targetRegion.innerText(),/0 ofertas con base comparable/);
+ observations=[{id:'reviewed-observation',created_at:now,payload:{provider:'crm-native',external_id:'reviewed-study-0',revision:1,suggested_sku:'HT816',product_label:similar.title,seller:similar.seller,seller_kind:'competitor',amount:1190,currency:'CLP',vat_basis:'gross',vat_percent:19,unit:'unit',package_quantity:1,availability:'available',source_url:similar.url,observed_at:now,confidence:.9,fx:null}}];
+ reviews=[{id:'human-review',observation_id:'reviewed-observation',created_at:now,payload:{product_key:'current:HT816',sku:'HT816',decision:'approved',equivalence_confirmed:true,cost_basis_confirmed:true,unit:'unit',internal_quantity:1,internal_fx:null}}];
+ await mount(true);await targetRegion.getByText('Fuentes revisadas del objetivo').waitFor();
+ assert.match(await targetRegion.innerText(),/1\.000/);assert.match(await targetRegion.innerText(),/1 ofertas con base comparable/);assert.match(await page.getByRole('row').filter({hasText:'similar.cl'}).innerText(),/Equivalencia revisada/);
+ for(const width of [1280,390,320]){await page.setViewportSize({width,height:950});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));await page.screenshot({path:path.join(output,`reviewed-${width}.png`),fullPage:true});}
+ reviews[0].payload.decision='rejected';await mount(true);await targetRegion.getByText('0 ofertas con base comparable',{exact:false}).waitFor();
+ observations=[];reviews=[];settings.jobs[0]={...settings.jobs[0],state:'unknown',result:{kind:'market_search',error:'Busqueda DeepSeek: limite de solicitudes o cuota (HTTP 429).'}};
+ await mount(true);await targetRegion.getByText('La busqueda no se completo:',{exact:false}).waitFor();
+ assert.match(await targetRegion.innerText(),/HTTP 429/);assert.equal(await page.getByText('La busqueda no encontro fichas publicas verificables para este producto.',{exact:true}).count(),0);
+ assert.equal(await page.getByRole('button',{name:'Actualizar fuentes',exact:true}).count(),0);
+ for(const width of [1280,390,320]){await page.setViewportSize({width,height:950});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));}
+ assert.equal(calls.some(c=>c.route.includes('/imports/commit')||c.route.endsWith('/reviews')),false);
+ assert.deepEqual(errors,[]);assert.deepEqual(unexpected,[]);await fs.writeFile(path.join(output,'results.json'),JSON.stringify({passed:true,network:'mocked',checks:['automatic search without URL','unknown competitor domain','current and incoming costs','sorting and filtering','currency isolation','no automatic price changes or equivalence approval','320/390/1280 layout','URL product selection preserved','approved similar offer reaches objective','rejected offer excluded','failed search is not empty success']},null,2));
  console.log('PASS automatic market search and comparative table, desktop/mobile');
 }finally{await browser.close();}

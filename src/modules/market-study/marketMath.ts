@@ -1,4 +1,5 @@
 import Decimal from 'decimal.js';
+import type { NativeStudyJob } from '../../../supabase/functions/_shared/market-native-contract';
 import type { MarketFx, MarketObservation, MarketReview, StoredMarketObservation } from '../../../supabase/functions/_shared/market-study-contract';
 export interface MarketProduct {
  key:string;sku:string;name:string;description?:string;brand?:string;mode:'current'|'transit';stock:number|null;stockAt:string|null;eta:string|null;
@@ -85,4 +86,23 @@ export function marketTopTen(products:MarketProduct[],observations:StoredMarketO
  const considered=products.filter(p=>mode==='all'||p.mode===mode).map(p=>compareProduct({...p,notices:[...p.notices,...((keys.get(p.key)||0)>1?['Identidad interna duplicada.']:[])]},observations,reviews,now));
  const rows=considered.filter(r=>r.score!==null).sort((a,b)=>b.score!-a.score!||b.margin!-a.margin!||a.product.key.localeCompare(b.product.key)).slice(0,10);
  return {rows,considered,eligible:considered.filter(r=>r.score!==null).length,total:considered.length,generatedAt:new Date(now).toISOString(),criteria:MARKET_RULES};
+}
+
+// Reuse the reviewed comparison pipeline. A saved observation supersedes the
+// unreviewed search snapshot, including pending/rejected or newer revisions.
+export function marketTargetReferences(product:MarketProduct,job:NativeStudyJob|null,observations:StoredMarketObservation[],reviews:MarketReview[],now=Date.now()) {
+ const reviewed=compareProduct(product,observations,reviews,now);
+ const latest=latestObservations(observations);
+ const approved=reviewed.comparable.map(o=>({url:o.observation.payload.source_url,seller:o.observation.payload.seller,observed_at:o.observation.payload.observed_at,net:o.netPerInternalUnit!,reviewed:true}));
+ const offers=job?.state==='completed'&&job.sku===product.sku?job.result.offers||[]:[];
+ const provisional=offers.filter(o=>!latest.some(r=>r.payload.source_url===o.url&&(r.payload.suggested_sku===product.sku||reviews.some(v=>v.observation_id===r.id&&v.payload.product_key===product.key))))
+  .filter(o=>o.identity==='model_match'&&o.package_quantity===1&&o.availability!=='unavailable'&&fresh(o.observed_at,MARKET_RULES.observationDays,now))
+  .map(o=>({...o,net:toNetClp(o.amount,o.currency,o.vat,o.vat_percent,null,now),reviewed:false}))
+  .filter((o):o is typeof o & {net:number}=>o.net!==null&&o.net>0);
+ // Prefer reviewed evidence when it exists; do not dilute it with candidates.
+ const candidates=approved.length?approved:provisional;
+ const bySeller=new Map<string,typeof candidates[number]>();
+ for(const o of candidates){const key=o.seller.trim().toLowerCase().replace(/^www\./,'');const previous=bySeller.get(key);if(!previous||o.observed_at>previous.observed_at)bySeller.set(key,o);}
+ const references=[...bySeller.values()].sort((a,b)=>a.net-b.net);
+ return {references,reviewed,usesReviewed:approved.length>0};
 }
