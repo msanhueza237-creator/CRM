@@ -5,9 +5,9 @@ import type { MarketProduct } from './marketMath.ts';
 import { known, fresh, MARKET_RULES } from './marketMath.ts';
 import { publicProductDescription } from '../../../supabase/functions/_shared/market-product-search.ts';
 export function marketProducts(data:MarketBootstrap):MarketProduct[]{
- const current:MarketProduct[]=data.inventory.map(p=>({key:`current:${p.sku}`,sku:p.sku,name:p.name,description:publicProductDescription(p.description),brand:publicProductDescription(p.brand,120),mode:'current',stock:known(p.stock)?p.stock:null,stockAt:p.stock_updated_at,eta:null,
+ const current:MarketProduct[]=data.inventory.map(p=>({key:`current:${p.sku}`,sku:p.sku,name:p.name,description:publicProductDescription(p.description),brand:publicProductDescription(p.brand,120),category:publicProductDescription(p.category,160),sourceUrl:p.product_url||undefined,mode:'current',stock:known(p.stock)?p.stock:null,stockAt:p.stock_updated_at,eta:null,
   price:p.net_price,priceCurrency:p.price_currency,priceAt:p.price_updated_at,cost:p.unit_cost??null,costCurrency:p.cost_currency??null,costAt:p.cost_updated_at??null,
-  costStatus:p.unit_cost!=null&&p.cost_currency?'recorded':'missing',costCurrencyAssumed:!p.cost_currency&&p.assumed_cost_currency==='CLP',costSource:'Facto: costo de producto registrado; no costo histórico de una venta.',path:`/dashboard?inventory_query=${encodeURIComponent(p.sku)}#inventario`,notices:[...(p.stock_warnings||[]),...(!p.cost_currency&&p.assumed_cost_currency==='CLP'?['Costo con moneda pendiente: simulacion en CLP segun moneda de venta; no confirmado.']:[])]}));
+  costStatus:p.unit_cost!=null&&p.cost_currency?'recorded':'missing',costCurrencyAssumed:!p.cost_currency&&p.assumed_cost_currency==='CLP',costSource:'Facto: costo de producto registrado; no costo histórico de una venta.',path:`/dashboard?inventory_query=${encodeURIComponent(p.sku)}#inventario`,notices:[...(p.stock_warnings||[]),...(p.catalog_conflicts||[]),...(!p.cost_currency&&p.assumed_cost_currency==='CLP'?['Costo con moneda pendiente: no se calcula margen hasta confirmar moneda y base del costo.']:[])]}));
  const incoming:MarketProduct[]=[];
  for(const detail of data.imports){
   const op=detail.operation;if(op.inventory_mode!=='future'||['received','closed','cancelled'].includes(op.status))continue;

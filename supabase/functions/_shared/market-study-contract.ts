@@ -1,3 +1,4 @@
+import {publicProductDescription} from './market-product-search.ts';
 export type MarketUnit = "unit" | "kg" | "m" | "l";
 export interface MarketFx { currency: string; clp_per_unit: number; observed_at: string; source: string }
 export interface MarketObservation {
@@ -14,6 +15,7 @@ export interface MarketReviewInput {
   decision: "approved" | "rejected" | "pending"; product_key: string; sku: string;
   unit: MarketUnit | null; internal_quantity: number | null; equivalence_confirmed: boolean; cost_basis_confirmed: boolean;
   internal_fx: MarketFx | null; reason: string;
+  internal_product?:{name:string;description:string;brand:string};
 }
 export interface MarketReview { id: string; observation_id: string; payload: MarketReviewInput; created_at: string; created_by: string }
 export const MARKET_UNITS: MarketUnit[] = ["unit", "kg", "m", "l"];
@@ -96,7 +98,10 @@ export function normalizeMarketReview(value: unknown, now = Date.now()): MarketR
   if(reason.length<12)throw new Error("Explica la equivalencia o rechazo (mínimo 12 caracteres).");
   const unit=r.unit==null?null:choice(r.unit,MARKET_UNITS,"Unidad interna"),quantity=num(r.internal_quantity,"Unidades base por unidad interna",0.000001,1e9,true);
   if(decision==='approved'&&(r.equivalence_confirmed!==true||unit===null||quantity===null))throw new Error("Confirmar equivalencia, unidad y presentación internas antes de comparar.");
-  return {observation_id:uuid(r.observation_id,"Observación"),request_id:uuid(r.request_id,"Solicitud"),expected_review_id:r.expected_review_id==null?null:uuid(r.expected_review_id,"Revisión previa"),decision,
+  const profile=r.internal_product===undefined?undefined:object(r.internal_product);
+  const internal_product=profile?{name:publicProductDescription(text(profile.name,'Nombre interno revisado',300)),description:publicProductDescription(text(profile.description??'','Descripción interna revisada',1800,false)),brand:publicProductDescription(text(profile.brand??'','Marca interna revisada',120,false),120)}:undefined;
+  if(internal_product&&!internal_product.name)throw new Error('Nombre técnico revisado requerido.');
+  return {...(internal_product?{internal_product}:{}),observation_id:uuid(r.observation_id,"Observación"),request_id:uuid(r.request_id,"Solicitud"),expected_review_id:r.expected_review_id==null?null:uuid(r.expected_review_id,"Revisión previa"),decision,
     product_key:text(r.product_key,"Producto interno",200),sku:text(r.sku,"SKU interno",120),unit,internal_quantity:quantity,equivalence_confirmed:r.equivalence_confirmed===true,cost_basis_confirmed:r.cost_basis_confirmed===true,internal_fx:marketFx(r.internal_fx??null,now),reason};
 }
 export function assertMarketAccess(profile: {role: string; active: boolean} | null) {

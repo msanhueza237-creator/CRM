@@ -95,15 +95,17 @@ test('Bootstrap usa import_shipments real y consulta el detalle de transito con 
  assert.equal(response.status,200);assert.equal(body.importsComplete,true);assert.equal(body.imports[0].operation.id,id);assert.ok(calls.some(c=>c.includes('import_shipments?')));assert.ok(calls.some(c=>c.includes('foreign_trade_cost_parameters?')));assert.deepEqual(body.costParameters,[]);assert.equal(calls.some(c=>c.includes('foreign_trade_operations?')),false);
 });
 
-test('Refresh solo admite ID del historial autenticado; no reserva gasto ni acepta URLs del cliente',async()=>{
- const calls=[],job={id,sku:'HT816',state:'completed',result:{kind:'market_search',offers:[]}};
+test('Refresh persiste con revision y replay; no acepta URLs ni reserva IA',async()=>{
+ const calls=[],job={id,sku:'HT816',state:'completed',result:{kind:'market_search',offers:[]}},request_id=crypto.randomUUID();let saved;
  const handler=createMarketHandler({rest:{url:'https://fixture.invalid',anonKey:'anon',serviceRoleKey:'service'},origin:'https://crm.example'},async(u,o)=>{
   if(String(u).includes('/auth/v1/user'))return json({id:actor});if(String(u).includes('profiles?'))return json([{role:'administrador',active:true}]);
-  if(String(u).endsWith('/rpc/market_native_run')){calls.push(JSON.parse(o.body));return json({jobs:[job]});}throw Error('Unexpected call');
+  if(String(u).endsWith('/rpc/market_native_sources_refresh')){const body=JSON.parse(o.body);calls.push(body);if(body.p_data.id!==id)return new Response('{}',{status:409});if(body.p_action==='prepare')return json({replayed:!!saved,job:saved||job});saved={...job,result:{...body.p_data.result,source_revision:1}};return json({job:saved});}throw Error('Unexpected call');
  });
  const call=(body,auth=true)=>handler(new Request('https://fixture.invalid/functions/v1/market-study/sources/refresh',{method:'POST',headers:auth?{Authorization:'Bearer synthetic'}:{},body:JSON.stringify(body)}));
- assert.equal((await call({id},false)).status,401);assert.equal((await call({id,url:'https://bad.cl/'})).status,422);assert.equal(calls.length,0);
- assert.equal((await call({id:crypto.randomUUID()})).status,404);const r=await call({id});assert.equal(r.status,200);assert.ok((await r.json()).result.refreshed_at);assert.ok(calls.every(c=>c.p_action==='status'));assert.equal(job.result.refreshed_at,undefined);
+ const input={id,revision:0,request_id};
+ assert.equal((await call(input,false)).status,401);assert.equal((await call({...input,url:'https://bad.cl/'})).status,422);assert.equal(calls.length,0);
+ assert.equal((await call({...input,id:crypto.randomUUID()})).status,409);const r=await call(input);assert.equal(r.status,200);const result=await r.json();assert.equal(result.result.source_revision,1);assert.ok(result.result.refreshed_at);
+ assert.deepEqual(await (await call(input)).json(),result);assert.deepEqual(calls.map(c=>c.p_action),['prepare','prepare','commit','prepare']);assert.equal(job.result.refreshed_at,undefined);
 });
 
 test('Bootstrap enlaza descripcion publica por SKU; no mezcla descripciones contradictorias',async()=>{
@@ -114,12 +116,51 @@ test('Bootstrap enlaza descripcion publica por SKU; no mezcla descripciones cont
   if(path.includes('profiles?'))return json([{role:'administrador',active:true}]);
   if(path.includes('accounting_entities?select=id'))return json([{id}]);
   if(path.includes('content_products?')){
-   const product={id,sku:'DIF-10',name:'Difusor circular',brand:'Ejemplo',description_text:'Aluminio 10 pulgadas. Costo: 19000 CLP',source_status:'active'};
+   const product={id,sku:'DIF-10',name:'Difusor circular',brand:'Ejemplo',category:'Climatización',primary_image_url:'https://climactiva.cl/image.jpg',product_url:'https://climactiva.cl/productos/difusor',description_text:'Aluminio 10 pulgadas. Costo: 19000 CLP',source_status:'active'};
    return new Response(JSON.stringify(ambiguous?[product,{...product,id:actor,description_text:'Modelo 12 pulgadas'}]:[product]),{headers:{'Content-Range':ambiguous?'0-1/2':'0-0/1'}});
   }
   return new Response('[]',{headers:{'Content-Range':'*/0'}});
  });
  const read=async()=>{const response=await handler(new Request('https://fixture.invalid/functions/v1/market-study/bootstrap',{headers:{Authorization:'Bearer synthetic'}}));assert.equal(response.status,200);return response.json();};
- let data=await read();assert.equal(data.inventoryAvailable,true);assert.equal(data.inventory[0].description,'Aluminio 10 pulgadas.');
- ambiguous=true;data=await read();assert.equal(data.inventory[0].description,'');
+ let data=await read();assert.equal(data.inventoryAvailable,true);assert.equal(data.inventory[0].description,'Aluminio 10 pulgadas.');assert.equal(data.inventory[0].category,'Climatización');assert.equal(data.inventory[0].brand,'Ejemplo');assert.equal(data.inventory[0].image_url,'https://climactiva.cl/image.jpg');
+ ambiguous=true;data=await read();assert.equal(data.inventory[0].description,'');assert.equal(data.inventory[0].category,undefined);assert.equal(data.inventory[0].image_url,undefined);assert.equal(data.inventory[0].catalog_conflicts.length,1);
+});
+
+test('Refresh valida sesión/admin activo antes de RPC/red; actor del cliente nunca suplanta sesión',async()=>{
+ const input={id,revision:0,request_id:crypto.randomUUID()};
+ for(const scenario of ['anon','invalid','finance','inactive','spoofactor']){
+  const calls=[],handler=createMarketHandler({rest:{url:'https://fixture.invalid',anonKey:'anon',serviceRoleKey:'service'},origin:'https://crm.example'},async(u)=>{
+   calls.push(String(u));if(String(u).includes('/auth/v1/user'))return scenario==='invalid'?new Response('{}',{status:401}):json({id:actor});
+   if(String(u).includes('profiles?'))return json([{id:actor,role:scenario==='finance'?'finanzas':'administrador',active:scenario!=='inactive'}]);
+   throw Error('Forbidden downstream request');
+  });
+  const response=await handler(new Request('https://fixture.invalid/functions/v1/market-study/sources/refresh',{method:'POST',headers:scenario==='anon'?{}:{Authorization:'Bearer synthetic'},body:JSON.stringify({...input,...(scenario==='spoofactor'?{actor:crypto.randomUUID()}:{})})}));
+  assert.equal(response.status,['anon','invalid'].includes(scenario)?401:scenario==='spoofactor'?422:403,scenario);
+  assert.ok(calls.every(c=>c.includes('/auth/v1/user')||c.includes('profiles?')),scenario);
+ }
+});
+
+test('Bootstrap vigencia incluye lecturas fallidas de todo historial y falla cerrado sin cobertura',async()=>{
+ let unavailable=false,ledgerUnavailable=false;const calls=[],at='2026-10-12T10:00:00Z',newAt='2026-10-12T11:00:00Z';
+ const handler=createMarketHandler({rest:{url:'https://fixture.invalid',anonKey:'anon',serviceRoleKey:'service'},origin:'https://crm.example'},async(u,o)=>{
+  const path=String(u);calls.push(path);
+  if(path.includes('/auth/v1/user'))return json({id:actor});if(path.includes('profiles?'))return json([{role:'administrador',active:true}]);
+  if(path.includes('market_native_source_revisions?')){
+   assert.equal(o.headers.Authorization,'Bearer service');
+   if(ledgerUnavailable)return new Response('{}',{status:404});
+   const baseline={url,observed_at:at,amount:10,technical:{fingerprint:'literal-baseline',unit:'unit',package_quantity:1},private_actor:'should-never-return'};
+   const latest={url,observed_at:newAt,amount:null,price_error:'HTTP 403'};
+   return new Response(JSON.stringify([{previous_job:{sku:'syn',actor:'private',result:{kind:'market_search',product_title:'Producto anterior',product_profile:{description:'Ficha original',brand:''},offers:[baseline]}},refreshed_job:{sku:'syn',result:{kind:'market_search',offers:[latest]}}}]),{headers:{'Content-Range':'0-0/1'}});
+  }
+  if(path.includes('market_native_jobs?')){
+   assert.equal(o.headers.Authorization,'Bearer service');assert.match(path,/state=eq.completed/);
+   if(unavailable)return new Response('{}',{status:503});
+   const rows=[{sku:'SYN',result:{kind:'market_search',offers:[{url,observed_at:newAt,amount:null,price_error:'HTTP 403'}]}}];
+   return new Response(JSON.stringify(rows),{headers:{'Content-Range':'0-1/2'}});
+  }
+  return new Response('[]',{headers:{'Content-Range':'*/0'}});
+ });
+ const read=async()=>{const r=await handler(new Request('https://fixture.invalid/functions/v1/market-study/bootstrap',{headers:{Authorization:'Bearer synthetic'}}));assert.equal(r.status,200);return r.json();};
+ const available=await read();assert.equal(available.sourceReadAvailable,true);assert.equal(available.sourceReads.length,2);assert.equal(available.sourceReads[0].observed_at,at);assert.equal(available.sourceReads[0].offer.technical.fingerprint,'literal-baseline');assert.deepEqual(available.sourceReads[0].internalProduct,{name:'Producto anterior',description:'Ficha original',brand:''});assert.equal(available.sourceReads[1].internalProduct,undefined);assert.equal(available.sourceReads[1].observed_at,newAt);assert.equal(available.sourceReads[1].offer.amount,null);assert.doesNotMatch(JSON.stringify(available.sourceReads),/private|should-never-return/);assert.ok(calls.every(p=>!p.includes('/rpc/market_native_run')));
+ unavailable=true;const blocked=await read();assert.equal(blocked.sourceReadAvailable,false);assert.deepEqual(blocked.sourceReads,[]);assert.ok(blocked.warnings.some(w=>w.includes('vigencia')));unavailable=false;ledgerUnavailable=true;const missingLedger=await read();assert.equal(missingLedger.sourceReadAvailable,false);assert.deepEqual(missingLedger.sourceReads,[]);
 });

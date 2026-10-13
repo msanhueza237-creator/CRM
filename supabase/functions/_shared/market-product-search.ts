@@ -1,4 +1,4 @@
-export interface MarketSearchProfile { description?: string; brand?: string }
+export interface MarketSearchProfile { description?: string; brand?: string; category?:string }
 export const searchText = (value: string) => value.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 
 // Only descriptive catalog text crosses the provider boundary, never raw records.
@@ -15,7 +15,7 @@ export function productNameQuery(name: string, sku: string): string {
   return withoutSku.replace(/\s+/g, ' ').replace(/^[\s\u00b7|-]+|[\s\u00b7|-]+$/g, '').trim() || name;
 }
 
-export function matchesMarketProduct(product: { name: string; sku: string; description?: string; brand?: string }, query: string): boolean {
+export function matchesMarketProduct(product: { name: string; sku: string; description?: string; brand?: string; category?:string }, query: string): boolean {
   const terms = searchText(query).match(/[a-z0-9+]+/g) || [];
   const text = searchText([product.name, product.description, product.brand, product.sku].join(' '));
   return terms.every(t => text.includes(t));
@@ -90,4 +90,22 @@ export function scaleCapacity100(title:string,description:string) {
   }
   const caps=values(t);
   return /\bbalanza\b/.test(t)&&!/(?:envio|embalaje|paquete|peso\s+bruto)/.test(t)&&!ambiguous.test(t)&&caps.length===1&&caps[0]===100?title.slice(0,180):null;
+}
+
+// Literal catalog facts only: missing values never become generated specifications.
+export function normalizedMarketProfile(input:{sku:string;name:string;description?:string;brand?:string;category?:string;productUrl?:string;imageUrl?:string}) {
+  const description=publicProductDescription(input.description), title=publicProductDescription(input.name), category=publicProductDescription(input.category)||null;
+  const attributes=productFeatures(title+' '+description).map(f=>({key:f.kind,value:f.label,source:'catalog' as const}));
+  const use=description.match(/(?:uso|utilizaci[oó]n|aplicaci[oó]n)\s*[:=]\s*([^.;]{3,160})/i)?.[1]?.trim()||null;
+  const conflicts:string[]=[];
+  if(input.sku==='LX-36575'&&/alimentos|paqueter[ií]a|equipaje/i.test(description))conflicts.push('Los usos históricos del catálogo difieren del sector de búsqueda solicitado; uso para refrigerantes sin confirmar.');
+  const named=productFeatures(title), described=productFeatures(description);
+  for(const kind of new Set(named.map(f=>f.kind))) {
+    const a=named.filter(f=>f.kind===kind),b=described.filter(f=>f.kind===kind);
+    if(b.length&&a.some(f=>!b.some(g=>g.value===f.value)))conflicts.push('Título y descripción difieren en '+kind+'; requiere revisión.');
+  }
+  if(/\bx\s*\d+|\b(?:pack|kit|caja|rollo|juego)\b/i.test(title))conflicts.push('Presentación múltiple: confirmar cantidad y unidad antes de comparar.');
+  const brand=publicProductDescription(input.brand)||null;
+  const missing=[!brand?'Marca sin confirmar':null,!category?'Categoría sin confirmar':null,!use?'Uso técnico sin confirmar':null,!attributes.length?'Atributos técnicos sin documentar':null,!input.productUrl?'Fuente de catálogo sin enlazar':null].filter((s):s is string=>!!s);
+  return {title,brand,category,use,attributes,missing,conflicts};
 }

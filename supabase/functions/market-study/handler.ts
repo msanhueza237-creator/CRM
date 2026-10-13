@@ -1,7 +1,7 @@
 import { researchAdmin } from './research-admin.ts';
 import { nativeSettings, nativeStudy } from './native-study.ts';
 import { marketSearch,refreshMarketSources } from './market-search.ts';
-import type { NativeStudyJob } from '../_shared/market-native-contract.ts';
+import { publicProductUrl, type NativeStudyJob } from '../_shared/market-native-contract.ts';
 import { extractionChoices, extractionPolicy, ExtractionError, type ExtractionEnv } from '../market-research/extraction.ts';
 import { assertMarketAccess, normalizeMarketReview, previewMarketImport } from "../_shared/market-study-contract.ts";
 import { CopilotSources } from "../crm-copilot/sources.ts";
@@ -41,12 +41,17 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
     const rpc=(name:string,args:Record<string,unknown>)=>durable.rpc(name,args,false);
     if(route==='native-settings'&&req.method==='GET')return json(await nativeSettings(ctx,rpc,user.id));
     if(route==='sources/refresh'&&req.method==='POST'){
-     const body=object(await readBody(req));if(Object.keys(body).join(',')!=='id'||typeof body.id!=='string'||!/^[0-9a-f-]{36}$/i.test(body.id))throw new HttpError(422,'Selecciona una consulta guardada.');
-     const status=object(await rpc('market_native_run',{p_actor:user.id,p_action:'status',p_data:{}}));
-     const job=(Array.isArray(status.jobs)?status.jobs:[]).find(j=>object(j).id===body.id) as NativeStudyJob|undefined;
-     if(!job)throw new HttpError(404,'Consulta no disponible en el historial.');
-     // Read only existing sources. No AI call, reservation, settlement or price write.
-     return json(await refreshMarketSources(job));
+     const body=object(await readBody(req)),uuid=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+     if(Object.keys(body).sort().join(',')!=='id,request_id,revision'||typeof body.id!=='string'||!uuid.test(body.id)||typeof body.request_id!=='string'||!uuid.test(body.request_id)||!Number.isSafeInteger(body.revision)||Number(body.revision)<0)throw new HttpError(422,'Selecciona una consulta guardada y su revisión.');
+     const persist=async(action:string,result?:unknown)=>{
+      try{return object(await rpc('market_native_sources_refresh',{p_actor:user.id,p_action:action,p_data:{...body,...(result?{result}:{})}}));}
+      catch{throw new HttpError(409,'No se confirmó la actualización. Recarga el historial; conserva el mismo identificador para reintentar sin duplicar.');}
+     };
+     const prepared=await persist('prepare');
+     if(prepared.replayed===true)return json(prepared.job);
+     // URLs come exclusively from the saved job. No paid AI, equivalence or business-price write.
+     const refreshed=await refreshMarketSources(prepared.job as NativeStudyJob);
+     return json((await persist('commit',refreshed.result)).job);
     }
     if(route==='native-settings'&&req.method==='POST') {
      const body=object(await readBody(req)),choices=await extractionChoices(ctx,false);
@@ -84,14 +89,21 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
     const [observations,reviews]=await Promise.all([source.all('market_study_observations?select=id,payload,created_at,created_by,origin_integration_id,origin_api_key_id&order=created_at.asc,id.asc',5000),source.all('market_study_reviews?select=id,observation_id,payload,created_at,created_by&order=created_at.asc,id.asc',10000)]);
     const warnings:string[]=[];
     const inventory=async()=>{try{
-     const [snapshots,details,catalog,entity]=await Promise.all([source.records('inventory_snapshots'),source.records('product_details'),source.all(`content_products?select=${inventoryCatalogFields}&order=id.asc`),source.entity()]);
+     const [snapshots,details,catalog,entity]=await Promise.all([source.records('inventory_snapshots'),source.records('product_details'),source.all(`content_products?select=${inventoryCatalogFields},category,primary_image_url&order=id.asc`),source.entity()]);
      const settings=await source.select(`accounting_entities?select=confirmations:settings->copilot_cost_currency_confirmations&id=eq.${entity}`);
      const stock=inventoryValuation(snapshots,details,catalog,{},factoCurrencies(env.currencyMap),object(settings[0]?.confirmations),true);
      const descriptions=new Map(resolveProducts(snapshots,details,catalog,false).map(p=>{
       const values=[...new Set(Array.isArray(p.search_descriptions)?p.search_descriptions:[])];
       return [p.sku,values.length===1?publicProductDescription(values[0]):''];
      }));
-     return {...stock,records:stock.records.map(p=>({...p,description:descriptions.get(p.sku)||''}))};
+     const key=(v:unknown)=>String(v??'').trim().toUpperCase();
+     const metadata=(sku:string)=>{
+      const matches=catalog.filter(c=>c.source_status!=='deleted'&&(key(c.sku)===key(sku)||(Array.isArray(c.variants)&&c.variants.some(v=>key(object(v).sku)===key(sku)))));
+      if(matches.length!==1)return {catalog_conflicts:matches.length>1?['SKU ambiguo en catálogo; ficha, marca, categoría e imagen pendientes.']:['Sin ficha de catálogo vinculada.']};
+      const c=matches[0],safeUrl=(v:unknown)=>{try{return publicProductUrl(String(v)).href;}catch{return undefined;}};
+      return {brand:publicProductDescription(c.brand,120),category:publicProductDescription(c.category,200),image_url:safeUrl(c.primary_image_url),product_url:safeUrl(c.product_url),catalog_read_at:typeof c.last_synced_at==='string'?c.last_synced_at:undefined,catalog_conflicts:[]};
+     };
+     return {...stock,records:stock.records.map(p=>({...p,description:descriptions.get(p.sku)||'',...metadata(String(p.sku||''))}))};
     }catch{warnings.push('Inventario/costos no disponibles: no se sustituyen por cero.');return null;}};
     const imports=async()=>{try{
      const operations=await source.all('import_shipments?select=id&inventory_mode=eq.future&status=not.in.(received,closed,cancelled)&order=id.asc',50);
@@ -99,8 +111,30 @@ export function createMarketHandler(env: MarketEnvironment,fetcher: typeof fetch
      return {details,complete:true};
     }catch{warnings.push('No se pudo verificar cobertura de productos por llegar.');return {details:[],complete:false};}};
     const parameters=async()=>{try{return await source.all('foreign_trade_cost_parameters?select=code,numeric_value,active,valid_from,valid_until&active=eq.true&order=code.asc',200);}catch{warnings.push('Parametros aduaneros no disponibles; no se completaran por suposicion.');return [];}};
-    const [stock,incoming,costParameters]=await Promise.all([inventory(),imports(),parameters()]);
-    return json({observations:observations.map(row=>({...row,created_by:row.created_by??`API ${row.origin_integration_id}`})),reviews,inventory:stock?.records||[],inventoryAvailable:stock!==null,inventoryWarnings:stock?.warnings||[],imports:incoming.details,costParameters,importsComplete:incoming.complete,warnings,readAt:new Date().toISOString()});
+    const sourceReads=async()=>{try{
+     const [current,revisions]=await Promise.all([
+      source.all('market_native_jobs?select=sku,result&state=eq.completed&order=created_at.asc,id.asc',10000),
+      source.all('market_native_source_revisions?select=previous_job,refreshed_job&order=created_at.asc,request_id.asc',10000),
+     ]);
+     const jobs=[...revisions.flatMap(r=>[object(r.previous_job),object(r.refreshed_job)]),...current];
+     const reads=new Map<string,{sku:string;url:string;observed_at:string;offer:Record<string,unknown>;internalProduct?:{name:string;description?:string;brand?:string}}>();
+     const publicFields=['url','seller','title','observed_at','image_url','amount','currency','vat','vat_percent','package_quantity','availability','identity','evidence','warning','match_reasons','conflicts','vat_assumed','package_assumed','currency_assumed','price_error','search_scope','technical'];
+     for(const job of jobs){const result=object(job.result);if(result.kind!=='market_search')continue;
+      if(!Array.isArray(result.offers))throw new Error('Missing source evidence');
+      const profile=object(result.product_profile),internalProduct=typeof result.product_title==='string'&&result.product_title.trim()?{name:result.product_title,...(typeof profile.description==='string'?{description:profile.description}:{}),...(typeof profile.brand==='string'?{brand:profile.brand}:{})}:undefined;
+      for(const value of result.offers){const offer=object(value);
+       if(typeof job.sku!=='string'||typeof offer.url!=='string'||typeof offer.observed_at!=='string'||!Number.isFinite(Date.parse(offer.observed_at)))throw new Error('Incomplete source timestamps');
+       const evidence=Object.fromEntries(publicFields.filter(field=>offer[field]!==undefined).map(field=>[field,offer[field]]));
+       for(const [field,keys] of [['technical',['fingerprint','unit','package_quantity']],['search_scope',['eligible','sector','capacity_evidence']]] as const){if(evidence[field]){const nested=object(evidence[field]);evidence[field]=Object.fromEntries(keys.filter(k=>nested[k]!==undefined).map(k=>[k,nested[k]]));}}
+       const item={sku:job.sku.trim().toUpperCase(),url:offer.url,observed_at:offer.observed_at,offer:evidence,...(internalProduct?{internalProduct}:{})},key=JSON.stringify([item.sku,item.url,new Date(item.observed_at).toISOString()]),previous=reads.get(key);
+       if(previous&&(JSON.stringify(previous.offer)!==JSON.stringify(evidence)||JSON.stringify(previous.internalProduct)!==JSON.stringify(internalProduct)))throw new Error('Conflicting source evidence');
+       reads.set(key,item);
+      }
+     }
+     return {sourceReads:[...reads.values()],sourceReadAvailable:true};
+    }catch{warnings.push('No se pudo verificar la vigencia de todas las fuentes; las referencias aprobadas requieren nueva comprobación.');return {sourceReads:[],sourceReadAvailable:false};}};
+    const [stock,incoming,costParameters,sourceEvidence]=await Promise.all([inventory(),imports(),parameters(),sourceReads()]);
+    return json({...sourceEvidence,observations:observations.map(row=>({...row,created_by:row.created_by??`API ${row.origin_integration_id}`})),reviews,inventory:stock?.records||[],inventoryAvailable:stock!==null,inventoryWarnings:stock?.warnings||[],imports:incoming.details,costParameters,importsComplete:incoming.complete,warnings,readAt:new Date().toISOString()});
    }
    if(route==='imports/preview'&&req.method==='POST')return json(previewMarketImport(await readBody(req)));
    if(route==='imports/commit'&&req.method==='POST'){

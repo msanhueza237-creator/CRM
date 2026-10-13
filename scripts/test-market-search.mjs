@@ -43,16 +43,16 @@ test('Cada busqueda reserva US$0,25: replay sin gasto nuevo, solo perfil publico
  }};
  const rpc=async(_name,args)=>{writes.push(args);if(args.p_action==='status')return {web_search_supported:true};if(args.p_action==='reserve')return {created:!replay,job,ticket:id};if(args.p_action==='finish')return {...job,state:args.p_data.state,result:args.p_data.result,estimated_usd:args.p_data.cost};};
  const source=async(u,o)=>{assert.equal(o.headers.Authorization,undefined);return String(u).endsWith('robots.txt')?new Response('',{status:404}):new Response('<h1>HT-816</h1><script type="application/ld+json">'+JSON.stringify({'@type':'Product',name:'Termostato HT-816',model:'HT-816',offers:{'@type':'Offer',price:11900,priceCurrency:'CLP'}})+'</script>',{headers:{'content-type':'text/html'}});};
- const input={id,sku:'HT816',title:'Termostato HT816',description:'Control digital 220 V. Costo: 5000 CLP; Contacto ventas@privado.test',brand:'Ejemplo',revision:1};
+ const input={id,sku:'HT816',title:'Termostato HT816',description:'Control digital 220 V. Costo: 5000 CLP; Contacto ventas@privado.test',brand:'Ejemplo',category:'Control climatización. Costo: 9999 CLP',revision:1};
  const result=await marketSearch(input,ctx,rpc,actor,source);
  assert.equal(result.state,'completed');assert.equal(result.result.offers[0].amount,11900);assert.equal(result.result.kind,'market_search');assert.equal(result.estimated_usd,null);
  assert.equal(writes.find(w=>w.p_action==='reserve').p_data.kind,'market_search');
- const request=JSON.parse(calls.find(c=>c.url.includes('/anthropic/')).body);assert.equal(request.tools[0].max_uses,3);assert.equal(request.model,'deepseek-flash');assert.deepEqual(JSON.parse(request.messages[0].content),{product:'Termostato',description:'Control digital 220 V.',brand:'Ejemplo',sku_reference:'HT816',market:'Chile'});
+ const request=JSON.parse(calls.find(c=>c.url.includes('/anthropic/')).body);assert.equal(request.tools[0].max_uses,3);assert.equal(request.model,'deepseek-flash');assert.deepEqual(JSON.parse(request.messages[0].content),{product:'Termostato',description:'Control digital 220 V.',brand:'Ejemplo',category:'Control climatización.',sku_reference:'HT816',market:'Chile'});
  assert.match(request.system,/Prioriza nombre, descripcion/);assert.match(request.system,/sin exigir marca ni codigo/);assert.match(request.system,/site:cl/);assert.doesNotMatch(request.messages[0].content,/5000|privado/);
  assert.equal(new URL(writes.find(w=>w.p_action==='reserve').p_data.url).searchParams.get('q'),'Termostato precio Chile');
- assert.equal(result.result.product_profile.description,'Control digital 220 V.');
+ assert.equal(result.result.product_profile.description,'Control digital 220 V.');assert.equal(result.result.product_profile.category,'Control climatización.');assert.match(request.system,/categoria suministrada/);assert.match(request.system,/no confirma uso/);assert.doesNotMatch(request.messages[0].content,/9999|100 kg/);assert.equal(result.result.search_restriction,undefined);
  replay=true;await marketSearch(input,ctx,rpc,actor,source);assert.equal(calls.filter(c=>c.url.includes('/anthropic/')).length,1);
- for(const invalid of [{cost:12},{description:'x'.repeat(1801)},{brand:[]},{title:'   '}])await assert.rejects(marketSearch({...input,...invalid},ctx,rpc,actor,source));
+ for(const invalid of [{cost:12},{description:'x'.repeat(1801)},{brand:[]},{category:[]},{category:'x'.repeat(161)},{title:'   '}])await assert.rejects(marketSearch({...input,...invalid},ctx,rpc,actor,source));
 });
 test('Diez busquedas por dia de Chile: reserva atomica, once bloqueada e historial conservado',async()=>{
  const db=new PGlite();try{
@@ -252,6 +252,6 @@ test('Consulta LX-36575 no transmite usos contradictorios; filtro no modifica pe
  const original=ctx.fetcher;ctx.fetcher=async(u,o)=>{if(String(u).includes('/anthropic/')){request=JSON.parse(o.body);return json({content:[payload.content[0],{type:'web_search_tool_result',content:[]}]});}return original(u,o);};
  const rpc=async(_,args)=>args.p_action==='status'?{web_search_supported:true}:args.p_action==='reserve'?{created:true,ticket:id}:{result:args.p_data.result};
  const result=await marketSearch({id,revision:1,sku:'LX-36575',title:'Balanza Digital 100Kg',description:'Para alimentos, paqueteria y equipaje',brand:'Climactiva'},ctx,rpc,actor);
- const input=JSON.parse(request.messages[0].content);assert.match(input.product,/100 kg.*climatizacion.*refrigeracion/);assert.doesNotMatch(input.description,/alimentos|paqueteria|equipaje/);assert.match(request.system,/Todas las consultas deben incluir 100 kg/);
+ const input=JSON.parse(request.messages[0].content);assert.match(input.product,/100 kg.*climatizacion.*refrigeracion/);assert.equal(input.category,'Herramientas de climatizacion y refrigeracion');assert.doesNotMatch(input.description,/alimentos|paqueteria|equipaje/);assert.match(request.system,/Todas las consultas deben incluir 100 kg/);
  assert.equal(result.result.product_profile.description,'Para alimentos, paqueteria y equipaje');assert.match(result.result.search_restriction,/No confirma uso para refrigerantes/);
 });

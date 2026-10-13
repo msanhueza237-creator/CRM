@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { previewMarketImport, normalizeMarketObservation, normalizeMarketReview, assertMarketAccess } from '../supabase/functions/_shared/market-study-contract.ts';
-import { toNetClp, discountScenario, compareProduct, marketTopTen, marketTarget, marketTargetReferences } from '../src/modules/market-study/marketMath.ts';
+import { toNetClp, discountScenario, compareProduct, marketTopTen, marketTarget, marketTargetReferences, channelScenario } from '../src/modules/market-study/marketMath.ts';
 import { marketProducts } from '../src/modules/market-study/marketSources.ts';
 const now=Date.parse('2026-10-02T12:00:00Z'),at='2026-10-01T12:00:00Z',id='11111111-1111-4111-8111-111111111111';
 const observation=(patch={})=>({provider:'synthetic',external_id:'offer-1',revision:1,product_label:'Bomba sintética',suggested_sku:'SYN-01',seller:'Competidor sintético',seller_kind:'competitor',amount:142800,currency:'CLP',vat_basis:'gross',vat_percent:19,unit:'unit',package_quantity:1,presentation:'Unidad',availability:'available',source_url:'https://synthetic-shop.cl/offer',observed_at:at,confidence:.9,fx:null,notes:'Dato sintético, no investigación real.',...patch});
@@ -114,7 +114,7 @@ test('Objetivo incorpora equivalencia humana aunque el codigo de la tienda sea d
 test('Objetivo provisional no revive rechazos, fallos, ofertas antiguas ni otros productos',()=>{
  const o=stored(),web={url:o.payload.source_url,seller:o.payload.seller,observed_at:at,amount:11900,currency:'CLP',vat:'gross',vat_percent:19,package_quantity:1,availability:'available',identity:'model_match'};
  const job={sku:product().sku,state:'completed',result:{offers:[web]}};
- assert.equal(marketTargetReferences(product(),job,[],[],now).references[0].net,10000);
+ assert.equal(marketTargetReferences(product(),job,[],[],now).references.length,0);assert.equal(marketTargetReferences(product(),job,[],[],now).provisional[0].net,10000);
  for(const patch of [{decision:'rejected'},{decision:'pending'}])assert.equal(marketTargetReferences(product(),job,[o],[review(patch)],now).references.length,0);
  for(const patch of [{sku:'OTHER'},{state:'unknown'},{result:{offers:[{...web,observed_at:'2020-01-01'}]}},{result:{offers:[{...web,observed_at:'2099-01-01'}]}}])assert.equal(marketTargetReferences(product(),{...job,...patch},[],[],now).references.length,0);
 });
@@ -122,4 +122,55 @@ test('Objetivo provisional no revive rechazos, fallos, ofertas antiguas ni otros
 test('Objetivo excluye dominios fuera de .cl aunque tengan CLP o revision humana',()=>{
  const p=product(),payload=observation({source_url:'https://tienda.cl.evil.com/offer'}),row=stored(payload),r=review();
  const comparison=compareProduct(p,[row],[r],now);assert.equal(comparison.comparable.length,0);assert.ok(comparison.offered[0].reasons.some(s=>s.includes('.cl')));
+});
+
+test('Canales independientes: gastos desconocidos no son cero; pérdidas y valores inválidos explícitos',()=>{
+ assert.equal(channelScenario(100,60,10,5).contribution,25);assert.equal(channelScenario(100,60,10,5).margin,25);
+ assert.equal(channelScenario(80,60,10,0).margin,12.5);
+ for(const args of [[100,null,0,0],[100,60,null,0],[100,60,0,null],[0,60,0,0],[100,60,-1,0],[100,60,0,100],[NaN,60,0,0],[100,Infinity,0,0]])assert.equal(channelScenario(...args).margin,null);
+ assert.equal(channelScenario(100,0,0,0).margin,100);assert.match(channelScenario(50,60,0,0).reasons[0],/Pérdida/);
+});
+
+test('Nueva lectura pública invalida evidencia aprobada en objetivo, simulador y ranking hasta nueva revisión',()=>{
+ const o=stored(),r=review(),p=product();
+ const evidence={sourceReadAvailable:true,sourceReads:[{sku:p.sku,url:o.payload.source_url,observed_at:'2026-10-02T11:00:00Z'}]};
+ assert.equal(compareProduct(p,[o],[r],now,evidence).median,null);
+ assert.match(compareProduct(p,[o],[r],now,evidence).offered[0].reasons.join(' '),/Lectura comercial no disponible/);
+ assert.equal(marketTopTen([p],[o],[r],'all',now,evidence).rows.length,0);
+ const job={sku:p.sku,state:'completed',result:{offers:[{url:o.payload.source_url,seller:'fixture',observed_at:'2026-10-02T11:00:00Z',amount:null,identity:'possible'}]}};
+ assert.equal(marketTargetReferences(p,job,[o],[r],now).references.length,0);
+ assert.equal(compareProduct(p,[o],[r],now,{sourceReadAvailable:false}).median,null);
+ assert.equal(compareProduct(p,[o],[r],now,{sourceReadAvailable:true,sourceReads:[{...evidence.sourceReads[0],sku:' syn-01 '}]}).median,null);
+ const changed={...stored({revision:2,observed_at:'2026-10-02T11:00:00Z'}),id:'changed'};
+ assert.equal(compareProduct(p,[o,changed],[r],now,evidence).median,null);
+ const newReview={...review(),observation_id:'changed',payload:{...r.payload,observation_id:'changed'}};
+ assert.equal(compareProduct(p,[o,changed],[r,newReview],now,evidence).median,120000);
+ assert.equal(compareProduct(p,[o],[r],now,{sourceReadAvailable:true,sourceReads:[{sku:'OTHER',url:o.payload.source_url,observed_at:'2026-10-02T11:00:00Z'}]}).median,120000);
+});
+
+test('Revisión técnica persiste con nueva evidencia idéntica, precio actual; fallos no reviven precio viejo',()=>{
+ const o=stored(),r=review(),p=product(),later='2026-10-02T11:00:00Z';
+ const technical={fingerprint:'verified-technical-identity',unit:'unit',package_quantity:1};
+ const web={url:o.payload.source_url,title:'Bomba técnica',seller:'synthetic',amount:142800,currency:'CLP',vat:'gross',vat_percent:19,unit:'unit',package_quantity:1,availability:'available',identity:'model_match',observed_at:at,technical};
+ const reads=(patch={})=>({sourceReadAvailable:true,sourceReads:[{sku:p.sku,url:web.url,observed_at:at,offer:web,internalProduct:{name:p.name,description:p.description,brand:p.brand}},{sku:p.sku,url:web.url,observed_at:later,offer:{...web,amount:119000,observed_at:later,...patch}}]});
+ const original=JSON.stringify(o),reviewOriginal=JSON.stringify(r);
+ const result=compareProduct(p,[o],[r],now,reads());assert.equal(result.median,100000);assert.equal(result.offered[0].reusedTechnicalReview,true);assert.equal(result.offered[0].effectivePayload.observed_at,later);assert.equal(result.offered[0].observation.payload.amount,142800);assert.equal(JSON.stringify(o),original);assert.equal(JSON.stringify(r),reviewOriginal);
+ assert.equal(marketTargetReferences(p,null,[o],[r],now,reads()).references[0].observed_at,later);
+ for(const patch of [{amount:null,price_error:'HTTP 403'},{amount:119000,price_error:'lectura ambigua'},{availability:'unavailable'},{currency_assumed:true},{vat_assumed:true},{package_assumed:true},{currency:null},{vat:'unknown'},{technical:null},{technical:{...technical,fingerprint:'changed'}},{technical:{...technical,package_quantity:2}},{technical:{...technical,unit:'kg'}}])assert.equal(compareProduct(p,[o],[r],now,reads(patch)).median,null,JSON.stringify(patch));
+ assert.equal(compareProduct(p,[o],[r],now,reads({amount:142800})).median,120000);
+ assert.match(compareProduct(p,[o],[r],now,reads({technical:null})).offered[0].reasons.join(' '),/no se afirma que el producto haya cambiado/);
+ assert.match(compareProduct(p,[o],[r],now,reads({technical:{...technical,fingerprint:'changed'}})).offered[0].reasons.join(' '),/cambió/);
+ for(const patch of [{name:'Otro modelo'},{description:'Nuevo voltaje 110V'},{brand:'Otra marca'}])assert.equal(compareProduct({...p,...patch},[o],[r],now,reads()).median,null);
+ const noBinding=reads();delete noBinding.sourceReads[0].internalProduct;assert.equal(compareProduct(p,[o],[r],now,noBinding).median,null);
+ const newInternal={...p,description:'Voltaje nuevo 110 V'};
+ const reapproved=review({internal_product:{name:newInternal.name,description:newInternal.description,brand:''}});
+ assert.equal(compareProduct(newInternal,[o],[reapproved],now,reads()).median,100000);
+ const noNewRead=reads();noNewRead.sourceReads.pop();assert.equal(compareProduct(newInternal,[o],[r],now,noNewRead).median,null);
+ assert.equal(compareProduct({...newInternal,name:'Otro nombre'},[o],[reapproved],now,noNewRead).median,null);
+ const missingBaseline=reads();missingBaseline.sourceReads.shift();assert.equal(compareProduct(p,[o],[r],now,missingBaseline).median,null);
+ const differentPresentation=reads();differentPresentation.sourceReads[0].offer={...web,technical:{...technical,package_quantity:2}};assert.equal(compareProduct(p,[o],[r],now,differentPresentation).median,null);
+ // Pending/rejected manual evidence, even under another provider lineage, supersedes old approval.
+ const newer={...stored({external_id:'new-lineage',revision:1,observed_at:later}),id:'new-evidence',created_at:later};
+ for(const decision of ['pending','rejected']){const rejection={...r,id:'new-review',observation_id:newer.id,created_at:later,payload:{...r.payload,observation_id:newer.id,decision}};assert.equal(compareProduct(p,[o,newer],[r,rejection],now,reads()).median,null);}
+ assert.equal(compareProduct(p,[o,newer],[r],now,reads()).median,null);
 });

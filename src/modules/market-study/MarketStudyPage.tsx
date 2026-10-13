@@ -18,6 +18,7 @@ import {
   discountScenario,
   latestObservations,
   latestReview,
+  newerSourceEvidence,
   marketTopTen,
   type MarketProduct,
 } from "./marketMath";
@@ -197,6 +198,7 @@ function ReviewForm({
         equivalence_confirmed: confirmed,
         cost_basis_confirmed: costConfirmed,
         internal_fx: fx,
+        internal_product:{name:product.name,description:product.description||'',brand:product.brand||''},
         reason,
       });
       setBusy(true);
@@ -516,7 +518,7 @@ export function MarketSimulator({
           </a>
           <small>
             {o.comparable ? "Comparable" : o.reasons.join(" ")} ·{" "}
-            {date(o.observation.payload.observed_at)}
+            Lectura comercial {date(o.effectivePayload.observed_at)} · revisión humana {date(o.review.created_at)}{o.reusedTechnicalReview?' · equivalencia técnica conservada':''}
           </small>
         </div>
       ))}
@@ -568,7 +570,7 @@ export function MarketStudyPage() {
     ranking = useMemo(
       () =>
         data
-          ? marketTopTen(filtered, data.observations, data.reviews, mode)
+          ? marketTopTen(filtered, data.observations, data.reviews, mode,Date.now(),{sourceReads:data.sourceReads,sourceReadAvailable:data.sourceReadAvailable===true})
           : null,
       [data, filtered, mode],
     );
@@ -657,7 +659,7 @@ export function MarketStudyPage() {
       )}
       {tab === "settings" ? <><MarketExtractionSettings/><MarketResearchAccess/></> : tab === "research" ? (
         <>
-          <MarketInvestigator observations={data?.observations||[]} reviews={data?.reviews||[]} products={products} selectedKey={selected?.key||''} onSelect={key=>update('product',key)} reload={reload} savedJobIds={data?.observations.filter(o=>o.payload.provider==='crm-native').map(o=>o.payload.external_id)||[]}/>
+          <MarketInvestigator evidence={{sourceReads:data?.sourceReads,sourceReadAvailable:data?.sourceReadAvailable===true}} observations={data?.observations||[]} reviews={data?.reviews||[]} products={products} selectedKey={selected?.key||''} onSelect={key=>update('product',key)} reload={reload} savedJobIds={data?.observations.filter(o=>o.payload.provider==='crm-native').map(o=>o.payload.external_id)||[]}/>
           {data && (
             <section className="market-card">
               <h2>Equivalencias por revisar</h2>
@@ -668,6 +670,7 @@ export function MarketStudyPage() {
               )}
               {latest.map((row) => {
                 const review = latestReview(data.reviews, row.id);
+                const stale=newerSourceEvidence(row.payload.suggested_sku||'',row.payload.source_url,row.payload.observed_at,{sourceReads:data.sourceReads,sourceReadAvailable:data.sourceReadAvailable===true});
                 return (
                   <details className="market-research" key={row.id}>
                     <summary>
@@ -678,6 +681,7 @@ export function MarketStudyPage() {
                           ? "Rechazada"
                           : "Pendiente"}
                     </summary>
+                    {stale&&<p className="market-warning">{stale}</p>}
                     <p>
                       {row.payload.amount === null
                         ? "Precio ausente"
@@ -827,7 +831,7 @@ export function MarketStudyPage() {
                     comparison={compareProduct(
                       selected,
                       data.observations,
-                      data.reviews,
+                      data.reviews,Date.now(),{sourceReads:data.sourceReads,sourceReadAvailable:data.sourceReadAvailable===true},
                     )}
                   />
                 ) : (

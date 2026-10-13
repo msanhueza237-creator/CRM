@@ -387,3 +387,4 @@
     gap: 15px;
   }
 }
+.market-channel-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.market-channel-grid fieldset{min-width:0;border:1px solid #d5dce5;border-radius:10px;padding:16px}.market-channel-grid label{display:flex;flex-direction:column;gap:6px;margin:10px 0}.market-channel-grid input{width:100%;min-height:44px}.market-offer-image{width:88px;height:88px;object-fit:contain;display:block}.market-profile{border:1px solid #d5dce5;border-radius:10px;padding:16px;margin:16px 0;overflow-wrap:anywhere}.market-profile dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.market-profile dd{margin:4px 0}.market-channel-section{margin:20px 0}.market-channel-section p{overflow-wrap:anywhere}@media(max-width:600px){.market-channel-grid,.market-profile dl{grid-template-columns:1fr}}

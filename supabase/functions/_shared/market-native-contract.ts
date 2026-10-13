@@ -9,13 +9,14 @@ export const MARKET_SITES = [
 ] as const;
 export interface MarketAttribute {field:string;value:string;quote:string}
 export interface MarketWebOffer {
-  url:string; seller:string; title:string; observed_at:string;
+  url:string; seller:string; title:string; observed_at:string; image_url?:string;
   amount:number|null; currency:string|null; vat:'gross'|'net'|'unknown';
   vat_percent:number|null; package_quantity:number|null; availability:string;
   identity:'model_match'|'similar'|'different'|'possible'; evidence:string; warning:string;
   match_reasons?:string[]; conflicts?:string[];
   vat_assumed?:boolean; package_assumed?:boolean; currency_assumed?:boolean;
   price_error?:string;
+  technical?:{fingerprint:string;unit:'unit'|'kg'|'m'|'l';package_quantity:number};
   search_scope?:{eligible:boolean;sector:string|null;capacity_evidence:string|null};
 }
 export interface NativeStudyJob {
@@ -23,8 +24,8 @@ export interface NativeStudyJob {
   created_at:string; finished_at:string|null; reserved_usd:number; estimated_usd:number|null;
   selection:{choice:string;provider:string;model:string};
   result:{attributes?:MarketAttribute[];text?:string;observed_at?:string;error?:string;
-    kind?:'market_search';product_title?:string;product_profile?:{description?:string;brand?:string};queries?:string[];offers?:MarketWebOffer[];search_restriction?:string;
-    source_count?:number;coverage?:string;usage_note?:string;refreshed_at?:string;
+    kind?:'market_search';product_title?:string;product_profile?:{description?:string;brand?:string;category?:string};queries?:string[];offers?:MarketWebOffer[];search_restriction?:string;
+    source_count?:number;coverage?:string;usage_note?:string;refreshed_at?:string; source_revision?:number; source_history?:{revision:number;refreshed_at:string;request_id:string}[];
     original_result?:NativeStudyJob['result'];refresh_batch?:string;source_policy?:'chile_cl_only'};
 }
 export function isChileMarketUrl(value:string) {
@@ -38,7 +39,7 @@ export function publicProductUrl(value:string) {
     !/^([a-z0-9][a-z0-9-]*\.)+[a-z]{2,63}$/i.test(u.hostname)||
     /(?:^|\.)(?:localhost|local|internal|test|invalid|example|lan|home|onion)$/i.test(u.hostname)||
     /\/(?:admin|login|account|cart|checkout|auth|api)(?:\/|$)/i.test(u.pathname)||
-    [...u.searchParams.keys()].some(k=>/token|secret|key|auth|session|password/i.test(k)||/^(?:add[-_]?to[-_]?cart|remove_item|wc-ajax|checkout|quantity|action|cmd|add|buy|remove|submit|purchase)$/i.test(k)))
+    [...u.searchParams.keys()].some(k=>/token|secret|key|auth|session|password|signature|credential|email|phone/i.test(k)||/^(?:add[-_]?to[-_]?cart|remove_item|wc-ajax|checkout|quantity|action|cmd|add|buy|remove|submit|purchase)$/i.test(k)))
     throw new Error('El enlace no corresponde a una fuente publica HTTPS.');
   for(const k of [...u.searchParams.keys()])if(/^utm_|^(?:gclid|fbclid)$/i.test(k))u.searchParams.delete(k);
   u.hash='';return u;

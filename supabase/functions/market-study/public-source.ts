@@ -50,6 +50,12 @@ export function productText(html:string,sourceUrl?:string) {
     const r=value as Record<string,unknown>;records.push(r);if([r['@type']].flat().includes('Product'))products.push(r);else if(r['@graph'])visit(r['@graph'],depth+1);};
   for(const node of document.querySelectorAll('script[type="application/ld+json"]')){try{visit(JSON.parse(node.textContent||''));}catch{/* Invalid metadata is not evidence. */}}
   const commercial_sector=commercialSector(document,records,sourceUrl);
+  const rawImage=products.length===1?products[0].image:null;
+  const firstImage=Array.isArray(rawImage)?rawImage[0]:rawImage;
+  const imageValue=firstImage&&typeof firstImage==='object'?(firstImage as Record<string,unknown>).url:firstImage;
+  let image_url:string|undefined;
+  try{const value=imageValue||document.querySelector('meta[property="og:image"]')?.getAttribute('content');if(value)image_url=publicProductUrl(new URL(String(value),sourceUrl).href).href;}catch{/* Unsafe images remain absent. */}
+
   if(products.length>1)throw new Error('La pagina contiene varios productos. Selecciona una ficha individual.');
   const structuredOffer=products.length===1?(isMarketplaceSource(sourceUrl)?marketplaceOffer(document,products[0],sourceUrl):singleOffer(products[0])):null;
   for(const node of document.querySelectorAll('script,style,nav,header,footer,form,aside,iframe,button,[hidden],[aria-hidden="true"]'))node.remove();
@@ -60,7 +66,18 @@ export function productText(html:string,sourceUrl?:string) {
     const p=products[0];
     if(!structuredOffer)throw new Error('Hay variantes o precios multiples; requiere revision manual.');
     const offer=structuredOffer,brand=p.brand&&typeof p.brand==='object'?(p.brand as Record<string,unknown>).name:p.brand;
-    const facts={commercial_sector,title:clean(p.name).slice(0,160),brand:clean(brand).slice(0,120),model:clean(p.model).slice(0,120),sku:clean(p.sku).slice(0,120),
+    // Bind reuse to literal product identity and specifications, never commercial fields.
+    const description=clean(p.description),technicalText=description.toLowerCase();
+    const pack=[...technicalText.matchAll(/\bpack de (\d+) unidades?\b/g)].map(m=>Number(m[1]));
+    const units=[...technicalText.matchAll(/\b(?:(?:precio|venta|valor)\s+por|presentaci[oó]n\s*:)\s*(unidad|kilogramos?|kg|metros?|litros?)\b/g)].map(m=>m[1]==='unidad'?'unit':/^(?:kg|kilo)/.test(m[1])?'kg':/^metro/.test(m[1])?'m':'l');
+    if(/\bprecio unitario\b/.test(technicalText))units.push('unit');
+    const technicalUnit=pack.length?'unit':units[0];
+    const packageQuantity=pack.length&&new Set(pack).size===1&&!units.length?pack[0]:!pack.length&&units.length&&new Set(units).size===1?1:null;
+    const dimensions=Object.fromEntries(['size','color','material','width','height','depth','weight','additionalProperty'].filter(k=>p[k]!=null).map(k=>[k,p[k]]));
+    const tables=[...(main?.querySelectorAll('table tr')||[])].filter(tr=>! /^(?:precio(?: neto| venta)?|iva|impuesto|moneda|stock|disponibilidad|oferta|descuento)\s*:?$/i.test(clean(tr.querySelector('th,td')?.textContent))).map(tr=>clean(tr.textContent));
+    const basis={title:clean(p.name),brand:clean(brand),model:clean(p.model),sku:clean(p.sku),description,dimensions,tables};
+    const technical_basis=packageQuantity&&packageQuantity<=1000000&&description.length<=3000&&JSON.stringify(basis).length<=10000&&description.length>=12&&(clean(p.model)||clean(p.sku))?{basis,unit:technicalUnit,package_quantity:packageQuantity}:null;
+    const facts={technical_basis,commercial_sector,image_url,title:clean(p.name).slice(0,160),brand:clean(brand).slice(0,120),model:clean(p.model).slice(0,120),sku:clean(p.sku).slice(0,120),
       price:offer.price,currency:offer.priceCurrency,availability:offer.availability,priceIncludesTax:offer.valueAddedTaxIncluded,singleProduct:true,description:clean(p.description).slice(0,3000),priceEvidence:offer.priceEvidence};
     const taxLines=(main?.textContent||'').split(/\n/).map(s=>s.trim()).filter(s=>s.length<180&&/\bIVA\b|impuesto|por unidad|pack de/i.test(s)).slice(0,6);
     return JSON.stringify(facts)+'\n'+taxLines.join('\n');
@@ -70,7 +87,7 @@ export function productText(html:string,sourceUrl?:string) {
   const commerce=commerceProduct(document,sourceUrl);
   if(commerce){
     const taxLines=(main.textContent||'').split(/\n/).map(s=>s.trim()).filter(s=>s.length<180&&/\bIVA\b|impuesto|por unidad/i.test(s)).slice(0,6);
-    return JSON.stringify({...commerce,commercial_sector})+'\n'+taxLines.join('\n');
+    return JSON.stringify({...commerce,commercial_sector,image_url})+'\n'+taxLines.join('\n');
   }
   const meta=(key:string)=>document.querySelector(`meta[property="${key}"],meta[name="${key}"]`)?.getAttribute('content');
   const nodes=[...main.querySelectorAll('[itemprop="price"]')];
@@ -79,7 +96,7 @@ export function productText(html:string,sourceUrl?:string) {
   const isProduct=meta('og:type')?.includes('product')||document.querySelector('[itemtype$="schema.org/Product"]');
   if(price&&currency&&isProduct){
     const taxLines=(main.textContent||'').split(/\n/).map(s=>s.trim()).filter(s=>s.length<180&&/\bIVA\b|impuesto|por unidad|pack de/i.test(s)).slice(0,6);
-    return JSON.stringify({commercial_sector,title:headings[0].textContent?.trim(),price,currency,singleProduct:true})+'\n'+taxLines.join('\n');
+    return JSON.stringify({commercial_sector,image_url,title:headings[0].textContent?.trim(),price,currency,singleProduct:true})+'\n'+taxLines.join('\n');
   }
   // OpenCart product detail: scope to the title/cart block, never related cards.
   if(cartContext&&sourceUrl&&new URL(sourceUrl).hostname.endsWith('.cl')){
@@ -89,7 +106,7 @@ export function productText(html:string,sourceUrl?:string) {
     if(prices.length===1&&net&&!/US\$|\bUSD\b/.test(context)){
       const gross=integer(prices[0]),netPrice=integer(net[1]);
       if(gross>0&&netPrice>0&&Math.abs(gross-netPrice*1.19)<=1.5){
-        return JSON.stringify({commercial_sector,title:heading?.textContent?.trim(),price:gross,currency:'CLP',currencyAssumed:true,priceIncludesTax:true,singleProduct:true,
+        return JSON.stringify({commercial_sector,image_url,title:heading?.textContent?.trim(),price:gross,currency:'CLP',currencyAssumed:true,priceIncludesTax:true,singleProduct:true,
           availability:/sin\s+stock|agotado/i.test(context)?'https://schema.org/OutOfStock':/stock\s+disponible/i.test(context)?'https://schema.org/InStock':null,
           priceEvidence:prices[0],netEvidence:net[0]})+'\nIVA 19% conciliado entre precio publicado y neto. CLP supuesto por ficha chilena en pesos.';
       }
@@ -143,5 +160,21 @@ export async function fetchPublicProduct(value:string,fetcher:typeof fetch=fetch
       }
     }
   }
-  return {text,observed_at:new Date().toISOString()};
+  return {text:await withTechnicalFingerprint(text),observed_at:new Date().toISOString()};
+}
+
+// SHA-256 is generated locally from the reader's scoped technical evidence.
+// Product-provided fingerprint fields are never accepted as authoritative.
+export async function withTechnicalFingerprint(text:string):Promise<string> {
+  try{
+    const lines=text.split('\n'),facts=JSON.parse(lines[0]);
+    const basis=facts.technical_basis;delete facts.technical_basis;delete facts.technical;
+    if(basis){
+      // Object keys are sorted, arrays retain order; case/spacing differences are harmless.
+      const canonical=(v:unknown):unknown=>typeof v==='string'?v.normalize('NFKC').replace(/\s+/g,' ').trim().toLowerCase():Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b)).map(([k,x])=>[k,canonical(x)])):v;
+      const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(canonical(basis))));
+      facts.technical={fingerprint:'technical-v1:'+Array.from(new Uint8Array(digest),b=>b.toString(16).padStart(2,'0')).join(''),unit:basis.unit,package_quantity:basis.package_quantity};
+    }
+    return [JSON.stringify(facts),...lines.slice(1)].join('\n');
+  }catch{return text;}
 }
