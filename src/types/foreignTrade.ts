@@ -284,6 +284,14 @@ export interface ForeignTradeCostingAssumptions {
   line_target_percent?: Record<string, number>;
 }
 
+export interface ForeignTradeScenarioSnapshot {
+  version: 1;
+  totals?: ForeignTradeOperationTotals;
+  operation_id: string;
+  lines: ForeignTradeOperationLine[];
+  costs: ForeignTradeCostLine[];
+}
+
 export interface ForeignTradeScenario {
   id: string;
   operation_id: string;
@@ -303,7 +311,7 @@ export interface ForeignTradeScenario {
   projected_sales_clp: number | null;
   projected_profit_clp: number | null;
   projected_margin_percent: number | null;
-  assumptions: { costing?: ForeignTradeCostingAssumptions; [key: string]: unknown };
+  assumptions: { snapshot?: ForeignTradeScenarioSnapshot; costing?: ForeignTradeCostingAssumptions; [key: string]: unknown };
   missing_inputs: string[];
   calculation_version: string;
   calculated_at: string | null;
@@ -1096,6 +1104,7 @@ export interface SaveForeignTradeCostingScenarioInput {
   exchangeRateSource: ForeignTradeExchangeRateSource;
   allocationMethod: Exclude<ForeignTradeScenario["allocation_method"], "manual">;
   assumptions: ForeignTradeCostingAssumptions;
+  snapshot?: ForeignTradeScenarioSnapshot;
   merchandiseTotalOriginal: number;
   merchandiseTotalClp: number;
   logisticsTotalClp: number;

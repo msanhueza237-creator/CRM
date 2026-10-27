@@ -13,6 +13,8 @@ import {
   type ForeignTradePricingMethod,
 } from "./foreignTradeCostEngine";
 import { exportForeignTradeCostingExcel } from "./foreignTradeCostingExport";
+import { SavedCostingScenarios } from "./SavedCostingScenarios";
+import { scenarioSnapshot } from "./foreignTradeSavedScenarios";
 import { hasSimulatedCosts } from "./foreignTradeCostReferences";
 
 function costingIdentity(line: { sku: string | null; supplierCode: string | null; supplierModel: string | null }) {
@@ -45,8 +47,16 @@ export function ForeignTradeCostingPanel({
   costParameters: ForeignTradeCostParameter[];
   onSaved: (message: string) => Promise<void>;
 }) {
-  const baseline = detail.scenarios.find((scenario) => scenario.status === "baseline") || detail.scenarios[0] || null;
+  const baseline = detail.scenarios.find((scenario) => scenario.status === "baseline" && scenario.operation_id === detail.operation.id) || null;
   const [form, setForm] = useState<CostingForm>(() => initialForm(detail, baseline, costParameters));
+  const [scenarioName, setScenarioName] = useState("");
+  const [opened, setOpened] = useState<ForeignTradeScenario | null>(null);
+  const [localScenarios, setLocalScenarios] = useState<ForeignTradeScenario[]>([]);
+  const savingRef = useRef(false);
+  const snapshot = opened ? scenarioSnapshot(opened, detail.operation.id) : null;
+  const simulationDetail = snapshot ? { ...detail, lines: snapshot.lines, costs: snapshot.costs, totals: snapshot.totals || detail.totals } : detail;
+  const scenarios = [...detail.scenarios, ...localScenarios.filter((item) => !detail.scenarios.some((remote) => remote.id === item.id))]
+    .filter((item) => item.operation_id === detail.operation.id);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [error, setError] = useState("");
@@ -77,19 +87,21 @@ export function ForeignTradeCostingPanel({
   }), [form]);
 
   const result = useMemo(
-    () => calculateForeignTradeCosting(detail.lines, detail.costs, settings),
-    [detail.costs, detail.lines, settings],
+    () => calculateForeignTradeCosting(simulationDetail.lines, simulationDetail.costs, settings),
+    [simulationDetail.costs, simulationDetail.lines, settings],
   );
-  const includedOperatingCosts = useMemo(() => detail.costs.filter((cost) => (
+  const includedOperatingCosts = useMemo(() => simulationDetail.costs.filter((cost) => (
     !Boolean(cost.metadata?.excluded_from_costing)
     && !["merchandise", "duties", "taxes", "international_freight", "insurance"].includes(cost.category)
     && Number(cost.amount_clp || 0) > 0
-  )), [detail.costs]);
+  )), [simulationDetail.costs]);
 
   const hasConfiguredLegalRates = ["cl_general_ad_valorem", "cl_import_vat", "cl_sales_vat"]
     .every((code) => costParameters.some((parameter) => parameter.code === code && parameter.active));
 
   async function saveScenario() {
+    if (savingRef.current || scenarioName.trim().length < 2) return;
+    savingRef.current = true;
     setSaving(true);
     setError("");
     setSaved("");
@@ -105,17 +117,17 @@ export function ForeignTradeCostingPanel({
         line_duty_percent: settings.lineDutyPercent,
         line_target_percent: settings.lineTargetPercent,
       };
-      await saveForeignTradeCostingScenario({
-        id: baseline?.id,
+      const input = {
         operationId: detail.operation.id,
-        name: baseline?.name || "Escenario base",
-        status: "baseline",
+        name: scenarioName.trim(),
+        status: "draft" as const,
         exchangeRateClp: settings.exchangeRateClp,
-        exchangeRateSource: detail.operation.exchange_rate_source || "manual",
+        exchangeRateSource: opened?.exchange_rate_source || detail.operation.exchange_rate_source || "manual",
         allocationMethod: settings.allocationMethod,
         assumptions,
-        merchandiseTotalOriginal: detail.totals.registered_merchandise,
-        merchandiseTotalClp: detail.totals.registered_merchandise * settings.exchangeRateClp,
+        snapshot: { version: 1 as const, operation_id: detail.operation.id, lines: simulationDetail.lines, costs: simulationDetail.costs, totals: simulationDetail.totals },
+        merchandiseTotalOriginal: simulationDetail.totals.registered_merchandise,
+        merchandiseTotalClp: result.lines.reduce((sum, line) => sum + line.invoiceTotalClp, 0),
         logisticsTotalClp: result.operatingExpensesNetClp,
         dutiesTotalClp: result.dutyClp,
         taxesTotalClp: result.importVatClp,
@@ -124,15 +136,32 @@ export function ForeignTradeCostingPanel({
         projectedProfitClp: result.projectedProfitClp,
         projectedMarginPercent: result.projectedMarginPercent,
         missingInputs: result.missingInputs,
-      });
-      setSaved("Escenario guardado con sus tasas, criterios y precios por producto.");
-      await onSaved("Escenario de costos y precios guardado.");
+      };
+      const id = await saveForeignTradeCostingScenario(input);
+      const now = new Date().toISOString();
+      setLocalScenarios((items) => [{
+        id, operation_id: input.operationId, name: input.name, status: "draft",
+        exchange_rate_clp: input.exchangeRateClp, exchange_rate_source: input.exchangeRateSource,
+        allocation_method: input.allocationMethod, target_margin_percent: settings.targetPercent,
+        minimum_margin_percent: null, merchandise_total_original: input.merchandiseTotalOriginal,
+        merchandise_total_clp: input.merchandiseTotalClp, logistics_total_clp: input.logisticsTotalClp,
+        duties_total_clp: input.dutiesTotalClp, taxes_total_clp: input.taxesTotalClp,
+        landed_total_clp: input.landedTotalClp, projected_sales_clp: input.projectedSalesClp,
+        projected_profit_clp: input.projectedProfitClp, projected_margin_percent: input.projectedMarginPercent,
+        assumptions: { costing: assumptions, snapshot: input.snapshot }, missing_inputs: input.missingInputs,
+        calculation_version: "cl_import_cost_v3_invoice_floor", calculated_at: now, created_at: now,
+      }, ...items]);
+      setScenarioName("");
+      setSaved("Copia guardada. El escenario base y los precios oficiales se conservan.");
+      try { await onSaved("Copia de escenario guardada."); }
+      catch { setError("La copia se guardó, pero no se pudo actualizar la ficha. Recarga para sincronizar."); }
     } catch (reason) {
-      const message = reason instanceof Error ? reason.message : String(reason);
+      const message = reason instanceof Error ? reason.message : reason && typeof reason === "object" && "message" in reason ? String(reason.message) : String(reason);
       setError(/save_foreign_trade_costing_scenario|does not exist|404/i.test(message)
-        ? "Falta ejecutar supabase/foreign_trade_center_phase4_costing.sql en Supabase."
-        : message);
+        ? "No está disponible la función de guardado. Solicita revisar las fases 4 y 16 antes de publicar."
+        : `${message} Si se perdió la conexión, recarga la operación y revisa Escenarios guardados antes de reintentar; la copia podría haberse guardado.`);
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   }
@@ -142,8 +171,8 @@ export function ForeignTradeCostingPanel({
     setError("");
     setSaved("");
     try {
-      await exportForeignTradeCostingExcel({ detail, result, settings });
-      setSaved(`Excel generado con ${result.lines.length} productos y ${detail.costs.length} registros de costos.`);
+      await exportForeignTradeCostingExcel({ detail: simulationDetail, result, settings });
+      setSaved(`Excel generado con ${result.lines.length} productos y ${simulationDetail.costs.length} registros de costos.`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
@@ -153,11 +182,18 @@ export function ForeignTradeCostingPanel({
 
   return (
     <div className="foreign-trade-costing-stack">
+      <SavedCostingScenarios scenarios={scenarios} operationId={detail.operation.id} disabled={saving} onOpen={(scenario) => {
+        setOpened(scenario);
+        const stored = scenario ? scenarioSnapshot(scenario, detail.operation.id) : null;
+        setForm(initialForm(stored ? { ...detail, lines: stored.lines, costs: stored.costs } : detail, scenario || baseline, costParameters));
+        setError(""); setSaved("");
+      }} />
+      <p role="status">{opened ? `Simulación: ${opened.name}. ${snapshot ? "Productos y gastos de la copia guardada." : "Escenario antiguo: supuestos guardados sobre productos y gastos actuales; el resultado puede cambiar."}` : "Simulación desde el escenario base y los datos actuales."} Abrir o ajustar no cambia costos ni precios oficiales.</p>
       <section className="panel foreign-trade-costing-config">
         <div className="foreign-trade-detail-panel-heading">
           <div>
             <h2>Costeo puesto en bodega y precio de venta</h2>
-            {hasSimulatedCosts(detail.costs) ? <span className="foreign-trade-source-badge simulated">Proyección con costos simulados</span> : null}
+            {hasSimulatedCosts(simulationDetail.costs) ? <span className="foreign-trade-source-badge simulated">Proyección con costos simulados</span> : null}
             <p>Los tributos se calculan desde el CIF y se muestran separados de los gastos operativos.</p>
           </div>
           <Calculator size={22} />
@@ -301,7 +337,9 @@ export function ForeignTradeCostingPanel({
       {saved ? <div className="notice-banner success"><CheckCircle2 size={18} /> {saved}</div> : null}
       <div className="foreign-trade-costing-actions" style={{ flexWrap: "wrap", gap: ".65rem" }}>
         <button className="ghost-button" style={{ flex: "1 1 190px", justifyContent: "center" }} type="button" disabled={saving || exporting || !result.lines.length} onClick={() => void exportExcel()}><FileSpreadsheet size={17} /> {exporting ? "Generando Excel..." : "Exportar Excel"}</button>
-        <button className="primary-button" type="button" disabled={saving || exporting || !settings.exchangeRateClp} onClick={() => void saveScenario()}><Save size={17} /> {saving ? "Guardando..." : "Guardar escenario"}</button>
+        <label>Nombre de la copia<input aria-label="Nombre de la copia" maxLength={140} value={scenarioName} disabled={saving} onChange={(event) => setScenarioName(event.target.value)} /></label>
+        <button className="ghost-button" type="button" disabled={saving || !scenarioName} onClick={() => setScenarioName("")}>Cancelar guardado</button>
+        <button className="primary-button" type="button" disabled={saving || exporting || !settings.exchangeRateClp || scenarioName.trim().length < 2 || !result.lines.length} onClick={() => void saveScenario()}><Save size={17} /> {saving ? "Guardando..." : "Guardar copia del escenario"}</button>
       </div>
     </div>
   );
@@ -318,7 +356,7 @@ function initialForm(
     : null;
   return {
     exchangeRateClp: valueString(scenario?.exchange_rate_clp ?? detail.operation.exchange_rate_clp),
-    cifTotalOriginal: hasSimulatedCosts(detail.costs) ? "" : valueString(saved.cif_total_original ?? explicitCif),
+    cifTotalOriginal: Object.prototype.hasOwnProperty.call(saved, "cif_total_original") ? valueString(saved.cif_total_original) : hasSimulatedCosts(detail.costs) ? "" : valueString(explicitCif),
     generalDutyPercent: valueString(saved.general_duty_percent ?? parameterValue(parameters, "cl_general_ad_valorem")),
     importVatPercent: valueString(saved.import_vat_percent ?? parameterValue(parameters, "cl_import_vat")),
     salesVatPercent: valueString(saved.sales_vat_percent ?? parameterValue(parameters, "cl_sales_vat")),

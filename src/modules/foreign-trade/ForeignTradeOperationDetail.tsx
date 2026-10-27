@@ -226,7 +226,7 @@ export function ForeignTradeOperationDetail({
 
       {tab === "reconciliation" ? <ForeignTradeExpenseReconciliationPanel operationId={operationId} costs={detail.costs} onChanged={changed} /> : null}
 
-      {tab === "costing" ? <ForeignTradeCostingPanel detail={detail} costParameters={costParameters} onSaved={changed} /> : null}
+      {tab === "costing" ? <ForeignTradeCostingPanel key={detail.operation.id} detail={detail} costParameters={costParameters} onSaved={changed} /> : null}
 
       {tab === "intelligence" ? <ForeignTradeIntelligencePanel operationId={operationId} /> : null}
 
