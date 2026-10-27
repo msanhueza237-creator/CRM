@@ -158,7 +158,7 @@ export function ForeignTradeCostingPanel({
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : reason && typeof reason === "object" && "message" in reason ? String(reason.message) : String(reason);
       setError(/save_foreign_trade_costing_scenario|does not exist|404/i.test(message)
-        ? "No está disponible la función de guardado. Solicita revisar las fases 4 y 16 antes de publicar."
+        ? "El guardado no está disponible. Contacta al administrador para revisar el servicio."
         : `${message} Si se perdió la conexión, recarga la operación y revisa Escenarios guardados antes de reintentar; la copia podría haberse guardado.`);
     } finally {
       savingRef.current = false;

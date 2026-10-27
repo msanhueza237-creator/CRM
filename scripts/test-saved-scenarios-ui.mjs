@@ -56,10 +56,11 @@ try {
  await page.getByRole('checkbox',{name:'Comparar Copia A',exact:true}).check();await page.getByRole('checkbox',{name:'Comparar Copia B',exact:true}).check();
  assert.equal(await page.getByRole('checkbox',{name:'Comparar Base antigua',exact:true}).isDisabled(),true);
  await page.getByRole('region',{name:'Escenarios guardados'}).screenshot({path:'/tmp/saved-scenarios-mobile.png'});
- const overflow=await page.getByRole('region',{name:'Escenarios guardados'}).evaluate(el=>el.scrollWidth>el.clientWidth);assert.equal(overflow,false);
+ for (const width of [320,390,1280]) { await page.setViewportSize({width,height:844}); const overflow=await page.getByRole('region',{name:'Escenarios guardados'}).evaluate(el=>el.scrollWidth>el.clientWidth);assert.equal(overflow,false,`saved scenarios overflow at ${width}px`); }
  await page.getByRole('button',{name:'Abrir simulación: Base antigua',exact:true}).click();assert.match(await page.getByRole('status').innerText(),/Escenario antiguo/);
  await page.evaluate(()=>window.fail=true);await name.fill('Con error');await save.click();await page.getByText('Fallo simulado',{exact:false}).waitFor();assert.equal(await name.inputValue(),'Con error');assert.equal(await page.getByRole('button',{name:'Abrir simulación: Con error',exact:true}).count(),0);
+ await page.evaluate(()=>{window.fail=false;window.refreshFail=false});await save.click();await page.getByRole('button',{name:'Abrir simulación: Con error',exact:true}).waitFor();assert.equal(await name.inputValue(),'');
  await page.evaluate(()=>window.renderOperation('op2'));await page.getByRole('heading',{name:'Escenarios guardados'}).waitFor();assert.equal(await name.inputValue(),'');assert.equal(await page.getByRole('button',{name:'Abrir simulación: Copia A',exact:true}).count(),0);
  assert.deepEqual(errors,[]);
- console.log('PASS: mobile 390px, copy/double click, cancel, snapshots, comparison, legacy/null values, refresh error, save error, operation change, no external network. Screenshot /tmp/saved-scenarios-mobile.png');
+ console.log('PASS: 320/390/1280px, successful retry, copy/double click, cancel, snapshots, comparison, legacy/null values, refresh error, save error, operation change, no external network. Screenshot /tmp/saved-scenarios-mobile.png');
 } finally {await browser?.close();await server.close();}
