@@ -1145,6 +1145,25 @@ assert.deepEqual(costingScenario.rows[0], {
   pricing_method: "markup_on_cost",
 });
 
+// Named draft copies preserve the complete baseline and official operation.
+const beforeCopies = await db.query("select to_jsonb(s) as row from public.foreign_trade_scenarios s where id=$1", [savedScenario.rows[0].id]);
+const beforeOperation = await db.query("select to_jsonb(s) as row from public.import_shipments s where id=$1", [operationId]);
+const copyPayload = { operation_id: operationId, name: "Copia prueba", status: "draft", exchange_rate_clp: 1000,
+  assumptions: { costing: { pricing_method: "margin_on_sale", target_percent: 30 }, snapshot: { version: 1, operation_id: operationId, lines: [], costs: [] } } };
+const copies = [];
+for (let i = 0; i < 2; i++) copies.push((await db.query("select public.save_foreign_trade_costing_scenario($1::jsonb) as id", [JSON.stringify(copyPayload)])).rows[0].id);
+assert.notEqual(copies[0], copies[1]);
+assert.notEqual(copies[0], savedScenario.rows[0].id);
+assert.deepEqual((await db.query("select to_jsonb(s) as row from public.foreign_trade_scenarios s where id=$1", [savedScenario.rows[0].id])).rows, beforeCopies.rows);
+assert.deepEqual((await db.query("select to_jsonb(s) as row from public.import_shipments s where id=$1", [operationId])).rows, beforeOperation.rows);
+assert.deepEqual((await db.query("select assumptions from public.foreign_trade_scenarios where id=$1", [copies[0]])).rows[0].assumptions, copyPayload.assumptions);
+await assert.rejects(db.query("select public.save_foreign_trade_costing_scenario($1::jsonb)", [JSON.stringify({ ...copyPayload, operation_id: "00000000-0000-4000-8000-999999999999" })]), /operation_not_found/);
+await assert.rejects(db.query("select public.save_foreign_trade_costing_scenario($1::jsonb)", [JSON.stringify({ ...copyPayload, name: "X" })]), /invalid_scenario_name/);
+await db.query("select set_config('app.test_role', 'vendedor', false)");
+await assert.rejects(db.query("select public.save_foreign_trade_costing_scenario($1::jsonb)", [JSON.stringify(copyPayload)]), /foreign_trade_forbidden/);
+await db.query("select set_config('app.test_role', 'administrador', false)");
+console.log("Saved scenario copies: distinct IDs, baseline/operation unchanged, snapshot retained, invalid operation/name rejected.");
+
 const detail = await db.query("select public.foreign_trade_operation_detail($1) as detail", [operationId]);
 assert.equal(detail.rows[0].detail.lines.length, 1);
 assert.equal(detail.rows[0].detail.costs.length, 1);

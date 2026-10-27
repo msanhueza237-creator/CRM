@@ -469,7 +469,7 @@ export async function saveForeignTradeCostingScenario(input: SaveForeignTradeCos
     exchange_rate_clp: input.exchangeRateClp,
     exchange_rate_source: input.exchangeRateSource,
     allocation_method: input.allocationMethod,
-    assumptions: { costing: input.assumptions },
+    assumptions: { costing: input.assumptions, ...(input.snapshot ? { snapshot: input.snapshot } : {}) },
     merchandise_total_original: input.merchandiseTotalOriginal,
     merchandise_total_clp: input.merchandiseTotalClp,
     logistics_total_clp: input.logisticsTotalClp,
